@@ -1,0 +1,1691 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%}
+  body{font-family:Vazirmatn,system-ui,sans-serif;background:#0d1013;-webkit-font-smoothing:antialiased}
+  ::selection{background:rgba(47,111,235,.22)}
+  ::-webkit-scrollbar{width:10px;height:10px}
+  ::-webkit-scrollbar-thumb{background:var(--line-2);border-radius:6px;border:2px solid transparent;background-clip:padding-box}
+  ::-webkit-scrollbar-track{background:transparent}
+  a{color:var(--accent);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .ltr{direction:ltr;unicode-bidi:isolate;font-family:'JetBrains Mono',monospace}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @keyframes slidein{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  @keyframes barflow{0%{transform:translateX(100%)}100%{transform:translateX(-100%)}}
+  @media (max-width:1200px){
+    aside[data-dock]{position:absolute!important;top:0;bottom:0;inset-inline-start:0;z-index:40;box-shadow:0 0 40px rgba(0,0,0,.28)}
+  }
+</style>
+</helmet>
+<div style="{{ themeStyle }}; position:relative; display:flex; flex-direction:row; height:100vh; width:100%; overflow:hidden; background:var(--bg); color:var(--ink); font-size:var(--fs); line-height:1.55" dir="{{ dir }}" lang="{{ lang }}">
+
+  <!-- ============ RIGHT NAV ============ -->
+  <nav style="width:236px; flex:none; background:var(--panel); border-inline-start:1px solid var(--line); display:flex; flex-direction:column; height:100%">
+    <div style="padding:16px 16px 14px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px">
+      <div style="width:30px; height:30px; border-radius:7px; background:var(--ink); color:var(--panel); display:flex; align-items:center; justify-content:center; font-weight:700; font-size:14px">DK</div>
+      <div style="line-height:1.25">
+        <div style="font-weight:700; font-size:13.5px">مرکز فرمان بازار</div>
+        <div style="font-size:10.5px; color:var(--ink-3)">هوش رقابتی دیجی‌کالا</div>
+      </div>
+    </div>
+
+    <div style="padding:10px 10px; flex:1; overflow-y:auto">
+      <div style="font-size:10px; color:var(--ink-3); padding:6px 8px 4px; letter-spacing:.02em">فضای کاری</div>
+      <sc-for list="{{ navMain }}" as="item" hint-placeholder-count="6">
+        <button onClick="{{ item.go }}" style="{{ item.style }}" style-hover="background:var(--panel-2)">
+          <span style="width:18px; text-align:center; font-size:14px">{{ item.icon }}</span>
+          <span style="flex:1; text-align:start">{{ item.label }}</span>
+          <sc-if value="{{ item.count }}" hint-placeholder-val=""><span style="{{ item.badgeStyle }}">{{ item.count }}</span></sc-if>
+        </button>
+      </sc-for>
+
+      <div style="font-size:10px; color:var(--ink-3); padding:14px 8px 4px; letter-spacing:.02em; border-top:1px solid var(--line); margin-top:10px">مرجع و راه‌اندازی</div>
+      <sc-for list="{{ navRef }}" as="item" hint-placeholder-count="3">
+        <button onClick="{{ item.go }}" style="{{ item.style }}" style-hover="background:var(--panel-2)">
+          <span style="width:18px; text-align:center; font-size:14px">{{ item.icon }}</span>
+          <span style="flex:1; text-align:start">{{ item.label }}</span>
+        </button>
+      </sc-for>
+    </div>
+
+    <div style="padding:10px 12px; border-top:1px solid var(--line); display:flex; align-items:center; gap:9px">
+      <div style="width:30px; height:30px; border-radius:50%; background:var(--panel-2); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-weight:600; font-size:12px; color:var(--ink-2)">ن.ر</div>
+      <div style="flex:1; line-height:1.25; min-width:0">
+        <div style="font-weight:600; font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">نیلوفر راد</div>
+        <div style="font-size:10px; color:var(--ink-3)">اپراتور قیمت‌گذاری</div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ============ MAIN ============ -->
+  <div style="flex:1; display:flex; flex-direction:column; min-width:0; height:100%">
+    <!-- TOPBAR -->
+    <header style="height:52px; flex:none; border-bottom:1px solid var(--line); background:var(--panel); display:flex; align-items:center; gap:14px; padding:0 18px">
+      <div style="font-weight:700; font-size:14px">{{ routeTitle }}</div>
+      <div style="font-size:11.5px; color:var(--ink-3)">{{ routeSub }}</div>
+      <div style="flex:1"></div>
+
+      <div style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--ink-2); padding:5px 10px; border:1px solid var(--line); border-radius:7px; background:var(--panel-3)">
+        <span style="width:7px; height:7px; border-radius:50%; background:var(--pos)"></span>
+        اتصال دیجی‌کالا: سالم
+      </div>
+
+      <div style="display:flex; align-items:center; gap:4px; padding-inline-end:4px; margin-inline-end:2px; border-inline-end:1px solid var(--line)">
+        <span style="font-size:10px; color:var(--ink-3); margin-inline-end:2px">حالت:</span>
+        <sc-for list="{{ demoStates }}" as="d" hint-placeholder-count="3"><button onClick="{{ d.set }}" style="{{ d.style }}">{{ d.label }}</button></sc-for>
+      </div>
+      <button onClick="{{ toggleDensity }}" title="تراکم" style="height:32px; padding:0 11px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:11.5px; cursor:pointer; display:flex; align-items:center; gap:6px" style-hover="background:var(--panel-2)">
+        <span style="font-size:13px">☰</span>{{ densityLabel }}
+      </button>
+      <button onClick="{{ localeToggle }}" title="Language / زبان" style="height:32px; padding:0 11px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:11.5px; font-weight:600; cursor:pointer" style-hover="background:var(--panel-2)">{{ localeName }}</button>
+      <button onClick="{{ toggleTheme }}" title="پوسته / theme" style="width:32px; height:32px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--ink-2); font-family:inherit; cursor:pointer; font-size:14px" style-hover="background:var(--panel-2)">{{ themeIcon }}</button>
+      <button onClick="{{ toggleChat }}" style="height:32px; padding:0 12px; border:1px solid var(--accent); border-radius:7px; background:{{ chatBtnBg }}; color:{{ chatBtnFg }}; font-family:inherit; font-size:11.5px; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:7px">
+        <span style="font-size:13px">◔</span>دستیار
+        <sc-if value="{{ briefingUnseen }}" hint-placeholder-val=""><span style="width:7px; height:7px; border-radius:50%; background:var(--risk)"></span></sc-if>
+      </button>
+    </header>
+
+    <!-- SCROLL AREA -->
+    <div style="flex:1; overflow-y:auto; overflow-x:hidden">
+
+      <!-- ===== GLOBAL LOADING (any screen) ===== -->
+      <sc-if value="{{ demoLoading }}" hint-placeholder-val="">
+      <div style="padding:20px 22px 40px; max-width:1180px">
+        <div style="height:20px; width:180px; background:var(--panel); border:1px solid var(--line); border-radius:6px; margin-bottom:18px; animation:pulse 1.3s ease-in-out infinite"></div>
+        <div style="display:flex; gap:12px; margin-bottom:16px">
+          <div style="flex:1; height:84px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite"></div>
+          <div style="flex:1; height:84px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite; animation-delay:.1s"></div>
+          <div style="flex:1; height:84px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite; animation-delay:.2s"></div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:9px">
+          <div style="height:64px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite"></div>
+          <div style="height:64px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite; animation-delay:.15s"></div>
+          <div style="height:64px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite; animation-delay:.3s"></div>
+          <div style="height:64px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite; animation-delay:.45s"></div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ===== GLOBAL EMPTY (any screen) ===== -->
+      <sc-if value="{{ demoEmpty }}" hint-placeholder-val="">
+      <div style="padding:60px 22px; display:flex; align-items:center; justify-content:center">
+        <div style="text-align:center; max-width:420px">
+          <div style="width:48px; height:48px; border-radius:12px; background:var(--panel-2); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; font-size:20px; color:var(--ink-3); margin:0 auto 16px">▤</div>
+          <div style="font-size:14px; font-weight:700; margin-bottom:8px">هنوز داده‌ای برای نمایش نیست</div>
+          <div style="font-size:12px; color:var(--ink-3); line-height:1.8">این نما پس از تکمیل همگام‌سازی و آمادگی داده پر می‌شود. اگر انتظار داده دارید، وضعیت اتصال و صف‌های عملیات را بررسی کنید.</div>
+          <button onClick="{{ goOnboarding }}" style="margin-top:18px; height:34px; padding:0 16px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:12px; font-weight:600; cursor:pointer">بررسی راه‌اندازی ←</button>
+        </div>
+      </div>
+      </sc-if>
+
+      <sc-if value="{{ demoReady }}" hint-placeholder-val="{{ true }}">
+      <!-- ================= TODAY ================= -->
+      <sc-if value="{{ isToday }}" hint-placeholder-val="{{ true }}">
+      <div style="padding:20px 22px 40px; max-width:1180px">
+
+        <div style="display:flex; align-items:center; gap:8px; margin-bottom:16px">
+          <span style="font-size:10.5px; color:var(--ink-3)">نمایش حالت:</span>
+          <sc-for list="{{ todayStates }}" as="s" hint-placeholder-count="4"><button onClick="{{ s.set }}" style="{{ s.style }}">{{ s.label }}</button></sc-for>
+        </div>
+
+        <sc-if value="{{ tReady }}" hint-placeholder-val="{{ true }}">
+        <!-- summary strip -->
+        <div style="display:flex; gap:12px; flex-wrap:wrap; margin-bottom:18px">
+          <div style="flex:1; min-width:190px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px">
+            <div style="font-size:11px; color:var(--ink-3); margin-bottom:7px">رویدادهای باز با اهمیت بالا</div>
+            <div style="font-size:26px; font-weight:700; letter-spacing:-.01em">{{ sum.highCount }}</div>
+            <div style="font-size:11px; color:var(--ink-3); margin-top:3px">از مجموع {{ sum.totalCount }} رویداد باز</div>
+          </div>
+          <div style="flex:1.4; min-width:230px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px">
+            <div style="font-size:11px; color:var(--ink-3); margin-bottom:7px; display:flex; align-items:center; gap:6px">حاشیهٔ در معرض خطر <span style="width:6px;height:6px;border-radius:50%;background:var(--risk)"></span></div>
+            <div style="font-size:26px; font-weight:700; color:var(--risk); letter-spacing:-.01em">{{ sum.exposure }}</div>
+            <div style="font-size:11px; color:var(--ink-3); margin-top:3px">برآورد موتور حاشیه · بازهٔ: از دیروز تا اکنون</div>
+          </div>
+          <div style="flex:1; min-width:190px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px 16px">
+            <div style="font-size:11px; color:var(--ink-3); margin-bottom:7px">اقدام‌های دیروز</div>
+            <div style="font-size:15px; font-weight:600; margin-top:8px; display:flex; gap:14px">
+              <span style="color:var(--pos)">{{ sum.yAccepted }} پذیرفته</span>
+              <span style="color:var(--warn)">{{ sum.yPending }} در انتظار تطبیق</span>
+            </div>
+            <a onClick="{{ goActions }}" style="font-size:11px; margin-top:9px; display:inline-block; cursor:pointer">مشاهدهٔ اقدام‌ها ←</a>
+          </div>
+        </div>
+
+        <!-- data-readiness blockers -->
+        <div style="background:var(--warn-bg); border:1px solid var(--warn-line); border-radius:10px; padding:12px 14px; margin-bottom:20px">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:9px">
+            <span style="font-size:13px; color:var(--warn)">⚠</span>
+            <span style="font-weight:600; font-size:12.5px">آمادگی داده — {{ blockerTotal }} مورد پیش از تصمیم نیاز به رسیدگی دارد</span>
+          </div>
+          <div style="display:flex; gap:10px; flex-wrap:wrap">
+            <sc-for list="{{ blockers }}" as="b" hint-placeholder-count="3">
+              <button onClick="{{ b.go }}" style="display:flex; align-items:center; gap:9px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:8px 11px; cursor:pointer; font-family:inherit" style-hover="border-color:var(--line-2)">
+                <span style="width:8px; height:8px; border-radius:2px; background:{{ b.color }}"></span>
+                <span style="font-size:12px; color:var(--ink); font-weight:500">{{ b.label }}</span>
+                <span style="font-size:11px; color:var(--accent)">حل ←</span>
+              </button>
+            </sc-for>
+          </div>
+        </div>
+
+        <!-- queue header -->
+        <div style="display:flex; align-items:baseline; gap:10px; margin-bottom:6px">
+          <h2 style="margin:0; font-size:14px; font-weight:700">صف اولویت</h2>
+          <span style="font-size:11px; color:var(--ink-3)">مرتب‌شده بر اساس درآمد در معرض خطر × اطمینان × فوریت</span>
+        </div>
+
+        <!-- event rows -->
+        <div style="display:flex; flex-direction:column; gap:9px; margin-top:12px">
+          <sc-for list="{{ events }}" as="ev" hint-placeholder-count="6">
+            <div style="background:var(--panel); border:1px solid {{ ev.borderColor }}; border-radius:10px; overflow:hidden">
+              <div style="display:flex; align-items:stretch">
+                <div style="width:44px; flex:none; background:var(--panel-3); border-inline-end:1px solid var(--line); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px">
+                  <div style="font-size:10px; color:var(--ink-3)">#</div>
+                  <div style="font-size:17px; font-weight:700">{{ ev.rank }}</div>
+                </div>
+                <div style="flex:1; padding:12px 14px; min-width:0">
+                  <div style="display:flex; align-items:center; gap:8px; margin-bottom:7px; flex-wrap:wrap">
+                    <span style="font-size:10.5px; font-weight:600; color:{{ ev.typeColor }}; background:{{ ev.typeBg }}; padding:2px 8px; border-radius:5px">{{ ev.typeLabel }}</span>
+                    <span style="font-size:13px; font-weight:600">{{ ev.product }}</span>
+                    <span class="ltr" style="font-size:11px; color:var(--ink-3)">{{ ev.sku }}</span>
+                    <sc-if value="{{ ev.hasVariant }}" hint-placeholder-val=""><span style="font-size:11px; color:var(--ink-3)">· {{ ev.variant }}</span></sc-if>
+                  </div>
+                  <div style="display:flex; gap:20px; flex-wrap:wrap; align-items:center">
+                    <div style="display:flex; align-items:center; gap:6px">
+                      <span style="width:7px; height:7px; border-radius:50%; background:{{ ev.qColor }}"></span>
+                      <span style="font-size:11.5px; color:var(--ink-2)">{{ ev.qLabel }}</span>
+                      <span style="font-size:11px; color:{{ ev.freshColor }}">· {{ ev.fresh }}</span>
+                    </div>
+                    <div style="font-size:11.5px; color:var(--ink-2)">قیمت من <b style="color:var(--ink)">{{ ev.ownedT }}</b></div>
+                    <div style="font-size:11.5px; color:var(--ink-2)">پایین‌ترین رقیب <b style="color:{{ ev.compColor }}">{{ ev.compT }}</b></div>
+                    <div style="font-size:11.5px; color:var(--ink-2)">اثر حاشیه <b style="color:{{ ev.expoColor }}">{{ ev.expoT }}</b></div>
+                  </div>
+                </div>
+                <div style="width:230px; flex:none; border-inline-start:1px solid var(--line); padding:12px 14px; display:flex; flex-direction:column; gap:8px; background:var(--panel-3)">
+                  <sc-if value="{{ ev.blocked }}" hint-placeholder-val="">
+                    <div style="display:flex; align-items:center; gap:6px; font-size:11.5px; color:var(--risk); font-weight:600"><span>◼</span>مسدود</div>
+                    <div style="font-size:11px; color:var(--ink-2); line-height:1.5">{{ ev.blockReason }}</div>
+                    <button onClick="{{ ev.open }}" style="margin-top:2px; height:30px; border:1px solid var(--line-2); border-radius:7px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:11.5px; font-weight:600; cursor:pointer" style-hover="background:var(--panel-2)">بررسی مانع</button>
+                  </sc-if>
+                  <sc-if value="{{ ev.notBlocked }}" hint-placeholder-val="{{ true }}">
+                    <div style="font-size:10.5px; color:var(--ink-3)">اقدام پیشنهادی</div>
+                    <div style="font-size:12px; font-weight:600; line-height:1.45">{{ ev.action }}</div>
+                    <button onClick="{{ ev.open }}" style="margin-top:2px; height:30px; border:none; border-radius:7px; background:var(--accent); color:#fff; font-family:inherit; font-size:11.5px; font-weight:600; cursor:pointer" style-hover="filter:brightness(1.06)">بررسی و تصمیم</button>
+                  </sc-if>
+                </div>
+              </div>
+              <div style="border-top:1px dashed var(--line); padding:7px 14px; display:flex; align-items:center; gap:7px; background:var(--panel)">
+                <span style="font-size:11px; color:var(--ink-3)">چرا این اولویت؟</span>
+                <span style="font-size:11px; color:var(--ink-2)">{{ ev.why }}</span>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+
+        <div style="text-align:center; margin-top:22px; font-size:11.5px; color:var(--ink-3)">
+          پایان صف امروز · <a onClick="{{ goActions }}" style="cursor:pointer">تاریخچهٔ اقدام‌ها</a>
+        </div>
+        </sc-if>
+
+        <!-- NO ACTION NEEDED -->
+        <sc-if value="{{ tNoAction }}" hint-placeholder-val="">
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:52px 30px; text-align:center; margin-top:6px">
+          <div style="width:52px; height:52px; border-radius:50%; background:var(--pos-bg); color:var(--pos); display:flex; align-items:center; justify-content:center; font-size:24px; margin:0 auto 16px">✓</div>
+          <div style="font-size:15px; font-weight:700; margin-bottom:8px">هیچ اقدامی لازم نیست</div>
+          <div style="font-size:12.5px; color:var(--ink-3); line-height:1.8; max-width:440px; margin:0 auto">همهٔ کالاهای پایش‌شده در محدودهٔ امن قیمت و حاشیه‌اند و دادهٔ بازار تازه است. رویداد باز با اهمیت بالایی وجود ندارد.<br>آخرین بررسی: ۴ دقیقه پیش · ۱۲۰ کالا پایش‌شده</div>
+          <div style="display:inline-flex; gap:20px; margin-top:20px; font-size:11.5px; color:var(--ink-2)">
+            <span>✓ ۱۱۸ کالا پایدار</span><span style="color:var(--pos)">✓ آمادگی داده کامل</span><span style="color:var(--pos)">✓ اتصال سالم</span>
+          </div>
+        </div>
+        </sc-if>
+
+        <!-- LOADING SKELETON -->
+        <sc-if value="{{ tLoading }}" hint-placeholder-val="">
+        <div style="display:flex; gap:12px; margin-bottom:18px">
+          <div style="flex:1; height:88px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite"></div>
+          <div style="flex:1.4; height:88px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite"></div>
+          <div style="flex:1; height:88px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite"></div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:9px">
+          <div style="height:74px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite"></div>
+          <div style="height:74px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite; animation-delay:.15s"></div>
+          <div style="height:74px; background:var(--panel); border:1px solid var(--line); border-radius:10px; animation:pulse 1.3s ease-in-out infinite; animation-delay:.3s"></div>
+        </div>
+        <div style="text-align:center; margin-top:16px; font-size:11.5px; color:var(--ink-3)">در حال ساخت صف اولویت امروز…</div>
+        </sc-if>
+
+        <!-- CONNECTOR DISCONNECTED -->
+        <sc-if value="{{ tDisconnected }}" hint-placeholder-val="">
+        <div style="background:var(--risk-bg); border:1px solid var(--risk); border-radius:12px; padding:24px 26px; margin-bottom:16px">
+          <div style="display:flex; align-items:center; gap:11px; margin-bottom:10px">
+            <span style="width:34px; height:34px; border-radius:50%; background:var(--risk); color:#fff; display:flex; align-items:center; justify-content:center; font-size:16px">⚠</span>
+            <div><div style="font-size:14px; font-weight:700; color:var(--risk)">اتصال دیجی‌کالا قطع شده است</div><div style="font-size:11.5px; color:var(--ink-2); margin-top:2px">خطای دامنهٔ دسترسی توکن · آخرین همگام‌سازی موفق ۳ ساعت پیش</div></div>
+          </div>
+          <div style="font-size:12px; color:var(--ink-2); line-height:1.8; margin-bottom:14px">قابلیت‌های مسدودشده تا بازیابی اتصال: تشخیص رویداد جدید، مشاهدهٔ تازه، و هر اقدام قیمتی. پاسخ‌های فقط‌خواندنی از آخرین دادهٔ همگام‌شده با برچسب سن داده ارائه می‌شوند.</div>
+          <div style="display:flex; gap:9px">
+            <button style="height:36px; padding:0 16px; border:none; border-radius:8px; background:var(--risk); color:#fff; font-family:inherit; font-size:12px; font-weight:600; cursor:pointer">اتصال دوباره</button>
+            <button style="height:36px; padding:0 16px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:12px; cursor:pointer">راهنمای بازیابی</button>
+          </div>
+        </div>
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 16px; font-size:11.5px; color:var(--ink-3); display:flex; align-items:center; gap:9px">
+          <span style="width:7px; height:7px; border-radius:50%; background:var(--warn)"></span>آخرین صف شناخته‌شده (۳ ساعت پیش) — فقط‌خواندنی، ممکن است قدیمی باشد.
+        </div>
+        </sc-if>
+
+      </div>
+      </sc-if>
+
+      <!-- ================= EVENT DETAIL ================= -->
+      <sc-if value="{{ isEvent }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:1180px">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px">
+          <button onClick="{{ evD.back }}" style="height:30px; padding:0 12px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:11.5px; cursor:pointer" style-hover="background:var(--panel-2)">→ امروز</button>
+          <span style="font-size:10.5px; font-weight:600; color:{{ evD.typeColor }}; background:{{ evD.typeBg }}; padding:3px 9px; border-radius:5px">{{ evD.typeLabel }}</span>
+          <span class="ltr" style="font-size:11px; color:var(--ink-3)">{{ evD.id }}</span>
+        </div>
+
+        <div style="display:flex; gap:16px; align-items:flex-start">
+          <!-- main column -->
+          <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:14px">
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px 18px">
+              <div style="font-size:17px; font-weight:700; margin-bottom:4px">{{ evD.product }}</div>
+              <div style="display:flex; gap:12px; align-items:center; margin-bottom:14px">
+                <span class="ltr" style="font-size:11.5px; color:var(--ink-3)">{{ evD.sku }}</span>
+                <span style="font-size:11.5px; color:var(--ink-3)">گونه: {{ evD.variant }}</span>
+                <span style="display:flex; align-items:center; gap:6px; font-size:11.5px"><span style="width:7px;height:7px;border-radius:50%;background:{{ evD.qColor }}"></span>{{ evD.qLabel }} <span style="color:{{ evD.freshColor }}">· {{ evD.fresh }}</span></span>
+              </div>
+              <div style="display:flex; gap:26px; padding:12px 0; border-top:1px solid var(--line)">
+                <div><div style="font-size:11px; color:var(--ink-3); margin-bottom:4px">قیمت من</div><div style="font-size:16px; font-weight:700">{{ evD.ownedT }}</div></div>
+                <div><div style="font-size:11px; color:var(--ink-3); margin-bottom:4px">پایین‌ترین رقیب واجد شرایط</div><div style="font-size:16px; font-weight:700; color:var(--risk)">{{ evD.compT }}</div></div>
+                <div><div style="font-size:11px; color:var(--ink-3); margin-bottom:4px">حاشیهٔ در معرض خطر</div><div style="font-size:16px; font-weight:700; color:var(--risk)">{{ evD.expoT }}</div></div>
+              </div>
+            </div>
+
+            <!-- price history chart -->
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px 18px">
+              <div style="display:flex; align-items:center; gap:16px; margin-bottom:12px">
+                <div style="font-size:13px; font-weight:700">قیمت من در برابر پایین‌ترین رقیب</div>
+                <div style="flex:1"></div>
+                <span style="display:flex; align-items:center; gap:6px; font-size:11px; color:var(--ink-2)"><span style="width:14px; height:2px; background:var(--ink)"></span>قیمت من</span>
+                <span style="display:flex; align-items:center; gap:6px; font-size:11px; color:var(--ink-2)"><span style="width:14px; height:2px; background:var(--risk)"></span>پایین‌ترین رقیب</span>
+              </div>
+              <div style="position:relative">
+                <svg viewBox="0 0 520 150" style="width:100%; height:auto; direction:ltr" preserveAspectRatio="none">
+                  <polyline points="{{ evD.chart.ownedPts }}" fill="none" stroke="var(--ink)" stroke-width="1.8" />
+                  <polyline points="{{ evD.chart.compPts }}" fill="none" stroke="var(--risk)" stroke-width="1.8" stroke-dasharray="0" />
+                </svg>
+                <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--ink-3); margin-top:4px"><span>۱۰ روز پیش</span><span>امروز</span></div>
+              </div>
+            </div>
+
+            <!-- competing offers table -->
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+              <div style="padding:12px 16px; border-bottom:1px solid var(--line); font-size:13px; font-weight:700">پیشنهادهای رقیب روی همین کالای دیجی‌کالا</div>
+              <table style="width:100%; border-collapse:collapse; font-size:12px">
+                <thead><tr style="background:var(--panel-3); color:var(--ink-3); font-size:11px">
+                  <th style="text-align:start; padding:9px 16px; font-weight:500">فروشنده</th>
+                  <th style="text-align:start; padding:9px 12px; font-weight:500">قیمت</th>
+                  <th style="text-align:start; padding:9px 12px; font-weight:500">کیفیت</th>
+                  <th style="text-align:start; padding:9px 12px; font-weight:500">تازگی</th>
+                  <th style="text-align:start; padding:9px 16px; font-weight:500">اختلاف با من</th>
+                </tr></thead>
+                <tbody>
+                  <sc-for list="{{ evD.observed }}" as="o" hint-placeholder-count="3">
+                    <tr style="border-top:1px solid var(--line)">
+                      <td style="padding:10px 16px; font-weight:500">{{ o.seller }}</td>
+                      <td style="padding:10px 12px">{{ o.price }}</td>
+                      <td style="padding:10px 12px"><span style="display:inline-flex; align-items:center; gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:{{ o.qc }}"></span>{{ o.q }}</span></td>
+                      <td style="padding:10px 12px; color:var(--ink-3)">{{ o.fresh }}</td>
+                      <td style="padding:10px 16px; color:{{ o.dc }}; font-weight:600">{{ o.delta }}</td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <!-- evidence sidebar -->
+          <div style="width:340px; flex:none; display:flex; flex-direction:column; gap:12px">
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+              <div style="padding:11px 14px; border-bottom:1px solid var(--line); font-size:12.5px; font-weight:700; display:flex; align-items:center; gap:7px"><span style="width:6px;height:6px;border-radius:50%;background:var(--pos)"></span>واقعیت‌های مشاهده‌شدهٔ بازار</div>
+              <div style="padding:11px 14px; font-size:11.5px; color:var(--ink-2); line-height:1.7">سه پیشنهاد فعال روی همین کالا؛ پایین‌ترین ۱۳٬۷۲۰٬۰۰۰ تومان از «الکترو پارس». دو مسیر مشاهده مقادیر را تایید کردند.</div>
+            </div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+              <div style="padding:11px 14px; border-bottom:1px solid var(--line); font-size:12.5px; font-weight:700; display:flex; align-items:center; gap:7px"><span style="width:6px;height:6px;border-radius:50%;background:var(--info)"></span>سیگنال‌های دیجی‌کالا</div>
+              <div style="padding:6px 14px 10px">
+                <sc-for list="{{ evD.dkSignals }}" as="s" hint-placeholder-count="4">
+                  <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line); font-size:11.5px"><span style="color:var(--ink-3)">{{ s.k }}</span><span style="color:{{ s.c }}; font-weight:500">{{ s.v }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+              <div style="padding:11px 14px; border-bottom:1px solid var(--line); font-size:12.5px; font-weight:700; display:flex; align-items:center; gap:7px"><span style="width:6px;height:6px;border-radius:50%;background:var(--ink-3)"></span>پیکربندی فروشنده</div>
+              <div style="padding:6px 14px 10px">
+                <sc-for list="{{ evD.sellerConfig }}" as="s" hint-placeholder-count="3">
+                  <div style="display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid var(--line); font-size:11.5px"><span style="color:var(--ink-3)">{{ s.k }}</span><span style="font-weight:500">{{ s.v }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:var(--accent-bg); border:1px solid var(--line); border-radius:11px; padding:11px 14px">
+              <div style="font-size:12.5px; font-weight:700; margin-bottom:6px; display:flex; align-items:center; gap:7px"><span style="color:var(--accent)">◔</span>استنتاج مدل</div>
+              <div style="font-size:11.5px; color:var(--ink-2); line-height:1.7">{{ evD.inference }}</div>
+            </div>
+            <button onClick="{{ evD.goRec }}" style="height:40px; border:none; border-radius:9px; background:var(--accent); color:#fff; font-family:inherit; font-size:13px; font-weight:700; cursor:pointer" style-hover="filter:brightness(1.06)">بررسی پیشنهاد قیمت ←</button>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= RECOMMENDATION + APPROVAL ================= -->
+      <sc-if value="{{ isRec }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:1120px">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px">
+          <button onClick="{{ rec.back }}" style="height:30px; padding:0 12px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:11.5px; cursor:pointer" style-hover="background:var(--panel-2)">→ رویداد</button>
+          <span style="font-size:13px; font-weight:700">هدفون بی‌سیم سونی WH-1000XM5</span>
+          <span class="ltr" style="font-size:11px; color:var(--ink-3)">DKP-8842213</span>
+        </div>
+
+        <div style="display:flex; gap:16px; align-items:flex-start">
+          <!-- approval card -->
+          <div style="flex:1; min-width:0">
+            <div style="background:var(--panel); border:1px solid var(--line-2); border-radius:12px; overflow:hidden">
+              <div style="padding:13px 18px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:9px; background:var(--panel-3)">
+                <span style="font-size:13.5px; font-weight:700">کارت تایید — تغییر قیمت</span>
+                <span class="ltr" style="font-size:10.5px; color:var(--ink-3)">ACT-DRAFT-5567 · v3</span>
+                <div style="flex:1"></div>
+                <span style="font-size:11px; color:var(--ink-2); display:flex; align-items:center; gap:6px"><span style="font-size:12px">⧗</span>انقضا تا ۱۴ دقیقهٔ دیگر</span>
+              </div>
+
+              <!-- price before/after -->
+              <div style="padding:18px; display:flex; align-items:stretch; gap:14px">
+                <div style="flex:1; background:var(--panel-3); border:1px solid var(--line); border-radius:10px; padding:14px 16px">
+                  <div style="font-size:11px; color:var(--ink-3); margin-bottom:6px">قیمت فعلی</div>
+                  <div style="font-size:19px; font-weight:700">{{ rec.curPriceT }}</div>
+                  <div style="font-size:11px; color:var(--ink-3); margin-top:8px">حاشیه: <b style="color:var(--ink-2)">{{ rec.curC }}</b> ({{ rec.curPct }})</div>
+                </div>
+                <div style="display:flex; align-items:center; color:var(--ink-3); font-size:20px">←</div>
+                <div style="flex:1; background:var(--accent-bg); border:1px solid var(--accent); border-radius:10px; padding:14px 16px">
+                  <div style="font-size:11px; color:var(--accent); margin-bottom:6px; display:flex; align-items:center; gap:6px">قیمت پیشنهادی <sc-if value="{{ rec.edited }}" hint-placeholder-val=""><span style="font-size:9.5px; background:var(--warn-bg); color:var(--warn); padding:1px 6px; border-radius:4px">ویرایش‌شده</span></sc-if></div>
+                  <div style="display:flex; align-items:center; gap:8px">
+                    <div style="flex:1; font-size:16px; font-weight:700; color:var(--accent); white-space:nowrap">{{ rec.priceT }}</div>
+                    <sc-if value="{{ rec.apReview }}" hint-placeholder-val="{{ true }}"><button onClick="{{ rec.editMinus }}" style="flex:none; width:24px; height:24px; border:1px solid var(--line-2); border-radius:6px; background:var(--panel); color:var(--ink); cursor:pointer; font-size:15px">−</button></sc-if>
+                    <sc-if value="{{ rec.apReview }}" hint-placeholder-val="{{ true }}"><button onClick="{{ rec.editPlus }}" style="flex:none; width:24px; height:24px; border:1px solid var(--line-2); border-radius:6px; background:var(--panel); color:var(--ink); cursor:pointer; font-size:15px">+</button></sc-if>
+                  </div>
+                  <div style="font-size:11px; color:var(--ink-2); margin-top:8px">حاشیه: <b style="color:{{ rec.cDeltaColor }}">{{ rec.propC }}</b> ({{ rec.propPct }}) · {{ rec.deltaAbs }} / {{ rec.deltaPct }}</div>
+                </div>
+              </div>
+
+              <!-- guardrails -->
+              <div style="padding:0 18px 14px; display:flex; gap:10px">
+                <div style="flex:1; border:1px solid var(--line); border-radius:9px; padding:10px 12px"><div style="font-size:10.5px; color:var(--ink-3); margin-bottom:4px">کف حاشیهٔ سخت</div><div style="font-size:12.5px; font-weight:600">{{ rec.floorT }} <span style="color:var(--pos); font-size:11px">· بالاتر ✓</span></div></div>
+                <div style="flex:1; border:1px solid var(--line); border-radius:9px; padding:10px 12px"><div style="font-size:10.5px; color:var(--ink-3); margin-bottom:4px">مرز قیمت دیجی‌کالا</div><div style="font-size:12.5px; font-weight:600">{{ rec.boundaryT }} <span style="color:var(--pos); font-size:11px">· مجاز ✓</span></div></div>
+              </div>
+
+              <!-- STAGE: review -->
+              <sc-if value="{{ rec.apReview }}" hint-placeholder-val="{{ true }}">
+              <div style="padding:14px 18px; border-top:1px solid var(--line); background:var(--panel-3)">
+                <div style="display:flex; gap:10px; align-items:center">
+                  <button onClick="{{ rec.approve }}" style="flex:1; height:42px; border:none; border-radius:9px; background:var(--accent); color:#fff; font-family:inherit; font-size:13.5px; font-weight:700; cursor:pointer" style-hover="filter:brightness(1.06)">تایید و اجرا</button>
+                  <button onClick="{{ rec.toggleSim }}" style="height:42px; padding:0 16px; border:1px solid var(--line-2); border-radius:9px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:12.5px; font-weight:600; cursor:pointer" style-hover="background:var(--panel-2)">شبیه‌سازی</button>
+                  <button onClick="{{ rec.invalidate }}" title="نمایش سناریوی تغییر خارجی" style="height:42px; padding:0 12px; border:1px dashed var(--line-2); border-radius:9px; background:transparent; color:var(--ink-3); font-family:inherit; font-size:11px; cursor:pointer" style-hover="color:var(--warn)">↺ تغییر خارجی</button>
+                  <button onClick="{{ rec.expire }}" title="نمایش انقضای کارت" style="height:42px; padding:0 12px; border:1px dashed var(--line-2); border-radius:9px; background:transparent; color:var(--ink-3); font-family:inherit; font-size:11px; cursor:pointer" style-hover="color:var(--ink-2)">⧗ انقضا</button>
+                  <button onClick="{{ rec.permission }}" title="نمایش کمبود مجوز" style="height:42px; padding:0 12px; border:1px dashed var(--line-2); border-radius:9px; background:transparent; color:var(--ink-3); font-family:inherit; font-size:11px; cursor:pointer" style-hover="color:var(--risk)">🔒 مجوز</button>
+                </div>
+                <div style="font-size:10.5px; color:var(--ink-3); text-align:center; margin-top:9px">تایید فقط با این کنترل انجام می‌شود · «خوبه» در گفتگو اجرا نمی‌کند</div>
+                <sc-if value="{{ rec.simOpen }}" hint-placeholder-val="">
+                  <div style="margin-top:12px; border:1px solid var(--conflict); background:var(--conflict-bg); border-radius:10px; padding:12px 14px">
+                    <div style="font-size:11.5px; font-weight:700; color:var(--conflict); margin-bottom:9px; display:flex; align-items:center; gap:7px">شبیه‌سازی — این مقدار اجرا نمی‌شود</div>
+                    <div style="display:flex; align-items:center; gap:10px; margin-bottom:8px">
+                      <button onClick="{{ rec.simMinus }}" style="width:24px; height:24px; border:1px solid var(--line-2); border-radius:6px; background:var(--panel); cursor:pointer; color:var(--ink)">−</button>
+                      <span style="font-size:14px; font-weight:700">{{ rec.simPriceT }}</span>
+                      <button onClick="{{ rec.simPlus }}" style="width:24px; height:24px; border:1px solid var(--line-2); border-radius:6px; background:var(--panel); cursor:pointer; color:var(--ink)">+</button>
+                    </div>
+                    <div style="font-size:11.5px; color:var(--ink-2)">حاشیهٔ حاصل: <b>{{ rec.simC }}</b> ({{ rec.simPct }})</div>
+                  </div>
+                </sc-if>
+              </div>
+              </sc-if>
+
+              <!-- STAGE: revalidating -->
+              <sc-if value="{{ rec.apRevalidating }}" hint-placeholder-val="">
+              <div style="padding:16px 18px; border-top:1px solid var(--line)">
+                <div style="display:flex; align-items:center; gap:9px; font-size:12.5px; font-weight:600; margin-bottom:12px"><span style="width:14px; height:14px; border:2px solid var(--line-2); border-top-color:var(--accent); border-radius:50%; display:inline-block; animation:spin .7s linear infinite"></span>در حال بازاعتبارسنجی — بازبینی همهٔ حفاظ‌ها پیش از نوشتن</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:7px">
+                  <sc-for list="{{ rec.gates }}" as="g" hint-placeholder-count="8"><div style="display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--ink-2)"><span style="color:var(--pos)">✓</span>{{ g }}</div></sc-for>
+                </div>
+              </div>
+              </sc-if>
+
+              <!-- STAGE: executing -->
+              <sc-if value="{{ rec.apExecuting }}" hint-placeholder-val="">
+              <div style="padding:18px; border-top:1px solid var(--line)">
+                <div style="display:flex; align-items:center; gap:9px; font-size:12.5px; font-weight:600; margin-bottom:12px; color:var(--info)">در حال اجرا — ارسال به دیجی‌کالا…</div>
+                <div style="height:6px; background:var(--panel-2); border-radius:6px; overflow:hidden; position:relative"><div style="position:absolute; inset:0; width:40%; background:var(--info); animation:barflow 1.1s ease-in-out infinite"></div></div>
+              </div>
+              </sc-if>
+
+              <!-- STAGE: accepted -->
+              <sc-if value="{{ rec.apAccepted }}" hint-placeholder-val="">
+              <div style="padding:18px; border-top:1px solid var(--line); background:var(--pos-bg)">
+                <div style="display:flex; align-items:center; gap:9px; font-size:13.5px; font-weight:700; color:var(--pos); margin-bottom:8px"><span style="width:22px; height:22px; border-radius:50%; background:var(--pos); color:#fff; display:flex; align-items:center; justify-content:center; font-size:13px">✓</span>قیمت با موفقیت ثبت شد — وضعیت: تاییدشده توسط دیجی‌کالا</div>
+                <div style="font-size:11.5px; color:var(--ink-2); line-height:1.7">اقدام <span class="ltr">ACT-9931</span> در سابقهٔ ممیزی ثبت شد به همراه عکس‌برداری کارت تایید. پنجرهٔ اندازه‌گیری نتیجه (۷ روز) آغاز شد.</div>
+                <div style="display:flex; gap:9px; margin-top:12px">
+                  <button onClick="{{ rec.goOutcome }}" style="height:36px; padding:0 16px; border:none; border-radius:8px; background:var(--ink); color:var(--panel); font-family:inherit; font-size:12px; font-weight:600; cursor:pointer">مشاهدهٔ اقدام و نتیجه</button>
+                  <button onClick="{{ rec.reset }}" style="height:36px; padding:0 16px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:12px; cursor:pointer">شروع دوباره (نمایش)</button>
+                </div>
+              </div>
+              </sc-if>
+
+              <!-- STAGE: invalidated -->
+              <sc-if value="{{ rec.apInvalidated }}" hint-placeholder-val="">
+              <div style="padding:18px; border-top:1px solid var(--line); background:var(--warn-bg)">
+                <div style="display:flex; align-items:center; gap:9px; font-size:13px; font-weight:700; color:var(--warn); margin-bottom:8px"><span>⚠</span>تایید باطل شد — شرایط پیش از اجرا تغییر کرد</div>
+                <div style="font-size:11.5px; color:var(--ink-2); line-height:1.7">قیمت رقیب حین بازبینی از ۱۳٬۷۲۰٬۰۰۰ به ۱۳٬۶۵۰٬۰۰۰ تومان تغییر کرد. پارامترهای قدیمی هرگز بی‌سروصدا اجرا نمی‌شوند؛ پیشنهاد بازمحاسبه شد.</div>
+                <button onClick="{{ rec.recalc }}" style="margin-top:12px; height:38px; padding:0 18px; border:none; border-radius:8px; background:var(--accent); color:#fff; font-family:inherit; font-size:12.5px; font-weight:600; cursor:pointer">مشاهدهٔ کارت بازمحاسبه‌شده</button>
+              </div>
+              </sc-if>
+
+              <!-- STAGE: permission denied -->
+              <sc-if value="{{ rec.apPermission }}" hint-placeholder-val="">
+              <div style="padding:18px; border-top:1px solid var(--line); background:var(--risk-bg)">
+                <div style="display:flex; align-items:center; gap:9px; font-size:13px; font-weight:700; color:var(--risk); margin-bottom:8px"><span>🔒</span>مجوز کافی ندارید</div>
+                <div style="font-size:11.5px; color:var(--ink-2); line-height:1.7">این تغییر نیاز به نقش <b>مالک</b> دارد. نقش فعلی شما «اپراتور قیمت‌گذاری» است و اجازهٔ عبور از حاشیهٔ صفر را ندارد. بدون کاهش بی‌سروصدای سطح دسترسی، اقدام متوقف شد.</div>
+                <div style="display:flex; gap:9px; margin-top:12px">
+                  <button style="height:36px; padding:0 16px; border:none; border-radius:8px; background:var(--ink); color:var(--panel); font-family:inherit; font-size:12px; font-weight:600; cursor:pointer">درخواست تایید از مالک</button>
+                  <button onClick="{{ rec.reset }}" style="height:36px; padding:0 16px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:12px; cursor:pointer">بازگشت</button>
+                </div>
+              </div>
+              </sc-if>
+
+              <!-- STAGE: expired -->
+              <sc-if value="{{ rec.apExpired }}" hint-placeholder-val="">
+              <div style="padding:18px; border-top:1px solid var(--line); background:var(--panel-2)">
+                <div style="display:flex; align-items:center; gap:9px; font-size:13px; font-weight:700; color:var(--ink-2); margin-bottom:8px"><span>⧗</span>کارت تایید منقضی شد</div>
+                <div style="font-size:11.5px; color:var(--ink-2); line-height:1.7">مهلت تایید این کارت به پایان رسید. برای اطمینان از اجرای تصمیم روی داده‌های جاری، پیشنهاد باید با شواهد تازه بازمحاسبه شود.</div>
+                <button onClick="{{ rec.recalc }}" style="margin-top:12px; height:38px; padding:0 18px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:12.5px; font-weight:600; cursor:pointer">بازمحاسبه و کارت جدید</button>
+              </div>
+              </sc-if>
+            </div>
+
+            <!-- warnings -->
+            <div style="margin-top:12px; display:flex; flex-direction:column; gap:7px">
+              <sc-for list="{{ rec.warnings }}" as="w" hint-placeholder-count="2">
+                <div style="display:flex; align-items:center; gap:9px; font-size:11.5px; color:var(--ink-2); background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:9px 12px"><span style="color:{{ w.c }}">{{ w.i }}</span>{{ w.t }}</div>
+              </sc-for>
+            </div>
+          </div>
+
+          <!-- contribution breakdown -->
+          <div style="width:340px; flex:none; display:flex; flex-direction:column; gap:12px">
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+              <div style="padding:11px 14px; border-bottom:1px solid var(--line); font-size:12.5px; font-weight:700">محاسبهٔ حاشیهٔ مشارکت — قابل بازرسی</div>
+              <div style="padding:8px 14px">
+                <sc-for list="{{ rec.breakdown }}" as="b" hint-placeholder-count="7">
+                  <div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid var(--line); font-size:11.5px"><span style="color:{{ b.c }}">{{ b.k }}</span><span class="ltr" style="color:{{ b.c }}; font-weight:500">{{ b.v }}</span></div>
+                </sc-for>
+                <div style="display:flex; justify-content:space-between; padding:11px 0 3px; font-size:13px; font-weight:700"><span>حاشیهٔ مشارکت</span><span style="color:var(--pos)">{{ rec.contribFinal }}</span></div>
+                <div style="text-align:end; font-size:11px; color:var(--ink-3)">{{ rec.contribPct }} از قیمت فروش</div>
+              </div>
+            </div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:11px 14px">
+              <div style="font-size:11.5px; color:var(--ink-3); margin-bottom:8px">شواهد</div>
+              <div style="display:flex; gap:6px; flex-wrap:wrap">
+                <sc-for list="{{ rec.evidence }}" as="e" hint-placeholder-count="5"><span class="ltr" style="background:var(--panel-2); border:1px solid var(--line); border-radius:5px; padding:2px 7px; font-size:10.5px; color:var(--ink-2)">{{ e }}</span></sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= PRODUCTS ================= -->
+      <sc-if value="{{ isProducts }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px">
+        <div style="display:flex; gap:10px; align-items:center; margin-bottom:16px; flex-wrap:wrap">
+          <div style="display:flex; align-items:center; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:7px 12px; min-width:280px; flex:1; max-width:360px">
+            <span style="color:var(--ink-3); font-size:13px">⌕</span>
+            <input placeholder="جست‌وجوی کالا یا SKU…" style="flex:1; border:none; background:transparent; outline:none; font-family:inherit; font-size:12.5px; color:var(--ink)" dir="rtl" />
+          </div>
+          <div style="display:flex; gap:6px">
+            <span style="font-size:11.5px; color:var(--ink-2); background:var(--ink); color:var(--panel); border-radius:16px; padding:5px 12px; cursor:pointer">همه</span>
+            <span style="font-size:11.5px; color:var(--ink-2); background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:5px 12px; cursor:pointer">صوتی</span>
+            <span style="font-size:11.5px; color:var(--ink-2); background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:5px 12px; cursor:pointer">آشپزخانه</span>
+            <span style="font-size:11.5px; color:var(--ink-2); background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:5px 12px; cursor:pointer">جانبی</span>
+          </div>
+          <div style="flex:1"></div>
+          <button onClick="{{ goBulk }}" style="height:34px; padding:0 14px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:12px; font-weight:600; cursor:pointer" style-hover="background:var(--panel-2)">اقدام دسته‌ای</button>
+        </div>
+
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+          <table style="width:100%; border-collapse:collapse; font-size:12px">
+            <thead><tr style="background:var(--panel-3); color:var(--ink-3); font-size:11px">
+              <th style="text-align:start; padding:10px 16px; font-weight:500">کالا</th>
+              <th style="text-align:start; padding:10px 12px; font-weight:500">دسته</th>
+              <th style="text-align:start; padding:10px 12px; font-weight:500">قیمت من</th>
+              <th style="text-align:start; padding:10px 12px; font-weight:500">آمادگی حاشیه</th>
+              <th style="text-align:start; padding:10px 12px; font-weight:500">کیفیت بازار</th>
+              <th style="text-align:start; padding:10px 12px; font-weight:500">پایین‌ترین رقیب</th>
+              <th style="text-align:start; padding:10px 12px; font-weight:500">حاشیه</th>
+              <th style="padding:10px 16px"></th>
+            </tr></thead>
+            <tbody>
+              <sc-for list="{{ products }}" as="p" hint-placeholder-count="8">
+                <tr style="border-top:1px solid var(--line); cursor:pointer" onClick="{{ p.open }}" style-hover="background:var(--panel-3)">
+                  <td style="padding:11px 16px"><div style="font-weight:600">{{ p.name }}</div><div class="ltr" style="font-size:10.5px; color:var(--ink-3)">{{ p.id }}</div></td>
+                  <td style="padding:11px 12px; color:var(--ink-2)">{{ p.cat }}</td>
+                  <td style="padding:11px 12px; font-weight:500">{{ p.priceT }}</td>
+                  <td style="padding:11px 12px"><span style="display:inline-flex; align-items:center; gap:5px"><span style="width:6px;height:6px;border-radius:2px;background:{{ p.readyColor }}"></span>{{ p.readyLabel }}</span></td>
+                  <td style="padding:11px 12px"><span style="display:inline-flex; align-items:center; gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:{{ p.qColor }}"></span>{{ p.qLabel }}</span></td>
+                  <td style="padding:11px 12px; color:var(--ink-2)">{{ p.compT }}</td>
+                  <td style="padding:11px 12px; font-weight:600; color:{{ p.marginColor }}">{{ p.marginT }}</td>
+                  <td style="padding:11px 16px; text-align:end; color:var(--accent); font-size:11px">باز کردن ←</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+        <div style="font-size:11px; color:var(--ink-3); margin-top:10px">۸ کالا از دامنهٔ پایش ۱۲۰ کالایی · جدول‌های بزرگ‌تر از ۲۰ ردیف در گفتگو به این صفحه پیوند می‌خورند</div>
+      </div>
+      </sc-if>
+
+      <!-- ================= PRODUCT DETAIL ================= -->
+      <sc-if value="{{ isProduct }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:1120px">
+        <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px">
+          <button onClick="{{ prodDetail.back }}" style="height:30px; padding:0 12px; border:1px solid var(--line); border-radius:7px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:11.5px; cursor:pointer" style-hover="background:var(--panel-2)">→ محصولات</button>
+          <span style="font-size:15px; font-weight:700">{{ prodDetail.name }}</span>
+          <span class="ltr" style="font-size:11px; color:var(--ink-3)">{{ prodDetail.id }}</span>
+          <span style="font-size:11px; color:var(--ink-3)">· {{ prodDetail.cat }}</span>
+        </div>
+
+        <sc-if value="{{ prodDetail.missing }}" hint-placeholder-val="">
+          <div style="background:var(--risk-bg); border:1px solid var(--risk); border-radius:10px; padding:13px 16px; margin-bottom:14px; display:flex; align-items:center; gap:12px">
+            <span style="color:var(--risk); font-size:15px">◼</span>
+            <div style="flex:1"><div style="font-weight:600; font-size:12.5px; color:var(--risk)">بهای تمام‌شده ثبت نشده — پیشنهاد قیمت مسدود است</div><div style="font-size:11.5px; color:var(--ink-2); margin-top:3px">تا ثبت COGS، محاسبهٔ حاشیه و هر اقدام قیمتی برای این کالا مسدود می‌ماند.</div></div>
+            <button onClick="{{ prodDetail.goCost }}" style="height:34px; padding:0 14px; border:none; border-radius:8px; background:var(--risk); color:#fff; font-family:inherit; font-size:12px; font-weight:600; cursor:pointer">ثبت بها</button>
+          </div>
+        </sc-if>
+
+        <div style="display:flex; gap:14px; align-items:flex-start">
+          <div style="flex:1; min-width:0; display:flex; flex-direction:column; gap:14px">
+            <div style="display:flex; gap:12px">
+              <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 15px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:6px">قیمت فعلی</div><div style="font-size:17px; font-weight:700">{{ prodDetail.priceT }}</div></div>
+              <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 15px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:6px">موجودی · وضعیت</div><div style="font-size:14px; font-weight:600">{{ prodDetail.stock }} · <span style="color:var(--pos)">{{ prodDetail.status }}</span></div></div>
+              <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 15px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:6px">حاشیهٔ مشارکت</div><div style="font-size:14px; font-weight:700; color:var(--pos)">{{ prodDetail.contribT }} <span style="font-size:11px; color:var(--ink-3)">({{ prodDetail.contribPct }})</span></div></div>
+            </div>
+
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+              <div style="padding:11px 15px; border-bottom:1px solid var(--line); font-size:12.5px; font-weight:700">پروفایل بها (نسخه‌بندی‌شده)</div>
+              <div style="padding:6px 15px 12px">
+                <sc-for list="{{ prodDetail.costRows }}" as="c" hint-placeholder-count="6">
+                  <div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid var(--line); font-size:11.5px"><span style="color:var(--ink-2)">{{ c.k }}</span><span class="ltr" style="font-weight:500">{{ c.v }}</span></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+
+          <div style="width:320px; flex:none; display:flex; flex-direction:column; gap:12px">
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:13px 15px">
+              <div style="font-size:12px; color:var(--ink-3); margin-bottom:9px">آمادگی و کیفیت</div>
+              <div style="display:flex; justify-content:space-between; margin-bottom:8px; font-size:12px"><span>آمادگی حاشیه</span><span style="display:inline-flex; align-items:center; gap:6px; font-weight:600"><span style="width:7px;height:7px;border-radius:2px;background:{{ prodDetail.readyColor }}"></span>{{ prodDetail.readyLabel }}</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:12px"><span>کیفیت بازار</span><span style="display:inline-flex; align-items:center; gap:6px; font-weight:600"><span style="width:7px;height:7px;border-radius:50%;background:{{ prodDetail.qColor }}"></span>{{ prodDetail.qLabel }}</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:12px; margin-top:8px"><span>پایین‌ترین رقیب</span><span style="font-weight:600; color:var(--risk)">{{ prodDetail.compT }}</span></div>
+            </div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+              <div style="padding:11px 15px; border-bottom:1px solid var(--line); font-size:12.5px; font-weight:700; display:flex; align-items:center; justify-content:space-between">تشخیص لیستینگ و تصویر <a onClick="{{ prodDetail.goDiag }}" style="font-size:11px; cursor:pointer">جزئیات</a></div>
+              <div style="padding:6px 15px 12px">
+                <sc-for list="{{ prodDetail.diagnostics }}" as="d" hint-placeholder-count="4">
+                  <div style="display:flex; justify-content:space-between; padding:7px 0; border-bottom:1px solid var(--line); font-size:11.5px"><span style="color:var(--ink-2)">{{ d.k }}</span><span style="font-weight:500"><sc-if value="{{ d.ok }}" hint-placeholder-val="{{ true }}"><span style="color:var(--pos)">{{ d.v }} ✓</span></sc-if><sc-if value="{{ d.notok }}" hint-placeholder-val=""><span style="color:var(--warn)">{{ d.v }} ⚠</span></sc-if></span></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= BULK ================= -->
+      <sc-if value="{{ isBulk }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:1120px">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:14px; align-items:center">
+          <span style="font-size:11.5px; color:var(--ink-3)">فیلترهای اعمال‌شده:</span>
+          <span style="display:inline-flex; align-items:center; gap:6px; font-size:11px; background:var(--panel-2); border:1px solid var(--line); border-radius:16px; padding:4px 10px">حاشیه ≥ ۱۲٪ <span style="color:var(--ink-3); cursor:pointer">✕</span></span>
+          <span style="display:inline-flex; align-items:center; gap:6px; font-size:11px; background:var(--panel-2); border:1px solid var(--line); border-radius:16px; padding:4px 10px">دستهٔ لوازم جانبی <span style="color:var(--ink-3); cursor:pointer">✕</span></span>
+          <span style="display:inline-flex; align-items:center; gap:6px; font-size:11px; background:var(--panel-2); border:1px solid var(--line); border-radius:16px; padding:4px 10px">جابه‌جایی ≤ ۵٪ <span style="color:var(--ink-3); cursor:pointer">✕</span></span>
+          <span style="font-size:11px; color:var(--ink-3)">· مجموعهٔ نسخه‌بندی‌شده SEL-2231</span>
+        </div>
+
+        <div style="display:flex; gap:12px; margin-bottom:16px">
+          <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 15px; border-inline-start:3px solid var(--pos)"><div style="font-size:11px; color:var(--ink-3)">قابل اجرا</div><div style="font-size:22px; font-weight:700; color:var(--pos)">{{ bulkCounts.exec }}</div></div>
+          <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 15px; border-inline-start:3px solid var(--warn)"><div style="font-size:11px; color:var(--ink-3)">هشدار</div><div style="font-size:22px; font-weight:700; color:var(--warn)">{{ bulkCounts.warn }}</div></div>
+          <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 15px; border-inline-start:3px solid var(--risk)"><div style="font-size:11px; color:var(--ink-3)">مسدود</div><div style="font-size:22px; font-weight:700; color:var(--risk)">{{ bulkCounts.blocked }}</div></div>
+          <div style="flex:1.4; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:13px 15px"><div style="font-size:11px; color:var(--ink-3)">اثر کل حاشیه</div><div style="font-size:17px; font-weight:700; color:var(--pos); margin-top:4px">+۴٬۸۳۰٬۰۰۰ تومان</div></div>
+        </div>
+
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+          <div style="padding:11px 16px; border-bottom:1px solid var(--line); display:flex; align-items:center; justify-content:space-between">
+            <span style="font-size:13px; font-weight:700">پیش‌نمایش دسته‌ای</span>
+            <sc-if value="{{ bulkResults }}" hint-placeholder-val=""><span style="font-size:11.5px; color:var(--ink-2)">نتایج هر مورد در ادامه</span></sc-if>
+          </div>
+          <table style="width:100%; border-collapse:collapse; font-size:12px">
+            <thead><tr style="background:var(--panel-3); color:var(--ink-3); font-size:11px">
+              <th style="text-align:start; padding:9px 16px; font-weight:500">کالا</th>
+              <th style="text-align:start; padding:9px 12px; font-weight:500">از</th>
+              <th style="text-align:start; padding:9px 12px; font-weight:500">به</th>
+              <th style="text-align:start; padding:9px 12px; font-weight:500">جابه‌جایی</th>
+              <th style="text-align:start; padding:9px 12px; font-weight:500">وضعیت</th>
+              <sc-if value="{{ bulkResults }}" hint-placeholder-val=""><th style="text-align:start; padding:9px 16px; font-weight:500">نتیجهٔ اجرا</th></sc-if>
+            </tr></thead>
+            <tbody>
+              <sc-for list="{{ bulk }}" as="b" hint-placeholder-count="6">
+                <tr style="border-top:1px solid var(--line)">
+                  <td style="padding:10px 16px"><div style="font-weight:500">{{ b.name }}</div><div class="ltr" style="font-size:10px; color:var(--ink-3)">{{ b.sku }}</div></td>
+                  <td style="padding:10px 12px; color:var(--ink-2)">{{ b.fromT }}</td>
+                  <td style="padding:10px 12px; font-weight:500">{{ b.toT }}</td>
+                  <td style="padding:10px 12px">{{ b.moveT }}</td>
+                  <td style="padding:10px 12px"><span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; color:{{ b.statusColor }}; background:{{ b.statusBg }}; padding:2px 8px; border-radius:5px">{{ b.statusLabel }}</span><sc-if value="{{ b.hasReason }}" hint-placeholder-val=""><div style="font-size:10px; color:var(--ink-3); margin-top:3px">{{ b.reason }}</div></sc-if></td>
+                  <sc-if value="{{ bulkResults }}" hint-placeholder-val=""><td style="padding:10px 16px"><span style="font-size:11px; font-weight:600; color:{{ b.resColor }}">{{ b.resLabel }}</span></td></sc-if>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+          <div style="padding:13px 16px; border-top:1px solid var(--line); display:flex; align-items:center; gap:12px; background:var(--panel-3)">
+            <sc-if value="{{ bulkPreview }}" hint-placeholder-val="{{ true }}">
+              <button onClick="{{ runBulk }}" style="height:40px; padding:0 20px; border:none; border-radius:9px; background:var(--accent); color:#fff; font-family:inherit; font-size:13px; font-weight:700; cursor:pointer">تایید و اجرای ۲ مورد واجد شرایط</button>
+              <span style="font-size:11px; color:var(--ink-3)">موارد مسدود هرگز به‌اجبار وارد اجرا نمی‌شوند</span>
+            </sc-if>
+            <sc-if value="{{ bulkExecuting }}" hint-placeholder-val="">
+              <span style="display:flex; align-items:center; gap:9px; font-size:12.5px; font-weight:600; color:var(--info)"><span style="width:14px; height:14px; border:2px solid var(--line-2); border-top-color:var(--info); border-radius:50%; display:inline-block; animation:spin .7s linear infinite"></span>در حال اجرای دسته‌ای…</span>
+            </sc-if>
+            <sc-if value="{{ bulkResults }}" hint-placeholder-val="">
+              <span style="font-size:12.5px; font-weight:600; color:var(--pos)">اجرا کامل شد — ۲ تاییدشده، ۱ در انتظار تطبیق</span>
+              <button onClick="{{ resetBulk }}" style="height:34px; padding:0 14px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:12px; cursor:pointer">شروع دوباره (نمایش)</button>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= COST IMPORT ================= -->
+      <sc-if value="{{ isCost }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:1000px">
+        <sc-if value="{{ importIdle }}" hint-placeholder-val="{{ true }}">
+          <div style="display:flex; gap:14px; align-items:stretch">
+            <div style="flex:1.3; background:var(--panel); border:2px dashed var(--line-2); border-radius:12px; padding:34px 24px; text-align:center">
+              <div style="font-size:30px; color:var(--ink-3); margin-bottom:10px">⬍</div>
+              <div style="font-size:13.5px; font-weight:700; margin-bottom:6px">فایل CSV بهای تمام‌شده را بکشید یا انتخاب کنید</div>
+              <div style="font-size:11.5px; color:var(--ink-3); line-height:1.7; margin-bottom:16px">ستون‌های موردنیاز: SKU، بهای تمام‌شده. ارقام فارسی و لاتین پذیرفته می‌شوند.</div>
+              <button onClick="{{ doImport }}" style="height:38px; padding:0 20px; border:none; border-radius:9px; background:var(--accent); color:#fff; font-family:inherit; font-size:12.5px; font-weight:600; cursor:pointer">بارگذاری فایل نمونه</button>
+            </div>
+            <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px 22px">
+              <div style="font-size:13px; font-weight:700; margin-bottom:12px">یا ثبت دستی برای یک کالا</div>
+              <div style="font-size:11px; color:var(--ink-3); margin-bottom:5px">SKU</div>
+              <input placeholder="DKP-…" class="ltr" style="width:100%; border:1px solid var(--line); border-radius:8px; padding:8px 11px; background:var(--panel-3); outline:none; font-family:'JetBrains Mono',monospace; font-size:12px; color:var(--ink); margin-bottom:12px" />
+              <div style="font-size:11px; color:var(--ink-3); margin-bottom:5px">بهای تمام‌شده (تومان)</div>
+              <input placeholder="۸٬۹۰۰٬۰۰۰" style="width:100%; border:1px solid var(--line); border-radius:8px; padding:8px 11px; background:var(--panel-3); outline:none; font-family:inherit; font-size:12px; color:var(--ink); margin-bottom:16px" dir="rtl" />
+              <button style="width:100%; height:36px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:12px; font-weight:600; cursor:pointer">ثبت مقدار</button>
+            </div>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ importPreview }}" hint-placeholder-val="">
+          <div style="display:flex; gap:10px; margin-bottom:14px">
+            <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px"><div style="font-size:11px; color:var(--ink-3)">نگاشته‌شده</div><div style="font-size:20px; font-weight:700; color:var(--pos)">۲</div></div>
+            <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px"><div style="font-size:11px; color:var(--ink-3)">نیازمند بازبینی</div><div style="font-size:20px; font-weight:700; color:var(--warn)">۱</div></div>
+            <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px"><div style="font-size:11px; color:var(--ink-3)">خطا</div><div style="font-size:20px; font-weight:700; color:var(--risk)">۱</div></div>
+            <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px 14px"><div style="font-size:11px; color:var(--ink-3)">تکراری</div><div style="font-size:20px; font-weight:700; color:var(--ink-2)">۱</div></div>
+          </div>
+          <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+            <div style="padding:11px 16px; border-bottom:1px solid var(--line); font-size:13px; font-weight:700">پیش‌نمایش نگاشت و اعتبارسنجی</div>
+            <table style="width:100%; border-collapse:collapse; font-size:12px">
+              <thead><tr style="background:var(--panel-3); color:var(--ink-3); font-size:11px">
+                <th style="text-align:start; padding:9px 16px; font-weight:500">SKU (فایل)</th>
+                <th style="text-align:start; padding:9px 12px; font-weight:500">بهای تمام‌شده</th>
+                <th style="text-align:start; padding:9px 12px; font-weight:500">وضعیت ردیف</th>
+                <th style="text-align:start; padding:9px 12px; font-weight:500">توضیح</th>
+                <th style="padding:9px 16px"></th>
+              </tr></thead>
+              <tbody>
+                <sc-for list="{{ impRows }}" as="r" hint-placeholder-count="5">
+                  <tr style="border-top:1px solid var(--line)">
+                    <td class="ltr" style="padding:10px 16px; font-weight:500">{{ r.sku }}</td>
+                    <td style="padding:10px 12px">{{ r.cogsT }}</td>
+                    <td style="padding:10px 12px"><span style="display:inline-flex; align-items:center; gap:5px; font-weight:600; color:{{ r.statusColor }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ r.statusColor }}"></span>{{ r.statusLabel }}</span></td>
+                    <td style="padding:10px 12px; color:var(--ink-3)">{{ r.note }}</td>
+                    <td style="padding:10px 16px; text-align:end"><sc-if value="{{ r.needsFix }}" hint-placeholder-val=""><span style="font-size:11px; color:var(--accent); cursor:pointer">رفع ←</span></sc-if></td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+            <div style="padding:13px 16px; border-top:1px solid var(--line); display:flex; gap:10px; background:var(--panel-3)">
+              <button style="height:38px; padding:0 18px; border:none; border-radius:9px; background:var(--accent); color:#fff; font-family:inherit; font-size:12.5px; font-weight:600; cursor:pointer">تایید ۲ ردیف معتبر</button>
+              <button onClick="{{ resetImport }}" style="height:38px; padding:0 16px; border:1px solid var(--line-2); border-radius:9px; background:var(--panel); color:var(--ink-2); font-family:inherit; font-size:12px; cursor:pointer">لغو</button>
+              <div style="flex:1"></div>
+              <span style="font-size:11px; color:var(--ink-3); align-self:center">۲ ردیف پیش از تایید نیازمند رسیدگی‌اند</span>
+            </div>
+          </div>
+        </sc-if>
+      </div>
+      </sc-if>
+
+      <!-- ================= ACTIONS / AUDIT / RECONCILIATION ================= -->
+      <sc-if value="{{ isActions }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; display:flex; gap:16px; align-items:flex-start">
+        <div style="flex:1; min-width:0">
+          <div style="display:flex; gap:6px; margin-bottom:12px">
+            <span style="font-size:11.5px; background:var(--ink); color:var(--panel); border-radius:16px; padding:5px 12px; cursor:pointer">همه</span>
+            <span style="font-size:11.5px; background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:5px 12px; cursor:pointer">در انتظار تطبیق</span>
+            <span style="font-size:11.5px; background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:5px 12px; cursor:pointer">ناموفق</span>
+            <span style="font-size:11.5px; background:var(--panel); border:1px solid var(--line); border-radius:16px; padding:5px 12px; cursor:pointer">اجراشده</span>
+          </div>
+          <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+            <table style="width:100%; border-collapse:collapse; font-size:12px">
+              <thead><tr style="background:var(--panel-3); color:var(--ink-3); font-size:11px">
+                <th style="text-align:start; padding:9px 16px; font-weight:500">شناسه · کالا</th>
+                <th style="text-align:start; padding:9px 12px; font-weight:500">تغییر</th>
+                <th style="text-align:start; padding:9px 12px; font-weight:500">وضعیت</th>
+                <th style="text-align:start; padding:9px 12px; font-weight:500">عامل · سطح</th>
+                <th style="text-align:start; padding:9px 16px; font-weight:500">زمان</th>
+              </tr></thead>
+              <tbody>
+                <sc-for list="{{ actions }}" as="a" hint-placeholder-count="5">
+                  <tr onClick="{{ a.select }}" style="border-top:1px solid var(--line); cursor:pointer; background:{{ a.rowBg }}" style-hover="background:var(--panel-3)">
+                    <td style="padding:10px 16px"><div style="font-weight:500">{{ a.name }}</div><div class="ltr" style="font-size:10px; color:var(--ink-3)">{{ a.id }}</div></td>
+                    <td style="padding:10px 12px; font-size:11px"><span style="color:var(--ink-3)">{{ a.beforeT }}</span><br><span style="font-weight:600">{{ a.afterT }}</span></td>
+                    <td style="padding:10px 12px"><span style="display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; color:{{ a.stateColor }}"><span style="width:6px;height:6px;border-radius:50%;background:{{ a.stateColor }}"></span>{{ a.stateLabel }}</span></td>
+                    <td style="padding:10px 12px; color:var(--ink-2)">{{ a.actor }} · {{ a.surface }}</td>
+                    <td style="padding:10px 16px; color:var(--ink-3)">{{ a.time }}</td>
+                  </tr>
+                </sc-for>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- detail: reconciliation / outcome -->
+        <div style="width:360px; flex:none; display:flex; flex-direction:column; gap:12px">
+          <sc-if value="{{ selAct.isPending }}" hint-placeholder-val="{{ true }}">
+            <div style="background:var(--warn-bg); border:1px solid var(--warn-line); border-radius:11px; padding:14px 16px">
+              <div style="font-size:12.5px; font-weight:700; color:var(--warn); margin-bottom:7px; display:flex; align-items:center; gap:7px"><span>⧗</span>در انتظار تطبیق</div>
+              <div style="font-size:11.5px; color:var(--ink-2); line-height:1.75">نتیجهٔ نوشتن نامشخص است تا وضعیت فعلی دیجی‌کالا خوانده شود. تا زمان تطبیق، هیچ تلاش مجددی مجاز نیست — این حالت هرگز موفق یا ناموفق نمایش داده نمی‌شود.</div>
+            </div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px">
+              <div style="font-size:12px; font-weight:700; margin-bottom:10px">{{ selAct.name }}</div>
+              <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0"><span style="color:var(--ink-3)">شناسه</span><span class="ltr">{{ selAct.id }}</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0"><span style="color:var(--ink-3)">تغییر</span><span>{{ selAct.beforeT }} ← {{ selAct.afterT }}</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0"><span style="color:var(--ink-3)">عامل · سطح</span><span>{{ selAct.actor }} · {{ selAct.surface }}</span></div>
+              <button style="width:100%; height:36px; margin-top:12px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:12px; font-weight:600; cursor:pointer" style-hover="background:var(--panel-2)">خواندن وضعیت فعلی دیجی‌کالا</button>
+              <div style="font-size:10.5px; color:var(--ink-3); text-align:center; margin-top:7px">تلاش مجدد فقط پس از تطبیق و به‌صورت کارت تایید جدید</div>
+            </div>
+          </sc-if>
+          <sc-if value="{{ selAct.isAccepted }}" hint-placeholder-val="">
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px">
+              <div style="font-size:12.5px; font-weight:700; margin-bottom:4px">اندازه‌گیری نتیجه</div>
+              <div class="ltr" style="font-size:10.5px; color:var(--ink-3); margin-bottom:12px">{{ selAct.id }}</div>
+              <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0; border-bottom:1px solid var(--line)"><span style="color:var(--ink-3)">پنجرهٔ اندازه‌گیری</span><span>۷ روز · روز ۲</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0; border-bottom:1px solid var(--line)"><span style="color:var(--ink-3)">طبقهٔ اطمینان</span><span style="color:var(--warn); font-weight:600">متوسط</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0; border-bottom:1px solid var(--line)"><span style="color:var(--ink-3)">تغییر حاشیهٔ تاییدشده</span><span style="color:var(--pos); font-weight:600">+۱٬۲۴۰٬۰۰۰ تومان</span></div>
+              <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0"><span style="color:var(--ink-3)">وضعیت باکس خرید</span><span style="color:var(--pos)">بازیابی‌شده</span></div>
+              <div style="margin-top:12px; font-size:11px; color:var(--ink-3); line-height:1.6">تغییرات هم‌زمان قیمت/موجودی، اطمینان انتساب را کاهش می‌دهند و نادیده گرفته نمی‌شوند.</div>
+            </div>
+          </sc-if>
+          <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:13px 15px">
+            <div style="font-size:12px; font-weight:700; margin-bottom:9px">سابقهٔ ممیزی</div>
+            <div style="font-size:11px; color:var(--ink-2); line-height:1.8">
+              <div>· عکس‌برداری کارت تایید (فیلدها، نسخه، رویداد تایید)</div>
+              <div>· مرجع گفتگو (در صورت شروع از دستیار)</div>
+              <div>· شواهد و نسخهٔ قیمت در لحظهٔ اجرا</div>
+              <div style="color:var(--ink-3); margin-top:6px">سابقه مستقل از نگه‌داری گفتگوست.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= MARKET ================= -->
+      <sc-if value="{{ isMarket }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:1120px">
+        <div style="display:flex; gap:12px; margin-bottom:16px; flex-wrap:wrap">
+          <div style="flex:2; min-width:320px; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:15px 17px">
+            <div style="font-size:13px; font-weight:700; margin-bottom:14px">پوشش تازگی مشاهده — اهداف اولویت</div>
+            <div style="display:flex; flex-direction:column; gap:11px">
+              <div><div style="display:flex; justify-content:space-between; font-size:11.5px; margin-bottom:4px"><span>تازه (≤ ۶۰ دقیقه)</span><span style="color:var(--pos); font-weight:600">۷۸٪</span></div><div style="height:7px; background:var(--panel-2); border-radius:5px; overflow:hidden"><div style="width:78%; height:100%; background:var(--pos)"></div></div></div>
+              <div><div style="display:flex; justify-content:space-between; font-size:11.5px; margin-bottom:4px"><span>در حال کهنه‌شدن (۱–۶ ساعت)</span><span style="color:var(--warn); font-weight:600">۱۵٪</span></div><div style="height:7px; background:var(--panel-2); border-radius:5px; overflow:hidden"><div style="width:15%; height:100%; background:var(--warn)"></div></div></div>
+              <div><div style="display:flex; justify-content:space-between; font-size:11.5px; margin-bottom:4px"><span>قدیمی‌شده (&gt; ۶ ساعت)</span><span style="color:var(--risk); font-weight:600">۷٪</span></div><div style="height:7px; background:var(--panel-2); border-radius:5px; overflow:hidden"><div style="width:7%; height:100%; background:var(--risk)"></div></div></div>
+            </div>
+          </div>
+          <div style="flex:1; min-width:220px; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:15px 17px">
+            <div style="font-size:13px; font-weight:700; margin-bottom:14px">توزیع کیفیت</div>
+            <div style="display:flex; flex-direction:column; gap:8px; font-size:11.5px">
+              <div style="display:flex; justify-content:space-between"><span style="display:flex; align-items:center; gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:var(--pos)"></span>تاییدشده</span><span style="font-weight:600">۵۴</span></div>
+              <div style="display:flex; justify-content:space-between"><span style="display:flex; align-items:center; gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:var(--info)"></span>پشتیبانی‌شده</span><span style="font-weight:600">۴۱</span></div>
+              <div style="display:flex; justify-content:space-between"><span style="display:flex; align-items:center; gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:var(--conflict)"></span>متناقض</span><span style="font-weight:600; color:var(--conflict)">۱</span></div>
+              <div style="display:flex; justify-content:space-between"><span style="display:flex; align-items:center; gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:var(--warn)"></span>قدیمی‌شده</span><span style="font-weight:600; color:var(--warn)">۲</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:var(--conflict-bg); border:1px solid var(--conflict); border-radius:11px; padding:13px 16px; margin-bottom:16px; display:flex; align-items:center; gap:12px">
+          <span style="color:var(--conflict); font-size:15px">◫</span>
+          <div style="flex:1"><div style="font-weight:600; font-size:12.5px">مشاهدهٔ متناقض — اسپیکر JBL Flip 6</div><div style="font-size:11.5px; color:var(--ink-2); margin-top:3px">مسیر A: ۳٬۳۹۰٬۰۰۰ (۱۸ دقیقه پیش) · مسیر C: ۳٬۵۵۰٬۰۰۰ (۲۳ دقیقه پیش) — پیشنهاد تا رفع تعارض مسدود است.</div></div>
+          <button onClick="{{ goOps }}" style="height:34px; padding:0 14px; border:1px solid var(--conflict); border-radius:8px; background:var(--panel); color:var(--conflict); font-family:inherit; font-size:12px; font-weight:600; cursor:pointer">تشخیص</button>
+        </div>
+
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden">
+          <div style="padding:11px 16px; border-bottom:1px solid var(--line); font-size:13px; font-weight:700">اهداف پایش</div>
+          <table style="width:100%; border-collapse:collapse; font-size:12px">
+            <thead><tr style="background:var(--panel-3); color:var(--ink-3); font-size:11px">
+              <th style="text-align:start; padding:9px 16px; font-weight:500">کالا</th>
+              <th style="text-align:start; padding:9px 12px; font-weight:500">پیشنهادهای مشاهده‌شده</th>
+              <th style="text-align:start; padding:9px 12px; font-weight:500">پایین‌ترین</th>
+              <th style="text-align:start; padding:9px 12px; font-weight:500">کیفیت</th>
+              <th style="text-align:start; padding:9px 16px; font-weight:500">تازگی</th>
+            </tr></thead>
+            <tbody>
+              <sc-for list="{{ products }}" as="p" hint-placeholder-count="6">
+                <tr style="border-top:1px solid var(--line)">
+                  <td style="padding:10px 16px"><div style="font-weight:500">{{ p.name }}</div><div class="ltr" style="font-size:10px; color:var(--ink-3)">{{ p.id }}</div></td>
+                  <td style="padding:10px 12px; color:var(--ink-2)">۳ فروشنده</td>
+                  <td style="padding:10px 12px; font-weight:500">{{ p.compT }}</td>
+                  <td style="padding:10px 12px"><span style="display:inline-flex; align-items:center; gap:5px"><span style="width:6px;height:6px;border-radius:50%;background:{{ p.qColor }}"></span>{{ p.qLabel }}</span></td>
+                  <td style="padding:10px 16px; color:var(--ink-3)">۱۸ دقیقه پیش</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= OPERATIONS ================= -->
+      <sc-if value="{{ isOps }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:1080px">
+        <div style="font-size:11.5px; color:var(--ink-3); margin-bottom:14px">نمای داخلی — کیفیت داده و اجرا. برای کاربران عملیات.</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:12px">
+          <sc-for list="{{ ops }}" as="o" hint-placeholder-count="6">
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px; border-inline-start:3px solid {{ o.c }}">
+              <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:7px">
+                <span style="font-size:12.5px; font-weight:700">{{ o.t }}</span>
+                <span style="font-size:16px; font-weight:700; color:{{ o.c }}">{{ o.count }}</span>
+              </div>
+              <div style="font-size:11.5px; color:var(--ink-2); line-height:1.6">{{ o.desc }}</div>
+              <button style="margin-top:11px; height:30px; padding:0 12px; border:1px solid var(--line-2); border-radius:7px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:11.5px; cursor:pointer" style-hover="background:var(--panel-2)">باز کردن صف ←</button>
+            </div>
+          </sc-for>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= SETTINGS ================= -->
+      <sc-if value="{{ isSettings }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:840px; display:flex; flex-direction:column; gap:14px">
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px 18px">
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:14px"><span style="font-size:13px; font-weight:700">کاربران و نقش‌ها</span></div>
+          <div style="display:flex; flex-direction:column; gap:8px">
+            <div style="display:flex; align-items:center; gap:11px; padding:9px 11px; background:var(--panel-3); border:1px solid var(--line); border-radius:9px"><div style="width:30px;height:30px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">ک.م</div><div style="flex:1"><div style="font-size:12.5px; font-weight:600">کاوه مرادی</div><div style="font-size:11px; color:var(--ink-3)">مالک / مدیر کل</div></div><span style="font-size:11px; color:var(--ink-2); background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:3px 9px">مدیریت اتصال و کف حاشیه</span></div>
+            <div style="display:flex; align-items:center; gap:11px; padding:9px 11px; background:var(--panel-3); border:1px solid var(--line); border-radius:9px"><div style="width:30px;height:30px;border-radius:50%;background:var(--panel-2);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600">ن.ر</div><div style="flex:1"><div style="font-size:12.5px; font-weight:600">نیلوفر راد</div><div style="font-size:11px; color:var(--ink-3)">اپراتور قیمت‌گذاری</div></div><span style="font-size:11px; color:var(--ink-2); background:var(--panel-2); border:1px solid var(--line); border-radius:6px; padding:3px 9px">تایید اقدام</span></div>
+          </div>
+        </div>
+
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px 18px">
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:6px"><span style="font-size:13px; font-weight:700">حفاظ‌های تجاری</span><span style="font-size:10px; color:var(--conflict); background:var(--conflict-bg); border-radius:5px; padding:2px 8px">سطح ۳ — تغییر فقط توسط مالک</span></div>
+          <div style="font-size:11px; color:var(--ink-3); margin-bottom:12px">دستیار این موارد را فقط توضیح می‌دهد؛ تغییر از این صفحه انجام می‌شود.</div>
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px">
+            <div style="border:1px solid var(--line); border-radius:9px; padding:11px 13px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:5px">کف حاشیهٔ سخت</div><div style="font-size:15px; font-weight:700">۱۲٪</div></div>
+            <div style="border:1px solid var(--line); border-radius:9px; padding:11px 13px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:5px">حداکثر جابه‌جایی قیمت</div><div style="font-size:15px; font-weight:700">۵٪</div></div>
+            <div style="border:1px solid var(--line); border-radius:9px; padding:11px 13px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:5px">دورهٔ خنک‌سازی</div><div style="font-size:15px; font-weight:700">۶۰ دقیقه</div></div>
+            <div style="border:1px solid var(--line); border-radius:9px; padding:11px 13px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:5px">عبور از حاشیهٔ صفر</div><div style="font-size:15px; font-weight:700; color:var(--risk)">هرگز</div></div>
+          </div>
+        </div>
+
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px 18px">
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:12px"><span style="font-size:13px; font-weight:700">اعلان‌ها</span><span style="font-size:10px; color:var(--info); background:var(--info-bg); border-radius:5px; padding:2px 8px">سطح ۲ — قابل تغییر با تایید</span></div>
+          <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0; border-bottom:1px solid var(--line)"><span style="font-size:12px">چکیدهٔ روزانهٔ ایمیل</span><span style="width:38px; height:22px; background:var(--pos); border-radius:20px; position:relative; cursor:pointer"><span style="position:absolute; top:2px; left:2px; width:18px; height:18px; background:#fff; border-radius:50%"></span></span></div>
+          <div style="display:flex; align-items:center; justify-content:space-between; padding:8px 0"><span style="font-size:12px">زمان چکیده</span><span style="font-size:12px; font-weight:600">۰۸:۰۰ صبح</span></div>
+        </div>
+
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:16px 18px">
+          <div style="font-size:13px; font-weight:700; margin-bottom:12px">اتصال دیجی‌کالا</div>
+          <div style="display:flex; align-items:center; gap:9px; margin-bottom:10px"><span style="width:8px;height:8px;border-radius:50%;background:var(--pos)"></span><span style="font-size:12px; font-weight:600">سالم</span><span style="font-size:11px; color:var(--ink-3)">· آخرین همگام‌سازی ۴ دقیقه پیش · ۷ از ۷ دامنه</span></div>
+          <button onClick="{{ goOnboarding }}" style="height:32px; padding:0 14px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:11.5px; cursor:pointer" style-hover="background:var(--panel-2)">جزئیات سلامت و دامنه‌ها ←</button>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= ONBOARDING ================= -->
+      <sc-if value="{{ isOnboarding }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:960px; display:flex; gap:18px; align-items:flex-start">
+        <div style="flex:1.1; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px 22px">
+          <div style="font-size:14px; font-weight:700; margin-bottom:4px">راه‌اندازی حساب</div>
+          <div style="font-size:11.5px; color:var(--ink-3); margin-bottom:18px">اتصال → آماده‌سازی داده → اولین ارزش</div>
+          <div style="display:flex; flex-direction:column">
+            <sc-for list="{{ steps }}" as="s" hint-placeholder-count="7">
+              <div style="display:flex; gap:12px; align-items:flex-start; padding-bottom:16px; position:relative">
+                <div style="width:26px; height:26px; flex:none; border-radius:50%; background:{{ s.dotBg }}; color:{{ s.dotFg }}; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; z-index:1">
+                  <sc-if value="{{ s.done }}" hint-placeholder-val="">✓</sc-if><sc-if value="{{ s.active }}" hint-placeholder-val="">●</sc-if>
+                </div>
+                <div style="flex:1; padding-top:3px">
+                  <div style="font-size:12.5px; font-weight:600">{{ s.t }}</div>
+                  <div style="font-size:11px; color:var(--ink-3); margin-top:2px">{{ s.sub }}</div>
+                  <sc-if value="{{ s.active }}" hint-placeholder-val=""><button onClick="{{ s.go }}" style="margin-top:8px; height:30px; padding:0 14px; border:none; border-radius:7px; background:var(--accent); color:#fff; font-family:inherit; font-size:11.5px; font-weight:600; cursor:pointer">ادامه — ورود بها ←</button></sc-if>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; gap:12px">
+          <div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px">
+            <div style="display:flex; align-items:center; gap:9px; margin-bottom:12px"><span style="width:8px;height:8px;border-radius:50%;background:var(--pos)"></span><span style="font-size:13px; font-weight:700">سلامت اتصال</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0; border-bottom:1px solid var(--line)"><span style="color:var(--ink-3)">وضعیت توکن</span><span style="color:var(--pos); font-weight:600">معتبر</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0; border-bottom:1px solid var(--line)"><span style="color:var(--ink-3)">آخرین همگام‌سازی</span><span>۴ دقیقه پیش</span></div>
+            <div style="display:flex; justify-content:space-between; font-size:11.5px; padding:5px 0"><span style="color:var(--ink-3)">پیشرفت واردسازی اولیه</span><span style="color:var(--pos); font-weight:600">۱۰۰٪</span></div>
+            <div style="height:6px; background:var(--panel-2); border-radius:5px; overflow:hidden; margin-top:8px"><div style="width:100%; height:100%; background:var(--pos)"></div></div>
+          </div>
+          <div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:16px 18px">
+            <div style="font-size:13px; font-weight:700; margin-bottom:12px">دامنه‌های دسترسی</div>
+            <sc-for list="{{ scopes }}" as="sc" hint-placeholder-count="7">
+              <div style="display:flex; align-items:center; gap:8px; padding:5px 0; font-size:11.5px"><span style="color:var(--pos)">✓</span><span style="color:var(--ink-2)">{{ sc.t }}</span></div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= DIAGNOSTICS ================= -->
+      <sc-if value="{{ isDiagnostics }}" hint-placeholder-val="">
+      <div style="padding:18px 22px 40px; max-width:900px">
+        <div style="font-size:11.5px; color:var(--ink-3); margin-bottom:14px">تشخیص لیستینگ و تصویر — فقط‌خواندنی در P0. پیشنهادها مستند و بدون تغییر خودکار.</div>
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:11px; overflow:hidden; margin-bottom:14px">
+          <div style="padding:12px 16px; border-bottom:1px solid var(--line); font-size:13px; font-weight:700">هدفون سونی WH-1000XM5 <span class="ltr" style="font-size:10.5px; color:var(--ink-3); font-weight:400">DKP-8842213</span></div>
+          <div style="padding:8px 16px">
+            <div style="display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line)"><span style="color:var(--warn)">⚠</span><div style="flex:1"><div style="font-size:12px; font-weight:600">۲ ویژگی کلیدی ناقص</div><div style="font-size:11px; color:var(--ink-3)">«فرکانس پاسخ» و «نوع اتصال» تکمیل نشده‌اند</div></div><span style="font-size:11px; color:var(--accent); cursor:pointer">پیشنهاد گرامی‌شده</span></div>
+            <div style="display:flex; align-items:center; gap:10px; padding:9px 0; border-bottom:1px solid var(--line)"><span style="color:var(--warn)">⚠</span><div style="flex:1"><div style="font-size:12px; font-weight:600">کیفیت تصویر اصلی پایین</div><div style="font-size:11px; color:var(--ink-3)">وضوح ۶۰۰×۶۰۰ — کمتر از حداقل توصیه‌شده</div></div><span style="font-size:11px; color:var(--accent); cursor:pointer">راهنمای اصلاح فنی</span></div>
+            <div style="display:flex; align-items:center; gap:10px; padding:9px 0"><span style="color:var(--pos)">✓</span><div style="flex:1"><div style="font-size:12px; font-weight:600">طول عنوان و تعداد تصویر مناسب</div></div></div>
+          </div>
+        </div>
+        <div style="display:flex; gap:12px">
+          <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:6px">کالاهای دارای مشکل لیستینگ</div><div style="font-size:22px; font-weight:700; color:var(--warn)">۱۴</div></div>
+          <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:6px">کالاهای دارای مشکل تصویر</div><div style="font-size:22px; font-weight:700; color:var(--warn)">۸</div></div>
+          <div style="flex:1; background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:14px 16px"><div style="font-size:11px; color:var(--ink-3); margin-bottom:6px">بدون مشکل</div><div style="font-size:22px; font-weight:700; color:var(--pos)">۹۸</div></div>
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= DESIGN SYSTEM ================= -->
+      <sc-if value="{{ isDS }}" hint-placeholder-val="">
+      <div style="padding:20px 22px 50px; max-width:1000px; display:flex; flex-direction:column; gap:20px">
+        <div>
+          <div style="font-size:13px; font-weight:700; margin-bottom:10px">توکن‌های رنگ معنایی</div>
+          <div style="font-size:11px; color:var(--ink-3); margin-bottom:12px">رنگ فقط برای معنا؛ هرگز تنها نشانه. هر حالت با متن نیز مشخص است.</div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px">
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:9px; overflow:hidden"><div style="height:44px; background:var(--risk)"></div><div style="padding:8px 10px; font-size:11px"><b>ریسک تجاری</b><div class="ltr" style="color:var(--ink-3); font-size:10px">--risk</div></div></div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:9px; overflow:hidden"><div style="height:44px; background:var(--pos)"></div><div style="padding:8px 10px; font-size:11px"><b>مثبت / حاشیه</b><div class="ltr" style="color:var(--ink-3); font-size:10px">--pos</div></div></div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:9px; overflow:hidden"><div style="height:44px; background:var(--warn)"></div><div style="padding:8px 10px; font-size:11px"><b>هشدار / کهنگی</b><div class="ltr" style="color:var(--ink-3); font-size:10px">--warn</div></div></div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:9px; overflow:hidden"><div style="height:44px; background:var(--info)"></div><div style="padding:8px 10px; font-size:11px"><b>اطلاعاتی / اجرا</b><div class="ltr" style="color:var(--ink-3); font-size:10px">--info</div></div></div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:9px; overflow:hidden"><div style="height:44px; background:var(--conflict)"></div><div style="padding:8px 10px; font-size:11px"><b>تعارض</b><div class="ltr" style="color:var(--ink-3); font-size:10px">--conflict</div></div></div>
+            <div style="background:var(--panel); border:1px solid var(--line); border-radius:9px; overflow:hidden"><div style="height:44px; background:var(--accent)"></div><div style="padding:8px 10px; font-size:11px"><b>کنش اصلی</b><div class="ltr" style="color:var(--ink-3); font-size:10px">--accent</div></div></div>
+          </div>
+        </div>
+
+        <div style="display:flex; gap:16px; flex-wrap:wrap">
+          <div style="flex:1; min-width:280px">
+            <div style="font-size:13px; font-weight:700; margin-bottom:10px">حالت‌های کیفیت مشاهده</div>
+            <div style="display:flex; flex-direction:column; gap:7px">
+              <div style="display:flex; align-items:center; gap:8px; font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:var(--pos)"></span>تاییدشده <span class="ltr" style="color:var(--ink-3); font-size:10px; margin-inline-start:auto">Verified</span></div>
+              <div style="display:flex; align-items:center; gap:8px; font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:var(--info)"></span>پشتیبانی‌شده <span class="ltr" style="color:var(--ink-3); font-size:10px; margin-inline-start:auto">Supported</span></div>
+              <div style="display:flex; align-items:center; gap:8px; font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:var(--ink-3)"></span>تاییدنشده <span class="ltr" style="color:var(--ink-3); font-size:10px; margin-inline-start:auto">Unverified</span></div>
+              <div style="display:flex; align-items:center; gap:8px; font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:var(--conflict)"></span>متناقض <span class="ltr" style="color:var(--ink-3); font-size:10px; margin-inline-start:auto">Conflicted</span></div>
+              <div style="display:flex; align-items:center; gap:8px; font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:var(--warn)"></span>قدیمی‌شده <span class="ltr" style="color:var(--ink-3); font-size:10px; margin-inline-start:auto">Stale</span></div>
+              <div style="display:flex; align-items:center; gap:8px; font-size:12px"><span style="width:8px;height:8px;border-radius:50%;background:var(--ink-3)"></span>در دسترس نیست <span class="ltr" style="color:var(--ink-3); font-size:10px; margin-inline-start:auto">Unavailable</span></div>
+            </div>
+          </div>
+          <div style="flex:1; min-width:280px">
+            <div style="font-size:13px; font-weight:700; margin-bottom:10px">وضعیت اجرا</div>
+            <div style="display:flex; flex-wrap:wrap; gap:7px">
+              <span style="font-size:11px; font-weight:600; color:var(--info); background:var(--info-bg); padding:3px 9px; border-radius:5px">در حال اجرا</span>
+              <span style="font-size:11px; font-weight:600; color:var(--pos); background:var(--pos-bg); padding:3px 9px; border-radius:5px">تاییدشده توسط دیجی‌کالا</span>
+              <span style="font-size:11px; font-weight:600; color:var(--warn); background:var(--warn-bg); padding:3px 9px; border-radius:5px">در انتظار تطبیق</span>
+              <span style="font-size:11px; font-weight:600; color:var(--risk); background:var(--risk-bg); padding:3px 9px; border-radius:5px">ناموفق</span>
+              <span style="font-size:11px; font-weight:600; color:var(--ink-2); background:var(--panel-2); padding:3px 9px; border-radius:5px">منقضی‌شده</span>
+            </div>
+            <div style="font-size:13px; font-weight:700; margin:18px 0 10px">دکمه‌ها</div>
+            <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+              <button style="height:34px; padding:0 16px; border:none; border-radius:8px; background:var(--accent); color:#fff; font-family:inherit; font-size:12px; font-weight:600">اصلی</button>
+              <button style="height:34px; padding:0 16px; border:1px solid var(--line-2); border-radius:8px; background:var(--panel); color:var(--ink); font-family:inherit; font-size:12px; font-weight:600">ثانویه</button>
+              <button style="height:34px; padding:0 16px; border:1px solid var(--risk); border-radius:8px; background:var(--risk); color:#fff; font-family:inherit; font-size:12px; font-weight:600">مخرب</button>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div style="font-size:13px; font-weight:700; margin-bottom:10px">مقیاس تایپوگرافی — Vazirmatn</div>
+          <div style="background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px 18px">
+            <div style="font-size:26px; font-weight:700; margin-bottom:6px">عنوان اصلی ۲۶px/۷۰۰</div>
+            <div style="font-size:17px; font-weight:700; margin-bottom:6px">عنوان بخش ۱۷px/۷۰۰</div>
+            <div style="font-size:13px; margin-bottom:6px">متن پایه ۱۳px — ارقام فارسی ۱۲۳ / <span class="ltr">Latin SKU DKP-8842213</span></div>
+            <div style="font-size:11px; color:var(--ink-3)">توضیح فرعی ۱۱px — تومان به‌عنوان واحد نمایش</div>
+          </div>
+        </div>
+
+        <div style="font-size:11px; color:var(--ink-3); line-height:1.7; border-top:1px solid var(--line); padding-top:14px">
+          <b>قواعد RTL/LTR:</b> رابط فارسی و راست‌به‌چپ؛ SKU، URL و شناسه‌های لاتین با جداسازی دوجهته در محفظهٔ LTR. ارقام فارسی در خروجی، پذیرش ارقام فارسی و لاتین در ورودی. تومان واحد نمایش، ریال واحد خام بازار.
+        </div>
+      </div>
+      </sc-if>
+
+      <!-- ================= GENERIC STUB (other routes) ================= -->
+      <sc-if value="{{ isStub }}" hint-placeholder-val="">
+      <div style="padding:40px 22px; max-width:900px">
+        <div style="background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:30px; text-align:center">
+          <div style="font-size:15px; font-weight:700; margin-bottom:8px">{{ routeTitle }}</div>
+          <div style="font-size:12.5px; color:var(--ink-3); line-height:1.7">این صفحه در مرحلهٔ بعدی ساخته می‌شود.<br>صفحات فعلاً آمادهٔ نمایش: امروز، جزئیات رویداد، پیشنهاد و تایید.</div>
+        </div>
+      </div>
+      </sc-if>
+      </sc-if>
+
+    </div>
+  </div>
+
+  <!-- ============ CHAT DOCK ============ -->
+  <sc-if value="{{ chatOpen }}" hint-placeholder-val="">
+  <aside data-dock="1" style="width:392px; flex:none; background:var(--panel); border-inline-end:1px solid var(--line); display:flex; flex-direction:column; height:100%">
+    <div style="height:52px; flex:none; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:9px; padding:0 14px">
+      <span style="font-size:15px; color:var(--accent)">◔</span>
+      <div style="font-weight:700; font-size:13px">دستیار</div>
+      <span style="font-size:10.5px; color:var(--ink-2); background:var(--panel-2); border:1px solid var(--line); border-radius:20px; padding:2px 9px; display:flex; align-items:center; gap:5px">
+        <span style="width:6px;height:6px;border-radius:50%;background:var(--ink-3)"></span>{{ chatContext }}
+      </span>
+      <div style="flex:1"></div>
+      <button onClick="{{ toggleChat }}" style="width:28px; height:28px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--ink-2); cursor:pointer; font-size:14px" style-hover="background:var(--panel-2)">✕</button>
+    </div>
+
+    <div style="flex:1; overflow-y:auto; padding:14px; display:flex; flex-direction:column; gap:12px">
+      <sc-for list="{{ chatMsgs }}" as="m" hint-placeholder-count="2">
+        <div style="{{ m.wrap }}">
+          <sc-if value="{{ m.isUser }}" hint-placeholder-val="">
+            <div style="max-width:82%; background:var(--accent); color:#fff; padding:9px 12px; border-radius:12px 12px 4px 12px; font-size:12.5px; line-height:1.6">{{ m.text }}</div>
+          </sc-if>
+          <sc-if value="{{ m.isBot }}" hint-placeholder-val="">
+            <div style="max-width:100%; width:100%">
+              <sc-if value="{{ m.hasText }}" hint-placeholder-val=""><div style="background:var(--panel-2); border:1px solid var(--line); padding:10px 12px; border-radius:12px 12px 12px 4px; font-size:12.5px; line-height:1.65; color:var(--ink)">{{ m.text }}</div></sc-if>
+              <sc-if value="{{ m.hasCard }}" hint-placeholder-val="">
+                <div style="margin-top:8px; background:var(--panel); border:1px solid var(--line-2); border-radius:11px; overflow:hidden">
+                  <div style="padding:10px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:7px">
+                    <span style="font-size:10px; font-weight:600; color:{{ m.card.typeColor }}; background:{{ m.card.typeBg }}; padding:2px 7px; border-radius:5px">{{ m.card.tag }}</span>
+                    <span style="font-size:12px; font-weight:600">{{ m.card.title }}</span>
+                  </div>
+                  <div style="padding:10px 12px; display:flex; flex-direction:column; gap:7px">
+                    <sc-for list="{{ m.card.rows }}" as="r" hint-placeholder-count="3">
+                      <div style="display:flex; justify-content:space-between; font-size:11.5px"><span style="color:var(--ink-3)">{{ r.k }}</span><span style="color:{{ r.color }}; font-weight:500">{{ r.v }}</span></div>
+                    </sc-for>
+                  </div>
+                  <div style="padding:8px 12px; border-top:1px solid var(--line); display:flex; gap:8px">
+                    <button onClick="{{ m.card.open }}" style="flex:1; height:30px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:7px; font-family:inherit; font-size:11.5px; font-weight:600; cursor:pointer">{{ m.card.cta }}</button>
+                  </div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ m.hasEvidence }}" hint-placeholder-val="">
+                <div style="margin-top:6px; font-size:10.5px; color:var(--ink-3); display:flex; align-items:center; gap:6px; flex-wrap:wrap">
+                  <span>شواهد:</span>
+                  <sc-for list="{{ m.evidence }}" as="e" hint-placeholder-count="2"><span class="ltr" style="background:var(--panel-2); border:1px solid var(--line); border-radius:5px; padding:1px 6px">{{ e }}</span></sc-for>
+                </div>
+              </sc-if>
+            </div>
+          </sc-if>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="flex:none; border-top:1px solid var(--line); padding:10px 12px">
+      <div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:9px">
+        <sc-for list="{{ chatPrompts }}" as="p" hint-placeholder-count="3">
+          <button onClick="{{ p.send }}" style="font-size:11px; color:var(--ink-2); background:var(--panel-2); border:1px solid var(--line); border-radius:16px; padding:5px 10px; cursor:pointer; font-family:inherit" style-hover="border-color:var(--accent); color:var(--accent)">{{ p.label }}</button>
+        </sc-for>
+      </div>
+      <div style="display:flex; gap:8px; align-items:center; background:var(--panel-2); border:1px solid var(--line); border-radius:9px; padding:4px 4px 4px 12px">
+        <input placeholder="بپرسید… (فارسی یا انگلیسی)" style="flex:1; border:none; background:transparent; outline:none; font-family:inherit; font-size:12.5px; color:var(--ink); padding:6px 0" dir="rtl" />
+        <button style="width:30px; height:30px; border:none; border-radius:7px; background:var(--accent); color:#fff; cursor:pointer; font-size:14px">↑</button>
+      </div>
+      <div style="font-size:10px; color:var(--ink-3); text-align:center; margin-top:7px">متن آزاد هیچ‌گاه اجرا نمی‌کند — تایید فقط با کنترل روی کارت</div>
+    </div>
+  </aside>
+  </sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:&quot;100%&quot;,&quot;height&quot;:&quot;100%&quot;}}">
+class Component extends DCLogic {
+  state = {
+    route: 'today',
+    theme: 'light',
+    density: 'comfortable',
+    chatOpen: true,
+    briefingUnseen: true,
+    selectedEventId: 'EVT-4471',
+    appr: { stage:'review', price:13990000, edited:false, simOpen:false, simPrice:13990000 },
+    bulkStage: 'preview',
+    importStage: 'idle',
+    selAction: 'ACT-9928',
+    selProduct: 'DKP-8842213',
+    prodMissing: false,
+    todayState: 'ready',
+    demo: 'ready',
+    locale: 'fa',
+  };
+
+  READY = { complete:{t:'کامل',c:'var(--pos)'}, partial:{t:'جزئی',c:'var(--warn)'}, stale:{t:'قدیمی‌شده',c:'var(--warn)'}, missing:{t:'فاقد بها',c:'var(--risk)'} };
+  BSTAT = { exec:{t:'قابل اجرا',c:'var(--pos)',bg:'var(--pos-bg)'}, warn:{t:'هشدار',c:'var(--warn)',bg:'var(--warn-bg)'}, blocked:{t:'مسدود',c:'var(--risk)',bg:'var(--risk-bg)'} };
+  ASTAT = { accepted:{t:'تاییدشده توسط دیجی‌کالا',c:'var(--pos)'}, pending:{t:'در انتظار تطبیق',c:'var(--warn)'}, failed:{t:'ناموفق',c:'var(--risk)'}, executing:{t:'در حال اجرا',c:'var(--info)'}, externally:{t:'اجرا خارج از سامانه',c:'var(--ink-2)'} };
+  ISTAT = { matched:{t:'نگاشته‌شده',c:'var(--pos)'}, review:{t:'نیازمند بازبینی',c:'var(--warn)'}, error:{t:'خطا',c:'var(--risk)'}, dup:{t:'تکراری',c:'var(--ink-2)'} };
+
+  // ---------- localization engine ----------
+  // Region/marketplace/currency are configuration, not hardcoded. Locale drives
+  // direction, digit system, grouping separator, currency label, and translations.
+  LOCALES = {
+    fa: { dir:'rtl', lang:'fa', digits:'fa',   sep:'٬', cur:'تومان', name:'فارسی' },
+    en: { dir:'ltr', lang:'en', digits:'latn', sep:',', cur:'Toman', name:'English' },
+  };
+  MKT = { fa:'دیجی‌کالا', en:'Digikala' };            // marketplace name — swappable per connector/region
+  L(){ return this.LOCALES[this.state.locale] || this.LOCALES.fa; }
+  mkt(){ return this.MKT[this.state.locale] || this.MKT.fa; }
+  // string-key dictionary; every UI string resolves through t()
+  DICT = {
+    unknown:{fa:'نامشخص',en:'Unknown'}, minAgo:{fa:'دقیقه پیش',en:'min ago'}, hrAgo:{fa:'ساعت پیش',en:'hr ago'},
+    brandTitle:{fa:'مرکز فرمان بازار',en:'Marketplace Command Center'},
+    navWorkspace:{fa:'فضای کاری',en:'Workspace'}, refGroup:{fa:'مرجع و راه‌اندازی',en:'Reference & setup'},
+    role:{fa:'اپراتور قیمت‌گذاری',en:'Pricing operator'},
+    connHealthy:{fa:'سالم',en:'healthy'}, comfortable:{fa:'راحت',en:'Comfortable'}, dense:{fa:'فشرده',en:'Dense'},
+    assistant:{fa:'دستیار',en:'Assistant'}, stateSim:{fa:'حالت',en:'State'},
+    stReal:{fa:'واقعی',en:'Live'}, stLoading:{fa:'بارگذاری',en:'Loading'}, stEmpty:{fa:'خالی',en:'Empty'},
+    chatFooter:{fa:'متن آزاد هیچ‌گاه اجرا نمی‌کند — تایید فقط با کنترل روی کارت',en:'Free text never executes — approve only via the card control'},
+    chatPlaceholder:{fa:'بپرسید… (فارسی یا انگلیسی)',en:'Ask… (any language)'}, chatCtxGlobal:{fa:'کل حساب',en:'Whole account'},
+    sumHigh:{fa:'رویدادهای باز با اهمیت بالا',en:'High-priority open events'},
+    exposure:{fa:'حاشیهٔ در معرض خطر',en:'Margin at risk'},
+    exposureSub:{fa:'برآورد موتور حاشیه · بازهٔ: از دیروز تا اکنون',en:'Margin-engine estimate · range: since yesterday'},
+    yActions:{fa:'اقدام‌های دیروز',en:"Yesterday's actions"}, accepted:{fa:'پذیرفته',en:'accepted'}, pendingRecon:{fa:'در انتظار تطبیق',en:'pending reconciliation'},
+    viewActions:{fa:'مشاهدهٔ اقدام‌ها',en:'View actions'}, resolve:{fa:'حل',en:'Resolve'},
+    queueTitle:{fa:'صف اولویت',en:'Priority queue'}, queueSub:{fa:'مرتب‌شده بر اساس درآمد در معرض خطر × اطمینان × فوریت',en:'Ranked by exposure × confidence × urgency'},
+    whyPriority:{fa:'چرا این اولویت؟',en:'Why this priority?'}, myPrice:{fa:'قیمت من',en:'My price'},
+    lowestComp:{fa:'پایین‌ترین رقیب',en:'Lowest competitor'}, marginImpact:{fa:'اثر حاشیه',en:'Margin impact'},
+    proposedAction:{fa:'اقدام پیشنهادی',en:'Proposed action'}, reviewDecide:{fa:'بررسی و تصمیم',en:'Review & decide'},
+    blocked:{fa:'مسدود',en:'Blocked'}, reviewBlocker:{fa:'بررسی مانع',en:'Review blocker'},
+    endQueue:{fa:'پایان صف امروز',en:"End of today's queue"}, actionHistory:{fa:'تاریخچهٔ اقدام‌ها',en:'Action history'},
+    stateShow:{fa:'نمایش حالت',en:'Show state'}, stReady:{fa:'آماده',en:'Ready'}, stNoAction:{fa:'بدون اقدام',en:'No action'}, stDisc:{fa:'قطع اتصال',en:'Disconnected'},
+    r_today:{fa:'امروز',en:'Today'}, r_products:{fa:'محصولات',en:'Products'}, r_market:{fa:'بازار',en:'Market'}, r_actions:{fa:'اقدام‌ها',en:'Actions'},
+    r_settings:{fa:'تنظیمات',en:'Settings'}, r_operations:{fa:'عملیات',en:'Operations'}, r_onboarding:{fa:'اتصال و راه‌اندازی',en:'Connect & setup'}, r_ds:{fa:'سیستم طراحی',en:'Design system'},
+    r_event:{fa:'جزئیات رویداد',en:'Event detail'}, r_recommendation:{fa:'پیشنهاد قیمت',en:'Price recommendation'}, r_product:{fa:'جزئیات محصول',en:'Product detail'},
+    r_cost:{fa:'ورود بها',en:'Cost import'}, r_bulk:{fa:'اقدام دسته‌ای',en:'Bulk action'}, r_diagnostics:{fa:'تشخیص',en:'Diagnostics'},
+    s_today:{fa:'صف اولویت تصمیم‌ها',en:'Decision priority queue'}, s_products:{fa:'فضای کاری کالاها',en:'Catalog workspace'}, s_market:{fa:'مشاهده‌ها و تاریخچهٔ رقبا',en:'Observations & competitor history'},
+    s_actions:{fa:'تاریخچه، تطبیق و نتیجه',en:'History, reconciliation & outcome'}, s_settings:{fa:'اتصال، نقش‌ها، حفاظ‌ها',en:'Connection, roles, guardrails'}, s_operations:{fa:'صف‌های داخلی کیفیت داده',en:'Internal data-quality queues'},
+  };
+  // fa-string → en-string map for data-driven labels (quality/type/status/readiness metas)
+  TR = {
+    'تاییدشده':'Verified','پشتیبانی‌شده':'Supported','تاییدنشده':'Unverified','متناقض':'Conflicted','قدیمی‌شده':'Stale','در دسترس نیست':'Unavailable',
+    'باکس خرید':'Buy Box','پیشنهاد رقیب':'Competitor offer','تعداد فروشندگان':'Seller count','مرز قیمت':'Price boundary','کف حاشیه':'Margin floor',
+    'کامل':'Complete','جزئی':'Partial','فاقد بها':'No cost',
+    'قابل اجرا':'Executable','هشدار':'Warning','مسدود':'Blocked',
+    'تاییدشده توسط دیجی‌کالا':'Accepted','در انتظار تطبیق':'Pending reconciliation','ناموفق':'Failed','در حال اجرا':'Executing','اجرا خارج از سامانه':'Externally executed',
+    'نگاشته‌شده':'Mapped','نیازمند بازبینی':'Needs review','خطا':'Error','تکراری':'Duplicate',
+  };
+  t(k){ const e=this.DICT[k]; return e?(e[this.state.locale]||e.fa):k; }
+  tx(s){ return this.state.locale==='en' ? (this.TR[s]||s) : s; }
+
+  // ---------- locale-aware formatting ----------
+  fa(s){ if(this.L().digits==='latn') return String(s); const m='۰۱۲۳۴۵۶۷۸۹'; return String(s).replace(/[0-9]/g,d=>m[+d]); }
+  sep(n){ return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, this.L().sep); }
+  toman(n){ if(n==null) return this.t('unknown'); return this.fa(this.sep(n))+' '+this.L().cur; }
+  tomanShort(n){ if(n==null) return this.t('unknown'); const s=n<0?'−':''; return s+this.fa(this.sep(Math.abs(n)))+' '+this.L().cur; }
+
+  QMETA = {
+    verified:{t:'تاییدشده',c:'var(--pos)'},
+    supported:{t:'پشتیبانی‌شده',c:'var(--info)'},
+    unverified:{t:'تاییدنشده',c:'var(--ink-3)'},
+    conflicted:{t:'متناقض',c:'var(--conflict)'},
+    stale:{t:'قدیمی‌شده',c:'var(--warn)'},
+    unavailable:{t:'در دسترس نیست',c:'var(--ink-3)'},
+  };
+  TYPEMETA = {
+    1:{t:'باکس خرید',c:'var(--info)',b:'var(--info-bg)'},
+    2:{t:'پیشنهاد رقیب',c:'var(--accent)',b:'var(--accent-bg)'},
+    3:{t:'تعداد فروشندگان',c:'var(--ink-2)',b:'var(--panel-2)'},
+    4:{t:'مرز قیمت',c:'var(--conflict)',b:'var(--conflict-bg)'},
+    5:{t:'کف حاشیه',c:'var(--risk)',b:'var(--risk-bg)'},
+  };
+
+  freshMeta(min){
+    if(min<=60) return {t:this.fa(min)+' '+this.t('minAgo'), c:'var(--pos)'};
+    if(min<360) return {t:this.fa(Math.round(min/60))+' '+this.t('hrAgo'), c:'var(--warn)'};
+    return {t:this.fa(Math.round(min/60))+' '+this.t('hrAgo'), c:'var(--risk)'};
+  }
+
+  events(){ return [
+    {id:'EVT-4471',type:1,rank:1,product:'هدفون بی‌سیم سونی WH-1000XM5',sku:'DKP-8842213',variant:'مشکی',owned:14350000,comp:13720000,quality:'verified',freshMin:12,exposure:-9200000,action:'کاهش به ۱۳٬۹۹۰٬۰۰۰ تومان',why:'باکس خرید از دست رفت؛ اختلاف قیمت ۴٫۴٪ و بالاترین درآمد در معرض خطر در صف.',blocked:false},
+    {id:'EVT-4468',type:2,rank:2,product:'قهوه‌ساز فیلیپس HD7461',sku:'DKP-7719004',variant:null,owned:2180000,comp:1990000,quality:'supported',freshMin:41,exposure:-3400000,action:'کاهش به ۲٬۰۵۰٬۰۰۰ (پس از بازخوانی)',why:'پایین‌ترین پیشنهاد واجد شرایط ۸٫۷٪ کاهش یافت؛ کیفیت پشتیبانی‌شده، نیازمند بازخوانی لحظه‌ای.',blocked:false,jit:true},
+    {id:'EVT-4460',type:5,rank:3,product:'پاوربانک انکر ۲۰۰۰۰',sku:'DKP-9032118',variant:'سفید',owned:1120000,comp:1090000,quality:'verified',freshMin:8,exposure:-1500000,action:'مسدود — زیر کف حاشیه',why:'تطبیق با رقیب، قیمت را زیر کف حاشیهٔ ۱۲٪ می‌برد.',blocked:true,blockReason:'تطبیق قیمت رقیب، حاشیه را زیر کف پیکربندی‌شده می‌برد.'},
+    {id:'EVT-4455',type:4,rank:4,product:'اسپیکر بلوتوث JBL Flip 6',sku:'DKP-6614022',variant:'آبی',owned:3450000,comp:null,quality:'conflicted',freshMin:23,exposure:null,action:'بررسی تعارض مشاهده',why:'دو مسیر مشاهده مقادیر متفاوت گزارش کردند؛ تا رفع تعارض، پیشنهاد مسدود است.',blocked:true,blockReason:'مشاهده‌ها متناقض‌اند (اختلاف بین دو مسیر).'},
+    {id:'EVT-4450',type:3,rank:5,product:'ماوس بی‌سیم لاجیتک MX Master 3S',sku:'DKP-5521890',variant:'گرافیتی',owned:4990000,comp:4990000,quality:'stale',freshMin:380,exposure:null,action:'دادهٔ قدیمی — بازخوانی لازم',why:'آخرین مشاهدهٔ معتبر بیش از ۶ ساعت پیش؛ اقدام وابسته مسدود است.',blocked:true,blockReason:'دادهٔ بازار قدیمی‌شده است.'},
+    {id:'EVT-4442',type:2,rank:6,product:'کتری برقی بوش TWK',sku:'DKP-4410771',variant:null,owned:1850000,comp:1795000,quality:'supported',freshMin:52,exposure:-980000,action:'کاهش به ۱٬۸۱۰٬۰۰۰ تومان',why:'پیشنهاد رقیب اندکی کاهش یافت؛ اثر حاشیهٔ متوسط.',blocked:false,jit:true},
+  ]; }
+
+  evVM(ev){
+    const q=this.QMETA[ev.quality], t=this.TYPEMETA[ev.type], f=this.freshMeta(ev.freshMin);
+    return {
+      ...ev,
+      rank:this.fa(ev.rank),
+      typeLabel:this.tx(t.t), typeColor:t.c, typeBg:t.b,
+      qLabel:this.tx(q.t), qColor:q.c,
+      fresh:f.t, freshColor:f.c,
+      hasVariant:!!ev.variant, variant:ev.variant||'',
+      ownedT:this.toman(ev.owned),
+      compT:ev.comp==null?'نامشخص':this.toman(ev.comp),
+      compColor:ev.comp!=null&&ev.comp<ev.owned?'var(--risk)':'var(--ink)',
+      expoT:ev.exposure==null?'نامشخص':this.tomanShort(ev.exposure),
+      expoColor:ev.exposure==null?'var(--ink-3)':'var(--risk)',
+      borderColor:ev.blocked?'var(--line-2)':'var(--line)',
+      blocked:ev.blocked, notBlocked:!ev.blocked,
+      open:()=>this.setState({route:'event',selectedEventId:ev.id}),
+    };
+  }
+
+  themeVars(){
+    const light = "--bg:#eef0f2;--panel:#ffffff;--panel-2:#eceef1;--panel-3:#f7f8f9;--line:#e2e5e8;--line-2:#cdd2d7;--ink:#141a1f;--ink-2:#515a63;--ink-3:#89929b;--accent:#2f6feb;--accent-bg:#e9f0fd;--pos:#1f7a4d;--pos-bg:#e7f3ec;--risk:#c8352b;--risk-bg:#fbecea;--warn:#946200;--warn-bg:#f8f0db;--warn-line:#ecdcae;--info:#2f6feb;--info-bg:#e9f0fd;--conflict:#7b3fbd;--conflict-bg:#f1eafb";
+    const dark = "--bg:#0d1013;--panel:#171b1f;--panel-2:#212832;--panel-3:#12161a;--line:#28303a;--line-2:#3a4551;--ink:#eef2f5;--ink-2:#a7b1bb;--ink-3:#6d7883;--accent:#5b8dff;--accent-bg:#15203a;--pos:#48bd82;--pos-bg:#122820;--risk:#f0645a;--risk-bg:#2c1a19;--warn:#d9a441;--warn-bg:#2a2312;--warn-line:#3d3418;--info:#5b8dff;--info-bg:#15203a;--conflict:#b389e8;--conflict-bg:#221a30";
+    return this.state.theme==='dark'?dark:light;
+  }
+
+  ROUTES = {
+    today:{t:'امروز',s:'صف اولویت تصمیم‌ها'},
+    products:{t:'محصولات',s:'فضای کاری کالاها'},
+    market:{t:'بازار',s:'مشاهده‌ها و تاریخچهٔ رقبا'},
+    actions:{t:'اقدام‌ها',s:'تاریخچه، تطبیق و نتیجه'},
+    settings:{t:'تنظیمات',s:'اتصال، نقش‌ها، حفاظ‌ها'},
+    operations:{t:'عملیات',s:'صف‌های داخلی کیفیت داده'},
+    event:{t:'جزئیات رویداد',s:'شواهد و اثر تجاری'},
+    recommendation:{t:'پیشنهاد قیمت',s:'بازبینی و تایید'},
+    product:{t:'جزئیات محصول',s:'حاشیه، بازار و تشخیص'},
+    ds:{t:'سیستم طراحی',s:'مبانی و اجزا'},
+    onboarding:{t:'اتصال و راه‌اندازی',s:'ایجاد سازمان و اتصال دیجی‌کالا'},
+  };
+
+  navBtnStyle(active){
+    const base="width:100%; display:flex; align-items:center; gap:10px; padding:8px 9px; margin-bottom:2px; border:none; border-radius:8px; font-family:inherit; font-size:12.5px; cursor:pointer; background:transparent; color:var(--ink-2)";
+    return active? "width:100%; display:flex; align-items:center; gap:10px; padding:8px 9px; margin-bottom:2px; border:none; border-radius:8px; font-family:inherit; font-size:12.5px; cursor:pointer; background:var(--panel-2); color:var(--ink); font-weight:600" : base;
+  }
+
+  go(r){ return ()=>this.setState({route:r}); }
+
+  // ---------- charts ----------
+  linePts(data,min,max,w,h,pad){
+    const n=data.length, span=(max-min)||1;
+    return data.map((v,i)=>{
+      const x=pad+(w-2*pad)*(i/(n-1));
+      const y=h-pad-(h-2*pad)*((v-min)/span);
+      return x.toFixed(1)+','+y.toFixed(1);
+    }).join(' ');
+  }
+
+  // ---------- contribution model ----------
+  contrib(price){
+    const cogs=8900000, fulfil=180000, ship=120000, pack=45000;
+    const ret=Math.round(price*0.007), comm=Math.round(price*0.10);
+    const c=price-comm-cogs-fulfil-ship-pack-ret;
+    return {price,comm,cogs,fulfil,ship,pack,ret,c,pct:c/price*100};
+  }
+  FLOOR=12300000; BOUNDARY=11500000;
+
+  // ---------- approval state machine ----------
+  approve(){
+    this.setState(s=>({appr:{...s.appr,stage:'revalidating'}}));
+    setTimeout(()=>this.setState(s=>s.appr.stage==='revalidating'?{appr:{...s.appr,stage:'executing'}}:{}),1600);
+    setTimeout(()=>this.setState(s=>s.appr.stage==='executing'?{appr:{...s.appr,stage:'accepted'}}:{}),3400);
+  }
+  editPrice(d){ this.setState(s=>{const p=Math.max(12400000,Math.min(14340000,s.appr.price+d)); return {appr:{...s.appr,price:p,edited:true}};}); }
+  invalidate(){ this.setState(s=>({appr:{...s.appr,stage:'invalidated'}})); }
+  recalc(){ this.setState(s=>({appr:{...s.appr,stage:'review',price:13960000,edited:false}})); }
+  expire(){ this.setState(s=>({appr:{...s.appr,stage:'expired'}})); }
+  resetAppr(){ this.setState(s=>({appr:{...s.appr,stage:'review',price:13990000,edited:false,simOpen:false}})); }
+  toggleSim(){ this.setState(s=>({appr:{...s.appr,simOpen:!s.appr.simOpen}})); }
+  editSim(d){ this.setState(s=>({appr:{...s.appr,simPrice:Math.max(12400000,Math.min(14340000,s.appr.simPrice+d))}})); }
+
+  // ---------- event detail VM ----------
+  eventDetailVM(){
+    const ev=this.events().find(e=>e.id===this.state.selectedEventId)||this.events()[0];
+    const q=this.QMETA[ev.quality], t=this.TYPEMETA[ev.type], f=this.freshMeta(ev.freshMin);
+    return {
+      id:ev.id, product:ev.product, sku:ev.sku, variant:ev.variant||'—', hasVariant:!!ev.variant,
+      typeLabel:this.tx(t.t), typeColor:t.c, typeBg:t.b,
+      qLabel:this.tx(q.t), qColor:q.c, fresh:f.t, freshColor:f.c,
+      ownedT:this.toman(ev.owned), compT:this.toman(ev.comp),
+      expoT:this.tomanShort(ev.exposure),
+      blocked:ev.blocked, blockReason:ev.blockReason||'',
+      observed:[
+        {seller:'فروشگاه الکترو پارس',price:this.toman(13720000),q:'تاییدشده',qc:'var(--pos)',fresh:'۱۲ دقیقه پیش',delta:'−۴٫۴٪',dc:'var(--risk)'},
+        {seller:'دیجی‌مارکت',price:this.toman(13990000),q:'تاییدشده',qc:'var(--pos)',fresh:'۱۸ دقیقه پیش',delta:'−۲٫۵٪',dc:'var(--risk)'},
+        {seller:'تک‌کالا',price:this.toman(14250000),q:'پشتیبانی‌شده',qc:'var(--info)',fresh:'۳۴ دقیقه پیش',delta:'−۰٫۷٪',dc:'var(--ink-2)'},
+      ],
+      dkSignals:[
+        {k:'وضعیت باکس خرید',v:'از دست رفته',c:'var(--risk)'},
+        {k:'تعداد فروشندگان',v:'۵ فروشنده (+۱)',c:'var(--ink)'},
+        {k:'مرز قیمت دیجی‌کالا',v:'حداقل ۱۱٬۵۰۰٬۰۰۰ تومان',c:'var(--ink)'},
+        {k:'وضعیت انتشار',v:'فعال',c:'var(--pos)'},
+      ],
+      sellerConfig:[
+        {k:'کف حاشیهٔ سخت',v:'۱۲٪'},{k:'حداکثر جابه‌جایی',v:'۵٪'},{k:'دورهٔ خنک‌سازی',v:'۶۰ دقیقه'},
+      ],
+      inference:'رتبهٔ اولویت ۱ از ترکیب بیشترین درآمد در معرض خطر (−۹٫۲م تومان)، اطمینان بالا (تاییدشده) و فوریت (باکس خرید فعال از دست رفته) محاسبه شد. — استنتاج مدل، نه واقعیت مشاهده‌شده.',
+      chart:this.buildChart(),
+      goRec:()=>this.setState({route:'recommendation'}),
+      back:()=>this.setState({route:'today'}),
+    };
+  }
+
+  prodDetailVM(prodData){
+    const st=this.state;
+    const p=prodData.find(x=>x.id===st.selProduct)||prodData[0];
+    const missing=st.prodMissing||p.ready==='missing';
+    const r=this.READY[missing?'missing':p.ready], q=this.QMETA[p.quality];
+    const c=missing?null:this.contrib(p.price);
+    return {
+      id:p.id,name:p.name,cat:p.cat,priceT:this.toman(p.price),
+      readyLabel:this.tx(r.t),readyColor:r.c, qLabel:this.tx(q.t),qColor:q.c,
+      compT:this.toman(p.comp),
+      missing,
+      stock:'۲۴ عدد', status:'فعال',
+      contribT:c?this.toman(c.c):'—', contribPct:c?this.fa(c.pct.toFixed(1))+'٪':'—',
+      costRows:missing?[]:[
+        {k:'بهای تمام‌شده (COGS)',v:this.toman(8900000),ok:true},
+        {k:'کمیسیون دیجی‌کالا',v:'۱۰٪',ok:true},
+        {k:'هزینهٔ انجام سفارش',v:this.toman(180000),ok:true},
+        {k:'حمل‌ونقل',v:this.toman(120000),ok:true},
+        {k:'بسته‌بندی',v:this.toman(45000),ok:true},
+        {k:'تبلیغات (اختیاری)',v:'ثبت‌نشده',ok:false},
+      ],
+      diagnostics:[
+        {k:'طول عنوان',v:'مناسب',ok:true},
+        {k:'ویژگی‌های کلیدی',v:'۲ ویژگی ناقص',ok:false},
+        {k:'تعداد تصویر',v:'۵ تصویر',ok:true},
+        {k:'کیفیت تصویر اصلی',v:'وضوح پایین',ok:false},
+      ].map(d=>({...d,notok:!d.ok})),
+      goCost:()=>this.setState({route:'cost'}),
+      goDiag:()=>this.setState({route:'diagnostics'}),
+      back:()=>this.setState({route:'products'}),
+    };
+  }
+
+  buildChart(){
+    const owned=[14350,14350,14350,14350,14350,14350,14350,14350,14350,14350];
+    const comp =[14300,14280,14210,14120,14060,13990,13910,13850,13780,13720];
+    const all=owned.concat(comp), min=Math.min(...all)-40, max=Math.max(...all)+40;
+    return {
+      ownedPts:this.linePts(owned,min,max,520,150,14),
+      compPts:this.linePts(comp,min,max,520,150,14),
+      maxLbl:this.toman(max*1000), minLbl:this.toman(min*1000),
+    };
+  }
+
+  // ---------- recommendation VM ----------
+  recVM(){
+    const st=this.state, ap=st.appr;
+    const cur=this.contrib(14350000), prop=this.contrib(ap.price), sim=this.contrib(ap.simPrice);
+    const stage=ap.stage;
+    const gates=[
+      'هویت محصول تاییدشده','بهای تمام‌شده کامل و جاری','قیمت و مرز بازار','شواهد بازار تازه و معتبر',
+      'کف حاشیهٔ سخت','حداکثر جابه‌جایی و خنک‌سازی','نسخه و انقضای تایید','کلید یکتایی (idempotency)',
+    ];
+    return {
+      apStage:stage,
+      apReview:stage==='review', apRevalidating:stage==='revalidating',
+      apExecuting:stage==='executing', apAccepted:stage==='accepted', apInvalidated:stage==='invalidated',
+      apExpired:stage==='expired', apPermission:stage==='permission',
+      expire:()=>this.expire(),
+      permission:()=>this.setState(s=>({appr:{...s.appr,stage:'permission'}})),
+      priceT:this.toman(ap.price), curPriceT:this.toman(14350000),
+      deltaAbs:this.tomanShort(ap.price-14350000),
+      deltaPct:this.fa((( (ap.price-14350000)/14350000)*100).toFixed(1))+'٪',
+      curC:this.toman(cur.c), propC:this.toman(prop.c),
+      curPct:this.fa(cur.pct.toFixed(1))+'٪', propPct:this.fa(prop.pct.toFixed(1))+'٪',
+      cDeltaColor:prop.c>=cur.c?'var(--pos)':'var(--warn)',
+      floorT:this.toman(this.FLOOR), boundaryT:this.toman(this.BOUNDARY),
+      aboveFloor:ap.price>this.FLOOR,
+      edited:ap.edited,
+      breakdown:[
+        {k:'قیمت فروش پیشنهادی',v:this.toman(prop.price),strong:true,c:'var(--ink)'},
+        {k:'کمیسیون دیجی‌کالا (۱۰٪)',v:'− '+this.toman(prop.comm),c:'var(--ink-2)'},
+        {k:'بهای تمام‌شده (COGS)',v:'− '+this.toman(prop.cogs),c:'var(--ink-2)'},
+        {k:'هزینهٔ انجام سفارش',v:'− '+this.toman(prop.fulfil),c:'var(--ink-2)'},
+        {k:'حمل‌ونقل فروشنده',v:'− '+this.toman(prop.ship),c:'var(--ink-2)'},
+        {k:'بسته‌بندی',v:'− '+this.toman(prop.pack),c:'var(--ink-2)'},
+        {k:'ذخیرهٔ مرجوعی (۰٫۷٪)',v:'− '+this.toman(prop.ret),c:'var(--ink-2)'},
+      ],
+      contribFinal:this.toman(prop.c), contribPct:this.fa(prop.pct.toFixed(1))+'٪',
+      gates,
+      evidence:['OBS-88421','OBS-88437','EVT-4471','MRG-2213','POL-77'],
+      warnings:[
+        {t:'کیفیت مشاهده تاییدشده است؛ اجرا مجاز است.',c:'var(--pos)',i:'✓'},
+        {t:'جابه‌جایی ۲٫۵٪ در محدودهٔ سقف ۵٪ قرار دارد.',c:'var(--pos)',i:'✓'},
+      ],
+      simOpen:ap.simOpen, simPriceT:this.toman(ap.simPrice),
+      simC:this.toman(sim.c), simPct:this.fa(sim.pct.toFixed(1))+'٪',
+      simAboveFloor:ap.simPrice>this.FLOOR,
+      approve:()=>this.approve(),
+      editPlus:()=>this.editPrice(50000), editMinus:()=>this.editPrice(-50000),
+      invalidate:()=>this.invalidate(), recalc:()=>this.recalc(), reset:()=>this.resetAppr(),
+      toggleSim:()=>this.toggleSim(), simPlus:()=>this.editSim(50000), simMinus:()=>this.editSim(-50000),
+      back:()=>this.setState({route:'event'}),
+      goOutcome:()=>this.setState({route:'actions'}),
+    };
+  }
+
+  renderVals(){
+    const st=this.state;
+    const evs=this.events();
+    const active=this.ROUTES[st.route]||this.ROUTES.today;
+    const stubRoutes=['products','market','actions','settings','operations','product','ds','onboarding'];
+
+    const navMain=[
+      {k:'today',icon:'◫',label:this.t('r_today'),count:this.fa(3)},
+      {k:'products',icon:'▤',label:this.t('r_products'),count:null},
+      {k:'market',icon:'◑',label:this.t('r_market'),count:null},
+      {k:'actions',icon:'⇄',label:this.t('r_actions'),count:this.fa(2)},
+      {k:'settings',icon:'⚙',label:this.t('r_settings'),count:null},
+      {k:'operations',icon:'◈',label:this.t('r_operations'),count:this.fa(5)},
+    ].map(n=>({...n,go:this.go(n.k),style:this.navBtnStyle(st.route===n.k),
+      badgeStyle:'font-size:10.5px; font-weight:600; color:var(--ink-2); background:var(--panel-2); border:1px solid var(--line); border-radius:20px; min-width:20px; text-align:center; padding:1px 6px'}));
+
+    const navRef=[
+      {k:'onboarding',icon:'⚡',label:this.t('r_onboarding')},
+      {k:'ds',icon:'❏',label:this.t('r_ds')},
+    ].map(n=>({...n,go:this.go(n.k),style:this.navBtnStyle(st.route===n.k)}));
+
+    const blockers=[
+      {label:this.fa(3)+(this.state.locale==='en'?' items missing cost':' کالا فاقد بهای تمام‌شده'),color:'var(--risk)',go:this.go('products')},
+      {label:this.fa(1)+(this.state.locale==='en'?' identity mapping to review':' نگاشت هویت نیازمند بازبینی'),color:'var(--conflict)',go:this.go('operations')},
+      {label:this.fa(2)+(this.state.locale==='en'?' items with stale observation':' کالا با مشاهدهٔ قدیمی'),color:'var(--warn)',go:this.go('market')},
+    ];
+
+    // chat
+    const chatMsgs=[
+      {isBot:true,hasText:true,text:'صبح‌بخیر نیلوفر. گزارش امروز: سه رویداد قیمت‌گذاری با اهمیت بالا نیاز به توجه دارند. برآورد حاشیهٔ در معرض خطر: ۱۴٬۱۰۰٬۰۰۰ تومان. سه مانع آمادگی داده نیز باز است.',hasEvidence:false,hasCard:false},
+      {isBot:true,hasText:true,text:'مهم‌ترین مورد، از دست رفتن باکس خرید روی هدفون سونی است:',hasCard:true,hasEvidence:true,
+        evidence:['OBS-88421','EVT-4471','MRG-2213'],
+        card:{tag:'باکس خرید',typeColor:'var(--info)',typeBg:'var(--info-bg)',title:'هدفون سونی WH-1000XM5',
+          rows:[{k:'قیمت من',v:'۱۴٬۳۵۰٬۰۰۰ تومان',color:'var(--ink)'},{k:'پایین‌ترین رقیب',v:'۱۳٬۷۲۰٬۰۰۰ تومان',color:'var(--risk)'},{k:'کیفیت مشاهده',v:'تاییدشده · ۱۲ دقیقه پیش',color:'var(--pos)'},{k:'حاشیهٔ در معرض خطر',v:'−۹٬۲۰۰٬۰۰۰ تومان',color:'var(--risk)'}],
+          cta:'باز کردن رویداد',open:()=>this.setState({route:'event',selectedEventId:'EVT-4471'})}},
+    ];
+    const chatPrompts=[
+      {label:'چه چیزی تغییر کرد؟'},{label:'بیشترین حاشیهٔ در خطر'},{label:'اقدام‌های ناموفق دیروز'},
+    ].map(p=>({...p,send:()=>{}}));
+
+    // ---- PRODUCTS ----
+    const prodData=[
+      {id:'DKP-8842213',name:'هدفون بی‌سیم سونی WH-1000XM5',cat:'صوتی',price:14350000,ready:'complete',quality:'verified',comp:13720000,margin:24.9},
+      {id:'DKP-7719004',name:'قهوه‌ساز فیلیپس HD7461',cat:'لوازم آشپزخانه',price:2180000,ready:'complete',quality:'supported',comp:1990000,margin:18.2},
+      {id:'DKP-9032118',name:'پاوربانک انکر ۲۰۰۰۰',cat:'جانبی موبایل',price:1120000,ready:'complete',quality:'verified',comp:1090000,margin:11.4},
+      {id:'DKP-6614022',name:'اسپیکر بلوتوث JBL Flip 6',cat:'صوتی',price:3450000,ready:'partial',quality:'conflicted',comp:null,margin:null},
+      {id:'DKP-5521890',name:'ماوس لاجیتک MX Master 3S',cat:'جانبی کامپیوتر',price:4990000,ready:'stale',quality:'stale',comp:4990000,margin:21.0},
+      {id:'DKP-4410771',name:'کتری برقی بوش TWK',cat:'لوازم آشپزخانه',price:1850000,ready:'complete',quality:'supported',comp:1795000,margin:16.8},
+      {id:'DKP-3320655',name:'کیبورد مکانیکی کیکرون K8',cat:'جانبی کامپیوتر',price:3200000,ready:'missing',quality:'unverified',comp:3150000,margin:null},
+      {id:'DKP-2214890',name:'شارژر بی‌سیم بلکین',cat:'جانبی موبایل',price:1650000,ready:'complete',quality:'verified',comp:1600000,margin:19.5},
+    ];
+    const products=prodData.map(p=>{const r=this.READY[p.ready],q=this.QMETA[p.quality];return{
+      id:p.id,name:p.name,cat:p.cat,priceT:this.toman(p.price),
+      readyLabel:this.tx(r.t),readyColor:r.c, qLabel:this.tx(q.t),qColor:q.c,
+      compT:p.comp==null?'—':this.toman(p.comp),
+      marginT:p.margin==null?'—':this.fa(p.margin.toFixed(1))+'٪',
+      marginColor:p.margin==null?'var(--ink-3)':(p.margin<12?'var(--risk)':'var(--ink)'),
+      open:()=>this.setState({route:'product',selProduct:p.id,prodMissing:p.ready==='missing'}),
+    };});
+
+    // ---- BULK ----
+    const bulkData=[
+      {name:'قهوه‌ساز فیلیپس HD7461',sku:'DKP-7719004',from:2180000,to:2050000,move:-6.0,status:'exec'},
+      {name:'کتری برقی بوش TWK',sku:'DKP-4410771',from:1850000,to:1810000,move:-2.2,status:'exec'},
+      {name:'شارژر بی‌سیم بلکین',sku:'DKP-2214890',from:1650000,to:1595000,move:-3.3,status:'warn',reason:'کیفیت پشتیبانی‌شده — بازخوانی لازم'},
+      {name:'پاوربانک انکر ۲۰۰۰۰',sku:'DKP-9032118',from:1120000,to:1090000,move:-2.7,status:'blocked',reason:'زیر کف حاشیه'},
+      {name:'ماوس لاجیتک MX Master 3S',sku:'DKP-5521890',from:4990000,to:null,move:null,status:'blocked',reason:'دادهٔ بازار قدیمی'},
+      {name:'کیبورد کیکرون K8',sku:'DKP-3320655',from:3200000,to:null,move:null,status:'blocked',reason:'فاقد بهای تمام‌شده'},
+    ];
+    const bstage=st.bulkStage;
+    const bulkResult={ 'DKP-7719004':'accepted','DKP-4410771':'pending','DKP-2214890':'accepted' };
+    const bulk=bulkData.map(b=>{const s=this.BSTAT[b.status];const res=bulkResult[b.sku];const rm=res?this.ASTAT[res]:null;return{
+      name:b.name,sku:b.sku,fromT:this.toman(b.from),toT:b.to==null?'—':this.toman(b.to),
+      moveT:b.move==null?'—':this.fa(b.move.toFixed(1))+'٪',
+      status:b.status,statusLabel:this.tx(s.t),statusColor:s.c,statusBg:s.bg,reason:b.reason||'',
+      hasReason:!!b.reason, eligible:b.status!=='blocked',
+      resLabel:rm?this.tx(rm.t):'—',resColor:rm?rm.c:'var(--ink-3)',hasRes:!!rm,
+    };});
+    const bulkCounts={exec:this.fa(2),warn:this.fa(1),blocked:this.fa(3)};
+
+    // ---- COST IMPORT ----
+    const impRows=[
+      {sku:'DKP-8842213',cogs:8900000,status:'matched',note:'—'},
+      {sku:'DKP-7719004',cogs:1450000,status:'matched',note:'—'},
+      {sku:'DKP-3320655',cogs:2100000,status:'review',note:'چند گونه با این SKU'},
+      {sku:'IMP-0000-X',cogs:null,status:'error',note:'SKU در کاتالوگ یافت نشد'},
+      {sku:'DKP-4410771',cogs:1150000,status:'dup',note:'ردیف تکراری در فایل'},
+    ].map(r=>{const s=this.ISTAT[r.status];return{sku:r.sku,cogsT:r.cogs==null?'—':this.toman(r.cogs),status:r.status,statusLabel:this.tx(s.t),statusColor:s.c,note:r.note,needsFix:r.status==='review'||r.status==='error'};});
+
+    // ---- ACTIONS ----
+    const actData=[
+      {id:'ACT-9931',name:'هدفون سونی WH-1000XM5',type:'کاهش قیمت',before:14350000,after:13990000,state:'accepted',actor:'نیلوفر راد',surface:'صفحه',time:'امروز ۰۹:۴۲'},
+      {id:'ACT-9928',name:'قهوه‌ساز فیلیپس HD7461',type:'کاهش قیمت',before:2180000,after:2050000,state:'pending',actor:'نیلوفر راد',surface:'گفتگو',time:'امروز ۰۹:۱۵'},
+      {id:'ACT-9920',name:'کتری برقی بوش TWK',type:'کاهش قیمت',before:1850000,after:1810000,state:'accepted',actor:'اپراتور',surface:'صفحه',time:'دیروز ۱۸:۳۰'},
+      {id:'ACT-9911',name:'شارژر بی‌سیم بلکین',type:'کاهش قیمت',before:1650000,after:1595000,state:'failed',actor:'نیلوفر راد',surface:'صفحه',time:'دیروز ۱۶:۱۰'},
+      {id:'ACT-9902',name:'اسپیکر JBL Flip 6',type:'افزایش قیمت',before:3400000,after:3450000,state:'externally',actor:'—',surface:'—',time:'دیروز ۱۱:۰۰'},
+    ];
+    const actions=actData.map(a=>{const s=this.ASTAT[a.state];return{
+      id:a.id,name:a.name,type:a.type,beforeT:this.toman(a.before),afterT:this.toman(a.after),
+      state:a.state,stateLabel:this.tx(s.t),stateColor:s.c,actor:a.actor,surface:a.surface,time:a.time,
+      sel:st.selAction===a.id, rowBg:st.selAction===a.id?'var(--panel-2)':'transparent',
+      select:()=>this.setState({selAction:a.id}),
+    };});
+    const selAct=actData.find(a=>a.id===st.selAction)||actData[1];
+    const selActVM={
+      id:selAct.id,name:selAct.name,isPending:selAct.state==='pending',isAccepted:selAct.state==='accepted',
+      stateLabel:this.tx(this.ASTAT[selAct.state].t),stateColor:this.ASTAT[selAct.state].c,
+      beforeT:this.toman(selAct.before),afterT:this.toman(selAct.after),actor:selAct.actor,surface:selAct.surface,time:selAct.time,
+    };
+
+    // ---- OPERATIONS ----
+    const ops=[
+      {t:'همگام‌سازی ناموفق',count:this.fa(1),c:'var(--risk)',desc:'یک حساب: خطای دامنهٔ دسترسی توکن'},
+      {t:'اهداف قدیمی',count:this.fa(2),c:'var(--warn)',desc:'۲ کالا بیش از ۶ ساعت بدون مشاهدهٔ تازه'},
+      {t:'صف نگاشت هویت',count:this.fa(1),c:'var(--conflict)',desc:'۱ نگاشت نیازمند بازبینی انسانی'},
+      {t:'مشاهده‌های متناقض',count:this.fa(1),c:'var(--conflict)',desc:'JBL Flip 6 — اختلاف بین دو مسیر'},
+      {t:'مشکل تجزیه‌گر/طرح‌واره',count:this.fa(0),c:'var(--pos)',desc:'بدون رانش شناسایی‌شده'},
+      {t:'تطبیق اقدام معلق',count:this.fa(1),c:'var(--warn)',desc:'ACT-9928 در انتظار خواندن وضعیت دیجی‌کالا'},
+    ];
+
+    // ---- ONBOARDING ----
+    const steps=[
+      {t:'ایجاد سازمان',state:'done',sub:'فروشگاه رادین'},
+      {t:'اتصال حساب دیجی‌کالا',state:'done',sub:'۷ از ۷ دامنه اعطا شد'},
+      {t:'همگام‌سازی کاتالوگ',state:'done',sub:'۱٬۲۴۰ کالا · تکمیل‌شده'},
+      {t:'ورود بهای تمام‌شده',state:'active',sub:'۳ کالا باقی‌مانده'},
+      {t:'رفع نگاشت‌های هویت',state:'todo',sub:'۱ مورد'},
+      {t:'تایید دامنهٔ پایش',state:'todo',sub:'۱۰۰–۵۰۰ کالا'},
+      {t:'دریافت اولین رویداد',state:'todo',sub:'ظرف یک روز کاری'},
+    ].map(s=>({...s,done:s.state==='done',active:s.state==='active',
+      dotBg:s.state==='done'?'var(--pos)':(s.state==='active'?'var(--accent)':'var(--panel-2)'),
+      dotFg:s.state==='todo'?'var(--ink-3)':'#fff',
+      go:this.go(s.state==='active'?'cost':'onboarding')}));
+    const scopes=[
+      {t:'خواندن کاتالوگ و کالاها',ok:true},{t:'خواندن پیشنهاد و موجودی',ok:true},
+      {t:'سیگنال باکس خرید و تعداد فروشنده',ok:true},{t:'خواندن مرز قیمت',ok:true},
+      {t:'نوشتن قیمت',ok:true},{t:'خواندن کمیسیون و هزینه',ok:true},{t:'زمینهٔ فروش',ok:true},
+    ];
+
+    const built=['products','market','actions','settings','operations','product','ds','onboarding','cost','bulk','diagnostics'];
+
+    return {
+      themeStyle:this.themeVars()+"; --fs:"+(st.density==='dense'?'12.5px':'13px'),
+      theme:st.theme, themeIcon:st.theme==='dark'?'☀':'☾',
+      density:st.density, densityLabel:st.density==='dense'?this.t('dense'):this.t('comfortable'),
+      toggleTheme:()=>this.setState({theme:st.theme==='dark'?'light':'dark'}),
+      toggleDensity:()=>this.setState({density:st.density==='dense'?'comfortable':'dense'}),
+      toggleChat:()=>this.setState({chatOpen:!st.chatOpen,briefingUnseen:false}),
+      chatOpen:st.chatOpen, briefingUnseen:st.briefingUnseen,
+      chatBtnBg:st.chatOpen?'var(--accent)':'var(--accent-bg)', chatBtnFg:st.chatOpen?'#fff':'var(--accent)',
+
+      locale:st.locale, localeName:this.L().name, dir:this.L().dir, lang:this.L().lang, mkt:this.mkt(),
+      localeToggle:()=>this.setState({locale:st.locale==='fa'?'en':'fa'}),
+      routeTitle:this.DICT['r_'+st.route]?this.t('r_'+st.route):active.t, routeSub:this.DICT['s_'+st.route]?this.t('s_'+st.route):active.s,
+      isToday:st.route==='today', isStub:!built.includes(st.route)&&st.route!=='today',
+      todayState:st.todayState,
+      demoReady:st.demo==='ready', demoLoading:st.demo==='loading', demoEmpty:st.demo==='empty',
+      demoStates:[{k:'ready',label:this.t('stReal')},{k:'loading',label:this.t('stLoading')},{k:'empty',label:this.t('stEmpty')}].map(s=>({label:s.label, set:()=>this.setState({demo:s.k}),
+        style:'font-size:10.5px; padding:4px 9px; border-radius:6px; cursor:pointer; font-family:inherit; border:1px solid var(--line); '+(st.demo===s.k?'background:var(--ink); color:var(--panel); border-color:var(--ink); font-weight:600':'background:var(--panel); color:var(--ink-3)')})),
+      tReady:st.todayState==='ready', tNoAction:st.todayState==='noaction', tLoading:st.todayState==='loading', tDisconnected:st.todayState==='disconnected',
+      todayStates:[
+        {k:'ready',label:this.t('stReady')},{k:'noaction',label:this.t('stNoAction')},{k:'loading',label:this.t('stLoading')},{k:'disconnected',label:this.t('stDisc')},
+      ].map(s=>({label:s.label, active:st.todayState===s.k, set:()=>this.setState({todayState:s.k}),
+        style:'font-size:11px; padding:5px 11px; border-radius:7px; cursor:pointer; font-family:inherit; border:1px solid var(--line); '+(st.todayState===s.k?'background:var(--ink); color:var(--panel); border-color:var(--ink); font-weight:600':'background:var(--panel); color:var(--ink-2)')})),
+      isEvent:st.route==='event', isRec:st.route==='recommendation',
+      isProducts:st.route==='products', isBulk:st.route==='bulk', isCost:st.route==='cost',
+      isActions:st.route==='actions', isMarket:st.route==='market', isOps:st.route==='operations',
+      isSettings:st.route==='settings', isOnboarding:st.route==='onboarding', isProduct:st.route==='product',
+      isDS:st.route==='ds', isDiagnostics:st.route==='diagnostics',
+      evD:this.eventDetailVM(), rec:this.recVM(),
+      products, goBulk:this.go('bulk'), goCost:this.go('cost'),
+      goOps:this.go('operations'), goOnboarding:this.go('onboarding'),
+      bulk, bulkCounts, bulkStage:bstage, bulkPreview:bstage==='preview', bulkExecuting:bstage==='executing', bulkResults:bstage==='results',
+      runBulk:()=>{ this.setState({bulkStage:'executing'}); setTimeout(()=>this.setState({bulkStage:'results'}),2200); },
+      resetBulk:()=>this.setState({bulkStage:'preview'}),
+      impRows, importStage:st.importStage, importIdle:st.importStage==='idle', importPreview:st.importStage==='preview',
+      doImport:()=>this.setState({importStage:'preview'}), resetImport:()=>this.setState({importStage:'idle'}),
+      actions, selAct:selActVM, reconcile:()=>this.setState({selAction:'ACT-9928'}),
+      ops, steps, scopes,
+      prodMissing:st.prodMissing,
+      goProduct:this.go('product'),
+      prodDetail:this.prodDetailVM(prodData),
+
+      navMain, navRef,
+      goActions:this.go('actions'),
+
+      sum:{highCount:this.fa(3),totalCount:this.fa(6),exposure:this.tomanShort(-14100000),yAccepted:this.fa(5),yPending:this.fa(2)},
+      blockers, blockerTotal:this.fa(6),
+      events:evs.map(e=>this.evVM(e)),
+
+      chatContext:this.t('chatCtxGlobal'), chatMsgs, chatPrompts,
+    };
+  }
+}
+</script>
+</body>
+</html>

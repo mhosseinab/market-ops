@@ -1,0 +1,745 @@
+openapi: 3.1.0
+info:
+  title: Digikala Public Web Endpoints (Undocumented) — Seller Command Center Connector
+  version: "0.1.0"
+  description: >
+    Reverse-engineered from observed browser network traffic on 2026-07-16,
+    from a guest (logged-out) session. These are NOT official Digikala APIs,
+    are not versioned or documented by Digikala, and may change without notice.
+    Only endpoints actually observed and fetched during research are included.
+    No endpoint, parameter, or field in this file has been invented.
+servers:
+  - url: https://api.digikala.com
+
+paths:
+  /discovery/api/v1/home:
+    get:
+      operationId: getHomeWidgetManifest
+      summary: Homepage widget manifest
+      x-source-status: undocumented-web-endpoint
+      x-verified-date: "2026-07-16"
+      x-auth-dependency: none-observed
+      x-stability: medium
+      responses:
+        "200":
+          description: Widget manifest
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/HomeWidgetManifest' }
+
+  /discovery/api/v1/widget-factory/widget/{widgetId}:
+    get:
+      operationId: getWidget
+      summary: Resolve a single lazily-loaded home widget
+      x-source-status: undocumented-web-endpoint
+      x-verified-date: "2026-07-16"
+      x-auth-dependency: none-observed
+      x-stability: medium
+      parameters:
+        - name: widgetId
+          in: path
+          required: true
+          schema: { type: integer }
+          example: 642
+      responses:
+        "200":
+          description: >
+            Widget content. Shape varies by widget `type`; only `horizontal_products`
+            was schema-verified in this session. Other types are returned as opaque objects.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WidgetFactoryResponse' }
+
+  /discovery/api/v1/categories/{categoryCode}:
+    get:
+      operationId: getCategoryListing
+      summary: Category listing / free-text search (search is this endpoint with `q` set)
+      x-source-status: undocumented-web-endpoint
+      x-verified-date: "2026-07-16"
+      x-auth-dependency: none-observed
+      x-stability: high-envelope/medium-facets
+      parameters:
+        - name: categoryCode
+          in: path
+          required: true
+          schema: { type: string }
+          example: mobile-phone
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+          description: URL-encoded Persian free-text query. Verified.
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1 }
+          description: 1-based page index. Verified via page=1,5,14 returning distinct, non-overlapping products.
+        - name: has_selling_stock
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: >
+            Facet key observed in response `filters.has_selling_stock`; exact query-string
+            encoding of the applied value NOT independently confirmed. Unverified as a request param.
+        - name: sort
+          in: query
+          required: false
+          schema: { type: integer }
+          description: >
+            Inferred parameter name to select one of `sort_options[].id` (e.g. 1=newest,
+            7=best-selling, 20=cheapest, 21=most expensive, 22=relevance, 29=curated).
+            NOT directly captured in a request URL during this session — unverified.
+      responses:
+        "200":
+          description: Listing payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DiscoveryListingResponse' }
+
+  /discovery/api/v1/sellers/{sellerCode}:
+    get:
+      operationId: getSellerListing
+      summary: Seller storefront listing
+      x-source-status: undocumented-web-endpoint
+      x-verified-date: "2026-07-16"
+      x-auth-dependency: none-observed
+      x-stability: partially-verified (single seller sample)
+      parameters:
+        - name: sellerCode
+          in: path
+          required: true
+          schema: { type: string }
+          example: h4shm
+          description: Lowercased seller code (product page shows uppercase, e.g. H4SHM; endpoint call observed lowercase).
+      responses:
+        "200":
+          description: Listing payload, includes `data.seller`
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SellerListingResponse' }
+
+  /v2/product/{productId}/:
+    get:
+      operationId: getProductDetail
+      summary: Full product detail — identity, content, media, specs, all variants/offers, rating, embedded recent reviews/questions
+      x-source-status: undocumented-web-endpoint
+      x-verified-date: "2026-07-16"
+      x-auth-dependency: none-observed
+      x-stability: high (3 products, 2 categories, reload-consistent)
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: integer }
+          example: 17986495
+      responses:
+        "200":
+          description: Product detail payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ProductDetailResponse' }
+
+  /v1/brands/{brandCode}/premium/:
+    get:
+      operationId: getPremiumBrandLanding
+      summary: Premium ("Digiplus") brand storefront layout
+      x-source-status: undocumented-web-endpoint
+      x-verified-date: "2026-07-16"
+      x-auth-dependency: none-observed
+      x-stability: low-confidence (single sample; standard/non-premium brand flow unverified)
+      parameters:
+        - name: brandCode
+          in: path
+          required: true
+          schema: { type: string }
+          example: my
+      responses:
+        "200":
+          description: Premium brand landing payload
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PremiumBrandResponse' }
+
+  /v1/user/init/:
+    get:
+      operationId: getUserInit
+      summary: Session bootstrap (guest/logged-in state, cart summary, module flags)
+      x-source-status: undocumented-web-endpoint
+      x-verified-date: "2026-07-16"
+      x-auth-dependency: session-cookie (works for guest sessions)
+      x-usage-note: >
+        Use ONLY to branch on data.is_logged_in. Never persist default_address, city,
+        or other personal/session fields from this response — out of scope for product intelligence.
+      responses:
+        "200":
+          description: Session bootstrap payload (privacy-sensitive; do not store beyond is_logged_in)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserInitResponse' }
+
+  /v1/rate-and-review/products/{productId}/comments/:
+    get:
+      operationId: getProductComments
+      summary: Paginated review listing (inferred purpose from URL)
+      x-source-status: undocumented-web-endpoint
+      x-verified-date: "2026-07-16"
+      x-stability: broken/unverified — returned HTTP 404 on every observed attempt in this session,
+        including the real browser-triggered request. Do not build a hard dependency on this endpoint.
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: page
+          in: query
+          required: false
+          schema: { type: integer }
+      responses:
+        "404":
+          description: Observed response in all attempts this session; schema unknown
+        "200":
+          description: Not observed — expected shape unknown, not documented here to avoid fabrication
+
+components:
+  schemas:
+    HomeWidgetManifest:
+      type: object
+      properties:
+        status: { type: integer, example: 200 }
+        data:
+          type: object
+          properties:
+            container_id: { type: integer }
+            title: { type: string }
+            description: { type: string, nullable: true }
+            widgets:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: integer }
+                  type:
+                    type: string
+                    description: "Observed values: dkms_banner, circle_badge, cart_based_products, horizontal_products, touchpoint_group, image_carousel, divider, ads_video"
+                  utm: { type: string, nullable: true }
+                  data: { type: object, nullable: true, description: "Present for inline widgets" }
+                  url: { type: string, format: uri, nullable: true, description: "Present for lazily-resolved widgets; fetch via widget-factory endpoint" }
+
+    WidgetFactoryResponse:
+      type: object
+      properties:
+        status: { type: integer }
+        data:
+          type: object
+          properties:
+            id: { type: integer }
+            type: { type: string }
+            utm: { type: string, nullable: true }
+            data:
+              type: object
+              description: "Verified only for type=horizontal_products"
+              properties:
+                title: { type: string }
+                icon: { type: string, nullable: true }
+                see_more: { type: object, nullable: true }
+                location_based: { type: boolean }
+                style: { type: object, nullable: true }
+                tabs: { type: array, items: { type: object }, nullable: true }
+                products:
+                  type: array
+                  items: { $ref: '#/components/schemas/HomeWidgetProductSummary' }
+
+    HomeWidgetProductSummary:
+      type: object
+      description: Lightweight product summary used only in home widgets (not the canonical product shape)
+      properties:
+        id: { type: integer, example: 5715766 }
+        title: { type: string }
+        status: { type: string, enum: [marketable, out_of_stock], description: "Only 'marketable' observed directly; 'out_of_stock' inferred from /v2/product/ status enum" }
+        default_variant_id: { type: integer }
+        has_quick_add: { type: boolean }
+        image: { type: object, properties: { url: { type: string, format: uri } } }
+        price:
+          type: object
+          properties:
+            selling_price: { type: integer, description: "Rial, integer" }
+            rrp_price: { type: integer, description: "Rial, integer" }
+        rating:
+          type: object
+          properties:
+            rate: { type: number }
+            count: { type: integer }
+        brand:
+          type: object
+          properties:
+            id: { type: integer }
+            code: { type: string }
+            title_fa: { type: string }
+            title_en: { type: string }
+            url: { type: object, properties: { uri: { type: string } } }
+            visibility: { type: boolean }
+            logo: { type: object, nullable: true }
+            is_premium: { type: boolean }
+        deep_link:
+          type: object
+          properties:
+            page: { type: string, example: product_page }
+            params:
+              type: object
+              properties:
+                product_id: { type: integer }
+                variant_id: { type: integer }
+
+    DiscoveryListingResponse:
+      type: object
+      properties:
+        status: { type: integer }
+        data:
+          type: object
+          properties:
+            products:
+              type: array
+              items: { $ref: '#/components/schemas/ListingProduct' }
+            total_hits: { type: integer }
+            filters:
+              type: object
+              description: "Keyed facet object; keys observed: price, brands, color_palettes, attribute_{numericId} (category-specific), has_ready_to_shipment, has_ship_by_seller, seller_types, has_offline_shop_stock, has_selling_stock, shipment_methods"
+              additionalProperties: true
+            result_type: { type: string, example: no_change }
+            is_text_lenz_eligible: { type: boolean, nullable: true }
+            text_lenz_eligibility: { type: object, nullable: true }
+            quick_filters: { type: array, items: { type: object }, nullable: true }
+            query_attributes: { type: object, nullable: true }
+            sort: { type: object, properties: { default: { type: integer } } }
+            sort_options:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: integer }
+                  title_fa: { type: string }
+            pager:
+              type: object
+              properties:
+                current_page: { type: integer }
+                total_pages: { type: integer }
+                total_items: { type: integer }
+            search_phase: { type: string, nullable: true }
+            search_version: { type: string, nullable: true }
+            advertisement:
+              type: object
+              nullable: true
+              properties:
+                sponsored_brands:
+                  type: object
+                  properties:
+                    brand: { type: object }
+                    products: { type: array, items: { type: object } }
+            search_method: { type: string, nullable: true }
+            category:
+              type: object
+              nullable: true
+              properties:
+                id: { type: integer }
+                code: { type: string }
+                title_fa: { type: string }
+            breadcrumb:
+              type: array
+              items: { $ref: '#/components/schemas/BreadcrumbItem' }
+            seo: { type: object, nullable: true }
+
+    SellerListingResponse:
+      allOf:
+        - $ref: '#/components/schemas/DiscoveryListingResponse'
+        - type: object
+          properties:
+            data:
+              type: object
+              properties:
+                seller:
+                  type: object
+                  properties:
+                    id: { type: integer }
+                    title: { type: string }
+                    code: { type: string }
+                    url: { type: object, properties: { url: { type: string } } }
+                    stars: { type: integer }
+                    registration_date: { type: string, description: "Free-text Persian duration, e.g. '1 سال و 2 ماه'" }
+                    grade: { type: object, properties: { label: { type: string }, color: { type: string } } }
+                    rating:
+                      type: object
+                      properties:
+                        total_rate: { type: number }
+                        total_count: { type: integer }
+                        totally_satisfied: { type: object }
+                        satisfied: { type: object }
+                        neutral: { type: object }
+                        dissatisfied: { type: object }
+                        totally_dissatisfied: { type: object }
+                    statistics:
+                      type: object
+                      properties:
+                        ship_on_time: { type: number }
+                        cancellation: { type: number }
+                        return: { type: number }
+                    properties:
+                      type: object
+                      properties:
+                        is_trusted: { type: boolean }
+                        is_official: { type: boolean }
+                        official_brands: { type: array, items: { type: object } }
+                        is_new: { type: boolean }
+                    description: { type: string, nullable: true }
+
+    ListingProduct:
+      type: object
+      properties:
+        id: { type: integer }
+        title_fa: { type: string }
+        title_en: { type: string }
+        test_title_fa: { type: string, nullable: true }
+        test_title_en: { type: string, nullable: true }
+        url:
+          type: object
+          properties:
+            base: { type: string, nullable: true }
+            uri: { type: string }
+            params:
+              type: array
+              items:
+                type: object
+                properties:
+                  product_id: { type: integer }
+                  variant_id: { type: integer }
+        status: { type: string, enum: [marketable, out_of_stock] }
+        has_quick_view: { type: boolean }
+        data_layer: { type: object, description: "Analytics dimensions, not part of canonical model" }
+        product_type: { type: string, example: product }
+        digiplus: { type: object, nullable: true }
+        images: { type: object, nullable: true }
+        rating: { type: object, properties: { rate: { type: number }, count: { type: integer } } }
+        properties:
+          type: object
+          properties:
+            is_fast_shipping: { type: boolean }
+            is_ship_by_seller: { type: boolean }
+            free_shipping_badge: { type: boolean }
+            is_multi_warehouse: { type: boolean }
+            is_fake: { type: boolean }
+            has_gift: { type: boolean }
+            min_price_in_last_month: { type: integer, nullable: true }
+            is_non_inventory: { type: boolean }
+            is_jet_eligible: { type: boolean }
+            is_ad: { type: boolean, description: "Sponsored-item flag; only false observed in this session" }
+        badges: { type: array, items: { type: object } }
+        colors:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              title: { type: string }
+              code: { type: string }
+              hex_code: { type: string }
+        default_variant: { $ref: '#/components/schemas/Variant' }
+        platforms: { type: object, nullable: true }
+        color_image_mapping: { type: object, nullable: true }
+
+    ProductDetailResponse:
+      type: object
+      properties:
+        status: { type: integer }
+        data:
+          type: object
+          properties:
+            product: { $ref: '#/components/schemas/ProductDetail' }
+            data_layer: { type: object }
+            seo: { type: object, nullable: true }
+            intrack: { type: object, nullable: true }
+            promotion_banner: { type: object, nullable: true }
+            bigdata_tracker_data: { type: object, nullable: true }
+
+    ProductDetail:
+      type: object
+      properties:
+        id: { type: integer, example: 17986495 }
+        title_fa: { type: string }
+        title_en: { type: string }
+        url: { type: object }
+        status: { type: string, enum: [marketable, out_of_stock] }
+        has_quick_view: { type: boolean }
+        data_layer: { type: object }
+        product_type: { type: string }
+        test_title_fa: { type: string, nullable: true }
+        test_title_en: { type: string, nullable: true }
+        digiplus: { type: object, nullable: true }
+        images:
+          type: object
+          properties:
+            main: { $ref: '#/components/schemas/ImageAsset' }
+            list: { type: array, items: { $ref: '#/components/schemas/ImageAsset' } }
+        rating: { type: object, properties: { rate: { type: number }, count: { type: integer } } }
+        has_makeup_try_on: { type: boolean, nullable: true }
+        gallery_variant: { type: object, nullable: true }
+        colors: { type: array, items: { type: object } }
+        has_price_chart: { type: boolean }
+        default_variant:
+          oneOf:
+            - $ref: '#/components/schemas/Variant'
+            - type: object
+              description: "Empty object {} when product.status = out_of_stock (Verified)"
+              maxProperties: 0
+        properties: { type: object }
+        has_true_to_size: { type: boolean, nullable: true }
+        variants_images: { type: object, nullable: true }
+        variants:
+          type: array
+          description: "All seller/color/warranty offers for this product. Empty [] when out_of_stock (Verified)."
+          items: { $ref: '#/components/schemas/Variant' }
+        videos: { type: array, items: { type: object }, nullable: true }
+        category:
+          type: object
+          properties:
+            id: { type: integer }
+            code: { type: string }
+            title_fa: { type: string }
+        brand: { type: object }
+        review: { type: object, nullable: true }
+        pros_and_cons: { type: object, nullable: true }
+        suggestion: { type: object, nullable: true }
+        second_default_variant: { type: object, nullable: true }
+        questions_count: { type: integer }
+        comments_count: { type: integer }
+        comments_overview:
+          type: object
+          nullable: true
+          description: "AI-generated review summary"
+          properties:
+            id: { type: integer }
+            overview: { type: string }
+            advantages: { type: array, items: { type: string } }
+            disadvantages: { type: array, items: { type: string } }
+        breadcrumb:
+          type: array
+          items: { $ref: '#/components/schemas/BreadcrumbItem' }
+        has_size_guide: { type: boolean, nullable: true }
+        specifications:
+          type: array
+          items:
+            type: object
+            properties:
+              title: { type: string }
+              attributes:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    title: { type: string }
+                    values: { type: array, items: { type: string } }
+        expert_reviews: { type: object, nullable: true }
+        meta: { type: object, nullable: true }
+        last_comments:
+          type: array
+          items: { $ref: '#/components/schemas/CommentSummary' }
+        last_questions:
+          type: array
+          items: { $ref: '#/components/schemas/QuestionSummary' }
+        tags: { type: array, items: { type: object }, nullable: true }
+        digify_touchpoint: { type: object, nullable: true }
+        show_type: { type: string, nullable: true }
+        cars_reservable: { type: boolean, nullable: true }
+        has_offline_shop_stock: { type: boolean, nullable: true }
+        has_style_try_on: { type: boolean, nullable: true }
+        ai_voice_url: { type: string, nullable: true }
+        st_cmp_tacker: { type: object, nullable: true }
+
+    Variant:
+      type: object
+      description: "A single seller/color/warranty offer for a product"
+      properties:
+        id: { type: integer }
+        lead_time: { type: integer }
+        rank: { type: integer }
+        rate: { type: number }
+        status: { type: string, enum: [marketable, out_of_stock] }
+        properties: { type: object }
+        warranty:
+          type: object
+          nullable: true
+          properties:
+            id: { type: integer }
+            title_fa: { type: string }
+            title_en: { type: string }
+        themes:
+          type: array
+          items:
+            type: object
+            properties:
+              value: { type: object }
+              label: { type: string }
+              type: { type: string }
+        color:
+          type: object
+          nullable: true
+          properties:
+            id: { type: integer }
+            title: { type: string }
+            code: { type: string }
+            hex_code: { type: string }
+        seller: { $ref: '#/components/schemas/SellerSummary' }
+        insurance: { type: object, nullable: true }
+        price: { $ref: '#/components/schemas/Price' }
+        shipment_methods: { type: array, items: { type: object }, nullable: true }
+        digiclub: { type: object, nullable: true }
+        digiplus: { type: object, nullable: true }
+        variant_badges: { type: array, items: { type: object }, nullable: true }
+        buy_box_notices: { type: array, items: { type: object }, nullable: true }
+        has_importer_price: { type: boolean, nullable: true }
+        manufacture_price_not_exist: { type: boolean, nullable: true }
+        has_best_price_in_last_month: { type: boolean, nullable: true }
+
+    SellerSummary:
+      type: object
+      properties:
+        id: { type: integer }
+        title: { type: string }
+        code: { type: string }
+        url: { type: string }
+        rating:
+          type: object
+          properties:
+            total_rate: { type: number }
+            total_count: { type: integer }
+            commitment: { type: number }
+            no_return: { type: number }
+            on_time_shipping: { type: number }
+        properties:
+          type: object
+          properties:
+            is_trusted: { type: boolean }
+            is_official: { type: boolean }
+            is_roosta: { type: boolean }
+            is_new: { type: boolean }
+        stars: { type: integer }
+        grade: { type: object, properties: { label: { type: string }, color: { type: string } } }
+        registration_date: { type: string }
+        logo: { type: string, nullable: true }
+
+    Price:
+      type: object
+      description: "All monetary values are integers denominated in Rial (Verified: API selling_price 450000000 == DOM '۴۵,۰۰۰,۰۰۰ تومان' i.e. Toman = Rial / 10)"
+      properties:
+        selling_price: { type: integer }
+        rrp_price: { type: integer }
+        order_limit: { type: integer }
+        is_incredible: { type: boolean }
+        is_promotion: { type: boolean }
+        is_locked_for_digiplus: { type: boolean }
+        bnpl_active: { type: boolean }
+        min_order_limit: { type: integer }
+        marketable_stock: { type: integer, nullable: true }
+        discount_percent: { type: integer, nullable: true }
+        badge:
+          type: object
+          nullable: true
+          properties:
+            title: { type: string }
+            color: { type: string }
+            icon: { type: string, nullable: true }
+        is_digiplus_promotion: { type: boolean, nullable: true }
+        is_digiplus_early_access: { type: boolean, nullable: true }
+        is_application_incredible: { type: boolean, nullable: true }
+        is_lightening_deal: { type: boolean, nullable: true }
+        is_plus_early_access: { type: boolean, nullable: true }
+
+    ImageAsset:
+      type: object
+      properties:
+        storage_ids: { type: array, items: { type: integer } }
+        url: { type: array, items: { type: string, format: uri } }
+        thumbnail_url: { type: string, nullable: true }
+        temporary_id: { type: string, nullable: true }
+        webp_url: { type: array, items: { type: string, format: uri } }
+
+    BreadcrumbItem:
+      type: object
+      properties:
+        category_id: { type: integer, nullable: true }
+        title: { type: string }
+        url: { type: object, properties: { base: { type: string, nullable: true }, uri: { type: string } } }
+
+    CommentSummary:
+      type: object
+      description: "PRIVACY: user_name may be a real, non-anonymized personal name (is_anonymous:false observed). MUST be redacted before storage."
+      properties:
+        id: { type: integer }
+        title: { type: string, nullable: true }
+        body: { type: string }
+        created_at: { type: string, description: "Jalali date string, e.g. '23 تیر 1405'" }
+        rate: { type: integer }
+        reactions: { type: object, properties: { likes: { type: integer }, dislikes: { type: integer } } }
+        files: { type: array, items: { type: object } }
+        is_buyer: { type: boolean }
+        user_name: { type: string, description: "PII — redact" }
+        is_anonymous: { type: boolean }
+        purchased_item: { type: array, items: { type: object } }
+        advantages: { type: array, items: { type: string } }
+        disadvantages: { type: array, items: { type: string } }
+        relative_date: { type: string, example: "2 روز پیش" }
+
+    QuestionSummary:
+      type: object
+      description: "PRIVACY: sender may be a real, non-anonymized personal name. MUST be redacted before storage."
+      properties:
+        id: { type: integer }
+        status: { type: string, example: accepted }
+        text: { type: string }
+        answer_count: { type: integer }
+        sender: { type: string, description: "PII — redact" }
+        created_at: { type: string, description: "Jalali date string" }
+
+    PremiumBrandResponse:
+      type: object
+      description: "Low-confidence schema; single sample only"
+      properties:
+        status: { type: integer }
+        data:
+          type: object
+          properties:
+            brand: { type: object }
+            newest_products: { type: array, items: { type: object } }
+            best_selling_products: { type: array, items: { type: object } }
+            chosen_products: { type: array, items: { type: object } }
+            header_banners: { type: array, items: { type: object } }
+            top_banners: { type: array, items: { type: object } }
+            top_second_banners: { type: array, items: { type: object } }
+            middle_banners: { type: array, items: { type: object } }
+            middle_right_banners: { type: array, items: { type: object } }
+            middle_second_banners: { type: array, items: { type: object } }
+            bottom_banners: { type: array, items: { type: object } }
+            seo: { type: object, nullable: true }
+            hero_banners: { type: array, items: { type: object } }
+            bigdata_tracker_data: { type: object, nullable: true }
+            premium_brand: { type: object, nullable: true }
+            menu_urls: { type: object, nullable: true }
+
+    UserInitResponse:
+      type: object
+      description: "Privacy-sensitive. Connector must only read data.is_logged_in and must not persist other fields."
+      properties:
+        status: { type: integer }
+        data:
+          type: object
+          properties:
+            is_logged_in: { type: boolean }
+            default_address: { type: object, nullable: true, description: "PERSONAL DATA — never store" }
+            city: { type: object, nullable: true }
+            show_location_modal: { type: boolean, nullable: true }
+            modules: { type: object, nullable: true }
+            date_time: { type: object, nullable: true }
+            social_profile: { type: object, nullable: true }
+            promotion_top_banner: { type: object, nullable: true }
+            fresh: { type: boolean, nullable: true }
+            location_area: { type: object, nullable: true }
+            cart: { type: object, nullable: true, description: "PERSONAL/TRANSACTIONAL DATA — never store" }
+            packages: { type: object, nullable: true }

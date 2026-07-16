@@ -1,0 +1,169 @@
+# ─────────────────────────────────────────────────────────────────────
+# market-ops — .gitignore
+# Multi-language monorepo: Go + Python (uv) + TypeScript (pnpm)
+# + Chrome MV3 extension + Docker/Compose + PostgreSQL.
+# Reference: docs/implementation/dk-p0-monorepo.md §1–2.
+# NOTE: gen/ is COMMITTED (generated but tracked) — do NOT ignore it.
+# ─────────────────────────────────────────────────────────────────────
+
+# ─── Secrets & environment (PRD §12.3, §15.2) ───────────────────────
+# Never commit credentials, API keys, or local env config.
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# ─── Go ─────────────────────────────────────────────────────────────
+# go.work is local-only (created by `task go:init`); CI uses GOWORK=off.
+go.work
+go.work.sum
+
+# Compiled binaries (services/core builds into bin/).
+services/core/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Coverage / profiles
+coverage.out
+coverage.txt
+*.prof
+
+# ─── Python (uv) ────────────────────────────────────────────────────
+# uv creates a single root .venv shared by all Python members.
+.venv/
+venv/
+env/
+.python-version
+
+# Bytecode / caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Packaging / build artifacts
+build/
+develop-eggs/
+dist-downloads/
+downloads/
+eggs/
+.eggs/
+*.egg-info/
+*.egg
+pip-log.txt
+pip-delete-this-directory.txt
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter / IPython
+.ipynb_checkpoints
+profile_default/
+ipython_config.py
+
+# ─── TypeScript / pnpm ──────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+
+# Build outputs (Vite, tsc, extension build)
+dist/
+dist-ssr/
+.turbo/
+*.tsbuildinfo
+
+# Test / coverage
+coverage/
+*.lcov
+
+# ─── Chrome extension (MV3) ─────────────────────────────────────────
+# Sourced builds go to dist/ (ignored above); keep source committed.
+apps/extension/dist/
+apps/extension/*.zip
+apps/extension/*.crx
+apps/extension/*.pem  # packaging key (also covered by *.pem above)
+
+# ─── Task runner ────────────────────────────────────────────────────
+.task/
+
+# ─── Docker / Compose ───────────────────────────────────────────────
+# Local volumes / persistent dev data must not be committed.
+deploy/data/
+deploy/volumes/
+*.local.yml
+
+# ─── PostgreSQL ─────────────────────────────────────────────────────
+# Local scratch/dev DB data (used by task db:reset).
+*.pgdata/
+pgdata/
+
+# ─── Logs & runtime ─────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.devspace/
+*.pid
+*.seed
+*.pid.lock
+
+# ─── IDEs & editors ─────────────────────────────────────────────────
+.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+.idea/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+*.sublime-workspace
+*.sublime-project
+.history/
+
+# ─── OS files ───────────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# ─── Misc / tooling ─────────────────────────────────────────────────
+.cache/
+.temp/
+tmp/
+*.local
+*.bak
+*.rej
+*.orig
+.collected/
+.eslintcache
+.stylelintcache
+.bundle/
+vendor/
