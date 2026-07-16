@@ -107,7 +107,9 @@ The capability role is canonical. Runtime profile names are adapters selected by
 | `security-review` | Security and privacy review | `safety_release_reviewer` | `security-privacy-reviewer` | S8, S20–S24, S30–S35 as applicable |
 | `adversarial-review` | Adversarial containment and cross-plane tests | `safety_release_reviewer` plus area owner | `red-team-adversarial` | S23–S24 and S32 |
 
-The profile file is the detailed charter. This table routes work; it does not expand a profile's authority.
+The profile file is the detailed charter. This table routes work; it does not expand a profile's authority. A step not named in the Primary-steps column routes by the file paths its diff touches (the orchestrator prompt's SETUP routing table), with §7's riskiest-boundary rule selecting the reviewer.
+
+Runtimes fulfill this contract with their native mechanisms — parallel background subagent dispatch, per-step worktree isolation, and pre-authorized command allowlists (`dk-p0-preflight.md` §3) — without persisting vendor or runtime names into product code, contracts, tests, or release evidence. The orchestrator prompt's RUNTIME MAPPING section is the Claude Code reference; other runtimes map equivalently.
 
 ## 9. Assignment packet
 
@@ -121,7 +123,7 @@ Every worker assignment must include:
 6. Current carry-forward constraints from `dk-p0-progress.md`.
 7. Explicit exclusions, especially live, paid, production, or adjacent-step work.
 
-Before editing, the worker confirms that dependencies are `passed`, reads the named sources, inspects the working tree, and gives a short implementation plan. If the step is not eligible or its branch contains conflicting unrelated edits, it stops and reports the condition.
+Before editing, the worker confirms that dependencies are `passed`, reads the named sources, inspects the working tree, and gives a short implementation plan. If the step is not eligible or its branch contains conflicting unrelated edits, it stops and reports the condition. Completed work is returned in the §12 handoff format — never as free-form narrative.
 
 ## 10. Implementation contract
 
@@ -162,7 +164,7 @@ The response begins with exactly one of:
 
 For requested changes, return a numbered list with severity, requirement or invariant, exact `file:line`, observed risk, and the smallest safe remediation. Distinguish blockers from optional follow-ups. A reviewer never treats a test name, code comment, dashboard stub, or agent assertion as execution evidence.
 
-Run the release-invariant reviewer after S7, S19, S24, S29, S31, and S33, and for S34–S36. Add the security/privacy reviewer whenever a change touches auth, credentials, LLM tools, extension permissions/storage, production secrets, or public/session boundaries.
+Run the release-invariant reviewer over the accumulated phase diff before merging each phase-closing step (S7, S19, S24, S29, S31, S33), and for S34–S36. Add the security/privacy reviewer whenever a change touches auth, credentials, LLM tools, extension permissions/storage, production secrets, or public/session boundaries. The adversarial-review role reviews S23–S24 and S32.
 
 ## 12. Verification and handoff
 

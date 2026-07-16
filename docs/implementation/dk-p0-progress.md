@@ -35,7 +35,7 @@ Review routing: canonical capability roles per plan §4.6 and `dk-p0-agent-guide
 | S4 | Contracts pipeline + drift check [C] | pending | 0 | — | — | |
 | S5 | DB foundation (goose+sqlc+River) | pending | 0 | — | — | |
 | S6 | CI pipeline | pending | 0 | — | — | first-GitHub-run deferred |
-| S7 | Money type + static guard | pending | 0 | — | — | phase-A boundary: safety review after merge |
+| S7 | Money type + static guard | pending | 0 | — | — | phase-A boundary: safety review before merge |
 | S8 | AuthN/Z + shared permission matrix [C] | pending | 0 | — | — | |
 | S9 | Connector capability layer + mock DK [C] | pending | 0 | — | — | -record mode feeds S35 |
 | S10 | Catalog + owned-offer sync | pending | 0 | — | — | |
