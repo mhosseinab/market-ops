@@ -15,6 +15,7 @@ Run steps **in order of the dependency graph** — a step starts only when its p
 - i18next catalogs + Intl formatters (`fa-IR-u-ca-persian`) + logical CSS + digit normalization at input boundary (§4.5).
 - In-context orchestrator; review routed to the repo's `.claude/agents`; `safety_release_reviewer` at phase boundaries and gates (§4.6).
 - Gate 0a: harnesses built offline in-phase; live probes = gated S35, pullable earlier when production access exists (§4.7).
+- Neutral ports/adapters + complete seams: all model providers expose an OpenAI-compatible API through one owned transport port; canonical domain/application code remains model-selection/OpenAI-compatible-endpoint/agent-runtime/deployment-platform agnostic; concrete integrations are substitutable under conformance tests; each claimed behavior is wired producer-to-consumer (§4.8).
 
 ## Project rules every prompt must respect (stated once)
 
@@ -27,6 +28,8 @@ Run steps **in order of the dependency graph** — a step starts only when its p
 7. **Capability gating (§15.2):** every connector capability starts Unknown; Unknown never enables dependent UI or logic — negative tests required.
 8. **Verification & commits:** run the step's Verify and paste actual output; `task ci:local` green before merging to `dk-p0/main`; Conventional Commits with scopes `core|llm|web|ext|contracts|locale|deploy|repo`; stage files by name; never bypass hooks.
 9. **Docs truthful:** if a step changes a command or convention, update `CLAUDE.md` / `dk-p0-monorepo.md` in the same commit. `docs/` and `design/` are read-only.
+10. **Complete seams:** a behavior introduced by the step is not done at an interface, DTO, generated client, route, repository method, or UI shell. Wire the owned contract, validation, producer, adapter/transport, real consumer, failure/degraded behavior, observability, and cross-boundary tests required by that step. Only a stub explicitly required by the prompt may remain; it fails closed, has a negative test, and names the downstream completing step.
+11. **SOLID/DRY/KISS + neutrality:** deterministic domain/application code depends on narrow owned ports, not vendor model SDKs, agent runtimes, connector clients, or deployment APIs. All model providers use one OpenAI-compatible transport port and conformance suite. Keep one source for domain knowledge and choose the simplest explicit design; do not build a generic provider framework speculatively.
 
 ## Dependency graph (quick view)
 
@@ -61,7 +64,7 @@ Taskfile.{go,py,ts,contracts}.yml (task names/behaviors per monorepo doc §3, in
 setup, dev, test:all, lint:all, ci:local as far as they can run today; contracts tasks may be
 stubs until S4), pnpm-workspace.yaml + root package.json (lefthook prepare script) + biome.json,
 root pyproject.toml (uv workspace, ruff/mypy strict config, dev group) + uv.lock, services/core
-go.mod placeholder module github.com/0xmh/market-ops/services/core with a doc.go, services/llm
+go.mod placeholder module github.com/mhosseinab/market-ops/services/core with a doc.go, services/llm
 minimal package with one passing pytest, apps/web + apps/extension + packages/locale + gen/ts
 placeholder pnpm members with one passing vitest each, .golangci.yml, .editorconfig, lefthook.yml
 (monorepo doc §6, glob_matcher: doublestar), .gitignore/.dockerignore, .env.example. README.md
@@ -121,7 +124,7 @@ Read dk-p0-plan.md §4.3, dk-p0-monorepo.md §4, and skim docs/DK Marketplace - 
 Service.yml (do NOT edit it). Author contracts/gateway.openapi.yaml (OpenAPI 3.1) v0 with:
 /healthz, bearer auth scheme, an ErrorEnvelope schema, and placeholder tags per PRD §15.1 domains.
 Implement Taskfile.contracts.yml generate: oapi-codegen strict-server+types → gen/go (own go.mod
-github.com/0xmh/market-ops/gen/go); openapi-typescript + a thin openapi-fetch wrapper → gen/ts
+github.com/mhosseinab/market-ops/gen/go); openapi-typescript + a thin openapi-fetch wrapper → gen/ts
 (pnpm workspace member, workspace:* consumers); openapi-python-client → gen/python (uv member);
 oapi-codegen client from the frozen DK doc → gen/dkgo (own go.mod). Pin generator versions.
 Add replace directives in services/core/go.mod, wire internal/httpapi to implement the generated
@@ -500,9 +503,10 @@ side: /chat SSE endpoint streaming from the LLM service; conversations/messages 
 retention field, pinned investigations; audit independence is S18's — conversation rows carry
 no execution state). Kill switch: global + per-account flag in core config; when on, /chat
 returns a structured disabled state and NOTHING else degrades — add the screens-fully-functional
-integration test skeleton (full journey coverage lands S32). Provider abstraction: pluggable
-model providers behind config (§12.1 model selection is config), with a deterministic MOCK
-provider for all tests; no paid calls anywhere in CI.
+integration test skeleton (full journey coverage lands S32). Provider boundary: one owned
+OpenAI-compatible transport port; base URL, credential reference, model, timeout, and qualified
+capabilities are config (§12.1). The deterministic MOCK speaks the same contract and is used for
+all tests; do not add vendor SDK adapters; no paid calls anywhere in CI.
 ```
 
 **Verify:** `task ci:local` green; registry test output pasted (tool list + assertion no state-changing tool); SSE endpoint streams from mock provider end-to-end (httpx test); kill-switch test: /chat disabled state while a sampled read endpoint still 200s; `task contracts:drift` exit 0.
@@ -590,7 +594,7 @@ All tests on mock provider + seeded fixtures.
 ---
 
 ### S24 — Evaluation harness + eval sets
-**Goal:** the §12.5 evaluation suite runs against any configured provider and reports pass/fail per Gate 0a threshold; offline (mock/local) run is green; paid runs are a deferred gate.
+**Goal:** the §12.5 evaluation suite runs against any configured OpenAI-compatible provider endpoint and reports pass/fail per Gate 0a threshold; offline (mock/local) run is green; paid runs are a deferred gate.
 **Depends on:** S21, S22, S23.
 
 ```

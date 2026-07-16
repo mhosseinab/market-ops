@@ -5,25 +5,29 @@
 ## 0. Already in place (nothing to do)
 
 - Product baseline (`docs/PRD.md` v1.3), frozen DK Seller spec, public-API research (`docs/DK-public-research-result/`), design handoff (`design/`).
-- The `dk-p0` execution set (`docs/implementation/`), `README.md`, `CLAUDE.md`.
-- Review agents in `.claude/agents/` (10, incl. `safety_release_reviewer`).
+- The `dk-p0` execution set (`docs/implementation/`), including the runtime-neutral agent guide, plus `README.md`, `AGENTS.md`, and `CLAUDE.md`.
+- Agent runtime adapters in `.claude/agents/` (10) and `.codex/agents/` (12); canonical capability roles are in `dk-p0-agent-guidelines.md` §8.
 
 ## 1. Repository & GitHub (required — the repo is not under git yet)
+
+The GitHub repo already exists (private): **https://github.com/mhosseinab/market-ops**. Wire the local folder to it:
 
 ```bash
 cd ~/workspace/market-ops
 git init -b main
 git add -A && git commit -m "chore(repo): baseline — PRD, design handoff, research, dk-p0 plan set"
 gh auth login                      # once; the blocked-step policy files issues via gh
-gh repo create <org>/market-ops --private --source=. --push
-gh label create dk-p0        --color 1d76db --description "dk-p0 orchestrated build"
-gh label create blocked-step --color d73a4a --description "step blocked after 3 review cycles"
+git remote add origin https://github.com/mhosseinab/market-ops.git
+git push -u origin main            # if the remote already has commits (README/license), run
+                                   # `git pull --rebase origin main` first, or push to a branch and merge
+gh label create dk-p0        --repo mhosseinab/market-ops --color 1d76db --description "dk-p0 orchestrated build"
+gh label create blocked-step --repo mhosseinab/market-ops --color d73a4a --description "step blocked after 3 review cycles"
 ```
 
-- [ ] Repo initialized, baseline committed, pushed.
-- [ ] `gh auth status` clean; both labels exist.
+- [ ] Local repo initialized, baseline committed, remote `origin` = mhosseinab/market-ops, pushed.
+- [ ] `gh auth status` clean; both labels exist on the repo.
 - [ ] Keep branch protection OFF for `dk-p0/*` during the run (the orchestrator merges step branches into `dk-p0/main` directly); protect `main` if you like — the trunk merge is a normal reviewed PR at the end.
-- [ ] **CONFIRM the Go module path.** The docs assume `github.com/0xmh/market-ops` (monorepo doc §2, steps S1/S3/S4). If the GitHub org/name differs, do a find-replace across `docs/implementation/` before S1 — after S1 it's a code change.
+- [x] **Go module path CONFIRMED (2026-07-16): `github.com/mhosseinab/market-ops`** — already applied across `docs/implementation/` (monorepo doc §2, steps S1/S3/S4). Note: with a **private** repo, this module path never resolves via the public Go proxy — irrelevant for this build (all internal modules resolve via `replace` directives / `go.work`, and CI checks out the repo directly), but if you ever `go get` it from another machine you'd need `GOPRIVATE=github.com/mhosseinab/*`.
 
 ## 2. Toolchain on the machine that runs the orchestrator (required)
 
@@ -51,7 +55,12 @@ Playwright browsers install via pnpm inside S26 — no pre-install needed. Check
 - [ ] All of the above on PATH (`command -v` each, or run `task doctor` after S1).
 - [ ] Docker daemon running; ~10 GB free disk for images/volumes.
 
-## 3. Claude Code session configuration (required)
+## 3. Agent runtime session configuration (required)
+
+- [ ] Use a subagent-capable runtime at the repo root and confirm it loads the repository guidance plus one complete adapter set: `.claude/agents/`, `.codex/agents/`, or an equivalent mapping of every canonical role in `dk-p0-agent-guidelines.md` §8.
+- [ ] Configure command approvals for the selected runtime so offline S1–S33 work can proceed without granting production, deploy, secret, paid-provider, or destructive authority.
+
+Claude Code example:
 
 - [ ] **Pre-authorize the commands** subagents run, so a 36-step run doesn't stall on permission prompts. Add to `.claude/settings.local.json` (create it — the device bridge can't write into `.claude/`, do this by hand):
 
@@ -73,7 +82,7 @@ Playwright browsers install via pnpm inside S26 — no pre-install needed. Check
 
   Deliberately NOT allowlisted (must prompt every time): deploy/SSH commands, secret rotation, anything touching production — S34/S35 are human-gated by design.
 - [ ] Session runs at the repo root with enough context budget for a long run; the orchestrator compacts itself, but start fresh.
-- [ ] `.claude/agents/` present in the session (they are — verify with `/agents`).
+- [ ] Selected runtime exposes every required capability role. For Claude, verify `.claude/agents/` with `/agents`; for Codex, verify project guidance and `.codex/agents/` discovery in the agent UI/CLI.
 
 ## 4. Environment & seed configuration (required before S2–S5)
 
@@ -105,7 +114,7 @@ The engineering loop (S1–S33) is fully offline, but PRD §4.1 makes beta conti
 ## 7. Launch sequence
 
 1. §1–§4 checked.
-2. Open Claude Code at the repo root → paste the fenced block from `dk-p0-orchestrator-prompt.md`.
+2. Open the selected subagent-capable runtime at the repo root → submit the fenced block from `dk-p0-orchestrator-prompt.md`.
 3. It seeds from `dk-p0-progress.md`, runs SETUP, dispatches S1, and fans out from there.
 4. You'll be interrupted only for: blocked-step summaries you asked to hear about, phase-boundary notes, and the three gates (S34/S35/S36).
 

@@ -7,6 +7,7 @@ Project rules for every agent and human working in this repo. `docs/PRD.md` v1.3
 - `docs/PRD.md` — requirements (IDs + acceptance criteria), scope, gates. **Read-only.**
 - `docs/implementation/dk-p0-monorepo.md` — repo layout, tooling, canonical command table. Binding.
 - `docs/implementation/dk-p0-plan.md` §4 — decided design forks. Don't re-litigate them.
+- `docs/implementation/dk-p0-agent-guidelines.md` — agent selection, assignment packets, delegation boundary, review contract, verification handoff, and blocked-step behavior.
 - `docs/DK Marketplace - Open API Service.yml` — frozen DK **Seller** (authenticated) spec. **Never hand-edit**; it only changes by a deliberate re-freeze.
 - `docs/DK-public-research-result/` — the reference for DK's **public** (unauthenticated) API and pages: binding for the Route C price scraper/observer (`internal/routec`) and the Chrome extension capture. Use `04-network-api-catalog.md` + `05-openapi.yaml` for public endpoints, `06-dom-and-selector-contract.md` for parser selectors and golden fixtures, `10-scraping-workflows.md` + `11-normalization-rules.md` for capture/normalization behavior, `12-security-privacy-and-compliance.md` for what Route B/C may and may not do. Don't invent selectors or endpoints these docs don't document — if reality drifts from them, that's a parser-drift event (§10.4), not a silent code change.
 - **Design docs** (`design/`) — binding spec for all UI work:
@@ -65,3 +66,12 @@ Go: `GOWORK=off` in CI; golangci-lint per module; fresh clones need `task go:ini
 - **Blocked steps** (3 failed review cycles): file a GitHub issue (`gh issue create`, labels `dk-p0`, `blocked-step`) with findings verbatim + final Verify output, mark `blocked` in `dk-p0-progress.md`, move on to independent steps. Fallback log: `docs/implementation/dk-p0-issues.md`.
 - **Gated operations** — production deploys, live DK probes, reversible write probes, paid model runs — require an explicit human "go". Never run them unattended.
 - **Docs stay truthful:** changing a command, convention, or behavior updates `CLAUDE.md` / `dk-p0-monorepo.md` / the relevant runbook in the same commit. `docs/` and `design/` are read-only except PRD-sanctioned sign-off/measurement records.
+
+## Engineering method
+
+- Ordinary code uses clear names, small cohesive functions, direct control flow, typed or validated boundaries, actionable errors, and minimal duplication. Keep cleanup scoped to the assigned step.
+- Before answering or coding against a third-party library, framework, SDK, API, CLI, provider, or cloud/infra tool, verify its current primary documentation through Context7. Provider-specific documentation tooling is a lookup adapter, not an architectural dependency.
+- Outside an explicitly started S1–S36 orchestrated run, ask for human permission before activating multiple agents for independent parallel work. Starting the orchestrator prompt authorizes its local worker/reviewer loop only; it never authorizes live or paid operations.
+- Keep deterministic domain code and owned contracts model-selection-, OpenAI-compatible-endpoint-, agent-runtime-, marketplace-SDK-, and deployment-platform-agnostic. All LLM providers are assumed to expose an OpenAI-compatible API; use one owned transport port and shared conformance suite, not vendor SDK abstractions.
+- Apply SOLID, DRY, and KISS together: cohesive responsibilities, substitutable adapters, consumer-specific interfaces, dependency inversion, one source for domain knowledge, and no speculative framework when direct composition suffices.
+- A step may claim a behavior only after its complete seam is wired: contract, validation, producer, adapter/transport, real consumer, failure behavior, observability, and cross-boundary tests. Explicitly planned stubs fail closed, carry a negative test, and name the downstream step that completes them.

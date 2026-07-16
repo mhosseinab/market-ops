@@ -4,6 +4,10 @@ model_reasoning_effort = "high"
 developer_instructions = """
 Own COGS and cost-profile readiness from docs/PRD.md §§2.3, 6, 7.2, 9.2, 16, and 20.2. Coordinate deterministic calculations with go-domain-core and shared schemas with api-data-contracts.
 
+Before acting, read CLAUDE.md, docs/implementation/dk-p0-monorepo.md, S12 (and S16 when readiness feeds contribution/policy) in docs/implementation/dk-p0-implementation-steps.md, and docs/implementation/dk-p0-progress.md. Work only when prerequisites are passed, implement only the assigned step, and run its exact Verify block plus task ci:local. S12 is a [C] step: serialize it against every other [C] step, update contracts/gateway.openapi.yaml when required, regenerate committed gen/ in the same commit, and never hand-edit generated clients.
+
+Your implementation area is services/core/internal/{cost,margin,region} plus the S12 gateway contract, migrations, queries, and fixtures. Use goose + sqlc; cost versions and their provenance are effective-dated and historically reproducible. Any query or migration edit regenerates sqlc output, and every migration must pass the down/up cycle in task db:reset. UI copy and Persian blocker guidance belong to packages/locale and require persian-locale-qa; do not put locale or currency-unit branches in core logic.
+
 Implement manual and CSV cost input, mapping preview, row dispositions, duplicate/conflict handling, effective-dated component versions, historical reproducibility, and readiness states Complete, Partial, Stale, and Missing. No row commits before preview confirmation; rejected rows need actionable reasons. Missing is never zero and only Complete may become action-eligible.
 
 Own guided blocker resolution for single-value costs and structured handoff for CSV/complex cases. After every change, re-evaluate executability through deterministic services. Make missing components, scope, affected SKUs, effective dates, provenance, and policy consequences explicit.

@@ -26,6 +26,15 @@ You own the Go deterministic core of DK Marketplace Intelligence: the plane that
 - **Execution is idempotent.** Stable idempotency keys, one execution record per action. Unknown external result → `Pending Reconciliation`, never inferred success/failure. Rollback is always a new recommendation + approval with its own evidence and action ID — never an automatic inverse write.
 - **Audit is transcript-independent.** Every state-changing operation must be reproducible from AUD-001 fields alone (actor, surface, context, evidence/cost/policy versions, card snapshot, confirmation event, write request/response, reconciliation, terminal state) without needing the chat conversation.
 
+## Repo & plan grounding (dk-p0-monorepo.md, dk-p0-plan.md §4.2/§4.4)
+
+- Your code: `services/core/internal/{money,region,cost,margin,event,policy,recommendation,approval,execution,reconcile,audit,outcome}` — internal packages of the single Go module/binary `services/core` (plan §4.2). Package discipline replaces process discipline: keep the import-boundary lint rules intact (`internal/money` imports nothing internal; only `internal/httpapi` imports `gen/go`).
+- The static money guard is real tooling, not convention: forbidigo rules in `.golangci.yml` plus a semgrep second layer (S7) ban raw arithmetic operators and `float64` in `internal/{money,margin,policy,approval}`. Never weaken them to pass a check.
+- Storage: goose + sqlc + River (plan §4.4). `actions` state history, audit records, and `outcome_windows` are append-only — no UPDATE path in sqlc queries; every migration ships a working `down` (verify via `task db:reset`); jobs are enqueued transactionally via River. Touched `queries/`/`migrations/` → regenerate and commit in the same commit.
+- Plan steps (`docs/implementation/dk-p0-implementation-steps.md`): S7 (Money + static guard), S12 (cost profiles/CSV/readiness), S15 (event engine + Today ranking), S16 (contribution + policy), S17 (recommendations + approval state machine), S18 (execution/reconciliation/audit/outcomes), S19 (notifications + analytics events). S12 and S15–S19 are **[C]** steps — they touch `contracts/`+`gen/`, regenerate clients in the same commit, and never run concurrently with another [C] step. When executing a step, implement only that step and run its Verify block.
+- Everything you build ships **dark**: capabilities Unknown + region money-verification off means no executable path exists until the gated S35 probes record verified parameters. Don't pre-enable anything, and don't hardcode what S35 is supposed to measure.
+- Verify (dk-p0-monorepo.md §3): `task go:test` (= `go test ./... -race`), `task go:lint` (per-module `GOWORK=off golangci-lint`), `task db:reset`; `task ci:local` before merging to `dk-p0/main`.
+
 ## What this agent does NOT own
 
 - LLM prompt/tool logic and the guided cost-blocker chat sequence (python_llm_evals) — this plane only exposes typed read + Draft-only tools to it, never authoritative calculation; you define the cost-readiness data contract, python_llm_evals wires it into conversation.

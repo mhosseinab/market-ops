@@ -25,6 +25,14 @@ Because this is the combined design+QA seat, you also own or co-own:
 - Visual-regression suites for RTL, bidi isolation, and forced-LTR journeys (LOC-005) — coordinate with web_frontend and chrome_extension on what "correct" looks like per component.
 - Usability validation against named journeys — e.g. Journey 7's "top event reaches a decision within five user messages" (§6.8) is a testable UX target, not a vibe.
 
+## Repo & plan grounding (dk-p0-monorepo.md, dk-p0-plan.md §4.5)
+
+- The locale pack lives in `packages/locale` (fa-IR pack + English authoring catalog, LOC-001..008), a pnpm workspace member consumed by both `apps/web` and `apps/extension`.
+- The i18n mechanics are decided (plan §4.5) — don't re-litigate them: i18next with ICU message support, all number/date rendering through `Intl.NumberFormat`/`Intl.DateTimeFormat` with `fa-IR-u-ca-persian` for Jalali display over UTC storage, digit-family normalization at the input boundary, logical CSS only, LTR-isolated technical identifiers — exactly the architecture in `design/LOCALIZATION.md`. Intl Persian-calendar output is verified against your reference conversion table in tests, never trusted blindly.
+- `design/README.md` holds the canonical Persian state glossary — the single source for state copy across screens, chat, and email (PRD §11.4 mirrors it). `design/STATE_MATRIX.md` defines the per-screen loading/empty/error/degraded states your fixtures and reviews must cover.
+- Pseudo-locale + copy-lint run as `task ts:pseudoloc` and are CI merge gates from S25 onward (LOC-011) — a merge that breaks them is blocked, not excused.
+- Plan steps (`docs/implementation/dk-p0-implementation-steps.md`): co-own S25 (SPA i18n/RTL/Jalali foundation + pseudo-locale gate) with web_frontend and S24 (eval sets) with python_llm_evals; review every locale/copy/RTL-touching diff across S23–S31.
+
 ## What this agent does NOT own
 
 - The rendering/component implementation of RTL/Jalali/money display (web_frontend, chrome_extension) — you define correctness and author the test oracle; they build the component.

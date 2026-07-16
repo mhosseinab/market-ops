@@ -2,6 +2,8 @@
 
 Profit-aware competitive-pricing intelligence for professional Digikala (DK) sellers: a Persian-first structured product (Today / Products / Market / Actions / Settings / Operations) with a persistent conversational operating layer over one deterministic core. Chat never owns money, policy, approval, or execution — services decide; interfaces orchestrate.
 
+The architecture is model-selection-, OpenAI-compatible-endpoint-, agent-runtime-, and deployment-platform-agnostic at its owned boundaries. Every LLM provider must expose an OpenAI-compatible API; the product uses one owned transport port instead of vendor SDK abstractions. Volatile integrations are substitutable adapters, and implementation steps deliver complete producer-to-consumer seams with SOLID/DRY/KISS but no speculative framework layers.
+
 **Status:** planning complete, pre-scaffold. The product baseline is final (`docs/PRD.md` v1.3); the implementation is fully sequenced and ready to execute (`docs/implementation/`). Code lands via the orchestrated steps S1–S36.
 
 ## Repo map
@@ -12,9 +14,9 @@ Profit-aware competitive-pricing intelligence for professional Digikala (DK) sel
 | `docs/DK Marketplace - Open API Service.yml` | Frozen official DK Seller OpenAPI document — source for the generated `gen/dkgo` client and the Gate 0a capability inventory. Never hand-edited. |
 | `docs/DK-public-research-result/` | **The reference for DK's public (unauthenticated) API and pages** — the binding spec for the two components that consume public DK data: the **Route C price scraper/observer** (`services/core/internal/routec`) and the **Chrome extension** capture. Files `01`–`14`: site map/page types, data-source inventory, network/API catalog, `05-openapi.yaml` (the public API spec), DOM/selector contract (parser fixtures derive from it), data dictionary, canonical marketplace schema, extension architecture, scraping workflows, normalization rules, security/privacy/compliance, testing, observability. Distinct from the *seller* API: that is the frozen `DK Marketplace - Open API Service.yml` above. |
 | `design/` | **Design handoff** — see "Design docs" below. |
-| `docs/implementation/` | The `dk-p0` execution set: plan, monorepo architecture, implementation steps S1–S36, orchestrator prompt, progress tracker, blocked-issues log. |
-| `.claude/agents/` | Ten project review/domain agents (contracts, Go connector/domain, Python LLM, web, extension, localization, reliability, delivery, and the read-only `safety_release_reviewer`). The orchestrator routes reviews to them. |
-| `CLAUDE.md` | Project rules for agents and humans — invariants, commands, conventions. Read it before changing anything. |
+| `docs/implementation/` | The `dk-p0` execution set: plan, monorepo architecture, agent operating guide, implementation steps S1–S36, orchestrator prompt, progress tracker, blocked-issues log. |
+| `.claude/agents/`, `.codex/agents/` | Project specialist and review profiles for Claude and Codex. The agent guide defines their cross-platform ownership and review routing. |
+| `AGENTS.md`, `CLAUDE.md` | Runtime entrypoints for Codex and Claude, both grounded in the neutral agent guide and shared project rules — invariants, engineering method, commands, conventions, and hard gates. |
 
 ## Design docs (`design/`)
 
@@ -38,7 +40,7 @@ Everything money- or action-bearing ships **dark**: connector capabilities start
 
 Today (pre-scaffold): read `docs/PRD.md`, then `docs/implementation/dk-p0-plan.md`.
 
-To execute the build: first complete [`docs/implementation/dk-p0-preflight.md`](docs/implementation/dk-p0-preflight.md) (git/GitHub setup, toolchain, Claude Code allowlist, and the schedule of human-only inputs — production accounts are the long pole), then paste the fenced block from [`docs/implementation/dk-p0-orchestrator-prompt.md`](docs/implementation/dk-p0-orchestrator-prompt.md) into a Claude Code session at the repo root. It drives S1–S36 through worker→reviewer→fix subagent loops, tracks state in `dk-p0-progress.md`, files GitHub issues for blocked steps, and stops for a human "go" at S34 (deploy), S35 (live probes), S36 (alpha sign-off).
+To execute the build: read the [`agent operating guide`](docs/implementation/dk-p0-agent-guidelines.md), complete [`docs/implementation/dk-p0-preflight.md`](docs/implementation/dk-p0-preflight.md) (git/GitHub setup, toolchain, agent permissions, and the schedule of human-only inputs — production accounts are the long pole), then use the fenced block from [`docs/implementation/dk-p0-orchestrator-prompt.md`](docs/implementation/dk-p0-orchestrator-prompt.md) in a subagent-capable session at the repo root. It drives S1–S36 through worker→reviewer→fix loops, tracks state in `dk-p0-progress.md`, files GitHub issues for blocked steps, and stops for a human "go" at S34 (deploy), S35 (live probes), S36 (alpha sign-off).
 
 Once S1 lands, the developer entry points are (see `dk-p0-monorepo.md` §3 for the full table):
 

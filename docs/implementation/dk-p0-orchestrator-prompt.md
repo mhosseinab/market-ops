@@ -1,6 +1,6 @@
 # DK Marketplace Intelligence P0 — Orchestrator Prompt (`dk-p0`)
 
-**The driver.** Paste the fenced block below into a Claude Code (or equivalent subagent-capable) session **at the repo root** of `market-ops`. It runs `dk-p0-implementation-steps.md` S1..S36 through fresh worker → reviewer → fix subagent loops, with durable state in `dk-p0-progress.md`. Chosen over a background workflow because this change is gate-heavy (S34/S35/S36 human gates, paid eval runs) and the repo ships its own review agents (plan §4.6) — the orchestrator stops inline at gates, takes your "go", and continues in the same session.
+**The driver.** Submit the fenced block below in any subagent-capable runtime **at the repo root** of `market-ops`. It runs `dk-p0-implementation-steps.md` S1..S36 through fresh worker → reviewer → fix loops, with durable state in `dk-p0-progress.md`. The active runtime resolves canonical capability roles through `dk-p0-agent-guidelines.md` §8. Chosen over a background workflow because this change is gate-heavy (S34/S35/S36 human gates, paid eval runs) — the orchestrator stops inline at gates, takes your "go", and continues in the same session.
 
 Before running: complete **`dk-p0-preflight.md`** — it covers everything this prompt assumes: git init + GitHub remote + `dk-p0`/`blocked-step` labels + `gh auth` (blocked-step issues are filed in GitHub; `docs/implementation/dk-p0-issues.md` is only the no-GitHub fallback), the toolchain list, the `.claude/settings.local.json` allowlist (`task`, `go`, `uv`, `pnpm`, `docker`, `git`, `gh issue`, `goose`, `sqlc`, `actionlint`, `semgrep`, `psql` …), the Go module-path confirmation, and the human-input schedule for the S34/S35/S36 gates.
 
@@ -17,6 +17,8 @@ SOURCES OF TRUTH (read first; do not duplicate wholesale into your context):
 - docs/implementation/dk-p0-plan.md — rationale + decided design forks (§4) + the sign-off log (§11).
 - docs/implementation/dk-p0-monorepo.md — repo layout, tooling, and the canonical command
   table every Verify uses.
+- docs/implementation/dk-p0-agent-guidelines.md — profile crosswalk, assignment packet,
+  worker/reviewer contracts, verification handoff, delegation boundary, and blocked-step rules.
 - CLAUDE.md — project rules (exists from S1 onward; until S1 lands, the steps doc's
   "Project rules" section is the rules doc).
 - docs/PRD.md — the product baseline. Workers read the sections their step names; never edit
@@ -31,21 +33,22 @@ DURABLE STATE (a context compaction never loses your place):
 SETUP (once, before S1):
 1. Read the steps doc's "Project rules" + "Decisions baked in" + dependency graph. Seed
    dk-p0-progress.md if not already seeded (it ships pre-seeded).
-2. Review routing (from plan §4.6 — these agents exist in .claude/agents/):
-   - contracts/gateway.openapi.yaml, gen/**, codegen tasks → api_data_contracts
-   - services/core connector/catalog/identity/observation/routec/scheduler → go_connector_observer
-   - services/core money/margin/policy/recommendation/approval/execution/reconcile/audit/outcome → go_domain_executor
-   - services/llm/** → python_llm_evals
-   - apps/web/**, packages/locale UI usage → web_frontend
-   - apps/extension/** → chrome_extension
-   - packages/locale content, fa-IR copy, RTL/Jalali/bidi tests, Persian eval fixtures → persian_localization_ux
-   - deploy/**, .github/workflows/**, Taskfiles, observability, River infra → platform_reliability
+2. Review routing (canonical roles from plan §4.6; resolve through the active runtime adapter crosswalk in the agent guide §8):
+   - contracts/gateway.openapi.yaml, gen/**, codegen tasks → contract-data
+   - services/core connector/catalog/identity/observation/routec/scheduler → connector-observation
+   - services/core cost/margin-readiness → cost-readiness
+   - services/core money/event/policy/recommendation/approval/execution/reconcile/audit/outcome → domain-execution
+   - services/llm/** → llm-plane
+   - apps/web/**, packages/locale UI usage → web-surface
+   - apps/extension/** → extension-surface
+   - packages/locale content, fa-IR copy, RTL/Jalali/bidi tests, Persian eval fixtures → locale-qa
+   - deploy/**, .github/workflows/**, Taskfiles, observability, River infra → reliability-delivery
    - A diff spanning areas gets the reviewer of its riskiest area plus the primary one.
    - ADDITIONALLY: before merging the LAST step of each phase (S7, S19, S24, S29, S31, S33)
-     and for every gated step, run safety_release_reviewer (read-only) over the accumulated
-     phase diff vs the previous phase boundary. Consult product_delivery_lead on any schedule/
+     and for every gated step, run the invariant-review role (read-only) over the accumulated
+     phase diff vs the previous phase boundary. Consult the delivery-lead role on any schedule/
      descope question (PRD §4.6 order) instead of cutting scope yourself.
-   If a named agent is unavailable, fall back to a fresh reviewer subagent with the checklist
+   If a role adapter is unavailable, fall back to a fresh reviewer subagent with the checklist
    in REVIEW below, and note it in the progress file.
 3. Verification commands: before S1 they don't exist (greenfield). S1's own Verify bootstraps
    them; from then on the canonical table in dk-p0-monorepo.md §3 applies. Confirm after S1

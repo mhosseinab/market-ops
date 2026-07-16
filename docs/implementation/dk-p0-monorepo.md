@@ -52,6 +52,10 @@ market-ops/
 
 Dependency direction: `apps/*` and `services/llm` consume `gen/*` clients; `services/core` implements `gen/go` and consumes `gen/dkgo`; nothing imports *from* an app. `packages/locale` is imported by both TS apps.
 
+Boundary direction follows ports and adapters (plan §4.8): deterministic domain/application packages own narrow interfaces and canonical types; DK, the single OpenAI-compatible model transport, PostgreSQL/sqlc, River, HTTP/SSE, browser, and deployment concerns implement outer adapters. Vendor model SDK types never cross into gateway contracts or domain packages. The deterministic mock and every configured OpenAI-compatible endpoint implement the same tool-call/structured-output/streaming/usage/error/cancellation contract and run the shared conformance suite.
+
+A feature step delivers a complete seam across the layers it claims: source contract → generated artifacts where applicable → validation/auth → producer/domain behavior → adapter/transport → real consumer → failure/degraded state → observability → cross-boundary test. An explicitly planned future-step stub must fail closed, have a negative test, and name the completing step; it is not release evidence for that future behavior. Apply SOLID/DRY/KISS to preserve these boundaries without creating a speculative framework.
+
 ## 2. The three workspace managers
 
 | Language | Manager | Config | Members | Internal dep syntax |
@@ -64,12 +68,12 @@ Go module plumbing for CI (`GOWORK=off` is set explicitly on every Go CI step): 
 
 ```
 require (
-    github.com/0xmh/market-ops/gen/go   v0.0.0
-    github.com/0xmh/market-ops/gen/dkgo v0.0.0
+    github.com/mhosseinab/market-ops/gen/go   v0.0.0
+    github.com/mhosseinab/market-ops/gen/dkgo v0.0.0
 )
 replace (
-    github.com/0xmh/market-ops/gen/go   => ../../gen/go
-    github.com/0xmh/market-ops/gen/dkgo => ../../gen/dkgo
+    github.com/mhosseinab/market-ops/gen/go   => ../../gen/go
+    github.com/mhosseinab/market-ops/gen/dkgo => ../../gen/dkgo
 )
 ```
 

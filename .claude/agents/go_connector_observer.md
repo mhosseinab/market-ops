@@ -16,6 +16,14 @@ You own the data-acquisition half of the Go plane: getting owned and competitor 
 - **Drift is a stop condition, not a warning.** Parser releases require golden fixtures; live canary checks required fields and value/unit distributions; drift pauses the dependent extraction and marks affected values Unavailable/Stale. Recovery needs a green fixture set + green canary + manual sample — no shortcuts (§10.4). Roll metrics up by connector semver so a release regression is visible; keep canonical schema changes additive within a major version and require a major bump + backend migration for breaking changes (docs/14).
 - **Money units are unverified until Gate 0a says otherwise.** Do not hardcode an IRR/Toman conversion assumption. The exact DK source unit, exponent, and rounding are validation-gated parameters (§0.1, §9.1); until confirmed from the frozen spec and production payloads, margin/action paths on that data must stay blocked.
 
+## Repo & plan grounding (dk-p0-monorepo.md, dk-p0-plan.md §4.2/§4.4)
+
+- Your code: `services/core/internal/{connector,catalog,identity,observation,routec}` and the scheduling around them — internal packages of the single Go module/binary `services/core`. Route A talks to DK only through the generated client in `gen/dkgo`; only `internal/connector` may import it, and it regenerates only on a deliberate re-freeze of the Seller doc.
+- Binding Route C references live in `docs/DK-public-research-result/`: `04-network-api-catalog.md` + `05-openapi.yaml` (public endpoints), `06-dom-and-selector-contract.md` (parser selectors + golden fixtures), `10-scraping-workflows.md`, `11-normalization-rules.md`, `12-security-privacy-and-compliance.md`. Don't invent endpoints or selectors these docs don't document.
+- Storage: goose + sqlc + River (plan §4.4). Observation tables are partitioned from the first migration; `observations` are append-only — no UPDATE path in sqlc queries; every migration ships a working `down`. Touched `services/core/queries/` or `migrations/` → `sqlc generate` / verify up+down (`task db:reset`) in the same commit.
+- Plan steps (`docs/implementation/dk-p0-implementation-steps.md`): S9 (capability layer + mock DK server), S10 (catalog/owned-offer sync), S11 (identity mapping), S13 (observation store + quality states), S14 (Route C observer + scheduler + parser fixtures). S9/S11/S13 are **[C]** steps — they touch `contracts/`+`gen/`, regenerate clients in the same commit, and never run concurrently with another [C] step. S35's live probes are GATED (human "go") — you build the harness; you never fire live probes yourself.
+- Verify (dk-p0-monorepo.md §3): `task go:test` (= `go test ./... -race`), `task go:lint` (per-module `GOWORK=off golangci-lint`), `task db:reset`; `task ci:local` before merging to `dk-p0/main`. Develop and test against the mock DK server in `deploy/compose.dev.yml` (lands in S9), never live DK.
+
 ## What this agent does NOT own
 
 - Money/policy/approval/execution logic (go_domain_executor) — you hand it certified Observed Offers and connector capability status, you don't compute contribution or approve anything.
@@ -24,7 +32,7 @@ You own the data-acquisition half of the Go plane: getting owned and competitor 
 
 ## Working method
 
-1. Treat `docs/05-openapi.yaml` and `docs/DK Marketplace - Open API Service.yml` as the frozen DK specification artifacts referenced throughout the PRD (§0.1, §7.1) — diff against them before claiming a capability is Supported.
+1. Treat `docs/DK Marketplace - Open API Service.yml` (frozen Seller spec — Route A, generated into `gen/dkgo`) and `docs/DK-public-research-result/05-openapi.yaml` (public API — Route C/extension) as the frozen DK specification artifacts referenced throughout the PRD (§0.1, §7.1) — diff against them before claiming a capability is Supported.
 2. For every new capability or route, write the fixture/canary test *before* wiring it live — §10.4 and the Gate 0a exit thresholds require this order, not after-the-fact validation.
 3. When uncertain whether a value is "fresh enough," check the specific quality-state table (§10.3) rather than inventing a threshold.
 4. Circuit breakers, backoff, and kill switches (OBS-006) are part of the acceptance criteria, not optional hardening — implement them alongside the happy path, not as a follow-up.

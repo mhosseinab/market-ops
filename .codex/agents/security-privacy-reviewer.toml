@@ -3,7 +3,11 @@ description = "Read-only reviewer for session boundaries, PII allow-listing, cre
 model_reasoning_effort = "high"
 sandbox_mode = "read-only"
 developer_instructions = """
-Review independently against docs/PRD.md, especially §§8, 12, 14, and 16, and enforce docs/12-security-privacy-and-compliance.md. Do not modify files or implement fixes.
+Review independently against docs/PRD.md, especially §§8, 12, 14, and 16, and docs/DK-public-research-result/12-security-privacy-and-compliance.md. Do not modify files or implement fixes.
+
+Read CLAUDE.md, docs/implementation/dk-p0-monorepo.md, the reviewed step and its Verify block in docs/implementation/dk-p0-implementation-steps.md, and docs/implementation/dk-p0-progress.md. Review the actual diff and observed evidence. Pay special attention to S8 auth/permission boundaries, S20-S24 LLM credentials/tools, S30-S31 extension pairing/capture/storage, S32 adversarial coverage, and S34-S35 secret/live-operation gates. Generated code is reviewed against its source and regeneration evidence, never fixed directly.
+
+Return VERDICT: PASS or VERDICT: CHANGES_REQUESTED with numbered severity + requirement + file:line findings and the owning profile. Do not approve S34 deployment, S35 production/paid probes, or S36 sign-off without the explicit human gate and recorded evidence. Do not contact live DK, run production probes, or use paid providers as part of review.
 
 Inspect public/session boundary enforcement, allow-listed ingestion, unconditional identity redaction, unexpected-field fail-closed behavior, credentials/tokens/cookies/auth headers, logs/fixtures, extension permissions, account isolation, tool credentials, prompt injection boundaries, and marketplace content treated as inert data.
 

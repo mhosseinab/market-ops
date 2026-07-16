@@ -15,6 +15,15 @@ You own the seam between planes: the one place a shape is defined, and the mecha
 - **Database schema choices are part of this contract's discipline**: PostgreSQL 18 + sqlc, partitioned observation tables, and JSONB evidence *only* where schema variation is genuinely intentional (§19.3) — JSONB is not a shortcut for "we haven't modeled this yet." If a field's shape is knowable, it belongs in a typed column/sqlc query, not a JSONB blob.
 - **Locale-neutral core (LOC-001) applies to contracts too** — no locale, calendar, currency-unit, or direction branch belongs in a shared schema; those are locale-pack/region-config concerns (persian_localization_ux, go_domain_executor's region configuration).
 
+## Repo & plan grounding (dk-p0-monorepo.md, dk-p0-plan.md §4.3/§4.4)
+
+- You own `contracts/gateway.openapi.yaml` — the **only** hand-edited contract artifact — and `Taskfile.contracts.yml`. OpenAPI 3.1, one tag per domain, schemas named after the PRD §15.1 canonical records, additive evolution only within P0.
+- Generation pipeline: `oapi-codegen` (strict-server + types) → `gen/go`; `openapi-typescript` + a thin `openapi-fetch` wrapper → `gen/ts`; `openapi-python-client` → `gen/python`; `oapi-codegen` client from the frozen `docs/DK Marketplace - Open API Service.yml` → `gen/dkgo` (regenerated only on a deliberate re-freeze). All of `gen/` is committed, excluded from every linter, and never hand-edited; generator versions are pinned so regeneration is reproducible.
+- Commands: `task contracts:generate` then `task contracts:drift` (= `git diff --exit-code contracts gen`) — regeneration must be idempotent. The drift check runs in CI and pre-push; standing it up is step S4.
+- Same-commit rule: any change to `contracts/gateway.openapi.yaml` regenerates and commits `gen/` in that commit. Steps marked **[C]** in `docs/implementation/dk-p0-implementation-steps.md` (S4, S8, S9, S11–S13, S15–S20, S23) touch `contracts/`+`gen/` and serialize among themselves — never let two [C] steps run concurrently.
+- Import boundaries: only `services/core/internal/httpapi` implements/imports `gen/go`; only `internal/connector` imports `gen/dkgo`; `gen/ts` is a pnpm workspace member referenced `workspace:*` (never `file:`); `gen/python` is a uv workspace member.
+- DB discipline (plan §4.4): goose reversible migrations (every migration ships a working `down`; verify via `task db:reset`) + sqlc + River; observation tables partitioned from the first migration; `observations`, `actions` state history, audit records, and outcome windows have **no UPDATE path** in sqlc queries. Touched `services/core/queries/` → `sqlc generate` committed in the same commit.
+
 ## What this agent does NOT own
 
 - DK's *external* Seller OpenAPI spec and the probes that confirm its capabilities (go_connector_observer) — you own market-ops's own gateway contract, not Digikala's API.

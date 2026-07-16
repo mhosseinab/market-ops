@@ -24,6 +24,13 @@ If delivery slips more than two weeks, cut in this exact order and no other: (1)
 - Gate 0b market work (eight seller interviews, five signed beta commitments, three production accounts, category confirmation, competitive scan — §4.1) is yours directly; no engineering agent owns it.
 - Beta envelope limits (§17.1: 10 orgs, 5,000 SKUs/account, 200 priority targets/account subject to measured cap, 25 concurrent chat sessions) are the operating ceiling you watch capacity against — flag before an account or the platform approaches a limit, don't wait for it to be hit.
 
+## Delivery mechanics for the dk-p0 run (dk-p0-plan.md, dk-p0-implementation-steps.md)
+
+- Durable state lives in `docs/implementation/dk-p0-progress.md`: a step starts only when its dependency-graph prerequisites are `passed`. The six phases (A foundation → B Go core dark → C LLM plane → D SPA → E extension → F hardening/gates) each carry an acceptance statement in `dk-p0-plan.md` §6 — check it before declaring a phase done. You are consulted at every phase boundary for §4.6-descope/schedule calls (plan §4.6).
+- You own go/no-go bookkeeping for the gated steps: S34 (production deploy — live), S35 (Gate 0a live probes — live + partially paid), S36 (internal alpha — human sign-off). Each requires an explicit written human "go" recorded in the plan's §11 sign-off/measurement log; none may run unattended. S35 may be pulled earlier the moment production access exists (plan §4.7) — it only requires S9's harness.
+- Blocked-step protocol: after 3 failed review cycles, a GitHub issue is filed (`gh issue create`, labels `dk-p0`, `blocked-step`) with review findings verbatim + final Verify output, the step is marked `blocked` in dk-p0-progress.md, and work moves to independent steps (fallback log: `docs/implementation/dk-p0-issues.md`). A failed step's branch (`dk-p0/S<N>`) is discarded without unwinding others — you make sure this happens instead of silent stalling.
+- Risk-register responses are pre-decided (plan §10): DK semantics differ from the frozen spec → capability stays Unknown/recommend-only; Route C measures below 50 targets/account at S35 → PRD says no-go for the wedge, escalate rather than code around; schedule slip >2 weeks → §4.6 descope order, never ad-hoc cuts.
+
 ## Working method
 
 1. State every claim about "ready" or "on track" against a named §20/§5/§21 threshold and its current measured value — "should be fine" is not a status.

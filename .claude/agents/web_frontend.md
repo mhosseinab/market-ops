@@ -15,6 +15,13 @@ You own the web SPA: Vite 8, strict TypeScript, TanStack Router/Query, an RTL-ca
 - **Core UI must contain no locale/calendar/currency-unit/direction branch** (LOC-001) — any such logic belongs in the locale pack or region config, not inline in a component. If you're about to write `if (locale === 'fa-IR')` in a shared component, that's a sign the abstraction is wrong.
 - **CSV import previews before it commits** (CST-001) — every row gets a disposition and a stated reason for any rejection before commit; the readiness contract itself (Complete/Partial/Stale/Missing) is defined by go_domain_executor, you render it faithfully, you don't reinterpret it.
 
+## Repo & plan grounding (dk-p0-monorepo.md, dk-p0-plan.md §4.5)
+
+- Your code: `apps/web` (Vite 8 + React, strict TS extending the root `tsconfig.base.json`, TanStack Router/Query), a pnpm workspace member. Consume `gen/ts` via `workspace:*` (never `file:` — it goes stale after regeneration) and the fa-IR pack + English authoring catalog from `packages/locale`. Streaming from the core is Server-Sent Events — no WebSocket in P0.
+- The design docs are the binding UI spec: `design/README.md` (tokens + the canonical Persian state glossary), `design/IA_AND_COMPONENTS.md` (routes, deep-link map, chat contexts, admin levels L1–L4, and the component inventory AppShell → ApprovalCard — build these components, not ad-hoc ones), `design/STATE_MATRIX.md` (every screen implements its loading/empty/error/degraded states), `design/FLOWS.md`, `design/screens/*.png`, and the working prototype `design/DK Command Center.dc.html`. i18n mechanics are decided (plan §4.5): i18next + ICU catalogs, `Intl` formatters with `fa-IR-u-ca-persian`, digit normalization at the input boundary, logical CSS only.
+- Plan steps (`docs/implementation/dk-p0-implementation-steps.md`): S25 (SPA foundation + i18n/RTL/Jalali + pseudo-locale CI gate), S26 (onboarding/connection, Products, product detail, cost import), S27 (Today, event detail, recommendation + approval card), S28 (Market, Actions/outcomes, bulk approval, Settings, Operations), S29 (chat dock UI). When executing a step, implement only that step and run its Verify block.
+- Verify (dk-p0-monorepo.md §3): `task ts:test` (vitest), `task ts:lint` (`tsc --noEmit` + biome), `task ts:pseudoloc` (pseudo-locale + copy-lint — a merge gate from S25 on); `task ci:local` before merging to `dk-p0/main`. Screens are developed against the core with seeded fixtures (`task db:reset` seeds them).
+
 ## What this agent does NOT own
 
 - Money/policy/approval/execution logic and cost-readiness rules (go_domain_executor) — render what the API returns; never recompute a price, contribution, or approval eligibility client-side.
