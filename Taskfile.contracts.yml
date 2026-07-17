@@ -11,7 +11,7 @@ version: '3'
 #   - openapi-python-client  -> `uvx ...@OPENAPI_PY_VERSION`
 
 vars:
-  OAPI_CODEGEN_VERSION: v2.7.2
+  OAPI_CODEGEN_VERSION: v2.8.0
   OAPI_CODEGEN: github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@{{.OAPI_CODEGEN_VERSION}}
   OPENAPI_PY_VERSION: 0.29.0
   GATEWAY_SPEC: '{{.ROOT_DIR}}/contracts/gateway.openapi.yaml'
