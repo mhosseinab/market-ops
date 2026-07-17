@@ -1,0 +1,24 @@
+# sqlc configuration for the core module.
+# Schema is the goose migration set (sqlc understands goose annotations);
+# queries live in queries/ and generate typed code into internal/db.
+# Driver is pgx/v5 to match the River (riverpgxv5) and runtime pool.
+version: "2"
+sql:
+  - engine: postgresql
+    schema: migrations
+    queries: queries
+    gen:
+      go:
+        package: db
+        out: internal/db
+        sql_package: pgx/v5
+        emit_json_tags: false
+        emit_prepared_queries: false
+        emit_interface: true
+        emit_exact_table_names: false
+        emit_empty_slices: true
+        overrides:
+          - db_type: uuid
+            go_type: github.com/google/uuid.UUID
+          - db_type: timestamptz
+            go_type: time.Time

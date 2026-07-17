@@ -92,7 +92,7 @@ includes:
   ts:        { taskfile: ./Taskfile.ts.yml }
   contracts: { taskfile: ./Taskfile.contracts.yml }
 tasks:
-  doctor:      # verify node/pnpm/uv/go/golangci-lint/oapi-codegen/goose/sqlc/docker/jq installed
+  doctor:      # verify node/pnpm/uv/go/golangci-lint/oapi-codegen/goose/sqlc/river/docker/jq installed
   setup:       # pnpm install --frozen-lockfile → uv sync --group dev → task go:init → go work sync → task contracts:generate
   dev:         # docker compose -f deploy/compose.dev.yml up -d → migrations up → run core+llm+web watchers
   build:all:   # cmds (sequential): contracts:generate → go:build → py:build → ts:build
