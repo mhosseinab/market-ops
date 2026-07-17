@@ -238,6 +238,24 @@ func (e ConnectorConnectionState) Valid() bool {
 	}
 }
 
+// Defines values for ContributionComponentKind.
+const (
+	Absolute ContributionComponentKind = "absolute"
+	Rate     ContributionComponentKind = "rate"
+)
+
+// Valid indicates whether the value is a known member of the ContributionComponentKind enum.
+func (e ContributionComponentKind) Valid() bool {
+	switch e {
+	case Absolute:
+		return true
+	case Rate:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CostComponent.
 const (
 	Ads         CostComponent = "ads"
@@ -457,6 +475,111 @@ func (e ObservationTargetTier) Valid() bool {
 	}
 }
 
+// Defines values for PolicyBlockerCode.
+const (
+	BoundaryInvalid         PolicyBlockerCode = "boundary_invalid"
+	BoundaryUnknown         PolicyBlockerCode = "boundary_unknown"
+	ContributionBelowFloor  PolicyBlockerCode = "contribution_below_floor"
+	ContributionCrossesZero PolicyBlockerCode = "contribution_crosses_zero"
+	CooldownActive          PolicyBlockerCode = "cooldown_active"
+	MovementCapInfeasible   PolicyBlockerCode = "movement_cap_infeasible"
+	ObjectiveInfeasible     PolicyBlockerCode = "objective_infeasible"
+	StrategyDisabled        PolicyBlockerCode = "strategy_disabled"
+)
+
+// Valid indicates whether the value is a known member of the PolicyBlockerCode enum.
+func (e PolicyBlockerCode) Valid() bool {
+	switch e {
+	case BoundaryInvalid:
+		return true
+	case BoundaryUnknown:
+		return true
+	case ContributionBelowFloor:
+		return true
+	case ContributionCrossesZero:
+		return true
+	case CooldownActive:
+		return true
+	case MovementCapInfeasible:
+		return true
+	case ObjectiveInfeasible:
+		return true
+	case StrategyDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PolicyObjective.
+const (
+	MaximizeContribution PolicyObjective = "maximize_contribution"
+	TrackStrategy        PolicyObjective = "track_strategy"
+)
+
+// Valid indicates whether the value is a known member of the PolicyObjective enum.
+func (e PolicyObjective) Valid() bool {
+	switch e {
+	case MaximizeContribution:
+		return true
+	case TrackStrategy:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PolicyStage.
+const (
+	Boundary    PolicyStage = "boundary"
+	Cooldown    PolicyStage = "cooldown"
+	HardFloor   PolicyStage = "hard_floor"
+	MovementCap PolicyStage = "movement_cap"
+	Objective   PolicyStage = "objective"
+	Strategy    PolicyStage = "strategy"
+)
+
+// Valid indicates whether the value is a known member of the PolicyStage enum.
+func (e PolicyStage) Valid() bool {
+	switch e {
+	case Boundary:
+		return true
+	case Cooldown:
+		return true
+	case HardFloor:
+		return true
+	case MovementCap:
+		return true
+	case Objective:
+		return true
+	case Strategy:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for PolicyStrategy.
+const (
+	Hold     PolicyStrategy = "hold"
+	Match    PolicyStrategy = "match"
+	Undercut PolicyStrategy = "undercut"
+)
+
+// Valid indicates whether the value is a known member of the PolicyStrategy enum.
+func (e PolicyStrategy) Valid() bool {
+	switch e {
+	case Hold:
+		return true
+	case Match:
+		return true
+	case Undercut:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for QualityState.
 const (
 	QualityStateConflicted  QualityState = "conflicted"
@@ -663,6 +786,59 @@ type ConnectorStatus struct {
 	// ConnectionState Whether the DK connection is currently established.
 	ConnectionState      ConnectorConnectionState `json:"connectionState"`
 	MarketplaceAccountId openapi_types.UUID       `json:"marketplaceAccountId"`
+}
+
+// Contribution The deterministic §9.2 contribution: the exact amount, its breakdown, the readiness that governs executability (only Complete is executable), and the versioned rounding-rule identifier that produced it (reproducible per CST-002).
+type Contribution struct {
+	// Amount An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Amount     MoneyAmount             `json:"amount"`
+	Deductions []ContributionDeduction `json:"deductions"`
+
+	// Executable True only when readiness is Complete (§9.2 / CST-003).
+	Executable bool `json:"executable"`
+
+	// NetProceeds An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	NetProceeds MoneyAmount `json:"netProceeds"`
+
+	// Readiness The four closed margin-readiness states (CST-003). Only `complete` may drive an executable recommendation; `partial` may show analysis but no approval control; `stale` and `missing` block.
+	Readiness MarginReadinessState `json:"readiness"`
+
+	// RoundingRule Versioned rounding-rule identifier applied to any rate.
+	RoundingRule string `json:"roundingRule"`
+}
+
+// ContributionComponentInput One §9.2 deduction with its cost-profile provenance. Exactly one of `amount` (kind `absolute`) or `rateBasisPoints` (kind `rate`) is meaningful. `version` is the cost-profile component version (CST-002) that produced the value, carried so a historical contribution reproduces the exact inputs.
+type ContributionComponentInput struct {
+	// Amount An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Amount *MoneyAmount `json:"amount,omitempty"`
+
+	// Component A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
+	Component CostComponent `json:"component"`
+
+	// Kind Whether a contribution component is an absolute money amount or a fixed-point basis-point rate applied to the rate base (§9.2). Both stay in exact money arithmetic — there is no float (§9.1).
+	Kind ContributionComponentKind `json:"kind"`
+
+	// RateBasisPoints Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`.
+	RateBasisPoints *int64 `json:"rateBasisPoints,omitempty"`
+
+	// Version Cost-profile component version id (CST-002); 0 for synthetic input.
+	Version *int64 `json:"version,omitempty"`
+}
+
+// ContributionComponentKind Whether a contribution component is an absolute money amount or a fixed-point basis-point rate applied to the rate base (§9.2). Both stay in exact money arithmetic — there is no float (§9.1).
+type ContributionComponentKind string
+
+// ContributionDeduction One resolved subtraction in the contribution breakdown (PRC-001 inputs).
+type ContributionDeduction struct {
+	// Amount An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Amount MoneyAmount `json:"amount"`
+
+	// Component A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
+	Component CostComponent `json:"component"`
+
+	// Kind Whether a contribution component is an absolute money amount or a fixed-point basis-point rate applied to the rate base (§9.2). Both stay in exact money arithmetic — there is no float (§9.1).
+	Kind    ContributionComponentKind `json:"kind"`
+	Version int64                     `json:"version"`
 }
 
 // CostComponent A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
@@ -1037,6 +1213,120 @@ type ObservedOfferList struct {
 	Items []ObservedOffer `json:"items"`
 }
 
+// PolicyBlocker One typed reason a policy stage prevented a proposal (in policy order).
+type PolicyBlocker struct {
+	// Code Stable, machine-readable reason a policy stage blocked. Free text lives only in a blocker's message and carries no authority (§8).
+	Code PolicyBlockerCode `json:"code"`
+
+	// Message Human-readable, non-authoritative detail (localized at the edge).
+	Message string `json:"message"`
+
+	// Stage One of the six ordered policy stages (§9.3). The order is fixed; `stageOrder` on a blocker carries the numeric precedence.
+	Stage PolicyStage `json:"stage"`
+
+	// StageOrder Numeric precedence (0 = boundary … 5 = objective).
+	StageOrder int `json:"stageOrder"`
+}
+
+// PolicyBlockerCode Stable, machine-readable reason a policy stage blocked. Free text lives only in a blocker's message and carries no authority (§8).
+type PolicyBlockerCode string
+
+// PolicyBoundary The marketplace price boundary (stage 1, §9.2). `known` false is an UNKNOWN boundary and blocks (§16). Min/Max are required when known.
+type PolicyBoundary struct {
+	Known bool `json:"known"`
+
+	// Max An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Max *MoneyAmount `json:"max,omitempty"`
+
+	// Min An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Min *MoneyAmount `json:"min,omitempty"`
+}
+
+// PolicyConfig The policy configuration for a simulation. `movementCapBasisPoints` and `cooldownSeconds` are optional; omitting them uses the §9.3 defaults (5%, 60m). A looser value (a larger cap or shorter cooldown) is rejected (PRC-004).
+type PolicyConfig struct {
+	// Boundary The marketplace price boundary (stage 1, §9.2). `known` false is an UNKNOWN boundary and blocks (§16). Min/Max are required when known.
+	Boundary PolicyBoundary `json:"boundary"`
+
+	// ContributionFloor An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	ContributionFloor MoneyAmount `json:"contributionFloor"`
+
+	// CooldownSeconds Minimum interval between actions in seconds (≥ 3600; default 3600).
+	CooldownSeconds *int64 `json:"cooldownSeconds,omitempty"`
+
+	// MovementCapBasisPoints Maximum price movement in basis points (≤ 500; default 500).
+	MovementCapBasisPoints *int64 `json:"movementCapBasisPoints,omitempty"`
+
+	// Objective The optimization objective (stage 6, §9.3).
+	Objective PolicyObjective `json:"objective"`
+
+	// Reference An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Reference *MoneyAmount `json:"reference,omitempty"`
+
+	// Strategy The selected pricing strategy (stage 5, §9.3). Closed set for P0.
+	Strategy        PolicyStrategy `json:"strategy"`
+	StrategyEnabled bool           `json:"strategyEnabled"`
+
+	// UndercutBasisPoints Undercut depth in basis points for the `undercut` strategy.
+	UndercutBasisPoints *int64 `json:"undercutBasisPoints,omitempty"`
+}
+
+// PolicyObjective The optimization objective (stage 6, §9.3).
+type PolicyObjective string
+
+// PolicyProposal An accepted policy result: a proposed price and its contribution. Present only when every hard stage passed and the contribution is strictly positive. It is NOT an approval control.
+type PolicyProposal struct {
+	// Contribution An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Contribution MoneyAmount `json:"contribution"`
+
+	// Price An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Price MoneyAmount `json:"price"`
+}
+
+// PolicySimulationRequest A fully-specified what-if for the contribution + policy engines. All money must share one currency and exponent (§9.1). Contribution is evaluated as a function of price: at any candidate price the net seller proceeds and the commission rate base are that price (the P0 owned-offer model), so the policy stages see a contribution that varies with price. `nowRfc3339` and `lastActionAt` drive the cooldown stage; omit `lastActionAt` when there is no prior action.
+type PolicySimulationRequest struct {
+	Components []ContributionComponentInput `json:"components"`
+
+	// Config The policy configuration for a simulation. `movementCapBasisPoints` and `cooldownSeconds` are optional; omitting them uses the §9.3 defaults (5%, 60m). A looser value (a larger cap or shorter cooldown) is rejected (PRC-004).
+	Config PolicyConfig `json:"config"`
+
+	// CurrentPrice An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	CurrentPrice MoneyAmount `json:"currentPrice"`
+
+	// LastActionAt Instant of the last price action, for the cooldown stage.
+	LastActionAt *time.Time `json:"lastActionAt,omitempty"`
+
+	// NowRfc3339 Evaluation instant (defaults to server now).
+	NowRfc3339 *time.Time `json:"nowRfc3339,omitempty"`
+
+	// Readiness The four closed margin-readiness states (CST-003). Only `complete` may drive an executable recommendation; `partial` may show analysis but no approval control; `stale` and `missing` block.
+	Readiness MarginReadinessState `json:"readiness"`
+
+	// VariantId Optional SKU the what-if is about (provenance only).
+	VariantId *openapi_types.UUID `json:"variantId,omitempty"`
+}
+
+// PolicySimulationResult The simulated contribution and policy result. `simulation` is always true and `approvable` is always false: a simulation NEVER carries an approval control (§8, §12.3, never-cut). `proposal` is present only when the policy stages accepted a price; otherwise `blockers` lists the typed reasons in policy order.
+type PolicySimulationResult struct {
+	// Approvable Always false — a simulation carries no approval control.
+	Approvable bool            `json:"approvable"`
+	Blockers   []PolicyBlocker `json:"blockers"`
+
+	// Contribution The deterministic §9.2 contribution: the exact amount, its breakdown, the readiness that governs executability (only Complete is executable), and the versioned rounding-rule identifier that produced it (reproducible per CST-002).
+	Contribution Contribution `json:"contribution"`
+
+	// Proposal An accepted policy result: a proposed price and its contribution. Present only when every hard stage passed and the contribution is strictly positive. It is NOT an approval control.
+	Proposal *PolicyProposal `json:"proposal,omitempty"`
+
+	// Simulation Always true — this result is non-executable.
+	Simulation bool `json:"simulation"`
+}
+
+// PolicyStage One of the six ordered policy stages (§9.3). The order is fixed; `stageOrder` on a blocker carries the numeric precedence.
+type PolicyStage string
+
+// PolicyStrategy The selected pricing strategy (stage 5, §9.3). Closed set for P0.
+type PolicyStrategy string
+
 // QualityState The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
 type QualityState string
 
@@ -1183,6 +1473,9 @@ type RejectIdentityJSONRequestBody = IdentityDecisionRequest
 // UploadCaptureJSONRequestBody defines body for UploadCapture for application/json ContentType.
 type UploadCaptureJSONRequestBody = CaptureUpload
 
+// SimulatePolicyJSONRequestBody defines body for SimulatePolicy for application/json ContentType.
+type SimulatePolicyJSONRequestBody = PolicySimulationRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
 	// Login Authenticate a user and open a server-side session.
@@ -1254,6 +1547,9 @@ type ServerInterface interface {
 	// ListObservationTargets List the account's observation targets.
 	// (GET /observation/targets)
 	ListObservationTargets(w http.ResponseWriter, r *http.Request, params ListObservationTargetsParams)
+	// SimulatePolicy Simulate the contribution + six-stage policy engines (non-executable).
+	// (POST /policy/simulate)
+	SimulatePolicy(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -1765,6 +2061,20 @@ func (siw *ServerInterfaceWrapper) ListObservationTargets(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
+// SimulatePolicy operation middleware
+func (siw *ServerInterfaceWrapper) SimulatePolicy(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SimulatePolicy(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -1908,6 +2218,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/cost/value", wrapper.EnterSingleCost)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/profiles", wrapper.ListCostProfiles)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/readiness", wrapper.GetMarginReadiness)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/policy/simulate", wrapper.SimulatePolicy)
 
 	return m
 }
@@ -2871,6 +3182,45 @@ func (response ListObservationTargetsdefaultJSONResponse) VisitListObservationTa
 	return err
 }
 
+type SimulatePolicyRequestObject struct {
+	Body *SimulatePolicyJSONRequestBody
+}
+
+type SimulatePolicyResponseObject interface {
+	VisitSimulatePolicyResponse(w http.ResponseWriter) error
+}
+
+type SimulatePolicy200JSONResponse PolicySimulationResult
+
+func (response SimulatePolicy200JSONResponse) VisitSimulatePolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SimulatePolicydefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response SimulatePolicydefaultJSONResponse) VisitSimulatePolicyResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// Login Authenticate a user and open a server-side session.
@@ -2942,6 +3292,9 @@ type StrictServerInterface interface {
 	// ListObservationTargets List the account's observation targets.
 	// (GET /observation/targets)
 	ListObservationTargets(ctx context.Context, request ListObservationTargetsRequestObject) (ListObservationTargetsResponseObject, error)
+	// SimulatePolicy Simulate the contribution + six-stage policy engines (non-executable).
+	// (POST /policy/simulate)
+	SimulatePolicy(ctx context.Context, request SimulatePolicyRequestObject) (SimulatePolicyResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -3628,6 +3981,37 @@ func (sh *strictHandler) ListObservationTargets(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListObservationTargetsResponseObject); ok {
 		if err := validResponse.VisitListObservationTargetsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SimulatePolicy operation middleware
+func (sh *strictHandler) SimulatePolicy(w http.ResponseWriter, r *http.Request) {
+	var request SimulatePolicyRequestObject
+
+	var body SimulatePolicyJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SimulatePolicy(ctx, request.(SimulatePolicyRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SimulatePolicy")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SimulatePolicyResponseObject); ok {
+		if err := validResponse.VisitSimulatePolicyResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

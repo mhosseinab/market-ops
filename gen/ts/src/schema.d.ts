@@ -464,6 +464,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/policy/simulate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Simulate the contribution + six-stage policy engines (non-executable).
+         * @description Runs the deterministic contribution model (§9.2) and the fixed six-stage policy order (§9.3: boundary → hard floor → movement cap → cooldown → strategy → objective) over fully-specified what-if inputs, and returns the proposed price with its contribution OR the typed blockers in policy order. This is a SIMULATION: the result is always labelled non-executable and carries NO approval control (`approvable` is always false). Free text / simulations never approve (§8, §12.3, never-cut). A loose movement cap or cooldown (PRC-004) is rejected with a structured error. Authoritative numbers come only from these engines — never from the model plane (§12.3).
+         */
+        post: operations["simulatePolicy"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1056,6 +1076,142 @@ export interface components {
             staleComponents: components["schemas"]["CostComponent"][];
             /** Format: date-time */
             computedAt: string;
+        };
+        /**
+         * @description Whether a contribution component is an absolute money amount or a fixed-point basis-point rate applied to the rate base (§9.2). Both stay in exact money arithmetic — there is no float (§9.1).
+         * @enum {string}
+         */
+        ContributionComponentKind: "absolute" | "rate";
+        /** @description One §9.2 deduction with its cost-profile provenance. Exactly one of `amount` (kind `absolute`) or `rateBasisPoints` (kind `rate`) is meaningful. `version` is the cost-profile component version (CST-002) that produced the value, carried so a historical contribution reproduces the exact inputs. */
+        ContributionComponentInput: {
+            component: components["schemas"]["CostComponent"];
+            kind: components["schemas"]["ContributionComponentKind"];
+            amount?: components["schemas"]["MoneyAmount"];
+            /**
+             * Format: int64
+             * @description Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`.
+             */
+            rateBasisPoints?: number;
+            /**
+             * Format: int64
+             * @description Cost-profile component version id (CST-002); 0 for synthetic input.
+             */
+            version?: number;
+        };
+        /** @description One resolved subtraction in the contribution breakdown (PRC-001 inputs). */
+        ContributionDeduction: {
+            component: components["schemas"]["CostComponent"];
+            amount: components["schemas"]["MoneyAmount"];
+            kind: components["schemas"]["ContributionComponentKind"];
+            /** Format: int64 */
+            version: number;
+        };
+        /** @description The deterministic §9.2 contribution: the exact amount, its breakdown, the readiness that governs executability (only Complete is executable), and the versioned rounding-rule identifier that produced it (reproducible per CST-002). */
+        Contribution: {
+            amount: components["schemas"]["MoneyAmount"];
+            netProceeds: components["schemas"]["MoneyAmount"];
+            deductions: components["schemas"]["ContributionDeduction"][];
+            readiness: components["schemas"]["MarginReadinessState"];
+            /** @description True only when readiness is Complete (§9.2 / CST-003). */
+            executable: boolean;
+            /** @description Versioned rounding-rule identifier applied to any rate. */
+            roundingRule: string;
+        };
+        /**
+         * @description The selected pricing strategy (stage 5, §9.3). Closed set for P0.
+         * @enum {string}
+         */
+        PolicyStrategy: "hold" | "match" | "undercut";
+        /**
+         * @description The optimization objective (stage 6, §9.3).
+         * @enum {string}
+         */
+        PolicyObjective: "maximize_contribution" | "track_strategy";
+        /**
+         * @description One of the six ordered policy stages (§9.3). The order is fixed; `stageOrder` on a blocker carries the numeric precedence.
+         * @enum {string}
+         */
+        PolicyStage: "boundary" | "hard_floor" | "movement_cap" | "cooldown" | "strategy" | "objective";
+        /**
+         * @description Stable, machine-readable reason a policy stage blocked. Free text lives only in a blocker's message and carries no authority (§8).
+         * @enum {string}
+         */
+        PolicyBlockerCode: "boundary_unknown" | "boundary_invalid" | "contribution_below_floor" | "contribution_crosses_zero" | "movement_cap_infeasible" | "cooldown_active" | "strategy_disabled" | "objective_infeasible";
+        /** @description The marketplace price boundary (stage 1, §9.2). `known` false is an UNKNOWN boundary and blocks (§16). Min/Max are required when known. */
+        PolicyBoundary: {
+            known: boolean;
+            min?: components["schemas"]["MoneyAmount"];
+            max?: components["schemas"]["MoneyAmount"];
+        };
+        /** @description The policy configuration for a simulation. `movementCapBasisPoints` and `cooldownSeconds` are optional; omitting them uses the §9.3 defaults (5%, 60m). A looser value (a larger cap or shorter cooldown) is rejected (PRC-004). */
+        PolicyConfig: {
+            boundary: components["schemas"]["PolicyBoundary"];
+            contributionFloor: components["schemas"]["MoneyAmount"];
+            /**
+             * Format: int64
+             * @description Maximum price movement in basis points (≤ 500; default 500).
+             */
+            movementCapBasisPoints?: number;
+            /**
+             * Format: int64
+             * @description Minimum interval between actions in seconds (≥ 3600; default 3600).
+             */
+            cooldownSeconds?: number;
+            strategy: components["schemas"]["PolicyStrategy"];
+            strategyEnabled: boolean;
+            reference?: components["schemas"]["MoneyAmount"];
+            /**
+             * Format: int64
+             * @description Undercut depth in basis points for the `undercut` strategy.
+             */
+            undercutBasisPoints?: number;
+            objective: components["schemas"]["PolicyObjective"];
+        };
+        /** @description One typed reason a policy stage prevented a proposal (in policy order). */
+        PolicyBlocker: {
+            stage: components["schemas"]["PolicyStage"];
+            /** @description Numeric precedence (0 = boundary … 5 = objective). */
+            stageOrder: number;
+            code: components["schemas"]["PolicyBlockerCode"];
+            /** @description Human-readable, non-authoritative detail (localized at the edge). */
+            message: string;
+        };
+        /** @description An accepted policy result: a proposed price and its contribution. Present only when every hard stage passed and the contribution is strictly positive. It is NOT an approval control. */
+        PolicyProposal: {
+            price: components["schemas"]["MoneyAmount"];
+            contribution: components["schemas"]["MoneyAmount"];
+        };
+        /** @description A fully-specified what-if for the contribution + policy engines. All money must share one currency and exponent (§9.1). Contribution is evaluated as a function of price: at any candidate price the net seller proceeds and the commission rate base are that price (the P0 owned-offer model), so the policy stages see a contribution that varies with price. `nowRfc3339` and `lastActionAt` drive the cooldown stage; omit `lastActionAt` when there is no prior action. */
+        PolicySimulationRequest: {
+            /**
+             * Format: uuid
+             * @description Optional SKU the what-if is about (provenance only).
+             */
+            variantId?: string;
+            currentPrice: components["schemas"]["MoneyAmount"];
+            components: components["schemas"]["ContributionComponentInput"][];
+            readiness: components["schemas"]["MarginReadinessState"];
+            config: components["schemas"]["PolicyConfig"];
+            /**
+             * Format: date-time
+             * @description Evaluation instant (defaults to server now).
+             */
+            nowRfc3339?: string;
+            /**
+             * Format: date-time
+             * @description Instant of the last price action, for the cooldown stage.
+             */
+            lastActionAt?: string;
+        };
+        /** @description The simulated contribution and policy result. `simulation` is always true and `approvable` is always false: a simulation NEVER carries an approval control (§8, §12.3, never-cut). `proposal` is present only when the policy stages accepted a price; otherwise `blockers` lists the typed reasons in policy order. */
+        PolicySimulationResult: {
+            /** @description Always true — this result is non-executable. */
+            simulation: boolean;
+            /** @description Always false — a simulation carries no approval control. */
+            approvable: boolean;
+            contribution: components["schemas"]["Contribution"];
+            proposal?: components["schemas"]["PolicyProposal"];
+            blockers: components["schemas"]["PolicyBlocker"][];
         };
         /** @description Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator. */
         ErrorEnvelope: {
@@ -1835,6 +1991,39 @@ export interface operations {
                 };
             };
             /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    simulatePolicy: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PolicySimulationRequest"];
+            };
+        };
+        responses: {
+            /** @description The simulated contribution and policy result (non-executable). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PolicySimulationResult"];
+                };
+            };
+            /** @description Unexpected error (including a rejected loose cap/cooldown, PRC-004). */
             default: {
                 headers: {
                     [name: string]: unknown;
