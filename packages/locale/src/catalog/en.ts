@@ -196,6 +196,7 @@ export const en: Catalog = {
   "product.diagnostics.evidence": "Evidence ref",
   "product.diagnostics.viewAll": "View diagnostics →",
   "product.noTarget": "No active observation target for this product.",
+  "product.back": "← Back to products",
 
   "availability.in_stock": "In stock",
   "availability.out_of_stock": "Out of stock",

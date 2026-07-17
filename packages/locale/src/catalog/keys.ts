@@ -212,6 +212,7 @@ export const MESSAGE_KEYS = [
   "product.diagnostics.evidence",
   "product.diagnostics.viewAll",
   "product.noTarget",
+  "product.back",
 
   // Availability (normalized, docs/11)
   "availability.in_stock",

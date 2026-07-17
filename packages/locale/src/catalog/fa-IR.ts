@@ -194,6 +194,7 @@ export const faIR: Catalog = {
   "product.diagnostics.evidence": "مرجع شواهد",
   "product.diagnostics.viewAll": "مشاهدهٔ تشخیص‌ها ←",
   "product.noTarget": "برای این کالا هدف پایشی فعالی نیست.",
+  "product.back": "→ بازگشت به محصولات",
 
   "availability.in_stock": "موجود",
   "availability.out_of_stock": "ناموجود",

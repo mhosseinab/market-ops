@@ -93,11 +93,14 @@ export function NeedsReview() {
                 <dl className="kv">
                   <dt>{t("needsReview.evidence.nativeVariant")}</dt>
                   <dd>
-                    <LtrToken text={formatCount(selected.nativeVariantId, locale)} />
+                    {/* Native IDs are technical identifiers, not quantities:
+                        render the raw value LTR-isolated (no grouping, no digit
+                        conversion) so they stay cross-referenceable against DK. */}
+                    <LtrToken text={String(selected.nativeVariantId)} />
                   </dd>
                   <dt>{t("needsReview.evidence.nativeProduct")}</dt>
                   <dd>
-                    <LtrToken text={formatCount(selected.nativeProductId, locale)} />
+                    <LtrToken text={String(selected.nativeProductId)} />
                   </dd>
                   <dt>{t("needsReview.evidence.candidateSource")}</dt>
                   <dd>

@@ -75,9 +75,10 @@ export function ProductDetail() {
     <div className="screen">
       <div className="toolbar">
         <AppLink to="/products" className="link">
-          ← {t("route.products.title")}
+          {t("product.back")}
         </AppLink>
-        {target ? <LtrToken text={formatCount(target.nativeProductId, "en")} /> : null}
+        {/* Native product ID is a technical identifier: raw + LTR-isolated. */}
+        {target ? <LtrToken text={String(target.nativeProductId)} /> : null}
       </div>
 
       <ViewState

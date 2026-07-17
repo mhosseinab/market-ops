@@ -115,12 +115,14 @@ export function Products() {
     {
       id: "product",
       header: "products.col.product",
-      render: (r) => <LtrToken text={formatCount(r.target.nativeProductId, "en")} />,
+      // Native IDs are technical identifiers, not quantities: raw + LTR-isolated
+      // (no grouping / digit conversion). Displayed value == the search haystack.
+      render: (r) => <LtrToken text={String(r.target.nativeProductId)} />,
     },
     {
       id: "sku",
       header: "products.col.sku",
-      render: (r) => <LtrToken text={formatCount(r.target.nativeVariantId, "en")} />,
+      render: (r) => <LtrToken text={String(r.target.nativeVariantId)} />,
     },
     {
       id: "tier",

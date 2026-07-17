@@ -21,5 +21,9 @@ describe("Product detail", () => {
     expect(screen.getAllByText(faIR["product.cost.notRecorded"]).length).toBeGreaterThan(0);
     // Market snapshot renders the raw price evidence (money quarantine — not Money).
     expect(screen.getByText("14,350,000")).toBeInTheDocument();
+    // Native product ID is a RAW LTR identifier (fa-IR default) — not grouped,
+    // not digit-converted.
+    expect(screen.getByText("7719004")).toBeInTheDocument();
+    expect(screen.queryByText("۷٬۷۱۹٬۰۰۴")).toBeNull();
   });
 });

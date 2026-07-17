@@ -19,5 +19,12 @@ describe("Products workspace", () => {
     expect(within(table).getByText(faIR["readiness.missing"])).toBeInTheDocument();
     // Bulk entry stub deep-links to the (S28) bulk screen.
     expect(screen.getByTestId("bulk-entry")).toBeInTheDocument();
+
+    // Native IDs render as RAW LTR identifiers (fa-IR default): no thousands
+    // separators and no Persian-digit conversion — they must match DK verbatim.
+    expect(within(table).getByText("7719004")).toBeInTheDocument(); // nativeProductId
+    expect(within(table).getByText("8842213")).toBeInTheDocument(); // nativeVariantId
+    expect(within(table).queryByText("7,719,004")).toBeNull(); // never grouped
+    expect(within(table).queryByText("۷٬۷۱۹٬۰۰۴")).toBeNull(); // never Persian digits
   });
 });
