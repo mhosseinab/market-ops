@@ -24,6 +24,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connector/connect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Connect the DK account for a marketplace account.
+         * @description Exchanges a DK authorization code for tokens (stored encrypted at rest), seeds every §15.2 capability at Unknown, and runs the capability probes. Returns the reconciled connection + capability status (ACC-001).
+         */
+        post: operations["connectConnector"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connector/refresh": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Refresh the DK access token and re-run capability probes.
+         * @description Rotates the access token via the stored refresh token (re-encrypted at rest) and re-probes every capability so status and last-verified time stay current (ACC-001, ACC-003).
+         */
+        post: operations["refreshConnector"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connector/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect connection and per-capability status.
+         * @description Returns the current connection state plus every §15.2 capability with its status and last-verified time. Capabilities default to Unknown and never enable dependent UI while Unknown (ACC-001).
+         */
+        get: operations["getConnectorStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/connector/disconnect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disconnect the DK account and purge stored tokens.
+         * @description Marks the connection disconnected, purges the encrypted tokens, and resets every capability to Unknown so no dependent logic can run on a severed connection (ACC-001).
+         */
+        post: operations["disconnectConnector"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -45,6 +125,59 @@ export interface components {
             commit: string;
             /** @description Build timestamp (RFC 3339, UTC). */
             buildTime: string;
+        };
+        /** @description References the marketplace account a connector operation targets. */
+        ConnectorAccountRef: {
+            /**
+             * Format: uuid
+             * @description Marketplace account (PRD §15.1) the operation applies to.
+             */
+            marketplaceAccountId: string;
+        };
+        /** @description Connect request. The authorization code is the value DK redirects back after the seller approves access (Seller Academy token guide, §0.1). It is exchanged server-side for tokens and never persisted in plaintext. */
+        ConnectorConnectRequest: {
+            /**
+             * Format: uuid
+             * @description Marketplace account (PRD §15.1) to connect.
+             */
+            marketplaceAccountId: string;
+            /** @description One-time DK authorization code exchanged for tokens. */
+            authorizationCode: string;
+        };
+        /**
+         * @description Whether the DK connection is currently established.
+         * @enum {string}
+         */
+        ConnectorConnectionState: "connected" | "disconnected";
+        /**
+         * @description The nine connector capabilities enumerated in PRD §15.2. Each is reported independently; the marketplace name never gates behavior.
+         * @enum {string}
+         */
+        ConnectorCapability: "catalog_read" | "owned_offer_read" | "stock_read" | "buybox_read" | "boundary_read" | "commission_read" | "sales_context_read" | "price_write" | "change_feed";
+        /**
+         * @description Capability status (PRD §15.2). Starts Unknown; becomes Supported only after a probe confirms behavior. Unknown never enables dependent UI.
+         * @enum {string}
+         */
+        ConnectorCapabilityState: "unknown" | "supported" | "unsupported" | "degraded";
+        /** @description One capability's current status and last-verified time (ACC-001). */
+        CapabilityStatus: {
+            capability: components["schemas"]["ConnectorCapability"];
+            status: components["schemas"]["ConnectorCapabilityState"];
+            /**
+             * Format: date-time
+             * @description When a probe last set this status (RFC 3339, UTC). Absent until the first probe runs; a historical value never reads as current.
+             */
+            lastVerified?: string;
+            /** @description Recovery-oriented reason for a non-Supported status (ACC-003). Free text only; carries no authority (PRD §8). */
+            detail?: string;
+        };
+        /** @description Reconciled connection state plus every §15.2 capability. This is the single surface chat and screens read connector health from (ACC-001). */
+        ConnectorStatus: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            connectionState: components["schemas"]["ConnectorConnectionState"];
+            /** @description All nine §15.2 capabilities, always present. */
+            capabilities: components["schemas"]["CapabilityStatus"][];
         };
         /** @description Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator. */
         ErrorEnvelope: {
@@ -82,6 +215,137 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    connectConnector: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorConnectRequest"];
+            };
+        };
+        responses: {
+            /** @description Connection established; capability status returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorStatus"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    refreshConnector: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorAccountRef"];
+            };
+        };
+        responses: {
+            /** @description Token refreshed; capability status returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorStatus"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getConnectorStatus: {
+        parameters: {
+            query: {
+                /** @description Marketplace account whose connector status is requested. */
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current connection and capability status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorStatus"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    disconnectConnector: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorAccountRef"];
+            };
+        };
+        responses: {
+            /** @description Connection disconnected; capabilities reset to Unknown. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorStatus"];
                 };
             };
             /** @description Unexpected error. */

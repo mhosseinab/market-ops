@@ -12,6 +12,9 @@ import (
 // regenerated interface, which is the whole point of the spec-first seam.
 type gatewayServer struct {
 	build BuildInfo
+	// connector backs the /connector/* routes (ACC-001). Nil until wired; the
+	// handlers fail closed with a structured error when it is absent.
+	connector ConnectorService
 }
 
 // Compile-time assertion that we implement the full generated interface.

@@ -1,0 +1,144 @@
+package httpapi
+
+import (
+	"context"
+	"errors"
+
+	"github.com/google/uuid"
+
+	gateway "github.com/mhosseinab/market-ops/gen/go"
+	"github.com/mhosseinab/market-ops/services/core/internal/connector"
+)
+
+// ConnectorService is the connector orchestration the gateway depends on
+// (ACC-001). *connector.Service satisfies it. Keeping it an interface lets the
+// transport be tested with a fake and keeps httpapi free of DB wiring.
+type ConnectorService interface {
+	Connect(ctx context.Context, accountID uuid.UUID, authCode string) (connector.Snapshot, error)
+	Refresh(ctx context.Context, accountID uuid.UUID) (connector.Snapshot, error)
+	Disconnect(ctx context.Context, accountID uuid.UUID) (connector.Snapshot, error)
+	Status(ctx context.Context, accountID uuid.UUID) (connector.Snapshot, error)
+}
+
+// ConnectConnector exchanges an auth code and returns the reconciled status.
+func (s *gatewayServer) ConnectConnector(
+	ctx context.Context, req gateway.ConnectConnectorRequestObject,
+) (gateway.ConnectConnectorResponseObject, error) {
+	if s.connector == nil {
+		return gateway.ConnectConnectordefaultJSONResponse{StatusCode: 503, Body: unavailableErr()}, nil
+	}
+	if req.Body == nil {
+		return gateway.ConnectConnectordefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
+	}
+	snap, err := s.connector.Connect(ctx, req.Body.MarketplaceAccountId, req.Body.AuthorizationCode)
+	if err != nil {
+		return gateway.ConnectConnectordefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
+	}
+	return gateway.ConnectConnector200JSONResponse(toGatewayStatus(snap)), nil
+}
+
+// RefreshConnector rotates the token and re-probes.
+func (s *gatewayServer) RefreshConnector(
+	ctx context.Context, req gateway.RefreshConnectorRequestObject,
+) (gateway.RefreshConnectorResponseObject, error) {
+	if s.connector == nil {
+		return gateway.RefreshConnectordefaultJSONResponse{StatusCode: 503, Body: unavailableErr()}, nil
+	}
+	if req.Body == nil {
+		return gateway.RefreshConnectordefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
+	}
+	snap, err := s.connector.Refresh(ctx, req.Body.MarketplaceAccountId)
+	if err != nil {
+		return gateway.RefreshConnectordefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
+	}
+	return gateway.RefreshConnector200JSONResponse(toGatewayStatus(snap)), nil
+}
+
+// DisconnectConnector severs the connection and resets capabilities to Unknown.
+func (s *gatewayServer) DisconnectConnector(
+	ctx context.Context, req gateway.DisconnectConnectorRequestObject,
+) (gateway.DisconnectConnectorResponseObject, error) {
+	if s.connector == nil {
+		return gateway.DisconnectConnectordefaultJSONResponse{StatusCode: 503, Body: unavailableErr()}, nil
+	}
+	if req.Body == nil {
+		return gateway.DisconnectConnectordefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
+	}
+	snap, err := s.connector.Disconnect(ctx, req.Body.MarketplaceAccountId)
+	if err != nil {
+		return gateway.DisconnectConnectordefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
+	}
+	return gateway.DisconnectConnector200JSONResponse(toGatewayStatus(snap)), nil
+}
+
+// GetConnectorStatus returns the current connection + capability status.
+func (s *gatewayServer) GetConnectorStatus(
+	ctx context.Context, req gateway.GetConnectorStatusRequestObject,
+) (gateway.GetConnectorStatusResponseObject, error) {
+	if s.connector == nil {
+		return gateway.GetConnectorStatusdefaultJSONResponse{StatusCode: 503, Body: unavailableErr()}, nil
+	}
+	snap, err := s.connector.Status(ctx, req.Params.MarketplaceAccountId)
+	if err != nil {
+		return gateway.GetConnectorStatusdefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
+	}
+	return gateway.GetConnectorStatus200JSONResponse(toGatewayStatus(snap)), nil
+}
+
+// toGatewayStatus maps a connector.Snapshot onto the generated ConnectorStatus.
+// It always emits all nine capabilities in fixed order (ACC-001).
+func toGatewayStatus(snap connector.Snapshot) gateway.ConnectorStatus {
+	caps := make([]gateway.CapabilityStatus, 0, len(connector.AllCapabilities()))
+	for _, st := range snap.Registry.List() {
+		cs := gateway.CapabilityStatus{
+			Capability: gateway.ConnectorCapability(st.Capability),
+			Status:     gateway.ConnectorCapabilityState(st.State),
+		}
+		if st.LastVerified != nil {
+			t := *st.LastVerified
+			cs.LastVerified = &t
+		}
+		if st.Detail != "" {
+			d := st.Detail
+			cs.Detail = &d
+		}
+		caps = append(caps, cs)
+	}
+	return gateway.ConnectorStatus{
+		MarketplaceAccountId: snap.AccountID,
+		ConnectionState:      gateway.ConnectorConnectionState(snap.Connection),
+		Capabilities:         caps,
+	}
+}
+
+func connectorErrStatus(err error) int {
+	switch {
+	case errors.Is(err, connector.ErrInvalidAuthCode):
+		return 400
+	case errors.Is(err, connector.ErrNotConnected):
+		return 409
+	default:
+		return 502
+	}
+}
+
+func connectorErr(err error) gateway.ErrorEnvelope {
+	code := "CONNECTOR_ERROR"
+	switch {
+	case errors.Is(err, connector.ErrInvalidAuthCode):
+		code = "INVALID_ARGUMENT"
+	case errors.Is(err, connector.ErrNotConnected):
+		code = "NOT_CONNECTED"
+	}
+	msg := err.Error()
+	return gateway.ErrorEnvelope{Code: code, Message: msg}
+}
+
+func invalidArgErr(msg string) gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "INVALID_ARGUMENT", Message: msg}
+}
+
+func unavailableErr() gateway.ErrorEnvelope {
+	// Fail closed: an unwired connector never reports a healthy connection.
+	return gateway.ErrorEnvelope{Code: "CONNECTOR_UNAVAILABLE", Message: "connector service is not configured"}
+}

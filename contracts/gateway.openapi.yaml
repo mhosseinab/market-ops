@@ -81,6 +81,128 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /connector/connect:
+    post:
+      operationId: connectConnector
+      tags:
+        - organization
+      summary: Connect the DK account for a marketplace account.
+      description: >-
+        Exchanges a DK authorization code for tokens (stored encrypted at rest),
+        seeds every §15.2 capability at Unknown, and runs the capability probes.
+        Returns the reconciled connection + capability status (ACC-001).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectorConnectRequest'
+      responses:
+        '200':
+          description: Connection established; capability status returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /connector/refresh:
+    post:
+      operationId: refreshConnector
+      tags:
+        - organization
+      summary: Refresh the DK access token and re-run capability probes.
+      description: >-
+        Rotates the access token via the stored refresh token (re-encrypted at
+        rest) and re-probes every capability so status and last-verified time
+        stay current (ACC-001, ACC-003).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectorAccountRef'
+      responses:
+        '200':
+          description: Token refreshed; capability status returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /connector/status:
+    get:
+      operationId: getConnectorStatus
+      tags:
+        - organization
+      summary: Inspect connection and per-capability status.
+      description: >-
+        Returns the current connection state plus every §15.2 capability with
+        its status and last-verified time. Capabilities default to Unknown and
+        never enable dependent UI while Unknown (ACC-001).
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose connector status is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current connection and capability status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /connector/disconnect:
+    post:
+      operationId: disconnectConnector
+      tags:
+        - organization
+      summary: Disconnect the DK account and purge stored tokens.
+      description: >-
+        Marks the connection disconnected, purges the encrypted tokens, and
+        resets every capability to Unknown so no dependent logic can run on a
+        severed connection (ACC-001).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectorAccountRef'
+      responses:
+        '200':
+          description: Connection disconnected; capabilities reset to Unknown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -125,6 +247,118 @@ components:
         buildTime:
           type: string
           description: Build timestamp (RFC 3339, UTC).
+      additionalProperties: false
+
+    ConnectorAccountRef:
+      type: object
+      description: References the marketplace account a connector operation targets.
+      required:
+        - marketplaceAccountId
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: Marketplace account (PRD §15.1) the operation applies to.
+      additionalProperties: false
+
+    ConnectorConnectRequest:
+      type: object
+      description: >-
+        Connect request. The authorization code is the value DK redirects back
+        after the seller approves access (Seller Academy token guide, §0.1). It
+        is exchanged server-side for tokens and never persisted in plaintext.
+      required:
+        - marketplaceAccountId
+        - authorizationCode
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: Marketplace account (PRD §15.1) to connect.
+        authorizationCode:
+          type: string
+          minLength: 1
+          description: One-time DK authorization code exchanged for tokens.
+      additionalProperties: false
+
+    ConnectorConnectionState:
+      type: string
+      description: Whether the DK connection is currently established.
+      enum:
+        - connected
+        - disconnected
+
+    ConnectorCapability:
+      type: string
+      description: >-
+        The nine connector capabilities enumerated in PRD §15.2. Each is
+        reported independently; the marketplace name never gates behavior.
+      enum:
+        - catalog_read
+        - owned_offer_read
+        - stock_read
+        - buybox_read
+        - boundary_read
+        - commission_read
+        - sales_context_read
+        - price_write
+        - change_feed
+
+    ConnectorCapabilityState:
+      type: string
+      description: >-
+        Capability status (PRD §15.2). Starts Unknown; becomes Supported only
+        after a probe confirms behavior. Unknown never enables dependent UI.
+      enum:
+        - unknown
+        - supported
+        - unsupported
+        - degraded
+
+    CapabilityStatus:
+      type: object
+      description: One capability's current status and last-verified time (ACC-001).
+      required:
+        - capability
+        - status
+      properties:
+        capability:
+          $ref: '#/components/schemas/ConnectorCapability'
+        status:
+          $ref: '#/components/schemas/ConnectorCapabilityState'
+        lastVerified:
+          type: string
+          format: date-time
+          description: >-
+            When a probe last set this status (RFC 3339, UTC). Absent until the
+            first probe runs; a historical value never reads as current.
+        detail:
+          type: string
+          description: >-
+            Recovery-oriented reason for a non-Supported status (ACC-003).
+            Free text only; carries no authority (PRD §8).
+      additionalProperties: false
+
+    ConnectorStatus:
+      type: object
+      description: >-
+        Reconciled connection state plus every §15.2 capability. This is the
+        single surface chat and screens read connector health from (ACC-001).
+      required:
+        - marketplaceAccountId
+        - connectionState
+        - capabilities
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        connectionState:
+          $ref: '#/components/schemas/ConnectorConnectionState'
+        capabilities:
+          type: array
+          description: All nine §15.2 capabilities, always present.
+          items:
+            $ref: '#/components/schemas/CapabilityStatus'
       additionalProperties: false
 
     ErrorEnvelope:

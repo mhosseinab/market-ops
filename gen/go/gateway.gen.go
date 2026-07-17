@@ -9,9 +9,99 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"time"
+
+	"github.com/oapi-codegen/runtime"
+	openapi_types "github.com/oapi-codegen/runtime/types"
 )
+
+const (
+	BearerAuthScopes bearerAuthContextKey = "bearerAuth.Scopes"
+)
+
+// Defines values for ConnectorCapability.
+const (
+	BoundaryRead     ConnectorCapability = "boundary_read"
+	BuyboxRead       ConnectorCapability = "buybox_read"
+	CatalogRead      ConnectorCapability = "catalog_read"
+	ChangeFeed       ConnectorCapability = "change_feed"
+	CommissionRead   ConnectorCapability = "commission_read"
+	OwnedOfferRead   ConnectorCapability = "owned_offer_read"
+	PriceWrite       ConnectorCapability = "price_write"
+	SalesContextRead ConnectorCapability = "sales_context_read"
+	StockRead        ConnectorCapability = "stock_read"
+)
+
+// Valid indicates whether the value is a known member of the ConnectorCapability enum.
+func (e ConnectorCapability) Valid() bool {
+	switch e {
+	case BoundaryRead:
+		return true
+	case BuyboxRead:
+		return true
+	case CatalogRead:
+		return true
+	case ChangeFeed:
+		return true
+	case CommissionRead:
+		return true
+	case OwnedOfferRead:
+		return true
+	case PriceWrite:
+		return true
+	case SalesContextRead:
+		return true
+	case StockRead:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ConnectorCapabilityState.
+const (
+	Degraded    ConnectorCapabilityState = "degraded"
+	Supported   ConnectorCapabilityState = "supported"
+	Unknown     ConnectorCapabilityState = "unknown"
+	Unsupported ConnectorCapabilityState = "unsupported"
+)
+
+// Valid indicates whether the value is a known member of the ConnectorCapabilityState enum.
+func (e ConnectorCapabilityState) Valid() bool {
+	switch e {
+	case Degraded:
+		return true
+	case Supported:
+		return true
+	case Unknown:
+		return true
+	case Unsupported:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ConnectorConnectionState.
+const (
+	Connected    ConnectorConnectionState = "connected"
+	Disconnected ConnectorConnectionState = "disconnected"
+)
+
+// Valid indicates whether the value is a known member of the ConnectorConnectionState enum.
+func (e ConnectorConnectionState) Valid() bool {
+	switch e {
+	case Connected:
+		return true
+	case Disconnected:
+		return true
+	default:
+		return false
+	}
+}
 
 // Defines values for HealthStatus.
 const (
@@ -38,6 +128,55 @@ type BuildInfo struct {
 
 	// Version Semantic version or dev marker of the running binary.
 	Version string `json:"version"`
+}
+
+// CapabilityStatus One capability's current status and last-verified time (ACC-001).
+type CapabilityStatus struct {
+	// Capability The nine connector capabilities enumerated in PRD §15.2. Each is reported independently; the marketplace name never gates behavior.
+	Capability ConnectorCapability `json:"capability"`
+
+	// Detail Recovery-oriented reason for a non-Supported status (ACC-003). Free text only; carries no authority (PRD §8).
+	Detail *string `json:"detail,omitempty"`
+
+	// LastVerified When a probe last set this status (RFC 3339, UTC). Absent until the first probe runs; a historical value never reads as current.
+	LastVerified *time.Time `json:"lastVerified,omitempty"`
+
+	// Status Capability status (PRD §15.2). Starts Unknown; becomes Supported only after a probe confirms behavior. Unknown never enables dependent UI.
+	Status ConnectorCapabilityState `json:"status"`
+}
+
+// ConnectorAccountRef References the marketplace account a connector operation targets.
+type ConnectorAccountRef struct {
+	// MarketplaceAccountId Marketplace account (PRD §15.1) the operation applies to.
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+}
+
+// ConnectorCapability The nine connector capabilities enumerated in PRD §15.2. Each is reported independently; the marketplace name never gates behavior.
+type ConnectorCapability string
+
+// ConnectorCapabilityState Capability status (PRD §15.2). Starts Unknown; becomes Supported only after a probe confirms behavior. Unknown never enables dependent UI.
+type ConnectorCapabilityState string
+
+// ConnectorConnectRequest Connect request. The authorization code is the value DK redirects back after the seller approves access (Seller Academy token guide, §0.1). It is exchanged server-side for tokens and never persisted in plaintext.
+type ConnectorConnectRequest struct {
+	// AuthorizationCode One-time DK authorization code exchanged for tokens.
+	AuthorizationCode string `json:"authorizationCode"`
+
+	// MarketplaceAccountId Marketplace account (PRD §15.1) to connect.
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+}
+
+// ConnectorConnectionState Whether the DK connection is currently established.
+type ConnectorConnectionState string
+
+// ConnectorStatus Reconciled connection state plus every §15.2 capability. This is the single surface chat and screens read connector health from (ACC-001).
+type ConnectorStatus struct {
+	// Capabilities All nine §15.2 capabilities, always present.
+	Capabilities []CapabilityStatus `json:"capabilities"`
+
+	// ConnectionState Whether the DK connection is currently established.
+	ConnectionState      ConnectorConnectionState `json:"connectionState"`
+	MarketplaceAccountId openapi_types.UUID       `json:"marketplaceAccountId"`
 }
 
 // ErrorEnvelope Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator.
@@ -70,8 +209,35 @@ type HealthStatus string
 // bearerAuthContextKey is the context key for bearerAuth security scheme
 type bearerAuthContextKey string
 
+// GetConnectorStatusParams defines parameters for GetConnectorStatus.
+type GetConnectorStatusParams struct {
+	// MarketplaceAccountId Marketplace account whose connector status is requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
+// ConnectConnectorJSONRequestBody defines body for ConnectConnector for application/json ContentType.
+type ConnectConnectorJSONRequestBody = ConnectorConnectRequest
+
+// DisconnectConnectorJSONRequestBody defines body for DisconnectConnector for application/json ContentType.
+type DisconnectConnectorJSONRequestBody = ConnectorAccountRef
+
+// RefreshConnectorJSONRequestBody defines body for RefreshConnector for application/json ContentType.
+type RefreshConnectorJSONRequestBody = ConnectorAccountRef
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// Connect the DK account for a marketplace account.
+	// (POST /connector/connect)
+	ConnectConnector(w http.ResponseWriter, r *http.Request)
+	// Disconnect the DK account and purge stored tokens.
+	// (POST /connector/disconnect)
+	DisconnectConnector(w http.ResponseWriter, r *http.Request)
+	// Refresh the DK access token and re-run capability probes.
+	// (POST /connector/refresh)
+	RefreshConnector(w http.ResponseWriter, r *http.Request)
+	// Inspect connection and per-capability status.
+	// (GET /connector/status)
+	GetConnectorStatus(w http.ResponseWriter, r *http.Request, params GetConnectorStatusParams)
 	// Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
@@ -85,6 +251,105 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ConnectConnector operation middleware
+func (siw *ServerInterfaceWrapper) ConnectConnector(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ConnectConnector(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DisconnectConnector operation middleware
+func (siw *ServerInterfaceWrapper) DisconnectConnector(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DisconnectConnector(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RefreshConnector operation middleware
+func (siw *ServerInterfaceWrapper) RefreshConnector(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RefreshConnector(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetConnectorStatus operation middleware
+func (siw *ServerInterfaceWrapper) GetConnectorStatus(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetConnectorStatusParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetConnectorStatus(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(w http.ResponseWriter, r *http.Request) {
@@ -220,9 +485,169 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 		ErrorHandlerFunc:   options.ErrorHandlerFunc,
 	}
 
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/connect", wrapper.ConnectConnector)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/disconnect", wrapper.DisconnectConnector)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/refresh", wrapper.RefreshConnector)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/connector/status", wrapper.GetConnectorStatus)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
 
 	return m
+}
+
+type ConnectConnectorRequestObject struct {
+	Body *ConnectConnectorJSONRequestBody
+}
+
+type ConnectConnectorResponseObject interface {
+	VisitConnectConnectorResponse(w http.ResponseWriter) error
+}
+
+type ConnectConnector200JSONResponse ConnectorStatus
+
+func (response ConnectConnector200JSONResponse) VisitConnectConnectorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConnectConnectordefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ConnectConnectordefaultJSONResponse) VisitConnectConnectorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DisconnectConnectorRequestObject struct {
+	Body *DisconnectConnectorJSONRequestBody
+}
+
+type DisconnectConnectorResponseObject interface {
+	VisitDisconnectConnectorResponse(w http.ResponseWriter) error
+}
+
+type DisconnectConnector200JSONResponse ConnectorStatus
+
+func (response DisconnectConnector200JSONResponse) VisitDisconnectConnectorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DisconnectConnectordefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response DisconnectConnectordefaultJSONResponse) VisitDisconnectConnectorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RefreshConnectorRequestObject struct {
+	Body *RefreshConnectorJSONRequestBody
+}
+
+type RefreshConnectorResponseObject interface {
+	VisitRefreshConnectorResponse(w http.ResponseWriter) error
+}
+
+type RefreshConnector200JSONResponse ConnectorStatus
+
+func (response RefreshConnector200JSONResponse) VisitRefreshConnectorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RefreshConnectordefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response RefreshConnectordefaultJSONResponse) VisitRefreshConnectorResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetConnectorStatusRequestObject struct {
+	Params GetConnectorStatusParams
+}
+
+type GetConnectorStatusResponseObject interface {
+	VisitGetConnectorStatusResponse(w http.ResponseWriter) error
+}
+
+type GetConnectorStatus200JSONResponse ConnectorStatus
+
+func (response GetConnectorStatus200JSONResponse) VisitGetConnectorStatusResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetConnectorStatusdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetConnectorStatusdefaultJSONResponse) VisitGetConnectorStatusResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type GetHealthzRequestObject struct {
@@ -265,6 +690,18 @@ func (response GetHealthzdefaultJSONResponse) VisitGetHealthzResponse(w http.Res
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// Connect the DK account for a marketplace account.
+	// (POST /connector/connect)
+	ConnectConnector(ctx context.Context, request ConnectConnectorRequestObject) (ConnectConnectorResponseObject, error)
+	// Disconnect the DK account and purge stored tokens.
+	// (POST /connector/disconnect)
+	DisconnectConnector(ctx context.Context, request DisconnectConnectorRequestObject) (DisconnectConnectorResponseObject, error)
+	// Refresh the DK access token and re-run capability probes.
+	// (POST /connector/refresh)
+	RefreshConnector(ctx context.Context, request RefreshConnectorRequestObject) (RefreshConnectorResponseObject, error)
+	// Inspect connection and per-capability status.
+	// (GET /connector/status)
+	GetConnectorStatus(ctx context.Context, request GetConnectorStatusRequestObject) (GetConnectorStatusResponseObject, error)
 	// Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(ctx context.Context, request GetHealthzRequestObject) (GetHealthzResponseObject, error)
@@ -297,6 +734,125 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ConnectConnector operation middleware
+func (sh *strictHandler) ConnectConnector(w http.ResponseWriter, r *http.Request) {
+	var request ConnectConnectorRequestObject
+
+	var body ConnectConnectorJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ConnectConnector(ctx, request.(ConnectConnectorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ConnectConnector")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ConnectConnectorResponseObject); ok {
+		if err := validResponse.VisitConnectConnectorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DisconnectConnector operation middleware
+func (sh *strictHandler) DisconnectConnector(w http.ResponseWriter, r *http.Request) {
+	var request DisconnectConnectorRequestObject
+
+	var body DisconnectConnectorJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DisconnectConnector(ctx, request.(DisconnectConnectorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DisconnectConnector")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DisconnectConnectorResponseObject); ok {
+		if err := validResponse.VisitDisconnectConnectorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RefreshConnector operation middleware
+func (sh *strictHandler) RefreshConnector(w http.ResponseWriter, r *http.Request) {
+	var request RefreshConnectorRequestObject
+
+	var body RefreshConnectorJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RefreshConnector(ctx, request.(RefreshConnectorRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RefreshConnector")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RefreshConnectorResponseObject); ok {
+		if err := validResponse.VisitRefreshConnectorResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetConnectorStatus operation middleware
+func (sh *strictHandler) GetConnectorStatus(w http.ResponseWriter, r *http.Request, params GetConnectorStatusParams) {
+	var request GetConnectorStatusRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetConnectorStatus(ctx, request.(GetConnectorStatusRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetConnectorStatus")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetConnectorStatusResponseObject); ok {
+		if err := validResponse.VisitGetConnectorStatusResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // GetHealthz operation middleware

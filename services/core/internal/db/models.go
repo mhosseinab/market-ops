@@ -8,7 +8,32 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+type ConnectorCapability struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	Capability           string
+	Status               string
+	Detail               pgtype.Text
+	LastVerifiedAt       pgtype.Timestamptz
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type ConnectorConnection struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	ConnectionState      string
+	AccessTokenSealed    []byte
+	RefreshTokenSealed   []byte
+	AccessExpiresAt      pgtype.Timestamptz
+	RefreshExpiresAt     pgtype.Timestamptz
+	KeyVersion           int32
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
 
 type MarketplaceAccount struct {
 	ID              uuid.UUID
