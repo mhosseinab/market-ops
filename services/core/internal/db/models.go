@@ -11,6 +11,35 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type CatalogPayloadSnapshot struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	SyncRunID            uuid.UUID
+	NativeVariantID      int64
+	Page                 int32
+	Payload              []byte
+	CapturedAt           time.Time
+}
+
+type CatalogSyncRun struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	Kind                 string
+	Status               string
+	NextPage             int32
+	PagesDone            int32
+	TotalPages           int32
+	TotalRows            int32
+	ItemsSeen            int32
+	RecordsInserted      int32
+	RecordsUpdated       int32
+	DriftCount           int32
+	Error                string
+	StartedAt            time.Time
+	UpdatedAt            time.Time
+	CompletedAt          pgtype.Timestamptz
+}
+
 type ConnectorCapability struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -35,6 +64,17 @@ type ConnectorConnection struct {
 	UpdatedAt            time.Time
 }
 
+type Listing struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	NativeListingID      int64
+	SellingChannel       string
+	ProductUrl           string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
 type MarketplaceAccount struct {
 	ID              uuid.UUID
 	OrganizationID  uuid.UUID
@@ -51,6 +91,33 @@ type Organization struct {
 	UpdatedAt time.Time
 }
 
+type OwnedOffer struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	NativeVariantID      int64
+	PriceRawText         string
+	PriceRawValue        string
+	PriceRawUnit         string
+	SellerStock          pgtype.Int8
+	WarehouseStock       pgtype.Int8
+	LastSeenRunID        pgtype.UUID
+	LastSeenAt           pgtype.Timestamptz
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type Product struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	NativeProductID      int64
+	Title                string
+	BrandTitle           string
+	ProductUrl           string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
 type User struct {
 	ID             uuid.UUID
 	OrganizationID uuid.UUID
@@ -58,4 +125,16 @@ type User struct {
 	Role           string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type Variant struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	ProductID            uuid.UUID
+	NativeVariantID      int64
+	NativeProductID      int64
+	SupplierCode         string
+	Title                string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }

@@ -11,17 +11,37 @@ import (
 )
 
 type Querier interface {
+	// Persist page progress after a page is fully applied. next_page is the resume
+	// cursor an interrupted import continues from; counters accumulate.
+	AdvanceCatalogSyncRun(ctx context.Context, arg AdvanceCatalogSyncRunParams) (CatalogSyncRun, error)
+	CompleteCatalogSyncRun(ctx context.Context, arg CompleteCatalogSyncRunParams) (CatalogSyncRun, error)
+	CountCatalogSnapshots(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	// Reconciliation: owned offers not observed by the given run are drift (missing
+	// from the latest full fetch). Reported, never silently deleted.
+	CountDriftedOwnedOffers(ctx context.Context, arg CountDriftedOwnedOffersParams) (int64, error)
+	CountListings(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	CountOwnedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	CountProducts(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	CountVariants(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
 	CreateMarketplaceAccount(ctx context.Context, arg CreateMarketplaceAccountParams) (MarketplaceAccount, error)
 	CreateOrganization(ctx context.Context, name string) (Organization, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	// Sever the connection and purge sealed tokens (ACC-001). Idempotent.
 	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
+	FailCatalogSyncRun(ctx context.Context, arg FailCatalogSyncRunParams) (CatalogSyncRun, error)
+	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
+	// Backs the sync-status view the UI reads (data persisted for a later UI step).
+	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (CatalogSyncRun, error)
 	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (MarketplaceAccount, error)
 	GetMarketplaceAccountByNativeID(ctx context.Context, nativeAccountID string) (MarketplaceAccount, error)
 	GetMarketplaceAccountByOrganization(ctx context.Context, organizationID uuid.UUID) (MarketplaceAccount, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
+	// APPEND-ONLY: the only write path to this table is INSERT. Raw item JSON kept
+	// verbatim as evidence (plan §4.7). No UPDATE/DELETE query exists by design.
+	InsertCatalogPayloadSnapshot(ctx context.Context, arg InsertCatalogPayloadSnapshotParams) error
 	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
@@ -32,11 +52,28 @@ type Querier interface {
 	// Insert a capability at 'unknown' if absent; leave an existing row untouched so
 	// a prior probe result is not clobbered by a re-seed (capability-gating invariant).
 	SeedConnectorCapability(ctx context.Context, arg SeedConnectorCapabilityParams) error
+	// Record a retryable error WITHOUT marking the run failed: status stays 'running'
+	// and next_page is untouched, so a retry (River backoff) resumes from the same
+	// page. Used for transient fetch/apply faults (pagination fault, parser drift).
+	SetCatalogSyncRunError(ctx context.Context, arg SetCatalogSyncRunErrorParams) (CatalogSyncRun, error)
 	// Record a probe result. Only a probe calls this; status is set explicitly and
 	// last_verified_at stamps when it was determined.
 	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
 	// Establish or update the connection with sealed tokens (connect / refresh).
 	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)
+	UpsertListing(ctx context.Context, arg UpsertListingParams) (UpsertListingRow, error)
+	// Money quarantine (§9.1): price is stored ONLY as raw evidence text; there is no
+	// Money/currency column and no conversion path. last_seen_run_id stamps the run
+	// that observed this offer for the reconciliation drift pass.
+	UpsertOwnedOffer(ctx context.Context, arg UpsertOwnedOfferParams) (UpsertOwnedOfferRow, error)
+	// Catalog + owned-offer sync queries (S10, CAT-001, ACC-004/ACC-005).
+	// Every canonical upsert conflicts on the stable DK native identifier so a
+	// repeated or REORDERED payload replay updates in place and never inserts a
+	// duplicate. The `(xmax = 0) AS inserted` flag distinguishes an INSERT from an
+	// UPDATE (Postgres system-column idiom) so the sync run can count new vs changed
+	// records without a second round trip.
+	UpsertProduct(ctx context.Context, arg UpsertProductParams) (UpsertProductRow, error)
+	UpsertVariant(ctx context.Context, arg UpsertVariantParams) (UpsertVariantRow, error)
 }
 
 var _ Querier = (*Queries)(nil)
