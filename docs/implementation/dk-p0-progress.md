@@ -33,6 +33,7 @@ Review routing: canonical capability roles per plan §4.6 and `dk-p0-agent-guide
 - S35: all PRD §4.1 Gate 0a live measurements on ≥3 production accounts; per-threshold pass/fail + PRD-decided consequence recorded in plan §11.
 - S35 (from S9 review): the connector probe fires an EMPTY-BATCH price_write POST on every connect/refresh — offline/mock it's inert, but before any LIVE connect confirm an empty batch is genuinely non-mutating & non-billable on real DK, and consider gating the write probe behind explicit opt-in. price_write stays capped at Degraded until a human-approved reversible write probe.
 - S32: §16 edge-case rows not automatable offline — list them here when S32 lands, with manual-test owners.
+- **LOC-003 native-Persian copy sign-off (RELEASE GATE, §20 beta — beyond S36 internal alpha):** all authored non-glossary Persian copy (nav/route subtitles/messages across S25–S29) needs a real native Persian operator sign-off before private beta. locale-qa proxy reviews can't discharge it. Accumulate the copy surface as web screens land; requires human native reviewer.
 
 ## Open blocked-step issues
 > One line per issue filed under the 3-cycle policy: `S<k> — <GitHub issue URL or dk-p0-issues.md#id> — <one-line reason> — dependents held: <steps>`. Mark resolved when the step re-runs to `passed` or the human descopes it in the plan. MUST be empty before S36 sign-off.
@@ -66,7 +67,7 @@ Review routing: canonical capability roles per plan §4.6 and `dk-p0-agent-guide
 | S22 | Response contract + grounding | pending | 0 | — | — | |
 | S23 | Chat flows (briefing…monitoring) [C] | pending | 0 | — | — | |
 | S24 | Eval harness + eval sets | pending | 0 | — | — | paid benchmark deferred; phase-C boundary |
-| S25 | SPA foundation + i18n + pseudo-locale gate | in_progress | 1 | (worker worktree) | — | dispatched (web-surface; +locale-qa co-review for fa-IR/RTL/Jalali/canonical-terms). Deps S4+S6✓. Replaces S6 pseudoloc placeholder in ci.yml. Context7 blocked→empirical Spotlight wiring |
+| S25 | SPA foundation + i18n + pseudo-locale gate | passed | 1 | worktree-agent-a4d3322c | 757c1b21 | PASS: web-surface area + locale-qa BOTH cycle 1. Merged 8761e8e (clean; verified ts:lint/test/pseudoloc + contracts:drift 0 post-merge w/ S8/S9 gen). Vite8/React19/TanStack shell, fa-IR verbatim §11.4 terms, Jalali-over-UTC (leap-verified via Intl), source-unit-only money, copylint+pseudoloc gates live in CI (S6 placeholder removed), Sentry→Spotlight tree-shaken from prod. CF (non-block): LOC-010 lang-switcher hardcodes 2 locales→data-drive; @sentry/react→devDependencies; wire assert-prod-clean into ci:local (later web step); add Tehran-tz Jalali boundary row. **LOC-003 native Persian sign-off = release gate (deferred list).** Route bodies are scaffold EmptyStates → S26–S28 fill |
 | S26 | Screens: onboarding/products/cost | pending | 0 | — | — | |
 | S27 | Screens: Today/event/recommendation/approval | pending | 0 | — | — | |
 | S28 | Screens: market/actions/bulk/settings/ops | pending | 0 | — | — | |
