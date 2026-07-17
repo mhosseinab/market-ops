@@ -17,7 +17,7 @@ tasks:
     cmds:
       - |
         missing=0
-        for tool in node pnpm uv go golangci-lint oapi-codegen goose sqlc river docker jq; do
+        for tool in node pnpm uv go golangci-lint semgrep oapi-codegen goose sqlc river docker jq; do
           if ! command -v "$tool" >/dev/null 2>&1; then
             echo "MISSING: $tool"
             missing=1
@@ -85,6 +85,30 @@ tasks:
       - go:lint
       - py:lint
       - ts:lint
+      - lint:money
+
+  lint:money:
+    desc: >-
+      Money static guard (PRD §9.1 / §4.6): semgrep second layer banning raw
+      integer arithmetic and float on the money paths internal/{money,margin,
+      policy,approval}. The forbidigo layer in .golangci.yml (run by go:lint)
+      covers floats; this covers arithmetic operators forbidigo cannot match.
+    silent: true
+    cmds:
+      # Fail closed: a money guard that silently skips when its linter is absent
+      # would be a never-cut-invariant weakening (PRD §4.6). Install semgrep
+      # (`uv tool install semgrep`) rather than bypassing this.
+      - |
+        if ! command -v semgrep >/dev/null 2>&1; then
+          echo "lint:money: semgrep is required but not installed." >&2
+          echo "  Install: uv tool install semgrep   (or pipx install semgrep)" >&2
+          echo "  The money raw-arithmetic/float guard (PRD §9.1) fails closed when absent." >&2
+          exit 1
+        fi
+      # Scan the whole core module; the rule's path filters (tools/semgrep/money.yml)
+      # restrict findings to the four money-domain packages, so packages that do
+      # not exist yet are simply not matched.
+      - semgrep --config tools/semgrep/money.yml services/core --error --quiet --disable-version-check
 
   db:reset:
     desc: Drop + recreate the dev DB, then goose up + river migrate-up + seed fixtures.

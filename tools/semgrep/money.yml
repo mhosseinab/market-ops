@@ -1,0 +1,55 @@
+# Money static guard — second layer over the forbidigo rules in .golangci.yml.
+#
+# PRD §9.1 / §4.6 (never-cut): "A static rule forbids raw integer arithmetic in
+# money, margin, policy, and card packages" and "No floating-point value enters
+# a money path." This file is that rule's second, tool-independent enforcement.
+#
+# Scope: internal/{money,margin,policy,approval}. All monetary math must go
+# through Money methods (money.Add/Sub/Neg/Compare/ApplyRate) or, inside
+# internal/money only, the audited overflow-checked primitives in checked.go
+# whose operator lines carry an explicit `//nosemgrep: money-raw-int-arithmetic`
+# marker. There is no other sanctioned place for `+ - * / %` on money-domain
+# values, and no float anywhere on these paths.
+#
+# Do NOT weaken these rules to pass a check (CLAUDE.md money rules). Adding a
+# `nosemgrep` marker outside checked.go, or excluding a whole file, is a
+# guard-weakening change and must be rejected in review.
+rules:
+  - id: money-raw-int-arithmetic
+    languages: [go]
+    severity: ERROR
+    message: >-
+      Raw arithmetic operator on a money path (PRD §9.1). Route integer math
+      through Money methods or the audited checked.go primitives; never use raw
+      + - * / % here.
+    paths:
+      include:
+        - "services/core/internal/money/"
+        - "services/core/internal/margin/"
+        - "services/core/internal/policy/"
+        - "services/core/internal/approval/"
+    patterns:
+      - pattern-either:
+          - pattern: $A + $B
+          - pattern: $A - $B
+          - pattern: $A * $B
+          - pattern: $A / $B
+          - pattern: $A % $B
+
+  - id: money-no-float
+    languages: [go]
+    severity: ERROR
+    message: >-
+      No floating point on a money path (PRD §9.1). Represent rates/percentages
+      as fixed-point basis points and amounts as Money.
+    paths:
+      include:
+        - "services/core/internal/money/"
+        - "services/core/internal/margin/"
+        - "services/core/internal/policy/"
+        - "services/core/internal/approval/"
+    patterns:
+      - pattern-either:
+          - pattern: float32($X)
+          - pattern: float64($X)
+          - pattern-regex: '\bfloat(32|64)\b'
