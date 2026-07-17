@@ -15,6 +15,12 @@ type gatewayServer struct {
 	// connector backs the /connector/* routes (ACC-001). Nil until wired; the
 	// handlers fail closed with a structured error when it is absent.
 	connector ConnectorService
+	// auth backs the /auth/* routes and the permission middleware (ACC-002).
+	// Nil until wired; auth routes fail closed when it is absent.
+	auth AuthService
+	// cookieSecure sets the Secure attribute on the session cookie. Defaults to
+	// true (production posture); local plain-HTTP dev may disable it.
+	cookieSecure CookieSecure
 }
 
 // Compile-time assertion that we implement the full generated interface.

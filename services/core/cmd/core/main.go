@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/auth"
 	"github.com/mhosseinab/market-ops/services/core/internal/config"
 	"github.com/mhosseinab/market-ops/services/core/internal/connector"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
@@ -67,17 +68,40 @@ func run() error {
 
 	info := httpapi.BuildInfo{Version: version, Commit: commit, BuildTime: buildTime}
 
-	// Wire the DK connector when its prerequisites are present. It fails CLOSED:
-	// a missing DATABASE_URL or CONNECTOR_ENCRYPTION_KEY leaves the /connector
-	// routes unwired (they return a structured error), never a healthy state.
+	// A single pgx pool backs every DB-backed route. When DATABASE_URL is unset
+	// the server serves only public routes; nothing DB-backed is wired.
 	var serverOpts []httpapi.Option
-	connSvc, closeConn, connErr := buildConnector(ctx, logger)
-	if connErr != nil {
-		logger.Warn("connector not wired; /connector routes fail closed", "error", connErr)
-	} else if connSvc != nil {
-		serverOpts = append(serverOpts, httpapi.WithConnector(connSvc))
-		defer closeConn()
-		logger.Info("connector wired")
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL != "" {
+		pool, err := pgxpool.New(ctx, dbURL)
+		if err != nil {
+			return err
+		}
+		defer pool.Close()
+		queries := db.New(pool)
+
+		// Auth is wired first: it arms the permission middleware that guards the
+		// connector routes. If auth cannot be wired, the connector routes must
+		// NOT be exposed unauthenticated, so we refuse to wire the connector too.
+		authSvc := auth.NewService(queries)
+		serverOpts = append(serverOpts,
+			httpapi.WithAuth(authSvc),
+			httpapi.WithCookieSecure(cfg.AppEnv != "dev"),
+		)
+		logger.Info("auth wired; permission middleware armed")
+
+		// Wire the DK connector when its own prerequisites are present. It fails
+		// CLOSED: a missing/invalid CONNECTOR_ENCRYPTION_KEY leaves the
+		// /connector routes returning a structured error, never a healthy state.
+		connSvc, connErr := buildConnector(ctx, logger, pool, queries)
+		if connErr != nil {
+			logger.Warn("connector not wired; /connector routes fail closed", "error", connErr)
+		} else if connSvc != nil {
+			serverOpts = append(serverOpts, httpapi.WithConnector(connSvc))
+			logger.Info("connector wired")
+		}
+	} else {
+		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
 	}
 
 	srv := httpapi.NewServer(cfg.HTTPAddr, info, logger, serverOpts...)
@@ -124,25 +148,18 @@ func run() error {
 	return nil
 }
 
-// buildConnector assembles the DK connector service from the environment. It
-// returns (nil, noop, nil) when DATABASE_URL is unset (connector simply not
-// wired in this deployment) and an error when a prerequisite is present but
-// invalid (e.g. a database that will not connect, or a missing/invalid
-// encryption key while a DB is configured — fail closed, never plaintext).
-func buildConnector(ctx context.Context, logger *slog.Logger) (httpapi.ConnectorService, func(), error) {
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		return nil, func() {}, nil
-	}
-	// Encryption key is mandatory once a DB is present: without it we cannot seal
-	// tokens at rest, so we refuse to wire the connector at all.
+// buildConnector assembles the DK connector service over an already-open pool.
+// It returns an error when a prerequisite is present but invalid (e.g. a
+// missing/invalid encryption key — fail closed, never plaintext). The pool
+// lifecycle is owned by the caller.
+func buildConnector(
+	_ context.Context, logger *slog.Logger, _ *pgxpool.Pool, queries *db.Queries,
+) (httpapi.ConnectorService, error) {
+	// Encryption key is mandatory: without it we cannot seal tokens at rest, so
+	// we refuse to wire the connector at all.
 	cipher, err := connector.NewCipherFromEnv(os.Getenv)
 	if err != nil {
-		return nil, func() {}, err
-	}
-	pool, err := pgxpool.New(ctx, dbURL)
-	if err != nil {
-		return nil, func() {}, err
+		return nil, err
 	}
 	dkBase := os.Getenv("DK_API_BASE_URL")
 	if dkBase == "" {
@@ -151,10 +168,8 @@ func buildConnector(ctx context.Context, logger *slog.Logger) (httpapi.Connector
 	}
 	dk, err := connector.NewDKClient(dkBase, nil)
 	if err != nil {
-		pool.Close()
-		return nil, func() {}, err
+		return nil, err
 	}
 	logger.Info("connector target", "dk_base_url", dkBase)
-	svc := connector.NewService(db.New(pool), cipher, dk)
-	return svc, pool.Close, nil
+	return connector.NewService(queries, cipher, dk), nil
 }

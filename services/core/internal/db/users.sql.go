@@ -56,6 +56,30 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 	return i, err
 }
 
+const getUserByEmail = `-- name: GetUserByEmail :one
+SELECT id, organization_id, email, role, created_at, updated_at FROM users
+WHERE email = $1
+ORDER BY created_at, id
+LIMIT 1
+`
+
+// Login identifier lookup. Emails are unique per organization; in P0 the beta
+// runs one organization, so this resolves the login user. A duplicate email
+// across organizations would return the earliest-created row deterministically.
+func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRow(ctx, getUserByEmail, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.Email,
+		&i.Role,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const listUsersByOrganization = `-- name: ListUsersByOrganization :many
 SELECT id, organization_id, email, role, created_at, updated_at FROM users
 WHERE organization_id = $1

@@ -11,6 +11,9 @@ from .connector_status import ConnectorStatus
 from .error_envelope import ErrorEnvelope
 from .health import Health
 from .health_status import HealthStatus
+from .login_request import LoginRequest
+from .session_info import SessionInfo
+from .user_role import UserRole
 
 __all__ = (
     "BuildInfo",
@@ -24,4 +27,7 @@ __all__ = (
     "ErrorEnvelope",
     "Health",
     "HealthStatus",
+    "LoginRequest",
+    "SessionInfo",
+    "UserRole",
 )
