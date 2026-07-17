@@ -7,13 +7,22 @@ pre-commit:
   commands:
     biome:
       glob: "*.{ts,tsx}"
+      # Generated clients under gen/ are excluded from ALL linters (monorepo §4).
+      # biome lints explicitly-passed paths even when its config ignores gen/ts,
+      # so exclude gen/ at the hook to avoid fighting the generator's formatting.
+      exclude: "gen/"
       run: pnpm biome check --no-errors-on-unmatched {staged_files}
     ruff-check:
       glob: "*.py"
+      # Generated clients under gen/ are excluded from ALL linters (monorepo §4);
+      # gen/python carries its own generator-owned ruff config, so it must be
+      # excluded here rather than relying on root-config discovery.
+      exclude: "gen/"
       stage_fixed: true
       run: uv run ruff check --fix {staged_files}
     ruff-format:
       glob: "*.py"
+      exclude: "gen/"
       stage_fixed: true
       run: uv run ruff format {staged_files}
     gofmt:

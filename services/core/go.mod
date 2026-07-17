@@ -4,9 +4,18 @@ go 1.25.0
 
 require (
 	github.com/getsentry/sentry-go v0.48.0
+	github.com/mhosseinab/market-ops/gen/go v0.0.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.44.0
 	go.opentelemetry.io/otel/sdk v1.44.0
+)
+
+// Generated modules are consumed via local replace (monorepo §2 dependency
+// table). gen/dkgo is wired here so the replace exists from S4; its importer
+// (internal/connector) lands in a later step.
+replace (
+	github.com/mhosseinab/market-ops/gen/dkgo => ../../gen/dkgo
+	github.com/mhosseinab/market-ops/gen/go => ../../gen/go
 )
 
 require (

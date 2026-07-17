@@ -12,7 +12,9 @@ tasks:
       # Pin the workspace go line to the module's required version so a fresh
       # clone on an older toolchain (< the module's `go` directive) still resolves
       # via GOTOOLCHAIN=auto instead of failing "go.work lists go <older>".
-      - go work init ./services/core
+      # Members: the core module plus the generated Go modules it consumes
+      # (gen/go server stubs, gen/dkgo DK Seller client) — monorepo §2.
+      - go work init ./services/core ./gen/go ./gen/dkgo
       - go work edit -go=1.25.0
 
   sync:

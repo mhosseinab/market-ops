@@ -1,0 +1,152 @@
+openapi: 3.1.0
+info:
+  title: Market-Ops Gateway API
+  description: >-
+    Internal gateway API for the DK Marketplace Intelligence platform. This
+    document is the single source of truth for the gateway contract (plan
+    §4.3): the Go server (`gen/go`), the TypeScript client (`gen/ts`), and the
+    Python client (`gen/python`) are all generated from it and committed. It is
+    the ONLY hand-edited contract artifact; evolution is additive within P0.
+    Schemas are named after the PRD §15.1 canonical records; one tag per domain.
+  version: 0.0.0
+  contact:
+    name: api_data_contracts
+
+servers:
+  - url: http://localhost:8080
+    description: Local dev (core service)
+
+# Bearer (JWT) auth applies to the whole surface by default. Operational probes
+# such as /healthz opt out with an explicit empty `security: []`.
+security:
+  - bearerAuth: []
+
+# One tag per PRD §15.1 canonical domain. These are placeholders in v0 — the
+# operations that populate them land in later [C] steps. Keeping the tag set
+# here fixes the naming vocabulary every plane generates against.
+tags:
+  - name: system
+    description: Liveness and build identity (unauthenticated operational probes).
+  - name: organization
+    description: Organization / Marketplace Account — reconciled account and capability state.
+  - name: product
+    description: Product / Variant / Listing / Owned Offer — canonical owned state with native IDs.
+  - name: identity
+    description: Market Product Identity — versioned Confirmed/Needs Review/Rejected/Obsolete mapping.
+  - name: observation
+    description: Observation / Observed Offer — append-only evidence and its derived current view.
+  - name: economics
+    description: Cost Profile / Margin Snapshot — versioned economics.
+  - name: event
+    description: Market Event — lifecycle records.
+  - name: recommendation
+    description: Recommendation — versioned, expiring policy result.
+  - name: approval
+    description: Approval Card — versioned, expiring rendering of exact action parameters.
+  - name: selection
+    description: Selection Set — named, versioned bulk scope.
+  - name: action
+    description: Action — append-only attempt and state history.
+  - name: outcome
+    description: Outcome Window — append-only measured result and confidence.
+  - name: conversation
+    description: Conversation / Context / Message — retained interaction records.
+  - name: investigation
+    description: Saved Investigation — pinned conversation.
+  - name: pilot
+    description: Pilot Assortment — versioned beta measurement unit.
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      tags:
+        - system
+      summary: Liveness probe with build identity.
+      description: >-
+        Returns service liveness plus the running binary's build identity.
+        Unauthenticated so orchestrators and load balancers can probe it.
+      security: []
+      responses:
+        '200':
+          description: The service is live.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Gateway bearer token. The LLM plane carries a read/Draft-only token
+        (PRD §8); scope enforcement is server-side, never inferred from shape.
+
+  schemas:
+    Health:
+      type: object
+      description: Liveness plus build identity, returned by GET /healthz.
+      required:
+        - status
+        - build
+      properties:
+        status:
+          type: string
+          description: Liveness marker; "ok" when the service is live.
+          enum:
+            - ok
+        build:
+          $ref: '#/components/schemas/BuildInfo'
+      additionalProperties: false
+
+    BuildInfo:
+      type: object
+      description: Identity of the running binary.
+      required:
+        - version
+        - commit
+        - buildTime
+      properties:
+        version:
+          type: string
+          description: Semantic version or dev marker of the running binary.
+        commit:
+          type: string
+          description: VCS commit the binary was built from.
+        buildTime:
+          type: string
+          description: Build timestamp (RFC 3339, UTC).
+      additionalProperties: false
+
+    ErrorEnvelope:
+      type: object
+      description: >-
+        Canonical error shape for every gateway endpoint. Free text lives in
+        `message`/`detail` only and never carries authority (PRD §8 free-text
+        containment); `code` is the stable machine-readable discriminator.
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Stable, machine-readable error code (screaming_snake_case).
+        message:
+          type: string
+          description: Human-readable summary. Localized at the edge, never in core.
+        detail:
+          type: string
+          description: Optional additional context for diagnostics.
+        requestId:
+          type: string
+          description: Correlation id for tracing this request across planes.
+      additionalProperties: false

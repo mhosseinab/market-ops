@@ -9,6 +9,16 @@ import (
 	"testing"
 )
 
+// healthBody mirrors the generated Health schema shape for decode assertions.
+type healthBody struct {
+	Status string `json:"status"`
+	Build  struct {
+		Version   string `json:"version"`
+		Commit    string `json:"commit"`
+		BuildTime string `json:"buildTime"`
+	} `json:"build"`
+}
+
 func TestHealthz(t *testing.T) {
 	info := BuildInfo{Version: "test", Commit: "abc123", BuildTime: "2026-07-17T00:00:00Z"}
 	srv := NewServer(":0", info, slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -38,17 +48,19 @@ func TestHealthz(t *testing.T) {
 				return
 			}
 
-			var got healthResponse
+			var got healthBody
 			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 				t.Fatalf("decode body: %v", err)
 			}
 			if got.Status != "ok" {
 				t.Errorf("status field = %q, want %q", got.Status, "ok")
 			}
-			if got.Build != info {
+			if got.Build.Version != info.Version ||
+				got.Build.Commit != info.Commit ||
+				got.Build.BuildTime != info.BuildTime {
 				t.Errorf("build = %+v, want %+v", got.Build, info)
 			}
-			if ct := rec.Header().Get("Content-Type"); ct != "application/json; charset=utf-8" {
+			if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
 				t.Errorf("Content-Type = %q", ct)
 			}
 		})

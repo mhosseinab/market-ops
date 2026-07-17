@@ -25,6 +25,8 @@ go.work.sum
 
 # Compiled binaries (services/core builds into bin/).
 services/core/bin/
+# Compiled output of the DK-doc normalizer tool (built ad hoc; never committed).
+contracts/tools/dknormalize/dknormalize
 *.exe
 *.exe~
 *.dll
