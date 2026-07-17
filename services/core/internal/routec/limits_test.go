@@ -79,9 +79,10 @@ func TestLimiterPerAccountCap(t *testing.T) {
 }
 
 // TestBudgetReserveAndConsume asserts request headroom is enforced and byte spend
-// is tracked per account.
+// is tracked per account within a window.
 func TestBudgetReserveAndConsume(t *testing.T) {
-	b := routec.NewBudget(3, 1000)
+	clock := time.Unix(0, 0).UTC()
+	b := routec.NewBudget(3, 1000, 24*time.Hour, func() time.Time { return clock })
 	a := uuid.New()
 	for i := 0; i < 3; i++ {
 		if !b.Reserve(a) {
@@ -98,6 +99,37 @@ func TestBudgetReserveAndConsume(t *testing.T) {
 	b.Consume(a, 999)
 	if got := b.Snapshot(a).BytesRemaining; got != 1 {
 		t.Fatalf("bytes remaining: got %d want 1", got)
+	}
+}
+
+// TestBudgetWindowRollover is the §17.3 daily-budget acceptance: an exhausted
+// account resumes after the window boundary. The reset is deterministic —
+// driven by advancing the injected clock past the window, never wall-clock.
+func TestBudgetWindowRollover(t *testing.T) {
+	clock := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
+	b := routec.NewBudget(2, 1<<30, 24*time.Hour, func() time.Time { return clock })
+	a := uuid.New()
+
+	r1 := b.Reserve(a)
+	r2 := b.Reserve(a)
+	if !r1 || !r2 {
+		t.Fatal("first two reserves in window should succeed")
+	}
+	if b.Reserve(a) {
+		t.Fatal("third reserve within window must fail (budget exhausted)")
+	}
+	// Advance within the SAME day: still exhausted (no premature reset).
+	clock = clock.Add(6 * time.Hour)
+	if b.Reserve(a) {
+		t.Fatal("still same window: must remain exhausted")
+	}
+	// Cross the daily boundary: the account resumes.
+	clock = time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	if !b.Reserve(a) {
+		t.Fatal("after window rollover the account must resume (no permanent starvation)")
+	}
+	if got := b.Snapshot(a).RequestsRemaining; got != 1 {
+		t.Fatalf("post-rollover remaining: got %d want 1", got)
 	}
 }
 

@@ -146,7 +146,7 @@ func NewObserver(cfg Config, deps ObserverDeps) *Observer {
 		cfg:      cfg,
 		fetcher:  deps.Fetcher,
 		limiter:  NewLimiter(cfg.PerAccountConcurrency, cfg.PerHostConcurrency),
-		budget:   NewBudget(cfg.RequestBudget, cfg.ByteBudget),
+		budget:   NewBudget(cfg.RequestBudget, cfg.ByteBudget, cfg.BudgetWindow, now),
 		breakers: newBreakerRegistry(cfg.Breaker, now),
 		drift:    drift,
 		ingestor: deps.Ingestor,
@@ -185,6 +185,8 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 	if !breaker.Allow() {
 		return ObserveOutcome{Skipped: SkipBreakerOpen}, nil
 	}
+	// Reserve the FIRST attempt's budget before taking a concurrency slot; if the
+	// account is out of budget we skip without occupying a slot.
 	if !o.budget.Reserve(ref.Account) {
 		return ObserveOutcome{Skipped: SkipBudget}, nil
 	}
@@ -195,17 +197,13 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 	}
 	defer release()
 
-	res, fetchErr := o.fetcher.Fetch(ctx, FetchRequest{
-		URL:      ProductURL(ref.NativeProductID),
-		Account:  ref.Account,
-		TargetID: ref.TargetID,
-	})
-	o.budget.Consume(ref.Account, res.Bytes)
-	breaker.Observe(res.Signal)
-
-	if fetchErr != nil || res.Signal != SignalOK {
-		// A fault feeds the breaker (above) and defers this target to a later
-		// sweep. No value is relabeled.
+	res, ferr := o.fetchWithRetry(ctx, breaker, ref)
+	if ferr != nil {
+		return ObserveOutcome{}, ferr
+	}
+	if res.Signal != SignalOK {
+		// A fault fed the breaker (inside fetchWithRetry) and defers this target to
+		// a later sweep. No value is relabeled.
 		return ObserveOutcome{Skipped: SkipFetchSignal, Signal: res.Signal}, nil
 	}
 
@@ -236,6 +234,54 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 		}
 	}
 	return ObserveOutcome{Signal: SignalOK, Ingested: len(captures)}, nil
+}
+
+// fetchWithRetry performs the fetch with a bounded in-attempt retry on TRANSIENT
+// faults (docs/10: "at most three retries with 2-second exponential backoff").
+// The caller has already reserved budget and taken the concurrency slot for the
+// first attempt. Each RETRY additionally: waits a full-jitter exponential
+// backoff, reserves its OWN budget (a retry is a real request), and re-checks the
+// breaker (which a prior fault may have opened) — so retries honour the budget,
+// concurrency (the held slot), and breaker guards. Only SignalTransport (network
+// / 5xx) is retried; a block/degrade signal (403/429/challenge/latency/drift) is
+// NOT retried — retrying would waste budget and hammer a host already refusing or
+// throttling. Returns the last result; the second value is non-nil only on ctx
+// cancellation. A fault is carried in the result's Signal, not an error.
+func (o *Observer) fetchWithRetry(ctx context.Context, breaker *Breaker, ref TargetRef) (FetchResult, error) {
+	req := FetchRequest{URL: ProductURL(ref.NativeProductID), Account: ref.Account, TargetID: ref.TargetID}
+	var res FetchResult
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(o.cfg.Backoff.Delay(attempt-1, o.rng)):
+			case <-ctx.Done():
+				return res, ctx.Err()
+			}
+			// A retry needs its own budget and an open circuit; if either denies,
+			// stop and defer with the prior fault.
+			if !breaker.Allow() || !o.budget.Reserve(ref.Account) {
+				break
+			}
+		}
+		var fetchErr error
+		res, fetchErr = o.fetcher.Fetch(ctx, req)
+		o.budget.Consume(ref.Account, res.Bytes)
+		breaker.Observe(res.Signal)
+		if fetchErr == nil && res.Signal == SignalOK {
+			return res, nil
+		}
+		if !transientFault(res.Signal, fetchErr) || attempt >= o.cfg.MaxRetries {
+			break
+		}
+	}
+	return res, nil
+}
+
+// transientFault reports whether a fetch outcome is worth an in-attempt retry: a
+// transport error or 5xx (SignalTransport). Block/degrade signals are not
+// retried.
+func transientFault(sig Signal, err error) bool {
+	return err != nil || sig == SignalTransport
 }
 
 // buildCaptures maps the parsed product's SAME-RECORD offers onto observation

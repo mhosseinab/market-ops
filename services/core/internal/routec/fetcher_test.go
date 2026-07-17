@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -51,6 +52,34 @@ func TestHTTPFetcherClassifies(t *testing.T) {
 				t.Fatalf("%s: signal got %s want %s (status %d)", tc.name, res.Signal, tc.want, res.StatusCode)
 			}
 		})
+	}
+}
+
+// TestHTTPFetcherRefusesCrossHostRedirect asserts host pinning (docs/12): a 302
+// to a DIFFERENT host is NOT followed, so Route C never leaves the DK host even
+// when DK redirects to a challenge/login page elsewhere.
+func TestHTTPFetcherRefusesCrossHostRedirect(t *testing.T) {
+	var otherHit int32
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&otherHit, 1)
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`<html>challenge</html>`))
+	}))
+	defer other.Close()
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL, http.StatusFound)
+	}))
+	defer origin.Close()
+
+	f := routec.NewHTTPFetcher(origin.Client(), 0, 1<<20)
+	res, err := f.Fetch(context.Background(), routec.FetchRequest{URL: origin.URL, Account: uuid.New()})
+	if atomic.LoadInt32(&otherHit) != 0 {
+		t.Fatal("cross-host redirect was followed (host pinning breached)")
+	}
+	// The refused redirect surfaces as a transport-class outcome, never a healthy
+	// fetch of the other host.
+	if err == nil && res.Signal == routec.SignalOK {
+		t.Fatal("cross-host redirect must not produce a healthy fetch")
 	}
 }
 

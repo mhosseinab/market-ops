@@ -86,6 +86,13 @@ type Config struct {
 	// RequestBudget / ByteBudget are the per-account budgets per window.
 	RequestBudget int
 	ByteBudget    int64
+	// BudgetWindow is the operating window the per-account budget resets on
+	// (PRD §17.3 daily budget). Default 24h.
+	BudgetWindow time.Duration
+	// MaxRetries bounds in-attempt retries of a TRANSIENT fetch fault within a
+	// single observe (docs/10: "at most three retries"). Each retry consumes
+	// budget and is skipped once the breaker opens or budget is exhausted.
+	MaxRetries int
 	// Backoff governs retry spacing after a transient failure.
 	Backoff Backoff
 	// Breaker holds the trip thresholds for each fault signal.
@@ -104,6 +111,8 @@ func DefaultConfig() Config {
 		JitterBP:              2000, // ±20%
 		RequestBudget:         500,
 		ByteBudget:            50 << 20, // 50 MiB/window
+		BudgetWindow:          24 * time.Hour,
+		MaxRetries:            3, // docs/10: at most three retries
 		Backoff: Backoff{
 			Base:   2 * time.Second, // docs/10: conservative 2s exponential base
 			Max:    2 * time.Minute,

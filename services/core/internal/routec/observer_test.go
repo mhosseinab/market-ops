@@ -53,6 +53,36 @@ func newTestObserver(t *testing.T, f routec.Fetcher, ing routec.Ingestor, kill r
 	})
 }
 
+// seqFetcher returns results from a sequence, repeating the last once exhausted,
+// and counts calls. Used to drive the retry loop deterministically offline.
+type seqFetcher struct {
+	mu   sync.Mutex
+	seq  []routec.FetchResult
+	errs []error
+	n    int
+}
+
+func (s *seqFetcher) Fetch(context.Context, routec.FetchRequest) (routec.FetchResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	i := s.n
+	if i >= len(s.seq) {
+		i = len(s.seq) - 1
+	}
+	s.n++
+	var err error
+	if s.errs != nil && i < len(s.errs) {
+		err = s.errs[i]
+	}
+	return s.seq[i], err
+}
+
+func (s *seqFetcher) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.n
+}
+
 func testTarget() routec.TargetRef {
 	return routec.TargetRef{
 		Account:         uuid.New(),
@@ -223,6 +253,101 @@ func TestObserveTargetFetchFaultDefers(t *testing.T) {
 	}
 	if len(ing.captures) != 0 {
 		t.Fatal("a fetch fault must not ingest a value")
+	}
+}
+
+// retryCfg builds a config with fast, deterministic backoff for retry tests.
+func retryCfg(maxRetries int) routec.Config {
+	cfg := routec.DefaultConfig()
+	cfg.MaxRetries = maxRetries
+	cfg.Backoff = routec.Backoff{Base: time.Nanosecond, Max: time.Microsecond, Factor: 2}
+	return cfg
+}
+
+func okBody(t *testing.T) routec.FetchResult {
+	return routec.FetchResult{StatusCode: 200, Body: golden(t, "product_marketable.json"), Signal: routec.SignalOK, Bytes: 100}
+}
+
+// TestObserveTargetRetriesTransientThenSucceeds proves backoff is a LIVE control:
+// a transient fault is retried (bounded) and a later success is ingested — the
+// fetch is attempted more than once within a single observe.
+func TestObserveTargetRetriesTransientThenSucceeds(t *testing.T) {
+	f := &seqFetcher{seq: []routec.FetchResult{
+		{Signal: routec.SignalTransport, Bytes: 5},
+		{Signal: routec.SignalTransport, Bytes: 5},
+		okBody(t),
+	}}
+	ing := &fakeIngestor{}
+	obs := routec.NewObserver(retryCfg(3), routec.ObserverDeps{
+		Fetcher: f, Ingestor: ing, Kill: routec.NewMemKillSwitchStore(),
+		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	out, err := obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if out.Skipped != routec.SkipNone || out.Ingested != 1 {
+		t.Fatalf("expected success after retries, got skip=%q ingested=%d", out.Skipped, out.Ingested)
+	}
+	if f.calls() != 3 {
+		t.Fatalf("expected 3 fetch attempts (1 + 2 retries), got %d", f.calls())
+	}
+}
+
+// TestObserveTargetDoesNotRetryBlockSignal proves a block signal (429) is NOT
+// retried — it defers after a single attempt.
+func TestObserveTargetDoesNotRetryBlockSignal(t *testing.T) {
+	f := &seqFetcher{seq: []routec.FetchResult{{StatusCode: 429, Signal: routec.Signal429, Bytes: 10}}}
+	ing := &fakeIngestor{}
+	obs := routec.NewObserver(retryCfg(3), routec.ObserverDeps{
+		Fetcher: f, Ingestor: ing, Kill: routec.NewMemKillSwitchStore(),
+		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	out, _ := obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
+	if out.Skipped != routec.SkipFetchSignal || out.Signal != routec.Signal429 {
+		t.Fatalf("block signal outcome: skip=%q signal=%s", out.Skipped, out.Signal)
+	}
+	if f.calls() != 1 {
+		t.Fatalf("a 429 must not be retried, got %d attempts", f.calls())
+	}
+}
+
+// TestObserveTargetRetryStopsWhenBudgetExhausted proves retries respect the
+// budget: with only 2 requests of headroom, the transient fault is retried once
+// (attempt 0 + 1) then stops — never unbounded.
+func TestObserveTargetRetryStopsWhenBudgetExhausted(t *testing.T) {
+	cfg := retryCfg(5)
+	cfg.RequestBudget = 2
+	f := &seqFetcher{seq: []routec.FetchResult{{Signal: routec.SignalTransport, Bytes: 5}}}
+	ing := &fakeIngestor{}
+	obs := routec.NewObserver(cfg, routec.ObserverDeps{
+		Fetcher: f, Ingestor: ing, Kill: routec.NewMemKillSwitchStore(),
+		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	_, _ = obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
+	if f.calls() != 2 {
+		t.Fatalf("retries must stop at budget (2 attempts), got %d", f.calls())
+	}
+}
+
+// TestObserveTargetRetryStopsWhenBreakerOpens proves retries respect the breaker:
+// a transport threshold of 1 opens the circuit on the first fault, so no retry is
+// attempted.
+func TestObserveTargetRetryStopsWhenBreakerOpens(t *testing.T) {
+	cfg := retryCfg(5)
+	cfg.Breaker = routec.BreakerConfig{
+		Window: time.Minute, Cooldown: time.Minute,
+		Thresholds: map[routec.Signal]int{routec.SignalTransport: 1},
+	}
+	f := &seqFetcher{seq: []routec.FetchResult{{Signal: routec.SignalTransport, Bytes: 5}}}
+	ing := &fakeIngestor{}
+	obs := routec.NewObserver(cfg, routec.ObserverDeps{
+		Fetcher: f, Ingestor: ing, Kill: routec.NewMemKillSwitchStore(),
+		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+	_, _ = obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
+	if f.calls() != 1 {
+		t.Fatalf("open breaker must stop retries (1 attempt), got %d", f.calls())
 	}
 }
 

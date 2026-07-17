@@ -52,10 +52,11 @@ func (b Backoff) Delay(attempt int, rng *rand.Rand) time.Duration {
 }
 
 // Jitter returns base spread by ± jitterBP basis points using rng: a duration
-// uniformly in [base*(1-jitterBP/10000), base*(1+jitterBP/10000)]. It is used
-// both for inter-request spacing and for tier scheduling so Route C never emits a
-// fixed cadence. A non-positive jitterBP returns base unchanged. Basis points
-// keep the spread integer (repo guard: no floats).
+// uniformly in [base*(1-jitterBP/10000), base*(1+jitterBP/10000)]. It spreads the
+// TIER SCHEDULE cadence (jitteredSchedule) so Route C never fires on a fixed,
+// fingerprintable interval; retry spacing uses Backoff.Delay's own full jitter.
+// A non-positive jitterBP returns base unchanged. Basis points keep the spread
+// integer (repo guard: no floats).
 func Jitter(base time.Duration, jitterBP int, rng *rand.Rand) time.Duration {
 	if jitterBP <= 0 || base <= 0 || rng == nil {
 		return base

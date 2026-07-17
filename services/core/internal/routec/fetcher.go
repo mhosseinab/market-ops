@@ -98,11 +98,37 @@ type HTTPFetcher struct {
 // NewHTTPFetcher builds the mainline fetcher. A nil client gets a bounded-timeout
 // default. latencyCeiling <= 0 disables latency classification; maxBytes <= 0
 // disables the read cap.
+//
+// HOST PINNING (docs/12 host-scope): the fetcher installs a CheckRedirect that
+// REFUSES any redirect that changes host. DK may 302 to a challenge/login page on
+// a different host; Route C must never follow off the public API host it was
+// pointed at. A same-host redirect (e.g. a trailing-slash canonicalisation) is
+// still allowed. This policy is enforced on whatever client is supplied, because
+// the fetcher — not the caller — owns transport scope.
 func NewHTTPFetcher(client *http.Client, latencyCeiling time.Duration, maxBytes int64) *HTTPFetcher {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	client.CheckRedirect = pinHostRedirect
 	return &HTTPFetcher{client: client, latencyCeiling: latencyCeiling, maxBytes: maxBytes}
+}
+
+// pinHostRedirect rejects any redirect that leaves the originally-requested host.
+// Returning an error aborts the redirect chain without fetching the new host, so
+// no cross-host request is ever made (docs/12).
+func pinHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 {
+		return nil
+	}
+	origin := via[0].URL.Host
+	if req.URL.Host != origin {
+		return fmt.Errorf("routec: refusing cross-host redirect %s -> %s (host pinned)", origin, req.URL.Host)
+	}
+	// Bound the redirect chain even for same-host hops.
+	if len(via) >= 5 {
+		return fmt.Errorf("routec: too many redirects (%d)", len(via))
+	}
+	return nil
 }
 
 // challengeMarkers are body fragments that indicate a bot/anti-automation wall
