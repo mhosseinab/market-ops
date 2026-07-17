@@ -30,7 +30,9 @@ Review routing: canonical capability roles per plan §4.6 and `dk-p0-agent-guide
 
 | Step | Title | Status | Attempts | Branch | Commit SHA | Note |
 |------|-------|--------|----------|--------|-----------|------|
-| S1 | Scaffold monorepo + rules doc | in_progress | 1 | dk-p0/S1 (wt fd58883) | fd58883 | worker green; in review (reliability-delivery) |
+| S1 | Scaffold monorepo + rules doc | passed | 1 | dk-p0/S1 | fd58883 | PASS 1st cycle (reliability-delivery); merged. CF: forbidigo float ban is repo-wide (.golangci.yml) — S5/S7 must keep money-path guard when scoping; Go core has no smoke test (per-spec); postgres-mcp `--access-mode=restricted`; generator tools (oapi-codegen/goose/sqlc) unpinned → S4 pins per monorepo §4 |
+| S2 | Dev stack (PG18 + otel compose) | in_progress | 1 | dk-p0/S2 | — | dispatched |
+| S3 | Go core service skeleton | in_progress | 1 | dk-p0/S3 | — | dispatched |
 | S2 | Dev stack (PG18 + otel compose) | pending | 0 | — | — | |
 | S3 | Go core service skeleton | pending | 0 | — | — | |
 | S4 | Contracts pipeline + drift check [C] | pending | 0 | — | — | |
@@ -90,3 +92,4 @@ Parallel tracks after Phase A: Go domain chain (S8–S19), Python chain (S20–S
 > Append-only. One line per state change: what passed/blocked, merge SHA, what's next.
 - 2026-07-16: Docs authored and progress seeded (S1..S36 = pending). Next: orchestrator SETUP, then S1.
 - 2026-07-17: SETUP done. 11 agent profiles loaded; integration branch `dk-p0/main` created off `acce0c7`. Dispatched S1 (worktree isolation, capability role connector/reliability→reliability-delivery for scaffold; reviewer reliability-delivery area charter platform_reliability). Verification commands don't exist pre-S1; S1 bootstraps them.
+- 2026-07-17: S1 PASSED (1 cycle, reviewer independently reproduced Verify) → merged into dk-p0/main (worker fd58883). `task ci:local`/toolchains confirmed live. Eligible now: S2 (dev stack) + S3 (Go core skeleton) — both depend only on S1, disjoint files, neither [C] → dispatched concurrently. Next after: S3→S4[C], {S2,S3}→S5, S3→S7.

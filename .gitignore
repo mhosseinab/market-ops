@@ -167,3 +167,6 @@ tmp/
 .stylelintcache
 .bundle/
 vendor/
+
+# Agent worktrees (ephemeral, orchestrator-managed)
+.claude/worktrees/
