@@ -19,6 +19,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
 	"github.com/mhosseinab/market-ops/services/core/internal/config"
 	"github.com/mhosseinab/market-ops/services/core/internal/connector"
+	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/httpapi"
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
@@ -128,6 +129,12 @@ func run() error {
 			serverOpts = append(serverOpts, httpapi.WithConnector(connSvc))
 			logger.Info("connector wired")
 		}
+
+		// Wire the cost plane (CST-001..003): CSV import preview/commit, single-
+		// value entry, point-in-time profile lookup, and margin readiness. Cost
+		// values stay OUT of executable paths until S16+S35.
+		serverOpts = append(serverOpts, httpapi.WithCost(cost.NewService(pool)))
+		logger.Info("cost service wired")
 	} else {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
 	}

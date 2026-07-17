@@ -14,6 +14,7 @@ type Querier interface {
 	// Persist page progress after a page is fully applied. next_page is the resume
 	// cursor an interrupted import continues from; counters accumulate.
 	AdvanceCatalogSyncRun(ctx context.Context, arg AdvanceCatalogSyncRunParams) (CatalogSyncRun, error)
+	CancelCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	// OBS-008 atomic dedup. A returned row = first sighting (accept the observation);
 	// an empty result = replay (dedup — create no duplicate current offer). The key
 	// carries the route, so a different route observing the same value is a distinct
@@ -29,16 +30,25 @@ type Querier interface {
 	// index uq_mpi_one_active_confirmed_per_variant rejects a second active Confirmed
 	// for the same variant, enforcing CAT-002 at commit time.
 	ConfirmIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
+	// CST-002 point-in-time lookup: the EXACT in-force version of each component for
+	// a variant at timestamp $2 — the row with the greatest effective_from <= $2 per
+	// component. Reproduces the exact cost profile that produced a historical number,
+	// never the current one.
+	CostProfileAt(ctx context.Context, arg CostProfileAtParams) ([]CostProfile, error)
 	CountCatalogSnapshots(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	// Reconciliation: owned offers not observed by the given run are drift (missing
 	// from the latest full fetch). Reported, never silently deleted.
 	CountDriftedOwnedOffers(ctx context.Context, arg CountDriftedOwnedOffersParams) (int64, error)
 	CountListings(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	// The per-account readiness distribution backing the ≥70%-Complete beta gate
+	// (§20.2 / §21). The caller computes the Complete ratio from these counts.
+	CountMarginReadinessStates(ctx context.Context, marketplaceAccountID uuid.UUID) ([]CountMarginReadinessStatesRow, error)
 	CountOwnedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountProducts(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountRecommendationInvalidationsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error)
 	CountVariants(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
+	CreateCostImportBatch(ctx context.Context, arg CreateCostImportBatchParams) (CostImportBatch, error)
 	// Market Product Identity queries (S11, CAT-002, §6.5 journey 4, §16).
 	// market_product_identities is a current-state table (state transitions UPDATE in
 	// place); the append-only history is market_product_identity_decisions and the
@@ -76,15 +86,25 @@ type Querier interface {
 	// Sever the connection and purge sealed tokens (ACC-001). Idempotent.
 	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
 	FailCatalogSyncRun(ctx context.Context, arg FailCatalogSyncRunParams) (CatalogSyncRun, error)
+	// Cost profile / CSV import / margin readiness queries (PRD §7.2 CST-001..003,
+	// §9.2, §16). Write disciplines:
+	//   * cost_profiles is APPEND-ONLY (CST-002): there is NO UPDATE/DELETE here — a
+	//     new value is a new version row. effective_to is derived at read time.
+	//   * cost_import_batches/cost_import_rows are workflow state for the preview.
+	//   * margin_readiness and the two policy/requirement tables are current-state
+	//     projections (upserted).
+	GetAccountCostPolicy(ctx context.Context, marketplaceAccountID uuid.UUID) (AccountCostPolicy, error)
 	// EXECUTABLE-PATH query (CAT-002/OBS-001). Returns the variant's mapping ONLY
 	// when it is Confirmed AND active. A NeedsReview/Rejected/Obsolete mapping yields
 	// no row, so no executable recommendation can be built on an unconfirmed identity.
 	GetActiveConfirmedIdentityForVariant(ctx context.Context, variantID uuid.UUID) (MarketProductIdentity, error)
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
+	GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
 	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (CatalogSyncRun, error)
+	GetMarginReadiness(ctx context.Context, variantID uuid.UUID) (MarginReadiness, error)
 	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (MarketplaceAccount, error)
 	GetMarketplaceAccountByNativeID(ctx context.Context, nativeAccountID string) (MarketplaceAccount, error)
 	GetMarketplaceAccountByOrganization(ctx context.Context, organizationID uuid.UUID) (MarketplaceAccount, error)
@@ -94,15 +114,24 @@ type Querier interface {
 	// Resolve a live session to its principal (user + role + organization). Rows
 	// at/after expiry are excluded, so an expired cookie fails closed.
 	GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error)
+	GetSkuCostRequirements(ctx context.Context, variantID uuid.UUID) (SkuCostRequirement, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
 	// Login identifier lookup. Emails are unique per organization; in P0 the beta
 	// runs one organization, so this resolves the login user. A duplicate email
 	// across organizations would return the earliest-created row deterministically.
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserCredential(ctx context.Context, userID uuid.UUID) (UserCredential, error)
+	// The account a variant belongs to — used to recompute readiness for a variant
+	// when the caller only has the variant id (e.g. the readiness read endpoint).
+	GetVariantAccountID(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	// APPEND-ONLY: the only write path to this table is INSERT. Raw item JSON kept
 	// verbatim as evidence (plan §4.7). No UPDATE/DELETE query exists by design.
 	InsertCatalogPayloadSnapshot(ctx context.Context, arg InsertCatalogPayloadSnapshotParams) error
+	InsertCostImportRow(ctx context.Context, arg InsertCostImportRowParams) (CostImportRow, error)
+	// APPEND-ONLY versioned cost value (CST-002). The version is MAX(version)+1 for
+	// this (variant, component); the UNIQUE (variant, component, version) constraint
+	// makes a concurrent double-insert fail closed rather than silently collide.
+	InsertCostProfileVersion(ctx context.Context, arg InsertCostProfileVersionParams) (CostProfile, error)
 	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
 	// INSERT; there is deliberately no UPDATE/DELETE query.
 	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)
@@ -123,11 +152,18 @@ type Querier interface {
 	// unique-violation on re-emit is swallowed by the producer, so a retry never
 	// double-expires downstream recommendations.
 	InsertRecommendationInvalidation(ctx context.Context, arg InsertRecommendationInvalidationParams) (RecommendationInvalidationEvent, error)
+	// The rows a commit turns into cost_profile versions: accepted rows with a
+	// resolved variant. Duplicate/reject rows are excluded by construction.
+	ListAcceptedCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
 	// EXECUTABLE-PATH query (OBS-001): the observation targets an account may create
 	// are EXACTLY its active Confirmed mappings. NeedsReview/Rejected/Obsolete are
 	// excluded by construction — no target exists for an unconfirmed identity.
 	ListConfirmedObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketProductIdentity, error)
 	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
+	ListCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
+	// Full version history for one (variant, component), newest first — the versioned
+	// cost-profile list the product-detail screen renders.
+	ListCostProfileVersions(ctx context.Context, arg ListCostProfileVersionsParams) ([]CostProfile, error)
 	ListIdentityDecisions(ctx context.Context, identityID uuid.UUID) ([]MarketProductIdentityDecision, error)
 	// OBS-003/§16 cross-route analysis from APPEND-ONLY evidence. For one offer,
 	// returns the LATEST observation per route that is STILL IN WINDOW at :now
@@ -137,6 +173,7 @@ type Querier interface {
 	// window), and recent history (a prior in-window sighting) from this — never from
 	// a retained string set that has no per-route freshness.
 	ListInWindowRouteValues(ctx context.Context, arg ListInWindowRouteValuesParams) ([]ListInWindowRouteValuesRow, error)
+	ListMarginReadinessByAccount(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarginReadiness, error)
 	// The Needs Review queue (journey 4): each pending candidate joined to its
 	// variant/product so the row carries SKU (supplier_code), variant + product title,
 	// and the native-id evidence a reviewer needs to confirm/reject/defer.
@@ -153,6 +190,12 @@ type Querier interface {
 	// and never stacks duplicate candidates. A previously rejected/obsolete variant
 	// becomes eligible again for a fresh candidate.
 	ListVariantsWithoutActiveIdentity(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListVariantsWithoutActiveIdentityRow, error)
+	// Commit a preview batch. The WHERE clause is a guard: only a batch that is still
+	// in 'preview' AND carries NO unresolved duplicate conflict (§16) may be
+	// committed. A batch that is already committed/cancelled, or that still has
+	// duplicate rows, matches nothing and returns no row — the service treats that as
+	// a refusal (no silent re-commit, no commit over an unresolved conflict).
+	MarkCostImportBatchCommitted(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	// OBS-004 expiry sweep on the derived current view: any live offer past its
 	// freshness deadline becomes Stale (renders age-only, never satisfies a
 	// current-data gate — that decision is in the domain). Closed offers are left as
@@ -178,6 +221,9 @@ type Querier interface {
 	// Return a capability to 'unknown' (disconnect). Clears last_verified_at so a
 	// stale verification can never read as current.
 	ResetConnectorCapability(ctx context.Context, marketplaceAccountID uuid.UUID) error
+	// Resolve a CSV SKU token to variants within an account. Zero rows ⇒ unknown SKU;
+	// more than one ⇒ ambiguous (both are preview rejects with a stated reason).
+	ResolveVariantsBySupplierCode(ctx context.Context, arg ResolveVariantsBySupplierCodeParams) ([]ResolveVariantsBySupplierCodeRow, error)
 	// Insert a capability at 'unknown' if absent; leave an existing row untouched so
 	// a prior probe result is not clobbered by a re-seed (capability-gating invariant).
 	SeedConnectorCapability(ctx context.Context, arg SeedConnectorCapabilityParams) error
@@ -188,9 +234,13 @@ type Querier interface {
 	// Record a probe result. Only a probe calls this; status is set explicitly and
 	// last_verified_at stamps when it was determined.
 	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
+	UpsertAccountCostPolicy(ctx context.Context, arg UpsertAccountCostPolicyParams) (AccountCostPolicy, error)
 	// Establish or update the connection with sealed tokens (connect / refresh).
 	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)
 	UpsertListing(ctx context.Context, arg UpsertListingParams) (UpsertListingRow, error)
+	// Recompute the derived readiness projection (CST-003). Upsert: readiness is a
+	// current-state projection, recomputed on any input change.
+	UpsertMarginReadiness(ctx context.Context, arg UpsertMarginReadinessParams) (MarginReadiness, error)
 	// Derived current view (OBS-008). One row per (target, offer identity); the latest
 	// accepted observation's fields, quality, freshness deadline, and the corroborating
 	// route-provenance set (computed by the domain and passed verbatim). Re-opening a
@@ -207,6 +257,7 @@ type Querier interface {
 	// UPDATE (Postgres system-column idiom) so the sync run can count new vs changed
 	// records without a second round trip.
 	UpsertProduct(ctx context.Context, arg UpsertProductParams) (UpsertProductRow, error)
+	UpsertSkuCostRequirements(ctx context.Context, arg UpsertSkuCostRequirementsParams) (SkuCostRequirement, error)
 	// Set or rotate a user's argon2id password hash. Current-state upsert: a
 	// password change replaces the hash in place.
 	UpsertUserCredential(ctx context.Context, arg UpsertUserCredentialParams) error

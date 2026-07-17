@@ -243,6 +243,120 @@ func (e ConnectorConnectionState) Valid() bool {
 	}
 }
 
+// Defines values for CostComponent.
+const (
+	Ads         CostComponent = "ads"
+	Cogs        CostComponent = "cogs"
+	Commission  CostComponent = "commission"
+	Fulfillment CostComponent = "fulfillment"
+	Packaging   CostComponent = "packaging"
+	Promotion   CostComponent = "promotion"
+	Returns     CostComponent = "returns"
+	Shipping    CostComponent = "shipping"
+)
+
+// Valid indicates whether the value is a known member of the CostComponent enum.
+func (e CostComponent) Valid() bool {
+	switch e {
+	case Ads:
+		return true
+	case Cogs:
+		return true
+	case Commission:
+		return true
+	case Fulfillment:
+		return true
+	case Packaging:
+		return true
+	case Promotion:
+		return true
+	case Returns:
+		return true
+	case Shipping:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CostImportCommitResultStatus.
+const (
+	CostImportCommitResultStatusCommitted CostImportCommitResultStatus = "committed"
+)
+
+// Valid indicates whether the value is a known member of the CostImportCommitResultStatus enum.
+func (e CostImportCommitResultStatus) Valid() bool {
+	switch e {
+	case CostImportCommitResultStatusCommitted:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CostImportDisposition.
+const (
+	Accept    CostImportDisposition = "accept"
+	Duplicate CostImportDisposition = "duplicate"
+	Reject    CostImportDisposition = "reject"
+)
+
+// Valid indicates whether the value is a known member of the CostImportDisposition enum.
+func (e CostImportDisposition) Valid() bool {
+	switch e {
+	case Accept:
+		return true
+	case Duplicate:
+		return true
+	case Reject:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CostImportPreviewStatus.
+const (
+	CostImportPreviewStatusCancelled CostImportPreviewStatus = "cancelled"
+	CostImportPreviewStatusCommitted CostImportPreviewStatus = "committed"
+	CostImportPreviewStatusPreview   CostImportPreviewStatus = "preview"
+)
+
+// Valid indicates whether the value is a known member of the CostImportPreviewStatus enum.
+func (e CostImportPreviewStatus) Valid() bool {
+	switch e {
+	case CostImportPreviewStatusCancelled:
+		return true
+	case CostImportPreviewStatusCommitted:
+		return true
+	case CostImportPreviewStatusPreview:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CostProfileVersionSource.
+const (
+	Connector   CostProfileVersionSource = "connector"
+	CsvImport   CostProfileVersionSource = "csv_import"
+	SingleValue CostProfileVersionSource = "single_value"
+)
+
+// Valid indicates whether the value is a known member of the CostProfileVersionSource enum.
+func (e CostProfileVersionSource) Valid() bool {
+	switch e {
+	case Connector:
+		return true
+	case CsvImport:
+		return true
+	case SingleValue:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HealthStatus.
 const (
 	Ok HealthStatus = "ok"
@@ -252,6 +366,30 @@ const (
 func (e HealthStatus) Valid() bool {
 	switch e {
 	case Ok:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for MarginReadinessState.
+const (
+	Complete MarginReadinessState = "complete"
+	Missing  MarginReadinessState = "missing"
+	Partial  MarginReadinessState = "partial"
+	Stale    MarginReadinessState = "stale"
+)
+
+// Valid indicates whether the value is a known member of the MarginReadinessState enum.
+func (e MarginReadinessState) Valid() bool {
+	switch e {
+	case Complete:
+		return true
+	case Missing:
+		return true
+	case Partial:
+		return true
+	case Stale:
 		return true
 	default:
 		return false
@@ -489,6 +627,15 @@ type ChatUnavailable struct {
 // ChatUnavailableReason Why chat is unavailable. All three degrade chat ONLY — every structured screen stays fully functional (CHAT-009). Never inferred; set by the gateway from the kill-switch config or LLM-plane reachability.
 type ChatUnavailableReason string
 
+// ColumnComponentMapping Maps one CSV header column to the cost component it supplies.
+type ColumnComponentMapping struct {
+	// Component A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
+	Component CostComponent `json:"component"`
+
+	// Header The CSV header text of the column.
+	Header string `json:"header"`
+}
+
 // ConnectorAccountRef References the marketplace account a connector operation targets.
 type ConnectorAccountRef struct {
 	// MarketplaceAccountId Marketplace account (PRD §15.1) the operation applies to.
@@ -521,6 +668,140 @@ type ConnectorStatus struct {
 	// ConnectionState Whether the DK connection is currently established.
 	ConnectionState      ConnectorConnectionState `json:"connectionState"`
 	MarketplaceAccountId openapi_types.UUID       `json:"marketplaceAccountId"`
+}
+
+// CostComponent A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
+type CostComponent string
+
+// CostImportCommitRequest Confirm and commit a preview batch (CST-001).
+type CostImportCommitRequest struct {
+	BatchId openapi_types.UUID `json:"batchId"`
+}
+
+// CostImportCommitResult Result of committing a preview batch.
+type CostImportCommitResult struct {
+	AffectedVariantIds []openapi_types.UUID `json:"affectedVariantIds"`
+	BatchId            openapi_types.UUID   `json:"batchId"`
+
+	// CommittedRows Number of accepted rows committed as cost-profile versions.
+	CommittedRows int                          `json:"committedRows"`
+	Status        CostImportCommitResultStatus `json:"status"`
+}
+
+// CostImportCommitResultStatus defines model for CostImportCommitResult.Status.
+type CostImportCommitResultStatus string
+
+// CostImportCounts Disposition tally backing the preview cards and the commit guard.
+type CostImportCounts struct {
+	Accept    int `json:"accept"`
+	Duplicate int `json:"duplicate"`
+	Reject    int `json:"reject"`
+}
+
+// CostImportDisposition The outcome of a preview row (CST-001, §16). `accept` will commit; `reject` cannot commit and carries a reason; `duplicate` is a (SKU, component) conflict within the file that blocks commit until resolved.
+type CostImportDisposition string
+
+// CostImportPreview A preview batch (status 'preview') with its per-row dispositions.
+type CostImportPreview struct {
+	BatchId openapi_types.UUID `json:"batchId"`
+
+	// Counts Disposition tally backing the preview cards and the commit guard.
+	Counts CostImportCounts `json:"counts"`
+
+	// Detected How the import interpreted the CSV columns, echoed for the seller to confirm the mapping (CST-001 mapping preview).
+	Detected             *DetectedMapping        `json:"detected,omitempty"`
+	Filename             *string                 `json:"filename,omitempty"`
+	MarketplaceAccountId openapi_types.UUID      `json:"marketplaceAccountId"`
+	Rows                 []CostImportRow         `json:"rows"`
+	Status               CostImportPreviewStatus `json:"status"`
+}
+
+// CostImportPreviewStatus defines model for CostImportPreview.Status.
+type CostImportPreviewStatus string
+
+// CostImportPreviewRequest Request to build a CSV cost-import preview. `csv` is the UTF-8 file content. An explicit column mapping is optional; when omitted the columns are auto-detected from the header row.
+type CostImportPreviewRequest struct {
+	// ComponentColumns Explicit component column mapping (optional; auto-detected when omitted).
+	ComponentColumns *[]ColumnComponentMapping `json:"componentColumns,omitempty"`
+
+	// Csv The UTF-8 CSV content.
+	Csv string `json:"csv"`
+
+	// Filename Original file name, for the audit/preview display.
+	Filename *string `json:"filename,omitempty"`
+
+	// MarketplaceAccountId The account the costs belong to.
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+
+	// SkuColumn Explicit SKU column header (optional; auto-detected when omitted).
+	SkuColumn *string `json:"skuColumn,omitempty"`
+}
+
+// CostImportRow One preview row: raw evidence, resolution, the parsed amount (when acceptable), and the disposition + reason (CST-001).
+type CostImportRow struct {
+	// Amount The parsed amount; null when the row is not an accept.
+	Amount *MoneyAmount `json:"amount,omitempty"`
+
+	// Component A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
+	Component CostComponent `json:"component"`
+
+	// Disposition The outcome of a preview row (CST-001, §16). `accept` will commit; `reject` cannot commit and carries a reason; `duplicate` is a (SKU, component) conflict within the file that blocks commit until resolved.
+	Disposition CostImportDisposition `json:"disposition"`
+
+	// NormalizedValue The digit-normalized numeric token (LOC-007).
+	NormalizedValue string `json:"normalizedValue"`
+
+	// RawValue The value cell exactly as entered.
+	RawValue string `json:"rawValue"`
+
+	// Reason Stable machine reason for a non-accept row; empty for accept.
+	Reason string `json:"reason"`
+
+	// RowNumber 1-based data-row number in the file.
+	RowNumber int `json:"rowNumber"`
+
+	// Sku The raw SKU token from the file (LTR-isolated identifier).
+	Sku string `json:"sku"`
+
+	// VariantId The resolved variant; null when the SKU did not resolve.
+	VariantId *openapi_types.UUID `json:"variantId,omitempty"`
+}
+
+// CostProfileList The in-force cost-profile version per component at a point in time.
+type CostProfileList struct {
+	Items []CostProfileVersion `json:"items"`
+}
+
+// CostProfileVersion One append-only, effective-dated cost-profile version for a component (CST-002). The exact version in force at a time reproduces a historical number.
+type CostProfileVersion struct {
+	// Amount An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Amount MoneyAmount `json:"amount"`
+
+	// Component A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
+	Component            CostComponent            `json:"component"`
+	EffectiveFrom        time.Time                `json:"effectiveFrom"`
+	Id                   openapi_types.UUID       `json:"id"`
+	MarketplaceAccountId openapi_types.UUID       `json:"marketplaceAccountId"`
+	RawText              *string                  `json:"rawText,omitempty"`
+	RawUnit              *string                  `json:"rawUnit,omitempty"`
+	RawValue             *string                  `json:"rawValue,omitempty"`
+	Source               CostProfileVersionSource `json:"source"`
+	StaleAfter           *time.Time               `json:"staleAfter,omitempty"`
+	VariantId            openapi_types.UUID       `json:"variantId"`
+
+	// Version Monotonic version per (variant, component).
+	Version int `json:"version"`
+}
+
+// CostProfileVersionSource defines model for CostProfileVersion.Source.
+type CostProfileVersionSource string
+
+// DetectedMapping How the import interpreted the CSV columns, echoed for the seller to confirm the mapping (CST-001 mapping preview).
+type DetectedMapping struct {
+	ComponentColumns []ColumnComponentMapping `json:"componentColumns"`
+
+	// SkuColumn The header text detected/used as the SKU column.
+	SkuColumn string `json:"skuColumn"`
 }
 
 // ErrorEnvelope Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator.
@@ -568,6 +849,21 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
+// MarginReadiness Derived margin readiness for a SKU (CST-003). Only `complete` drives an executable recommendation.
+type MarginReadiness struct {
+	ComputedAt           time.Time          `json:"computedAt"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	MissingComponents    []CostComponent    `json:"missingComponents"`
+	StaleComponents      []CostComponent    `json:"staleComponents"`
+
+	// State The four closed margin-readiness states (CST-003). Only `complete` may drive an executable recommendation; `partial` may show analysis but no approval control; `stale` and `missing` block.
+	State     MarginReadinessState `json:"state"`
+	VariantId openapi_types.UUID   `json:"variantId"`
+}
+
+// MarginReadinessState The four closed margin-readiness states (CST-003). Only `complete` may drive an executable recommendation; `partial` may show analysis but no approval control; `stale` and `missing` block.
+type MarginReadinessState string
+
 // MarketProductIdentity A variant's mapping to a public DK product record, with its versioned state. Separate canonical entity from the owned Variant/Listing (CAT-001).
 type MarketProductIdentity struct {
 	// Active Whether this is the variant's live mapping.
@@ -598,6 +894,18 @@ type MarketProductIdentity struct {
 
 // MarketProductIdentityState Versioned Market Product Identity state (PRD §7.2 CAT-002). Only `confirmed` may drive an executable path; `needs_review`, `rejected`, and `obsolete` never can (identity quarantine).
 type MarketProductIdentityState string
+
+// MoneyAmount An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+type MoneyAmount struct {
+	// Currency ISO-4217 currency code.
+	Currency string `json:"currency"`
+
+	// Exponent Base-10 exponent applied to the mantissa.
+	Exponent int `json:"exponent"`
+
+	// Mantissa Exact integer mantissa.
+	Mantissa int64 `json:"mantissa"`
+}
 
 // NeedsReviewItem One Needs Review queue row (journey 4 step 1): the pending candidate plus the SKU / variant title / product title / native-id evidence a reviewer needs to confirm, reject, or defer.
 type NeedsReviewItem struct {
@@ -767,6 +1075,26 @@ type SessionInfo struct {
 	UserId openapi_types.UUID `json:"userId"`
 }
 
+// SingleCostEntryRequest Record one cost-component value for a SKU (CST-002). effectiveFrom defaults to now; staleAfter is an optional review-by instant.
+type SingleCostEntryRequest struct {
+	// Component A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
+	Component CostComponent `json:"component"`
+
+	// EffectiveFrom When this version takes effect (RFC 3339). Defaults to now.
+	EffectiveFrom        *time.Time         `json:"effectiveFrom,omitempty"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+
+	// RawUnit The unit as entered, preserved verbatim as evidence.
+	RawUnit *string `json:"rawUnit,omitempty"`
+
+	// RawValue The value as entered (Persian/Latin digits normalized, LOC-007).
+	RawValue string `json:"rawValue"`
+
+	// StaleAfter Optional review-by instant; past ⇒ the value is stale for readiness.
+	StaleAfter *time.Time         `json:"staleAfter,omitempty"`
+	VariantId  openapi_types.UUID `json:"variantId"`
+}
+
 // UserRole Product role (PRD §2.2). Owner governs commercial boundaries and users; Operator executes day-to-day within Owner-defined permissions; Internal diagnoses data/execution and cannot change seller commercial rules.
 type UserRole string
 
@@ -780,6 +1108,27 @@ type cookieAuthContextKey string
 type GetConnectorStatusParams struct {
 	// MarketplaceAccountId Marketplace account whose connector status is requested.
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
+// GetCostImportPreviewParams defines parameters for GetCostImportPreview.
+type GetCostImportPreviewParams struct {
+	// BatchId The preview batch to fetch.
+	BatchId openapi_types.UUID `form:"batchId" json:"batchId"`
+}
+
+// ListCostProfilesParams defines parameters for ListCostProfiles.
+type ListCostProfilesParams struct {
+	// VariantId The variant (SKU) whose cost profile is requested.
+	VariantId openapi_types.UUID `form:"variantId" json:"variantId"`
+
+	// AsOf Point-in-time instant (RFC 3339). Defaults to now.
+	AsOf *time.Time `form:"asOf,omitempty" json:"asOf,omitempty"`
+}
+
+// GetMarginReadinessParams defines parameters for GetMarginReadiness.
+type GetMarginReadinessParams struct {
+	// VariantId The variant (SKU) whose readiness is requested.
+	VariantId openapi_types.UUID `form:"variantId" json:"variantId"`
 }
 
 // ListNeedsReviewParams defines parameters for ListNeedsReview.
@@ -824,6 +1173,15 @@ type DisconnectConnectorJSONRequestBody = ConnectorAccountRef
 // RefreshConnectorJSONRequestBody defines body for RefreshConnector for application/json ContentType.
 type RefreshConnectorJSONRequestBody = ConnectorAccountRef
 
+// CommitCostImportJSONRequestBody defines body for CommitCostImport for application/json ContentType.
+type CommitCostImportJSONRequestBody = CostImportCommitRequest
+
+// PreviewCostImportJSONRequestBody defines body for PreviewCostImport for application/json ContentType.
+type PreviewCostImportJSONRequestBody = CostImportPreviewRequest
+
+// EnterSingleCostJSONRequestBody defines body for EnterSingleCost for application/json ContentType.
+type EnterSingleCostJSONRequestBody = SingleCostEntryRequest
+
 // ConfirmIdentityJSONRequestBody defines body for ConfirmIdentity for application/json ContentType.
 type ConfirmIdentityJSONRequestBody = IdentityDecisionRequest
 
@@ -862,6 +1220,24 @@ type ServerInterface interface {
 	// Inspect connection and per-capability status.
 	// (GET /connector/status)
 	GetConnectorStatus(w http.ResponseWriter, r *http.Request, params GetConnectorStatusParams)
+	// Re-fetch a stored cost-import preview batch.
+	// (GET /cost/import)
+	GetCostImportPreview(w http.ResponseWriter, r *http.Request, params GetCostImportPreviewParams)
+	// Commit a confirmed cost-import preview.
+	// (POST /cost/import/commit)
+	CommitCostImport(w http.ResponseWriter, r *http.Request)
+	// Build a CSV cost-import preview (no commit).
+	// (POST /cost/import/preview)
+	PreviewCostImport(w http.ResponseWriter, r *http.Request)
+	// List the in-force cost-profile versions for a SKU at a time.
+	// (GET /cost/profiles)
+	ListCostProfiles(w http.ResponseWriter, r *http.Request, params ListCostProfilesParams)
+	// Read a SKU's margin readiness.
+	// (GET /cost/readiness)
+	GetMarginReadiness(w http.ResponseWriter, r *http.Request, params GetMarginReadinessParams)
+	// Record a single cost-component value.
+	// (POST /cost/value)
+	EnterSingleCost(w http.ResponseWriter, r *http.Request)
 	// Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
@@ -1064,6 +1440,196 @@ func (siw *ServerInterfaceWrapper) GetConnectorStatus(w http.ResponseWriter, r *
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetConnectorStatus(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetCostImportPreview operation middleware
+func (siw *ServerInterfaceWrapper) GetCostImportPreview(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetCostImportPreviewParams
+
+	// ------------- Required query parameter "batchId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "batchId", r.URL.Query(), &params.BatchId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "batchId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "batchId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetCostImportPreview(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CommitCostImport operation middleware
+func (siw *ServerInterfaceWrapper) CommitCostImport(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CommitCostImport(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewCostImport operation middleware
+func (siw *ServerInterfaceWrapper) PreviewCostImport(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewCostImport(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListCostProfiles operation middleware
+func (siw *ServerInterfaceWrapper) ListCostProfiles(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListCostProfilesParams
+
+	// ------------- Required query parameter "variantId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "variantId", r.URL.Query(), &params.VariantId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "variantId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "variantId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "asOf" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "asOf", r.URL.Query(), &params.AsOf, runtime.BindQueryParameterOptions{Type: "string", Format: "date-time"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "asOf"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "asOf", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListCostProfiles(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetMarginReadiness operation middleware
+func (siw *ServerInterfaceWrapper) GetMarginReadiness(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetMarginReadinessParams
+
+	// ------------- Required query parameter "variantId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "variantId", r.URL.Query(), &params.VariantId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "variantId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "variantId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetMarginReadiness(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// EnterSingleCost operation middleware
+func (siw *ServerInterfaceWrapper) EnterSingleCost(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.EnterSingleCost(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -1464,6 +2030,12 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/disconnect", wrapper.DisconnectConnector)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/refresh", wrapper.RefreshConnector)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/connector/status", wrapper.GetConnectorStatus)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/import", wrapper.GetCostImportPreview)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/cost/import/commit", wrapper.CommitCostImport)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/cost/import/preview", wrapper.PreviewCostImport)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/profiles", wrapper.ListCostProfiles)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/readiness", wrapper.GetMarginReadiness)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/cost/value", wrapper.EnterSingleCost)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/confirm", wrapper.ConfirmIdentity)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/defer", wrapper.DeferIdentity)
@@ -1852,6 +2424,240 @@ func (response GetConnectorStatusdefaultJSONResponse) VisitGetConnectorStatusRes
 	return err
 }
 
+type GetCostImportPreviewRequestObject struct {
+	Params GetCostImportPreviewParams
+}
+
+type GetCostImportPreviewResponseObject interface {
+	VisitGetCostImportPreviewResponse(w http.ResponseWriter) error
+}
+
+type GetCostImportPreview200JSONResponse CostImportPreview
+
+func (response GetCostImportPreview200JSONResponse) VisitGetCostImportPreviewResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetCostImportPreviewdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetCostImportPreviewdefaultJSONResponse) VisitGetCostImportPreviewResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CommitCostImportRequestObject struct {
+	Body *CommitCostImportJSONRequestBody
+}
+
+type CommitCostImportResponseObject interface {
+	VisitCommitCostImportResponse(w http.ResponseWriter) error
+}
+
+type CommitCostImport200JSONResponse CostImportCommitResult
+
+func (response CommitCostImport200JSONResponse) VisitCommitCostImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CommitCostImportdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response CommitCostImportdefaultJSONResponse) VisitCommitCostImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewCostImportRequestObject struct {
+	Body *PreviewCostImportJSONRequestBody
+}
+
+type PreviewCostImportResponseObject interface {
+	VisitPreviewCostImportResponse(w http.ResponseWriter) error
+}
+
+type PreviewCostImport200JSONResponse CostImportPreview
+
+func (response PreviewCostImport200JSONResponse) VisitPreviewCostImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewCostImportdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response PreviewCostImportdefaultJSONResponse) VisitPreviewCostImportResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListCostProfilesRequestObject struct {
+	Params ListCostProfilesParams
+}
+
+type ListCostProfilesResponseObject interface {
+	VisitListCostProfilesResponse(w http.ResponseWriter) error
+}
+
+type ListCostProfiles200JSONResponse CostProfileList
+
+func (response ListCostProfiles200JSONResponse) VisitListCostProfilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListCostProfilesdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListCostProfilesdefaultJSONResponse) VisitListCostProfilesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMarginReadinessRequestObject struct {
+	Params GetMarginReadinessParams
+}
+
+type GetMarginReadinessResponseObject interface {
+	VisitGetMarginReadinessResponse(w http.ResponseWriter) error
+}
+
+type GetMarginReadiness200JSONResponse MarginReadiness
+
+func (response GetMarginReadiness200JSONResponse) VisitGetMarginReadinessResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetMarginReadinessdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetMarginReadinessdefaultJSONResponse) VisitGetMarginReadinessResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnterSingleCostRequestObject struct {
+	Body *EnterSingleCostJSONRequestBody
+}
+
+type EnterSingleCostResponseObject interface {
+	VisitEnterSingleCostResponse(w http.ResponseWriter) error
+}
+
+type EnterSingleCost200JSONResponse CostProfileVersion
+
+func (response EnterSingleCost200JSONResponse) VisitEnterSingleCostResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EnterSingleCostdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response EnterSingleCostdefaultJSONResponse) VisitEnterSingleCostResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthzRequestObject struct {
 }
 
@@ -2228,6 +3034,24 @@ type StrictServerInterface interface {
 	// Inspect connection and per-capability status.
 	// (GET /connector/status)
 	GetConnectorStatus(ctx context.Context, request GetConnectorStatusRequestObject) (GetConnectorStatusResponseObject, error)
+	// Re-fetch a stored cost-import preview batch.
+	// (GET /cost/import)
+	GetCostImportPreview(ctx context.Context, request GetCostImportPreviewRequestObject) (GetCostImportPreviewResponseObject, error)
+	// Commit a confirmed cost-import preview.
+	// (POST /cost/import/commit)
+	CommitCostImport(ctx context.Context, request CommitCostImportRequestObject) (CommitCostImportResponseObject, error)
+	// Build a CSV cost-import preview (no commit).
+	// (POST /cost/import/preview)
+	PreviewCostImport(ctx context.Context, request PreviewCostImportRequestObject) (PreviewCostImportResponseObject, error)
+	// List the in-force cost-profile versions for a SKU at a time.
+	// (GET /cost/profiles)
+	ListCostProfiles(ctx context.Context, request ListCostProfilesRequestObject) (ListCostProfilesResponseObject, error)
+	// Read a SKU's margin readiness.
+	// (GET /cost/readiness)
+	GetMarginReadiness(ctx context.Context, request GetMarginReadinessRequestObject) (GetMarginReadinessResponseObject, error)
+	// Record a single cost-component value.
+	// (POST /cost/value)
+	EnterSingleCost(ctx context.Context, request EnterSingleCostRequestObject) (EnterSingleCostResponseObject, error)
 	// Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(ctx context.Context, request GetHealthzRequestObject) (GetHealthzResponseObject, error)
@@ -2508,6 +3332,177 @@ func (sh *strictHandler) GetConnectorStatus(w http.ResponseWriter, r *http.Reque
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetConnectorStatusResponseObject); ok {
 		if err := validResponse.VisitGetConnectorStatusResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetCostImportPreview operation middleware
+func (sh *strictHandler) GetCostImportPreview(w http.ResponseWriter, r *http.Request, params GetCostImportPreviewParams) {
+	var request GetCostImportPreviewRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetCostImportPreview(ctx, request.(GetCostImportPreviewRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetCostImportPreview")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetCostImportPreviewResponseObject); ok {
+		if err := validResponse.VisitGetCostImportPreviewResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CommitCostImport operation middleware
+func (sh *strictHandler) CommitCostImport(w http.ResponseWriter, r *http.Request) {
+	var request CommitCostImportRequestObject
+
+	var body CommitCostImportJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CommitCostImport(ctx, request.(CommitCostImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CommitCostImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CommitCostImportResponseObject); ok {
+		if err := validResponse.VisitCommitCostImportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewCostImport operation middleware
+func (sh *strictHandler) PreviewCostImport(w http.ResponseWriter, r *http.Request) {
+	var request PreviewCostImportRequestObject
+
+	var body PreviewCostImportJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewCostImport(ctx, request.(PreviewCostImportRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewCostImport")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewCostImportResponseObject); ok {
+		if err := validResponse.VisitPreviewCostImportResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListCostProfiles operation middleware
+func (sh *strictHandler) ListCostProfiles(w http.ResponseWriter, r *http.Request, params ListCostProfilesParams) {
+	var request ListCostProfilesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListCostProfiles(ctx, request.(ListCostProfilesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListCostProfiles")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListCostProfilesResponseObject); ok {
+		if err := validResponse.VisitListCostProfilesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetMarginReadiness operation middleware
+func (sh *strictHandler) GetMarginReadiness(w http.ResponseWriter, r *http.Request, params GetMarginReadinessParams) {
+	var request GetMarginReadinessRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetMarginReadiness(ctx, request.(GetMarginReadinessRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetMarginReadiness")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetMarginReadinessResponseObject); ok {
+		if err := validResponse.VisitGetMarginReadinessResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// EnterSingleCost operation middleware
+func (sh *strictHandler) EnterSingleCost(w http.ResponseWriter, r *http.Request) {
+	var request EnterSingleCostRequestObject
+
+	var body EnterSingleCostJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.EnterSingleCost(ctx, request.(EnterSingleCostRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "EnterSingleCost")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(EnterSingleCostResponseObject); ok {
+		if err := validResponse.VisitEnterSingleCostResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

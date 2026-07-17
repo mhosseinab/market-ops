@@ -61,6 +61,14 @@ func WithObservation(o ObservationService) Option {
 	return func(s *gatewayServer) { s.observation = o }
 }
 
+// WithCost injects the cost-profile / CSV import / readiness service backing the
+// /cost/* routes (PRD §7.2 CST-001..003). Without it those routes fail closed
+// with a structured error, so no cost value, preview, commit, or readiness is
+// served on an unwired cost plane.
+func WithCost(c CostService) Option {
+	return func(s *gatewayServer) { s.cost = c }
+}
+
 // WithCookieSecure overrides the Secure attribute of the session cookie. Default
 // is true; local plain-HTTP dev sets it false so the browser sends the cookie.
 func WithCookieSecure(secure bool) Option {

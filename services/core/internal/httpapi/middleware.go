@@ -81,6 +81,15 @@ var routePolicies = []routePolicy{
 	{http.MethodGet, "/observation/observed-offers", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/observation/observations", kindProtected, perm.ActionReadObservations},
 	{http.MethodPost, "/observation/capture", kindProtected, perm.ActionUploadCapture},
+	// Cost import is a reversible seller-data write (CST-001) — L2 cost.import.
+	{http.MethodPost, "/cost/import/preview", kindProtected, perm.ActionImportCosts},
+	{http.MethodGet, "/cost/import", kindProtected, perm.ActionImportCosts},
+	{http.MethodPost, "/cost/import/commit", kindProtected, perm.ActionImportCosts},
+	// Single cost value entry (CST-002) — L2 config.single_cost_value.
+	{http.MethodPost, "/cost/value", kindProtected, perm.ActionSetSingleCostValue},
+	// Cost profile + readiness reads (CST-002/CST-003) — L1 read.cost_readiness.
+	{http.MethodGet, "/cost/profiles", kindProtected, perm.ActionReadCostReadiness},
+	{http.MethodGet, "/cost/readiness", kindProtected, perm.ActionReadCostReadiness},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.

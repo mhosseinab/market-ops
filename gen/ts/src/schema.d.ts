@@ -344,6 +344,126 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/cost/import/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Build a CSV cost-import preview (no commit).
+         * @description Parses a UTF-8 cost CSV (Persian/Latin digits normalized, LOC-007), resolves SKUs, and returns a per-row disposition preview (CST-001). NO cost value is committed here — the returned batch is in 'preview' and must be confirmed via /cost/import/commit. Every non-accept row carries a stated reason; duplicate (SKU, component) rows are a 'duplicate' conflict that blocks commit until resolved (§16).
+         */
+        post: operations["previewCostImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cost/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Re-fetch a stored cost-import preview batch.
+         * @description Returns a previously created preview batch and its disposition rows (CST-001), e.g. to restore the preview after a reload before confirmation.
+         */
+        get: operations["getCostImportPreview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cost/import/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Commit a confirmed cost-import preview.
+         * @description Commits the ACCEPTED rows of a preview batch into append-only, component-versioned cost profiles (CST-001/CST-002) and recomputes margin readiness for every affected SKU. A batch that is not in 'preview', or that still has duplicate conflicts, is refused (§16 no-commit-until- resolved).
+         */
+        post: operations["commitCostImport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cost/value": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record a single cost-component value.
+         * @description Records ONE component value for a SKU as a new append-only cost-profile version and recomputes readiness (CST-002/CST-003). Used by the guided cost-blocker flow. The value is parsed to an exact integer money amount (no float, §9.1); the raw entered text/unit is preserved as evidence.
+         */
+        post: operations["enterSingleCost"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cost/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the in-force cost-profile versions for a SKU at a time.
+         * @description Returns the EXACT in-force version of each cost component for a variant at `asOf` (CST-002 point-in-time lookup). Omitting `asOf` returns the current in-force versions. This reproduces the cost profile that produced a historical number, never the current one.
+         */
+        get: operations["listCostProfiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cost/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a SKU's margin readiness.
+         * @description Returns the derived margin readiness for a variant (CST-003): one of Complete, Partial, Stale, Missing, with the components that block or limit it. Only Complete drives an executable recommendation (enforced downstream); Partial may show analysis but no approval control.
+         */
+        get: operations["getMarginReadiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -765,6 +885,177 @@ export interface components {
              */
             observationId?: string | null;
             quality: components["schemas"]["QualityState"];
+        };
+        /**
+         * @description A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
+         * @enum {string}
+         */
+        CostComponent: "cogs" | "commission" | "fulfillment" | "shipping" | "packaging" | "promotion" | "ads" | "returns";
+        /**
+         * @description The outcome of a preview row (CST-001, §16). `accept` will commit; `reject` cannot commit and carries a reason; `duplicate` is a (SKU, component) conflict within the file that blocks commit until resolved.
+         * @enum {string}
+         */
+        CostImportDisposition: "accept" | "reject" | "duplicate";
+        /**
+         * @description The four closed margin-readiness states (CST-003). Only `complete` may drive an executable recommendation; `partial` may show analysis but no approval control; `stale` and `missing` block.
+         * @enum {string}
+         */
+        MarginReadinessState: "complete" | "partial" | "stale" | "missing";
+        /** @description An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35. */
+        MoneyAmount: {
+            /**
+             * Format: int64
+             * @description Exact integer mantissa.
+             */
+            mantissa: number;
+            /** @description ISO-4217 currency code. */
+            currency: string;
+            /** @description Base-10 exponent applied to the mantissa. */
+            exponent: number;
+        };
+        /** @description Maps one CSV header column to the cost component it supplies. */
+        ColumnComponentMapping: {
+            /** @description The CSV header text of the column. */
+            header: string;
+            component: components["schemas"]["CostComponent"];
+        };
+        /** @description How the import interpreted the CSV columns, echoed for the seller to confirm the mapping (CST-001 mapping preview). */
+        DetectedMapping: {
+            /** @description The header text detected/used as the SKU column. */
+            skuColumn: string;
+            componentColumns: components["schemas"]["ColumnComponentMapping"][];
+        };
+        /** @description Request to build a CSV cost-import preview. `csv` is the UTF-8 file content. An explicit column mapping is optional; when omitted the columns are auto-detected from the header row. */
+        CostImportPreviewRequest: {
+            /**
+             * Format: uuid
+             * @description The account the costs belong to.
+             */
+            marketplaceAccountId: string;
+            /** @description Original file name, for the audit/preview display. */
+            filename?: string;
+            /** @description The UTF-8 CSV content. */
+            csv: string;
+            /** @description Explicit SKU column header (optional; auto-detected when omitted). */
+            skuColumn?: string;
+            /** @description Explicit component column mapping (optional; auto-detected when omitted). */
+            componentColumns?: components["schemas"]["ColumnComponentMapping"][];
+        };
+        /** @description Disposition tally backing the preview cards and the commit guard. */
+        CostImportCounts: {
+            accept: number;
+            reject: number;
+            duplicate: number;
+        };
+        /** @description One preview row: raw evidence, resolution, the parsed amount (when acceptable), and the disposition + reason (CST-001). */
+        CostImportRow: {
+            /** @description 1-based data-row number in the file. */
+            rowNumber: number;
+            /** @description The raw SKU token from the file (LTR-isolated identifier). */
+            sku: string;
+            component: components["schemas"]["CostComponent"];
+            /** @description The value cell exactly as entered. */
+            rawValue: string;
+            /** @description The digit-normalized numeric token (LOC-007). */
+            normalizedValue: string;
+            /**
+             * Format: uuid
+             * @description The resolved variant; null when the SKU did not resolve.
+             */
+            variantId?: string | null;
+            /** @description The parsed amount; null when the row is not an accept. */
+            amount?: components["schemas"]["MoneyAmount"] | null;
+            disposition: components["schemas"]["CostImportDisposition"];
+            /** @description Stable machine reason for a non-accept row; empty for accept. */
+            reason: string;
+        };
+        /** @description A preview batch (status 'preview') with its per-row dispositions. */
+        CostImportPreview: {
+            /** Format: uuid */
+            batchId: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            filename?: string;
+            /** @enum {string} */
+            status: "preview" | "committed" | "cancelled";
+            counts: components["schemas"]["CostImportCounts"];
+            detected?: components["schemas"]["DetectedMapping"];
+            rows: components["schemas"]["CostImportRow"][];
+        };
+        /** @description Confirm and commit a preview batch (CST-001). */
+        CostImportCommitRequest: {
+            /** Format: uuid */
+            batchId: string;
+        };
+        /** @description Result of committing a preview batch. */
+        CostImportCommitResult: {
+            /** Format: uuid */
+            batchId: string;
+            /** @enum {string} */
+            status: "committed";
+            /** @description Number of accepted rows committed as cost-profile versions. */
+            committedRows: number;
+            affectedVariantIds: string[];
+        };
+        /** @description Record one cost-component value for a SKU (CST-002). effectiveFrom defaults to now; staleAfter is an optional review-by instant. */
+        SingleCostEntryRequest: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: uuid */
+            variantId: string;
+            component: components["schemas"]["CostComponent"];
+            /** @description The value as entered (Persian/Latin digits normalized, LOC-007). */
+            rawValue: string;
+            /** @description The unit as entered, preserved verbatim as evidence. */
+            rawUnit?: string;
+            /**
+             * Format: date-time
+             * @description When this version takes effect (RFC 3339). Defaults to now.
+             */
+            effectiveFrom?: string;
+            /**
+             * Format: date-time
+             * @description Optional review-by instant; past ⇒ the value is stale for readiness.
+             */
+            staleAfter?: string | null;
+        };
+        /** @description One append-only, effective-dated cost-profile version for a component (CST-002). The exact version in force at a time reproduces a historical number. */
+        CostProfileVersion: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: uuid */
+            variantId: string;
+            component: components["schemas"]["CostComponent"];
+            /** @description Monotonic version per (variant, component). */
+            version: number;
+            amount: components["schemas"]["MoneyAmount"];
+            rawText?: string;
+            rawValue?: string;
+            rawUnit?: string;
+            /** Format: date-time */
+            effectiveFrom: string;
+            /** Format: date-time */
+            staleAfter?: string | null;
+            /** @enum {string} */
+            source: "csv_import" | "single_value" | "connector";
+        };
+        /** @description The in-force cost-profile version per component at a point in time. */
+        CostProfileList: {
+            items: components["schemas"]["CostProfileVersion"][];
+        };
+        /** @description Derived margin readiness for a SKU (CST-003). Only `complete` drives an executable recommendation. */
+        MarginReadiness: {
+            /** Format: uuid */
+            variantId: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            state: components["schemas"]["MarginReadinessState"];
+            missingComponents: components["schemas"]["CostComponent"][];
+            staleComponents: components["schemas"]["CostComponent"][];
+            /** Format: date-time */
+            computedAt: string;
         };
         /** @description Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator. */
         ErrorEnvelope: {
@@ -1344,6 +1635,203 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CaptureAccepted"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    previewCostImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostImportPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The preview batch with per-row dispositions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostImportPreview"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getCostImportPreview: {
+        parameters: {
+            query: {
+                /** @description The preview batch to fetch. */
+                batchId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The preview batch with per-row dispositions. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostImportPreview"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    commitCostImport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CostImportCommitRequest"];
+            };
+        };
+        responses: {
+            /** @description The committed batch and the affected SKUs. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostImportCommitResult"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    enterSingleCost: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SingleCostEntryRequest"];
+            };
+        };
+        responses: {
+            /** @description The newly recorded cost-profile version. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostProfileVersion"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listCostProfiles: {
+        parameters: {
+            query: {
+                /** @description The variant (SKU) whose cost profile is requested. */
+                variantId: string;
+                /** @description Point-in-time instant (RFC 3339). Defaults to now. */
+                asOf?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The in-force cost-profile versions per component. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CostProfileList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getMarginReadiness: {
+        parameters: {
+            query: {
+                /** @description The variant (SKU) whose readiness is requested. */
+                variantId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The SKU's margin readiness. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarginReadiness"];
                 };
             };
             /** @description Unexpected error. */

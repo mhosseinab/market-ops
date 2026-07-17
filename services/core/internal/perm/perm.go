@@ -141,6 +141,11 @@ const (
 	ActionSetWatchlist        Action = "config.watchlist"
 	ActionSetMonitoringTier   Action = "config.monitoring_tier"
 	ActionSetSingleCostValue  Action = "config.single_cost_value"
+	// ActionImportCosts authorizes the CSV cost-import preview + commit
+	// (CST-001). Importing cost values is a reversible seller-data task within the
+	// L2 baseline {Owner, Operator}; Internal is not a seller-data actor, and the
+	// machine gateway principal never imports costs.
+	ActionImportCosts Action = "cost.import"
 
 	// --- L3 commercial guardrail (Owner only) -------------------------------
 	ActionSetContributionFloor  Action = "guardrail.contribution_floor"
@@ -204,6 +209,9 @@ var Matrix = []Rule{
 	{ActionSetWatchlist, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	{ActionSetMonitoringTier, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	{ActionSetSingleCostValue, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
+	// CSV cost import is a reversible seller-data task within the L2 baseline
+	// {Owner, Operator}; Internal is excluded (not a seller-data actor).
+	{ActionImportCosts, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	// Identity resolution is a reversible data task within the L2 baseline
 	// {Owner, Operator}; Internal diagnoses but does not resolve mappings.
 	{ActionResolveIdentity, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},

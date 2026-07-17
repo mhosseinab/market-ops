@@ -11,6 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AccountCostPolicy struct {
+	MarketplaceAccountID       uuid.UUID
+	EntryCurrency              string
+	EntryExponent              int16
+	RequiredOptionalComponents []byte
+	CreatedAt                  time.Time
+	UpdatedAt                  time.Time
+}
+
 type CatalogPayloadSnapshot struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -85,6 +94,57 @@ type ConversationMessage struct {
 	CreatedAt      time.Time
 }
 
+type CostImportBatch struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	Filename             string
+	Status               string
+	AcceptCount          int32
+	RejectCount          int32
+	DuplicateCount       int32
+	CreatedBy            pgtype.UUID
+	CreatedAt            time.Time
+	CommittedAt          pgtype.Timestamptz
+}
+
+type CostImportRow struct {
+	ID                uuid.UUID
+	BatchID           uuid.UUID
+	RowNumber         int32
+	RawSku            string
+	Component         string
+	RawValue          string
+	NormalizedValue   string
+	RawUnit           string
+	ResolvedVariantID pgtype.UUID
+	AmountMantissa    pgtype.Int8
+	AmountCurrency    string
+	AmountExponent    int16
+	Disposition       string
+	Reason            string
+	CreatedAt         time.Time
+}
+
+type CostProfile struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	Component            string
+	Version              int32
+	AmountMantissa       int64
+	AmountCurrency       string
+	AmountExponent       int16
+	RawText              string
+	RawValue             string
+	RawUnit              string
+	EffectiveFrom        time.Time
+	StaleAfter           pgtype.Timestamptz
+	Source               string
+	ImportBatchID        pgtype.UUID
+	CreatedBy            pgtype.UUID
+	CreatedAt            time.Time
+}
+
 type Listing struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -94,6 +154,15 @@ type Listing struct {
 	ProductUrl           string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+type MarginReadiness struct {
+	VariantID            uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	State                string
+	MissingComponents    []byte
+	StaleComponents      []byte
+	ComputedAt           time.Time
 }
 
 type MarketProductIdentity struct {
@@ -296,6 +365,13 @@ type Session struct {
 	UserID    uuid.UUID
 	CreatedAt time.Time
 	ExpiresAt time.Time
+}
+
+type SkuCostRequirement struct {
+	VariantID            uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	ApplicableComponents []byte
+	UpdatedAt            time.Time
 }
 
 type User struct {
