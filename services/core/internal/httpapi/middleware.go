@@ -77,6 +77,10 @@ var routePolicies = []routePolicy{
 	{http.MethodPost, "/identity/confirm", kindProtected, perm.ActionResolveIdentity},
 	{http.MethodPost, "/identity/reject", kindProtected, perm.ActionResolveIdentity},
 	{http.MethodPost, "/identity/defer", kindProtected, perm.ActionResolveIdentity},
+	{http.MethodGet, "/observation/targets", kindProtected, perm.ActionReadObservations},
+	{http.MethodGet, "/observation/observed-offers", kindProtected, perm.ActionReadObservations},
+	{http.MethodGet, "/observation/observations", kindProtected, perm.ActionReadObservations},
+	{http.MethodPost, "/observation/capture", kindProtected, perm.ActionUploadCapture},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.

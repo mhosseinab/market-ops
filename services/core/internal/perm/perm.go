@@ -119,13 +119,22 @@ const (
 	// queue (CAT-002, journey 4). Reading is always L1 (§8.3); a machine data-read
 	// tool may hold it.
 	ActionReadNeedsReview Action = "read.needs_review"
+	// ActionReadObservations authorizes reading observation targets, the derived
+	// current Observed Offers, and append-only observation evidence (PRD §7.3).
+	// Reading is always L1 (§8.3); a machine data-read tool may hold it.
+	ActionReadObservations Action = "read.observations"
 
 	// --- L2 reversible configuration ----------------------------------------
 	ActionConnectorConnect Action = "connector.connect"
 	// ActionResolveIdentity authorizes confirm/reject/defer on a Market Product
 	// Identity candidate (CAT-002, journey 4). It is a reversible data-resolution
 	// task — Owner + Operator, never the machine gateway principal (an L2 write).
-	ActionResolveIdentity     Action = "identity.resolve"
+	ActionResolveIdentity Action = "identity.resolve"
+	// ActionUploadCapture authorizes the extension (Route B) capture-upload
+	// ingestion contract (PRD §7.3 OBS-005/OBS-008, §10.1). It ingests corroborating
+	// observation evidence — a reversible data task within the L2 baseline
+	// {Owner, Operator}; the machine gateway/Internal principal is not an ingestor.
+	ActionUploadCapture       Action = "observation.upload_capture"
 	ActionConnectorRefresh    Action = "connector.refresh"
 	ActionConnectorDisconnect Action = "connector.disconnect"
 	ActionSetNotificationTime Action = "config.notification_time"
@@ -182,6 +191,7 @@ var Matrix = []Rule{
 	{ActionSessionLogout, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionChatConverse, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionReadNeedsReview, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	{ActionReadObservations, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 
 	// L2 reversible configuration. Account-lifecycle connector actions are
 	// account management — Owner only (PRD §2.2 "Connect account") — a valid
@@ -197,6 +207,9 @@ var Matrix = []Rule{
 	// Identity resolution is a reversible data task within the L2 baseline
 	// {Owner, Operator}; Internal diagnoses but does not resolve mappings.
 	{ActionResolveIdentity, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
+	// Extension capture upload is a reversible data-ingestion task within the L2
+	// baseline {Owner, Operator}; Internal is not an ingestor.
+	{ActionUploadCapture, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 
 	// L3 commercial guardrail — Owner only. Operator and Internal are denied:
 	// this is the §2.2/§8.3 guardrail invariant (Operator cannot change floors,
