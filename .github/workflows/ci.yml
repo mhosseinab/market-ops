@@ -137,6 +137,14 @@ jobs:
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
       - name: golangci-lint
         run: task go:lint
+      # Apply the full schema to the fresh postgres:18 service container BEFORE
+      # go:test, exactly as `task db:reset` does locally: DROP/CREATE via the
+      # `postgres` maintenance DB + goose up (0001–0005) + River migrate-up +
+      # seed fixtures. Without this, DB-backed tests hit a schemaless DB and fail
+      # with `relation "organizations" does not exist`. The DATABASE_URL role
+      # (market_ops) is the container superuser, so DROP/CREATE DATABASE succeeds.
+      - name: apply schema to service container (db:reset)
+        run: task db:reset
       - name: go test -race
         run: task go:test
       - name: migration up/down/up reversibility (scratch postgres:18)
