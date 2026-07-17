@@ -174,3 +174,8 @@ vendor/
 
 # Agent worktrees (ephemeral, orchestrator-managed)
 .claude/worktrees/
+
+# Playwright (S26)
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/dist/

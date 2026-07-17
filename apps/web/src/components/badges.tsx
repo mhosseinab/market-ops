@@ -125,6 +125,59 @@ export function EventTypeBadge({ type }: { type: EventType }) {
   return <Badge tone={m.tone} label={t(m.key)} shape="none" />;
 }
 
+// ── Availability (normalized, docs/11) ─────────────────────────────────────
+export type AvailabilityState =
+  | "in_stock"
+  | "out_of_stock"
+  | "limited"
+  | "unavailable"
+  | "disappeared";
+
+const AVAILABILITY: Record<AvailabilityState, { tone: Tone; key: MessageKey }> = {
+  in_stock: { tone: "tone-pos", key: "availability.in_stock" },
+  out_of_stock: { tone: "tone-risk", key: "availability.out_of_stock" },
+  limited: { tone: "tone-warn", key: "availability.limited" },
+  unavailable: { tone: "tone-muted", key: "availability.unavailable" },
+  disappeared: { tone: "tone-ink2", key: "availability.disappeared" },
+};
+
+export function AvailabilityBadge({ state }: { state: AvailabilityState }) {
+  const t = useT();
+  const m = AVAILABILITY[state];
+  return <Badge tone={m.tone} label={t(m.key)} />;
+}
+
+// ── Connector capability status (ACC-001; distinct axis from observation) ────
+export type CapabilityState = "unknown" | "supported" | "unsupported" | "degraded";
+
+const CAPABILITY: Record<CapabilityState, { tone: Tone; key: MessageKey }> = {
+  unknown: { tone: "tone-muted", key: "capabilityState.unknown" },
+  supported: { tone: "tone-pos", key: "capabilityState.supported" },
+  unsupported: { tone: "tone-risk", key: "capabilityState.unsupported" },
+  degraded: { tone: "tone-warn", key: "capabilityState.degraded" },
+};
+
+export function CapabilityBadge({ state }: { state: CapabilityState }) {
+  const t = useT();
+  const m = CAPABILITY[state];
+  return <Badge tone={m.tone} label={t(m.key)} shape="square" />;
+}
+
+// ── Cost-import row disposition (CST-001) ───────────────────────────────────
+export type DispositionState = "accept" | "reject" | "duplicate";
+
+const DISPOSITION: Record<DispositionState, { tone: Tone; key: MessageKey }> = {
+  accept: { tone: "tone-pos", key: "disposition.accept" },
+  reject: { tone: "tone-risk", key: "disposition.reject" },
+  duplicate: { tone: "tone-warn", key: "disposition.duplicate" },
+};
+
+export function DispositionBadge({ state }: { state: DispositionState }) {
+  const t = useT();
+  const m = DISPOSITION[state];
+  return <Badge tone={m.tone} label={t(m.key)} />;
+}
+
 // ── Freshness pill (fresh ≤60m / aging 1–6h / stale >6h) ───────────────────
 export function FreshnessPill({ ageMinutes }: { ageMinutes: number }) {
   const t = useT();

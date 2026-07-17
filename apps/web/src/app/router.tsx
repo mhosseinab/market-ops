@@ -5,14 +5,21 @@ import {
   type RouterHistory,
   redirect,
 } from "@tanstack/react-router";
+import type { ReactElement } from "react";
 import { AppShell } from "../components/AppShell";
 import { EmptyState } from "../components/EmptyState";
-import { ROUTES } from "./navConfig";
+import { CostImport } from "../screens/CostImport";
+import { Onboarding } from "../screens/Onboarding";
+import { ProductDetail } from "../screens/ProductDetail";
+import { Products } from "../screens/Products";
+import { ROUTES, type RouteKey } from "./navConfig";
 
 // Code-based route tree derived from the DATA in navConfig. Root renders the
-// AppShell; `/` deep-links to Today; every screen + deep-link sub-route
-// (event/recommendation/product/cost/bulk/diagnostics/onboarding/ds) is a leaf.
-// Screen bodies are scaffold EmptyStates in S25; real screens land in S26–S28.
+// AppShell; `/` deep-links to Today; every screen + deep-link sub-route is a
+// leaf. S26 mounts the real onboarding/products/product/cost screens; the
+// remaining screens stay EmptyState scaffolds until S27–S28. Every route accepts
+// an optional `variantId` search key so deep links (products → product,
+// product → cost/diagnostics) stay typed end-to-end.
 
 const rootRoute = createRootRoute({ component: AppShell });
 
@@ -26,8 +33,25 @@ const indexRoute = createRoute({
   },
 });
 
+const SCREENS: Partial<Record<RouteKey, () => ReactElement>> = {
+  products: Products,
+  product: ProductDetail,
+  cost: CostImport,
+  onboarding: Onboarding,
+};
+
+/** Uniform, permissive search validation so deep-link `variantId` stays typed. */
+function validateSearch(search: Record<string, unknown>): { variantId?: string } {
+  return typeof search.variantId === "string" ? { variantId: search.variantId } : {};
+}
+
 const screenRoutes = ROUTES.map((r) =>
-  createRoute({ getParentRoute: () => rootRoute, path: r.path, component: EmptyState }),
+  createRoute({
+    getParentRoute: () => rootRoute,
+    path: r.path,
+    component: SCREENS[r.key] ?? EmptyState,
+    validateSearch,
+  }),
 );
 
 const routeTree = rootRoute.addChildren([indexRoute, ...screenRoutes]);
