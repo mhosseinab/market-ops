@@ -30,7 +30,7 @@ Review routing: canonical capability roles per plan §4.6 and `dk-p0-agent-guide
 
 | Step | Title | Status | Attempts | Branch | Commit SHA | Note |
 |------|-------|--------|----------|--------|-----------|------|
-| S1 | Scaffold monorepo + rules doc | in_progress | 1 | dk-p0/S1 | — | dispatched |
+| S1 | Scaffold monorepo + rules doc | in_progress | 1 | dk-p0/S1 (wt fd58883) | fd58883 | worker green; in review (reliability-delivery) |
 | S2 | Dev stack (PG18 + otel compose) | pending | 0 | — | — | |
 | S3 | Go core service skeleton | pending | 0 | — | — | |
 | S4 | Contracts pipeline + drift check [C] | pending | 0 | — | — | |
