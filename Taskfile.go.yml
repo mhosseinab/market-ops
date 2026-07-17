@@ -19,7 +19,7 @@ tasks:
       # Members: the core module plus the generated Go modules it consumes
       # (gen/go server stubs, gen/dkgo DK Seller client) — monorepo §2.
       - go work init ./services/core ./gen/go ./gen/dkgo
-      - go work edit -go=1.25.0
+      - go work edit -go=1.25.12
 
   sync:
     desc: Sync the go workspace.

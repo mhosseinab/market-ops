@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@11.13.1",
   "engines": {
     "node": ">=22"
   },
@@ -11,16 +11,9 @@
     "prepare": "lefthook install"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.2.0",
-    "lefthook": "1.13.6",
-    "typescript": "5.9.2",
-    "vitest": "3.2.4"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@biomejs/biome",
-      "esbuild",
-      "lefthook"
-    ]
+    "@biomejs/biome": "2.5.4",
+    "lefthook": "2.1.10",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
   }
 }
