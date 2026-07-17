@@ -164,6 +164,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chat": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Converse with the LLM plane over a Server-Sent Events stream.
+         * @description Opens (or continues) a conversation turn and streams the LLM plane's response as Server-Sent Events (PRD §19.3: SSE, no WebSocket). The gateway authenticates the browser session (cookie), authorizes the read action through the single shared permission matrix, and proxies the turn to the internal Python LLM service; it never lets free text approve, execute, or confirm anything (PRD §8, §12.3 — the LLM plane holds a read/Draft-only credential and no model tool advances an action past Draft). When the global or per-account kill switch is on, or the LLM plane is unreachable, chat returns a structured unavailable state and NOTHING else degrades — every structured screen stays fully functional (CHAT-009).
+         */
+        post: operations["chat"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -271,6 +291,63 @@ export interface components {
              * @description When the session expires (RFC 3339, UTC).
              */
             expiresAt: string;
+        };
+        /** @description One conversation turn from the browser. The message is free text and carries NO authority (PRD §8 free-text containment): it can never approve, execute, or confirm — those live only in structured controls outside the model plane. A turn optionally continues an existing conversation and/or binds a marketplace-account context; context resolution itself is deterministic in the LLM plane (§8.1), never guessed from this field. */
+        ChatTurnRequest: {
+            /**
+             * Format: uuid
+             * @description Existing conversation to continue. Absent on the first turn; the gateway opens a new conversation and returns its id in the stream.
+             */
+            conversationId?: string;
+            /**
+             * Format: uuid
+             * @description Optional account context for the turn. Exactly one context is active per conversation; ambiguity is resolved by a structured picker, never inferred (CHAT-007).
+             */
+            marketplaceAccountId?: string;
+            /** @description The user's free-text message. Bounded; carries no authority. */
+            message: string;
+        };
+        /**
+         * @description Why chat is unavailable. All three degrade chat ONLY — every structured screen stays fully functional (CHAT-009). Never inferred; set by the gateway from the kill-switch config or LLM-plane reachability.
+         * @enum {string}
+         */
+        ChatUnavailableReason: "kill_switch_global" | "kill_switch_account" | "provider_unavailable";
+        /** @description Structured disabled state for /chat. The web client renders the suggested-prompts + structured-screens fallback (§12.1) from this; it is NOT an error the way a 5xx failure is — screens remain fully usable. */
+        ChatUnavailable: {
+            /** @description Stable machine-readable code (screaming_snake_case). */
+            code: string;
+            /** @description Human-readable summary. Localized at the edge, never in core. */
+            message: string;
+            reason: components["schemas"]["ChatUnavailableReason"];
+        };
+        /** @description The JSON payload carried in each SSE `data:` frame from /chat. Documented so every consumer (web, tests) decodes the same shape; the wire transport is text/event-stream, not a JSON response body. `kind` discriminates the frame; `token` carries incremental assistant text; `conversationId` is emitted once when a new conversation is opened; `envelope` carries the final typed response envelope on the `final` frame; `failure` carries the §12.4 structured failure state. No frame ever carries an approval control. */
+        ChatStreamEvent: {
+            /**
+             * @description Frame discriminator.
+             * @enum {string}
+             */
+            kind: "conversation" | "token" | "final" | "failure";
+            /**
+             * Format: uuid
+             * @description Emitted once on the `conversation` frame for a new conversation.
+             */
+            conversationId?: string;
+            /** @description Incremental assistant text on a `token` frame. */
+            token?: string;
+            /** @description The final typed response envelope on a `final` frame. Its internal shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2) and lands with the response contract step; the gateway relays it verbatim. */
+            envelope?: {
+                [key: string]: unknown;
+            };
+            failure?: components["schemas"]["ChatFailure"];
+        };
+        /** @description The §12.4 structured failure state: after one automatic retry, a concise message plus a deep link to the structured screen. Free text only; no authority. Emitted as the `failure` frame, or when a hard bound (turn recursion limit, tool-call limit, timeout, token ceiling) is exceeded. */
+        ChatFailure: {
+            /** @description Stable machine-readable failure code (screaming_snake_case). */
+            code: string;
+            /** @description Human-readable summary. Localized at the edge. */
+            message: string;
+            /** @description Path to the structured screen that completes the task deterministically. */
+            deepLink?: string;
         };
         /** @description Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator. */
         ErrorEnvelope: {
@@ -547,6 +624,48 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    chat: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatTurnRequest"];
+            };
+        };
+        responses: {
+            /** @description An event stream of turn events (text/event-stream). Each SSE `data:` frame is a JSON ChatStreamEvent. The stream is grounded, read/Draft only, and carries no approval control. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Chat is unavailable: the kill switch is on (global or per-account) or the LLM plane is unreachable. Screens are unaffected (CHAT-009). */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatUnavailable"];
+                };
             };
             /** @description Unexpected error. */
             default: {

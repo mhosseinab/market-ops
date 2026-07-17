@@ -2,6 +2,13 @@
 
 from .build_info import BuildInfo
 from .capability_status import CapabilityStatus
+from .chat_failure import ChatFailure
+from .chat_stream_event import ChatStreamEvent
+from .chat_stream_event_envelope import ChatStreamEventEnvelope
+from .chat_stream_event_kind import ChatStreamEventKind
+from .chat_turn_request import ChatTurnRequest
+from .chat_unavailable import ChatUnavailable
+from .chat_unavailable_reason import ChatUnavailableReason
 from .connector_account_ref import ConnectorAccountRef
 from .connector_capability import ConnectorCapability
 from .connector_capability_state import ConnectorCapabilityState
@@ -18,6 +25,13 @@ from .user_role import UserRole
 __all__ = (
     "BuildInfo",
     "CapabilityStatus",
+    "ChatFailure",
+    "ChatStreamEvent",
+    "ChatStreamEventEnvelope",
+    "ChatStreamEventKind",
+    "ChatTurnRequest",
+    "ChatUnavailable",
+    "ChatUnavailableReason",
     "ConnectorAccountRef",
     "ConnectorCapability",
     "ConnectorCapabilityState",

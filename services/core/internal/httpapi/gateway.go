@@ -21,6 +21,12 @@ type gatewayServer struct {
 	// cookieSecure sets the Secure attribute on the session cookie. Defaults to
 	// true (production posture); local plain-HTTP dev may disable it.
 	cookieSecure CookieSecure
+	// killSwitch gates /chat (CHAT-009). Nil ⇒ never killed by config, but /chat
+	// still fails closed when the LLM plane is unwired.
+	killSwitch ChatKillSwitch
+	// llmChat is the internal Python LLM plane seam (§19.3). Nil ⇒ /chat returns
+	// a structured provider_unavailable state; screens are unaffected.
+	llmChat LLMChatService
 }
 
 // Compile-time assertion that we implement the full generated interface.

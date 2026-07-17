@@ -109,6 +109,12 @@ const (
 	ActionReadStrategy      Action = "read.current_strategy"
 	ActionSessionRead       Action = "session.read"
 	ActionSessionLogout     Action = "session.logout"
+	// ActionChatConverse authorizes opening/continuing a chat turn (CHAT-009,
+	// §12.1). Chat is a read-surface: a turn can, at most, create a Draft via a
+	// Draft-only tool; it never approves/executes. Any authenticated role may
+	// converse — authority for any prepared action still resolves through this
+	// same Matrix by the user's role, never from the chat surface itself.
+	ActionChatConverse Action = "chat.converse"
 
 	// --- L2 reversible configuration ----------------------------------------
 	ActionConnectorConnect    Action = "connector.connect"
@@ -166,6 +172,7 @@ var Matrix = []Rule{
 	{ActionReadStrategy, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionSessionRead, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionSessionLogout, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	{ActionChatConverse, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 
 	// L2 reversible configuration. Account-lifecycle connector actions are
 	// account management — Owner only (PRD §2.2 "Connect account") — a valid

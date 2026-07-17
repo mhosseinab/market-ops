@@ -88,3 +88,46 @@ func TestSpotlightDisabledWhenUnset(t *testing.T) {
 		t.Fatal("SpotlightEnabled() = false with SENTRY_SPOTLIGHT set; must be enabled")
 	}
 }
+
+// TestChatKillSwitchDefaultsOff proves chat is NOT killed by default: an absent
+// CHAT_KILL_SWITCH / CHAT_KILL_SWITCH_ACCOUNTS leaves the global flag false and
+// the account list empty (CHAT-009). The switch is opt-in, never a silent kill.
+func TestChatKillSwitchDefaultsOff(t *testing.T) {
+	cfg, err := config.Load(fakeEnv(map[string]string{"APP_ENV": "dev"}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ChatKillSwitchGlobal {
+		t.Error("ChatKillSwitchGlobal = true by default; must be false (opt-in)")
+	}
+	if len(cfg.ChatKillSwitchAccounts) != 0 {
+		t.Errorf("ChatKillSwitchAccounts = %v, want empty by default", cfg.ChatKillSwitchAccounts)
+	}
+	if cfg.LLMServiceBaseURL != "" || cfg.LLMGatewayToken != "" {
+		t.Error("LLM plane config must be empty by default (fail closed)")
+	}
+}
+
+// TestChatKillSwitchParses proves the global flag and comma-separated account
+// list parse, trimming blanks.
+func TestChatKillSwitchParses(t *testing.T) {
+	cfg, err := config.Load(fakeEnv(map[string]string{
+		"APP_ENV":                   "dev",
+		"CHAT_KILL_SWITCH":          "true",
+		"CHAT_KILL_SWITCH_ACCOUNTS": " a , ,b ",
+		"LLM_SERVICE_URL":           "http://llm:9000",
+		"LLM_GATEWAY_TOKEN":         "secret",
+	}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.ChatKillSwitchGlobal {
+		t.Error("ChatKillSwitchGlobal = false, want true")
+	}
+	if len(cfg.ChatKillSwitchAccounts) != 2 || cfg.ChatKillSwitchAccounts[0] != "a" || cfg.ChatKillSwitchAccounts[1] != "b" {
+		t.Errorf("ChatKillSwitchAccounts = %v, want [a b]", cfg.ChatKillSwitchAccounts)
+	}
+	if cfg.LLMServiceBaseURL != "http://llm:9000" || cfg.LLMGatewayToken != "secret" {
+		t.Error("LLM plane config did not parse")
+	}
+}

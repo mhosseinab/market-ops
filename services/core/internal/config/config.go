@@ -34,11 +34,48 @@ type Config struct {
 	// (SENTRY_SPOTLIGHT). It is either a truthy flag or the sidecar stream URL;
 	// unset means all Sentry wiring stays disabled (dk-p0-monorepo.md §8).
 	Spotlight string
+
+	// ChatKillSwitchGlobal disables chat platform-wide when true
+	// (CHAT_KILL_SWITCH global; CHAT-009). Screens stay fully functional.
+	// Absent ⇒ false ⇒ chat is not globally killed.
+	ChatKillSwitchGlobal bool
+
+	// ChatKillSwitchAccounts is the set of marketplace-account ids for which
+	// chat is disabled (CHAT_KILL_SWITCH_ACCOUNTS, comma-separated UUIDs;
+	// CHAT-009). Screens for those accounts stay fully functional.
+	ChatKillSwitchAccounts []string
+
+	// LLMServiceBaseURL is the base URL of the internal Python LLM plane
+	// (LLM_SERVICE_URL). Unset ⇒ /chat fails closed with a structured
+	// provider_unavailable state; screens are unaffected (§19.3).
+	LLMServiceBaseURL string
+
+	// LLMGatewayToken is the read+Draft-only bearer credential the core mints
+	// for the LLM plane (LLM_GATEWAY_TOKEN; PRD §8, §12.3, §19.3). Its capability
+	// envelope is enforced by perm.GatewayCan. Unset ⇒ the LLM plane cannot call
+	// back into read/Draft endpoints. A secret; never defaulted, never logged.
+	LLMGatewayToken string
 }
 
 // SpotlightEnabled reports whether dev Spotlight wiring should be initialized.
 // Unset SENTRY_SPOTLIGHT ⇒ false ⇒ Sentry is fully disabled.
 func (c Config) SpotlightEnabled() bool { return c.Spotlight != "" }
+
+// splitList parses a comma-separated env value into a trimmed, non-empty list.
+// An empty or all-whitespace value yields nil (no entries).
+func splitList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
 
 // Load reads configuration using getenv (pass os.Getenv in production; a fake in
 // tests). It returns an error listing every missing required variable.
@@ -50,6 +87,11 @@ func Load(getenv func(string) string) (*Config, error) {
 		HTTPAddr:    r.optional("HTTP_ADDR", ":8080"),
 		OTelEnabled: r.boolOptional("OTEL_ENABLED", false),
 		Spotlight:   strings.TrimSpace(getenv("SENTRY_SPOTLIGHT")),
+
+		ChatKillSwitchGlobal:   r.boolOptional("CHAT_KILL_SWITCH", false),
+		ChatKillSwitchAccounts: splitList(getenv("CHAT_KILL_SWITCH_ACCOUNTS")),
+		LLMServiceBaseURL:      strings.TrimSpace(getenv("LLM_SERVICE_URL")),
+		LLMGatewayToken:        strings.TrimSpace(getenv("LLM_GATEWAY_TOKEN")),
 	}
 
 	if len(r.missing) > 0 {
