@@ -22,7 +22,10 @@ tasks:
   build:
     desc: Build the web app and extension.
     cmds:
-      - pnpm -r build
+      # --if-present so the task is a no-op green on scaffold members that have no
+      # build script yet (web/extension build scripts land in their own steps) and
+      # picks up each real build automatically as it arrives.
+      - pnpm -r --if-present build
 
   pseudoloc:
     desc: Pseudo-locale + copy-lint gate (LOC-011). Wired in S25.

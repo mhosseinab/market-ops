@@ -1,0 +1,188 @@
+name: ci
+
+# Affected-only, per-language CI (monorepo §7). A `detect` job computes path
+# filters with dorny/paths-filter; each language job runs only when its filter
+# matched. A contracts change cascades to all four planes. `task ci:local`
+# mirrors these commands, in order, for the pre-merge loop.
+#
+# NOTE: first-run-on-GitHub is a DEFERRED gate — CI cannot execute from the
+# build environment (Docker/Actions egress-blocked). Offline verification is
+# `task ci:local` + `actionlint`.
+
+on:
+  push:
+    branches: [dk-p0/main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to save runner minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  detect:
+    name: detect affected planes
+    runs-on: ubuntu-latest
+    outputs:
+      contracts: ${{ steps.filter.outputs.contracts }}
+      go: ${{ steps.filter.outputs.go }}
+      py: ${{ steps.filter.outputs.py }}
+      ts: ${{ steps.filter.outputs.ts }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            contracts:
+              - 'contracts/**'
+              - 'docs/DK Marketplace - Open API Service.yml'
+            go:
+              - 'services/core/**'
+              - 'gen/go/**'
+              - 'gen/dkgo/**'
+              - 'contracts/**'
+            py:
+              - 'services/llm/**'
+              - 'gen/python/**'
+              - 'contracts/**'
+            ts:
+              - 'apps/**'
+              - 'packages/**'
+              - 'gen/ts/**'
+              - 'contracts/**'
+
+  contracts:
+    name: contracts drift
+    needs: detect
+    if: ${{ needs.detect.outputs.contracts == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Task
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/core/go.mod
+          cache-dependency-path: services/core/go.sum
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: pnpm install --frozen-lockfile
+      # Regenerate every gen/ artifact from its contract source, then fail if the
+      # committed tree drifted (task contracts:drift = generate + git diff
+      # --exit-code -- contracts gen).
+      - run: task contracts:drift
+
+  go:
+    name: go
+    needs: detect
+    if: ${{ needs.detect.outputs.go == 'true' }}
+    runs-on: ubuntu-latest
+    # GOWORK=off on EVERY step — the go.work file never exists in CI; module
+    # `replace` directives are what make cross-module builds resolve (monorepo §10).
+    # `off` is quoted so YAML does not coerce it to the boolean false.
+    env:
+      GOWORK: "off"
+      DATABASE_URL: postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable
+    services:
+      # Scratch Postgres for the goose up/down assertion and any DB-touching tests.
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: market_ops
+          POSTGRES_PASSWORD: market_ops
+          POSTGRES_DB: market_ops
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U market_ops"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Task
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/core/go.mod
+          cache-dependency-path: services/core/go.sum
+      # Toolchain the go job needs beyond the compiler: linter, migration + query
+      # + job-queue CLIs (carry-forward from S5 — river joined task doctor).
+      - name: install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
+      - name: install goose + sqlc + river
+        run: |
+          go install github.com/pressly/goose/v3/cmd/goose@latest
+          go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+          go install github.com/riverqueue/river/cmd/river@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - name: golangci-lint
+        run: task go:lint
+      - name: go test -race
+        run: task go:test
+      - name: migration up/down/up reversibility (scratch postgres:18)
+        run: task migrate:verify
+
+  py:
+    name: py
+    needs: detect
+    if: ${{ needs.detect.outputs.py == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Task
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --frozen --group dev
+      # ruff + mypy (mypy is invoked from the repo root, whole packages — §10).
+      - run: task py:lint
+      - run: task py:test
+
+  ts:
+    name: ts
+    needs: detect
+    if: ${{ needs.detect.outputs.ts == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Task
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # biome + per-member typecheck, then vitest, then the web + extension builds.
+      - run: task ts:lint
+      - run: task ts:test
+      - run: task ts:build
+      # S25 wires the pseudo-locale + copy-lint gate (LOC-011); until then the
+      # ts:pseudoloc task is a stub. Uncomment when S25 lands:
+      # - run: task ts:pseudoloc
