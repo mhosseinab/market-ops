@@ -99,6 +99,11 @@ jobs:
     env:
       GOWORK: "off"
       DATABASE_URL: postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable
+      GOBIN: ${{ github.workspace }}/.cache/go-tools/bin
+      GOLANGCI_LINT_VERSION: v2.5.0
+      GOOSE_VERSION: v3.27.2
+      SQLC_VERSION: v1.31.1
+      RIVER_VERSION: v0.40.0
     services:
       # Scratch Postgres for the goose up/down assertion and any DB-touching tests.
       postgres:
@@ -122,19 +127,50 @@ jobs:
           curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: actions/setup-go@v5
+        id: setup-go
         with:
           go-version-file: services/core/go.mod
           cache-dependency-path: services/core/go.sum
       # Toolchain the go job needs beyond the compiler: linter, migration + query
       # + job-queue CLIs (carry-forward from S5 — river joined task doctor).
-      - name: install golangci-lint
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
-      - name: install goose + sqlc + river
+      # setup-go caches GOMODCACHE/GOCACHE but not installed binaries, so keep a
+      # separate exact-version cache for the four CLIs that otherwise rebuild on
+      # every run. No restore-keys: a tool-version change must produce a cold miss.
+      - name: configure Go CLI path
         run: |
-          go install github.com/pressly/goose/v3/cmd/goose@latest
-          go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
-          go install github.com/riverqueue/river/cmd/river@latest
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          mkdir -p "$GOBIN"
+          echo "$GOBIN" >> "$GITHUB_PATH"
+      - name: restore Go CLI cache
+        id: go-tools-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.GOBIN }}
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-golangci-${{ env.GOLANGCI_LINT_VERSION }}-goose-${{ env.GOOSE_VERSION }}-sqlc-${{ env.SQLC_VERSION }}-river-${{ env.RIVER_VERSION }}
+      - name: install missing Go CLIs
+        run: |
+          if [ -x "$GOBIN/golangci-lint" ]; then
+            echo "golangci-lint restored from cache"
+          else
+            echo "installing golangci-lint ${GOLANGCI_LINT_VERSION}"
+            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
+              | sh -s -- -b "$GOBIN" "$GOLANGCI_LINT_VERSION"
+          fi
+
+          install_go_cli() {
+            binary="$1"
+            package="$2"
+            version="$3"
+            if [ -x "$GOBIN/$binary" ]; then
+              echo "$binary restored from cache"
+              return
+            fi
+            echo "installing $binary $version"
+            go install "${package}@${version}"
+          }
+
+          install_go_cli goose github.com/pressly/goose/v3/cmd/goose "$GOOSE_VERSION"
+          install_go_cli sqlc github.com/sqlc-dev/sqlc/cmd/sqlc "$SQLC_VERSION"
+          install_go_cli river github.com/riverqueue/river/cmd/river "$RIVER_VERSION"
       - name: golangci-lint
         run: task go:lint
       # Apply the full schema to the fresh postgres:18 service container BEFORE

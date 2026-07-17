@@ -67,6 +67,18 @@ Go: `GOWORK=off` in CI; golangci-lint per module; fresh clones need `task go:ini
 - **Gated operations** — production deploys, live DK probes, reversible write probes, paid model runs — require an explicit human "go". Never run them unattended.
 - **Docs stay truthful:** changing a command, convention, or behavior updates `CLAUDE.md` / `dk-p0-monorepo.md` / the relevant runbook in the same commit. `docs/` and `design/` are read-only except PRD-sanctioned sign-off/measurement records.
 
+## Test-Driven Development
+
+TDD (Red → Green → Refactor) is the default development approach for deterministic code in this repo. Write the test first, watch it fail for the right reason, make it pass with the minimum code, then refactor under green.
+
+- **Mandatory TDD** for: money arithmetic and Money-typed boundaries; policy evaluation and ordering; approval versioning and idempotency; event deduplication; permission matrix (`internal/perm`); connector capability transitions (Unknown → …); free-text containment; Route C parser/normalization; observability field emission. These are never-cut invariants (§4.6) — a regression here is a release blocker.
+- **Strongly preferred TDD** for: the rest of `internal/{money,margin,policy,approval}`, sqlc query wrappers, owned-contract validation, the LangGraph state transitions in `services/llm`, and any code enforcing a never-cut rule indirectly.
+- **Test-first for bug fixes:** reproduce the defect with a failing test (named after the issue/PR), then fix. The failing test is the evidence the fix is real and the regression is closed.
+- **Refactor only under green.** If the suite isn't green, stop refactoring and fix the test or the code.
+- **Where TDD does not apply:** generated code under `gen/`, throwaway exploratory scripts, visual-only UI layout work, and codegen runs (`contracts:generate`, `sqlc generate`) — these are validated by their generators, drift checks, and integration/visual gates instead.
+- **Negative tests are first-class.** "Unknown never enables", "free text never approves", "mismatched currency rejects", and every append-only invariant are written before the happy path and kept passing on every change.
+- Tests are not a substitute for the Verify block of the assigned step — both must pass.
+
 ## Engineering method
 
 - Ordinary code uses clear names, small cohesive functions, direct control flow, typed or validated boundaries, actionable errors, and minimal duplication. Keep cleanup scoped to the assigned step.
