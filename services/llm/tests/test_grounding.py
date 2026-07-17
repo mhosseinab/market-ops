@@ -155,7 +155,7 @@ def test_table_exactly_20_rows_is_allowed() -> None:
 
 
 def test_table_with_more_total_rows_must_summarize_and_deep_link() -> None:
-    rows = [[str(i), "x"] for i in range(20)]
+    rows = [["item", "x"] for _ in range(20)]  # digit-free cells
     # 200 total, only 20 shown, but no summary/deep-link ⇒ rejected.
     env = ResponseEnvelope(
         tables=[InlineTable(columns=["sku", "price"], rows=rows, total_row_count=200)]
@@ -163,9 +163,9 @@ def test_table_with_more_total_rows_must_summarize_and_deep_link() -> None:
     assert "TABLE_NOT_SUMMARIZED" in _codes(env)
     ok = ResponseEnvelope(
         tables=[InlineTable(columns=["sku", "price"], rows=rows, total_row_count=200,
-                            summary="showing 20 of 200", deep_link="/app/products")]
+                            summary="showing a partial slice", deep_link="/app/products")]
     )
-    assert "TABLE_NOT_SUMMARIZED" not in _codes(ok)
+    assert _codes(ok) == set()
 
 
 # --- CHAT-022: invented (non-canonical) state term --------------------------
@@ -231,3 +231,97 @@ def test_calculation_not_from_engine_is_rejected() -> None:
                                                  evidence=[GOOD_EVIDENCE])]
     )
     assert "CALCULATION_NOT_FROM_ENGINE" in _codes(env)
+
+
+# --- CHAT-002: a number moved one field over is STILL rejected --------------
+# The model_inference digit-ban must not be bypassable by relocating the digit
+# into any other model-visible free-text slot.
+
+
+def test_digit_in_table_cell_is_rejected() -> None:
+    env = ResponseEnvelope(
+        tables=[InlineTable(columns=["sku", "price"], rows=[["B", "1250000 IRR"]],
+                            total_row_count=1)]
+    )
+    assert "NUMBER_IN_TEXT" in _codes(env)
+
+
+def test_persian_digit_in_table_cell_is_rejected() -> None:
+    env = ResponseEnvelope(
+        tables=[InlineTable(columns=["sku", "price"], rows=[["A", "۹۹۰٬۰۰۰ تومان"]],
+                            total_row_count=1)]
+    )
+    assert "NUMBER_IN_TEXT" in _codes(env)
+
+
+def test_digit_in_claim_statement_is_rejected() -> None:
+    env = ResponseEnvelope(
+        observed_facts=[Claim(statement="the price is 990000 IRR", evidence=[GOOD_EVIDENCE])]
+    )
+    assert "NUMBER_IN_TEXT" in _codes(env)
+
+
+def test_digit_in_recommendation_statement_is_rejected() -> None:
+    env = ResponseEnvelope(
+        recommendation=Recommendation(statement="drop price by 15000 IRR",
+                                      deep_link="/app/recommendation")
+    )
+    assert "NUMBER_IN_TEXT" in _codes(env)
+
+
+def test_digit_in_table_summary_is_rejected() -> None:
+    env = ResponseEnvelope(
+        tables=[InlineTable(columns=["sku", "value"], rows=[["A", "x"]], total_row_count=200,
+                            summary="990000 more rows", deep_link="/app/products")]
+    )
+    assert "NUMBER_IN_TEXT" in _codes(env)
+
+
+def test_digit_in_calculation_label_is_rejected() -> None:
+    env = ResponseEnvelope(
+        deterministic_calculations=[Calculation(label="contribution for 5 units",
+                                                 result=_money_value(), evidence=[GOOD_EVIDENCE])]
+    )
+    assert "NUMBER_IN_TEXT" in _codes(env)
+
+
+def test_digit_in_comparison_label_is_rejected() -> None:
+    env = ResponseEnvelope(
+        comparisons=[Comparison(label="price move over 2 days", left=_money_value(),
+                                right=_money_value(), delta=_money_value(),
+                                left_captured_at="2026-07-16T10:00:00Z",
+                                right_captured_at="2026-07-17T10:00:00Z")]
+    )
+    assert "NUMBER_IN_TEXT" in _codes(env)
+
+
+def test_digit_in_missing_data_entry_is_rejected() -> None:
+    env = ResponseEnvelope(missing_data=["3 competitor offers"])
+    assert "NUMBER_IN_TEXT" in _codes(env)
+
+
+# --- CHAT-022: evidence quality must be a canonical catalog key -------------
+
+
+def test_non_canonical_evidence_quality_is_rejected() -> None:
+    bad = EvidenceRef(evidence_id="ev-3", captured_at="2026-07-17T10:00:00Z",
+                      quality="totally_fresh")
+    env = ResponseEnvelope(observed_facts=[Claim(statement="an offer", evidence=[bad])])
+    assert "NON_CANONICAL_QUALITY" in _codes(env)
+
+
+def test_canonical_evidence_quality_is_allowed() -> None:
+    for quality in ("state.verified", "state.stale", "freshness.aging"):
+        ev = EvidenceRef(evidence_id="ev-4", captured_at="2026-07-17T10:00:00Z", quality=quality)
+        env = ResponseEnvelope(observed_facts=[Claim(statement="an offer", evidence=[ev])])
+        assert "NON_CANONICAL_QUALITY" not in _codes(env)
+
+
+# --- CHAT-023: total_row_count below the shown rows is a mismatch -----------
+
+
+def test_total_row_count_below_shown_rows_is_rejected() -> None:
+    env = ResponseEnvelope(
+        tables=[InlineTable(columns=["sku"], rows=[["A"], ["B"], ["C"]], total_row_count=1)]
+    )
+    assert "TABLE_ROW_COUNT_MISMATCH" in _codes(env)

@@ -98,6 +98,21 @@ def test_compose_or_refuse_returns_envelope_when_grounded() -> None:
     assert isinstance(result, ResponseEnvelope)
 
 
+def test_compose_or_refuse_fails_closed_on_validation_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """A pydantic ValidationError during compose fails closed, not propagates."""
+    import llm.envelope.composer as composer_mod
+
+    def _boom(**_kwargs: object) -> ResponseEnvelope:
+        Money(mantissa=1.5, currency="IRR")  # type: ignore[arg-type]  # raises ValidationError
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(composer_mod, "compose", _boom)
+    result = composer_mod.compose_or_refuse(model_inference="note")
+    assert isinstance(result, CannotAnswer)
+    assert "ENVELOPE_MALFORMED" in result.violations
+    assert result.deep_link == FALLBACK_DEEP_LINK
+
+
 def test_fail_closed_helper_shape() -> None:
     refusal = fail_closed(message="cannot answer", missing=["cost"])
     assert refusal.code == "CANNOT_ANSWER"

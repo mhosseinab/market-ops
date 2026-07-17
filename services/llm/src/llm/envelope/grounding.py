@@ -81,9 +81,29 @@ CANONICAL_STATE_KEYS: frozenset[str] = frozenset(
     }
 )
 
+# The subset of canonical keys admissible as an EvidenceRef.quality label — the
+# observation quality states plus the freshness pill (design/README.md §"quality"
+# / evidence quality states). A quality label outside this set is a non-canonical
+# synonym (CHAT-022); it is a subset of CANONICAL_STATE_KEYS (drift-guarded).
+CANONICAL_QUALITY_KEYS: frozenset[str] = frozenset(
+    {
+        "state.verified",
+        "state.supported",
+        "state.unverified",
+        "state.conflicted",
+        "state.stale",
+        "state.unavailable",
+        "freshness.fresh",
+        "freshness.aging",
+        "freshness.stale",
+    }
+)
+
 # Any decimal digit — ASCII, Persian (U+06F0–U+06F9), or Arabic-Indic
-# (U+0660–U+0669). Model text must contain none: a number belongs in a sourced
-# field, never in prose (CHAT-002).
+# (U+0660–U+0669). NO model-visible free-text slot may contain one: a number
+# belongs in a sourced field, never in prose or a table cell (CHAT-002). Decimal
+# points and thousands separators are irrelevant to detection because a number
+# always carries at least one of these digit characters.
 _DIGIT = re.compile(r"[0-9۰-۹٠-٩]")
 
 
@@ -113,6 +133,44 @@ def _evidence_ok(ev: EvidenceRef) -> bool:
     return bool(ev.evidence_id.strip()) and bool(ev.captured_at.strip()) and bool(
         ev.quality.strip()
     )
+
+
+def _check_no_digits(text: str, where: str, out: list[Violation], *, code: str) -> None:
+    """CHAT-002: a model-visible free-text slot may introduce no financial number.
+
+    Every free-text field the model can influence (claim/recommendation prose,
+    labels, missing-data notes, table summaries and cells) is digit-banned the
+    same way ``model_inference`` is — a number must live in a sourced field, so
+    moving a digit one field over cannot smuggle an unsourced number to the user.
+    """
+    if _DIGIT.search(text):
+        out.append(
+            Violation(
+                code,
+                f"{where}: free text contains a digit; numbers must live in a sourced "
+                f"field, never in prose (CHAT-002)",
+            )
+        )
+
+
+def _check_evidence_quality(
+    evidence: list[EvidenceRef], where: str, out: list[Violation]
+) -> None:
+    """CHAT-022: an evidence quality label must be a canonical catalog key.
+
+    Presence is handled by :func:`_evidence_ok` (⇒ MISSING_EVIDENCE); here we
+    reject a *present* quality label that is an invented synonym rather than a
+    glossary quality/freshness key.
+    """
+    for j, ev in enumerate(evidence):
+        if ev.quality.strip() and ev.quality not in CANONICAL_QUALITY_KEYS:
+            out.append(
+                Violation(
+                    "NON_CANONICAL_QUALITY",
+                    f"{where}.evidence[{j}]: quality {ev.quality!r} is not a canonical "
+                    f"catalog key (CHAT-022)",
+                )
+            )
 
 
 def _check_sourced_numeric(
@@ -150,6 +208,8 @@ def _check_claim(claim: Claim, where: str, out: list[Violation]) -> None:
                 f"quality (CHAT-005)",
             )
         )
+    _check_evidence_quality(claim.evidence, where, out)
+    _check_no_digits(claim.statement, f"{where}.statement", out, code="NUMBER_IN_TEXT")
     if claim.value is not None:
         _check_sourced_numeric(claim.value, f"{where}.value", out)
     _check_state_key(claim.state_key, where, out)
@@ -157,6 +217,8 @@ def _check_claim(claim: Claim, where: str, out: list[Violation]) -> None:
 
 def _check_calculation(calc: Calculation, where: str, out: list[Violation]) -> None:
     _check_sourced_numeric(calc.result, f"{where}.result", out)
+    _check_evidence_quality(calc.evidence, where, out)
+    _check_no_digits(calc.label, f"{where}.label", out, code="NUMBER_IN_TEXT")
     if calc.result.provenance not in ENGINE_PROVENANCES:
         out.append(
             Violation(
@@ -169,6 +231,7 @@ def _check_calculation(calc: Calculation, where: str, out: list[Violation]) -> N
 
 def _check_comparison(cmp: Comparison, where: str, out: list[Violation]) -> None:
     # CHAT-021: both values, the delta, and both timestamps.
+    _check_no_digits(cmp.label, f"{where}.label", out, code="NUMBER_IN_TEXT")
     _check_sourced_numeric(cmp.left, f"{where}.left", out)
     _check_sourced_numeric(cmp.right, f"{where}.right", out)
     _check_sourced_numeric(cmp.delta, f"{where}.delta", out)
@@ -216,6 +279,24 @@ def _check_table(table: InlineTable, where: str, out: list[Violation]) -> None:
                     f"summarized + deep-linked (CHAT-023)",
                 )
             )
+    if table.total_row_count < len(table.rows):
+        out.append(
+            Violation(
+                "TABLE_ROW_COUNT_MISMATCH",
+                f"{where}: total_row_count {table.total_row_count} is below the "
+                f"{len(table.rows)} inline rows shown (CHAT-023)",
+            )
+        )
+    # CHAT-002: cells/headers/summary are model-visible free text — no unsourced
+    # number may hide in them. Table cells have no SourceRef mechanism in this
+    # shape, so a numeric cell fails closed until a sourced-cell shape lands.
+    for col, header in enumerate(table.columns):
+        _check_no_digits(header, f"{where}.columns[{col}]", out, code="NUMBER_IN_TEXT")
+    for r, row in enumerate(table.rows):
+        for c, cell in enumerate(row):
+            _check_no_digits(cell, f"{where}.rows[{r}][{c}]", out, code="NUMBER_IN_TEXT")
+    if table.summary:
+        _check_no_digits(table.summary, f"{where}.summary", out, code="NUMBER_IN_TEXT")
 
 
 def find_violations(env: ResponseEnvelope) -> list[Violation]:
@@ -244,16 +325,20 @@ def find_violations(env: ResponseEnvelope) -> list[Violation]:
 
     if env.recommendation is not None:
         _check_state_key(env.recommendation.state_key, "recommendation", out)
-
-    # CHAT-002: model text can never introduce a financial number.
-    if _DIGIT.search(env.model_inference):
-        out.append(
-            Violation(
-                "NUMBER_IN_MODEL_TEXT",
-                "model_inference contains a digit; numbers must live in sourced fields "
-                "(CHAT-002)",
-            )
+        _check_no_digits(
+            env.recommendation.statement,
+            "recommendation.statement",
+            out,
+            code="NUMBER_IN_TEXT",
         )
+
+    for i, note in enumerate(env.missing_data):
+        _check_no_digits(note, f"missing_data[{i}]", out, code="NUMBER_IN_TEXT")
+
+    # CHAT-002: the model-authored inference slot can never introduce a number.
+    _check_no_digits(
+        env.model_inference, "model_inference", out, code="NUMBER_IN_MODEL_TEXT"
+    )
 
     return out
 

@@ -31,6 +31,7 @@ from llm.envelope.contract import (
     SourceRef,
 )
 from llm.envelope.grounding import (
+    CANONICAL_QUALITY_KEYS,
     CANONICAL_STATE_KEYS,
     GroundingError,
     Violation,
@@ -49,6 +50,7 @@ from llm.envelope.models import (
 
 __all__ = [
     "CANNOT_ANSWER_REASON_KEY",
+    "CANONICAL_QUALITY_KEYS",
     "CANONICAL_STATE_KEYS",
     "FALLBACK_DEEP_LINK",
     "MAX_INLINE_ROWS",

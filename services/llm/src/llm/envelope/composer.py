@@ -13,6 +13,8 @@ reason and a deep link to the structured screen (CHAT-005, §12.4).
 
 from __future__ import annotations
 
+from pydantic import ValidationError
+
 from llm.envelope.contract import (
     Calculation,
     CannotAnswer,
@@ -106,9 +108,10 @@ def compose_or_refuse(
 ) -> ResponseEnvelope | CannotAnswer:
     """Compose a grounded envelope, or fail closed to a structured refusal.
 
-    On any grounding violation the plane returns :class:`CannotAnswer` — never a
-    degraded, plausible-looking answer — carrying the violation codes and any
-    named missing data for audit, plus the deep link to the structured screen.
+    On any grounding violation — or any pydantic construction/validation error —
+    the plane returns :class:`CannotAnswer` — never a degraded, plausible-looking
+    answer — carrying the violation codes and any named missing data for audit,
+    plus the deep link to the structured screen.
     """
     try:
         return compose(
@@ -129,4 +132,13 @@ def compose_or_refuse(
             "use the structured screen",
             missing=list(missing_data or []),
             violations=_violation_summary(exc.violations),
+        )
+    except ValidationError:
+        # A malformed envelope (e.g. a bad SourcedValue payload) must also fail
+        # closed rather than propagate — never degrade to a guess (§12.2 item 6).
+        return fail_closed(
+            message="the assistant cannot answer from the available evidence; "
+            "use the structured screen",
+            missing=list(missing_data or []),
+            violations=["ENVELOPE_MALFORMED"],
         )
