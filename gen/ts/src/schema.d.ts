@@ -184,6 +184,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/identity/needs-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the Needs Review identity-mapping queue for an account.
+         * @description Returns the account's pending Market Product Identity candidates (journey 4 step 1): each row carries SKU (supplier code), variant and product title, and the native-id evidence a reviewer needs. Only NeedsReview candidates appear here — Confirmed/Rejected/Obsolete mappings are never in the queue. Confirming a candidate is the ONLY thing that makes a variant an observation target (CAT-002, OBS-001).
+         */
+        get: operations["listNeedsReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/identity/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a Needs Review candidate as the variant's active mapping.
+         * @description Transitions a NeedsReview candidate to Confirmed (journey 4 step 2). At most one active Confirmed mapping may exist per variant (CAT-002, enforced by a partial unique index); a second confirm for the same variant is rejected. Only after confirmation does the variant become an observation target (OBS-001). The decision is recorded in an append-only audit (who/when/evidence).
+         */
+        post: operations["confirmIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/identity/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject a Needs Review candidate.
+         * @description Transitions a NeedsReview candidate to Rejected (journey 4 step 2). A rejected mapping never feeds an executable path and frees the variant for a fresh candidate later. The decision is recorded in an append-only audit.
+         */
+        post: operations["rejectIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/identity/defer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Defer a Needs Review candidate, keeping it in the queue.
+         * @description Leaves a NeedsReview candidate in the queue (journey 4 step 2) and records the deferral in the append-only audit. It never promotes the mapping to an executable state.
+         */
+        post: operations["deferIdentity"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -348,6 +428,75 @@ export interface components {
             message: string;
             /** @description Path to the structured screen that completes the task deterministically. */
             deepLink?: string;
+        };
+        /**
+         * @description Versioned Market Product Identity state (PRD §7.2 CAT-002). Only `confirmed` may drive an executable path; `needs_review`, `rejected`, and `obsolete` never can (identity quarantine).
+         * @enum {string}
+         */
+        MarketProductIdentityState: "confirmed" | "needs_review" | "rejected" | "obsolete";
+        /** @description A variant's mapping to a public DK product record, with its versioned state. Separate canonical entity from the owned Variant/Listing (CAT-001). */
+        MarketProductIdentity: {
+            /**
+             * Format: uuid
+             * @description Stable mapping id.
+             */
+            id: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /**
+             * Format: uuid
+             * @description The owned variant this mapping resolves.
+             */
+            variantId: string;
+            /**
+             * Format: int64
+             * @description DK native variant id (LTR technical identifier).
+             */
+            nativeVariantId: number;
+            /**
+             * Format: int64
+             * @description The public DK product record the variant is mapped to.
+             */
+            nativeProductId: number;
+            state: components["schemas"]["MarketProductIdentityState"];
+            /** @description Whether this is the variant's live mapping. */
+            active: boolean;
+            /** @description How the candidate was created (P0 is exact_native_id only). */
+            candidateSource: string;
+            /** @description Monotonic per-mapping version, bumped on every state transition. */
+            version: number;
+        };
+        /** @description One Needs Review queue row (journey 4 step 1): the pending candidate plus the SKU / variant title / product title / native-id evidence a reviewer needs to confirm, reject, or defer. */
+        NeedsReviewItem: {
+            /** Format: uuid */
+            identityId: string;
+            /** Format: uuid */
+            variantId: string;
+            /** Format: int64 */
+            nativeVariantId: number;
+            /** Format: int64 */
+            nativeProductId: number;
+            /** @description Seller SKU / supplier code (LTR technical identifier). */
+            supplierCode: string;
+            variantTitle: string;
+            productTitle: string;
+            candidateSource: string;
+            version: number;
+        };
+        /** @description The account's pending Needs Review identity-mapping candidates. */
+        NeedsReviewQueue: {
+            /** @description Pending candidates; empty when the queue is clear. */
+            items: components["schemas"]["NeedsReviewItem"][];
+        };
+        /** @description A confirm / reject / defer decision on a Needs Review candidate. The optional note is free text captured as audit evidence; it carries NO authority (PRD §8): the structured operation itself is the decision. */
+        IdentityDecisionRequest: {
+            /**
+             * Format: uuid
+             * @description The Market Product Identity to act on.
+             */
+            identityId: string;
+            /** @description Optional reviewer note stored as append-only audit evidence. */
+            note?: string;
         };
         /** @description Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator. */
         ErrorEnvelope: {
@@ -665,6 +814,137 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatUnavailable"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listNeedsReview: {
+        parameters: {
+            query: {
+                /** @description Marketplace account whose review queue is requested. */
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The pending Needs Review candidates for the account. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NeedsReviewQueue"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    confirmIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Candidate confirmed; the updated mapping is returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketProductIdentity"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    rejectIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Candidate rejected; the updated mapping is returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketProductIdentity"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    deferIdentity: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IdentityDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Candidate deferred; the unchanged mapping is returned. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketProductIdentity"];
                 };
             };
             /** @description Unexpected error. */

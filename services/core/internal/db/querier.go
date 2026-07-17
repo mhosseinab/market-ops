@@ -15,6 +15,11 @@ type Querier interface {
 	// cursor an interrupted import continues from; counters accumulate.
 	AdvanceCatalogSyncRun(ctx context.Context, arg AdvanceCatalogSyncRunParams) (CatalogSyncRun, error)
 	CompleteCatalogSyncRun(ctx context.Context, arg CompleteCatalogSyncRunParams) (CatalogSyncRun, error)
+	// Transition NeedsReview -> Confirmed. Guarded WHERE state='needs_review' so a
+	// concurrent/duplicate confirm is a no-op (returns no row). The partial unique
+	// index uq_mpi_one_active_confirmed_per_variant rejects a second active Confirmed
+	// for the same variant, enforcing CAT-002 at commit time.
+	ConfirmIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	CountCatalogSnapshots(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	// Reconciliation: owned offers not observed by the given run are drift (missing
 	// from the latest full fetch). Reported, never silently deleted.
@@ -22,14 +27,33 @@ type Querier interface {
 	CountListings(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountOwnedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountProducts(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	CountRecommendationInvalidationsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error)
 	CountVariants(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
+	// Market Product Identity queries (S11, CAT-002, §6.5 journey 4, §16).
+	// market_product_identities is a current-state table (state transitions UPDATE in
+	// place); the append-only history is market_product_identity_decisions and the
+	// append-only event log is recommendation_invalidation_events.
+	//
+	// IDENTITY QUARANTINE (never-cut, CAT-002): the executable-path queries below —
+	// GetActiveConfirmedIdentityForVariant and ListConfirmedObservationTargets —
+	// filter to state='confirmed' AND active=true. NeedsReview/Rejected/Obsolete
+	// rows can therefore never be returned to a caller that drives a recommendation,
+	// and the negative tests assert exactly that at this query layer.
+	// Rule-based EXACT-native-id candidate (P0). Created in NeedsReview and active so
+	// it appears in the review queue but cannot drive an executable path until a
+	// human confirms it. Fuzzy suggestion is P0.5 and not created here.
+	CreateIdentityCandidate(ctx context.Context, arg CreateIdentityCandidateParams) (MarketProductIdentity, error)
 	CreateMarketplaceAccount(ctx context.Context, arg CreateMarketplaceAccountParams) (MarketplaceAccount, error)
 	CreateOrganization(ctx context.Context, name string) (Organization, error)
 	// Open a server-side session. token_hash is the SHA-256 of the opaque cookie
 	// token; the raw token never reaches the database.
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// Defer keeps the candidate in NeedsReview (still in the queue) and bumps the
+	// version + updated_at so the defer is ordered in the append-only audit. It never
+	// promotes the mapping to an executable state.
+	DeferIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// Sweep expired sessions.
 	DeleteExpiredSessions(ctx context.Context) error
 	// Close a single session (logout). Idempotent: deleting an absent row is a no-op.
@@ -39,8 +63,13 @@ type Querier interface {
 	// Sever the connection and purge sealed tokens (ACC-001). Idempotent.
 	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
 	FailCatalogSyncRun(ctx context.Context, arg FailCatalogSyncRunParams) (CatalogSyncRun, error)
+	// EXECUTABLE-PATH query (CAT-002/OBS-001). Returns the variant's mapping ONLY
+	// when it is Confirmed AND active. A NeedsReview/Rejected/Obsolete mapping yields
+	// no row, so no executable recommendation can be built on an unconfirmed identity.
+	GetActiveConfirmedIdentityForVariant(ctx context.Context, variantID uuid.UUID) (MarketProductIdentity, error)
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
+	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
 	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (CatalogSyncRun, error)
 	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (MarketplaceAccount, error)
@@ -59,10 +88,42 @@ type Querier interface {
 	// APPEND-ONLY: the only write path to this table is INSERT. Raw item JSON kept
 	// verbatim as evidence (plan §4.7). No UPDATE/DELETE query exists by design.
 	InsertCatalogPayloadSnapshot(ctx context.Context, arg InsertCatalogPayloadSnapshotParams) error
+	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
+	// INSERT; there is deliberately no UPDATE/DELETE query.
+	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)
+	// APPEND-ONLY event emit (§16). dedup_key carries the event-dedup invariant: a
+	// unique-violation on re-emit is swallowed by the producer, so a retry never
+	// double-expires downstream recommendations.
+	InsertRecommendationInvalidation(ctx context.Context, arg InsertRecommendationInvalidationParams) (RecommendationInvalidationEvent, error)
+	// EXECUTABLE-PATH query (OBS-001): the observation targets an account may create
+	// are EXACTLY its active Confirmed mappings. NeedsReview/Rejected/Obsolete are
+	// excluded by construction — no target exists for an unconfirmed identity.
+	ListConfirmedObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketProductIdentity, error)
 	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
+	ListIdentityDecisions(ctx context.Context, identityID uuid.UUID) ([]MarketProductIdentityDecision, error)
+	// The Needs Review queue (journey 4): each pending candidate joined to its
+	// variant/product so the row carries SKU (supplier_code), variant + product title,
+	// and the native-id evidence a reviewer needs to confirm/reject/defer.
+	ListNeedsReviewQueue(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListNeedsReviewQueueRow, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
+	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
+	// Candidate-generation source (rule-based exact-native-id). Returns variants that
+	// have no pending (NeedsReview) or Confirmed mapping, so generation is idempotent
+	// and never stacks duplicate candidates. A previously rejected/obsolete variant
+	// becomes eligible again for a fresh candidate.
+	ListVariantsWithoutActiveIdentity(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListVariantsWithoutActiveIdentityRow, error)
+	// Transition NeedsReview -> Rejected and deactivate. A rejected mapping never
+	// feeds an executable path and frees the variant for a fresh candidate later.
+	RejectIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	RenameOrganization(ctx context.Context, arg RenameOrganizationParams) (Organization, error)
+	// Reopen a Confirmed mapping on a merge/split/redirect/variant-conflict signal
+	// (§16). Guarded WHERE state='confirmed' AND active so only a live Confirmed
+	// mapping is reopened and a duplicate signal is a no-op. $2 is the target state
+	// ('needs_review' to re-queue, or 'obsolete' when the product record is gone);
+	// either way the mapping leaves the executable set. The caller emits the
+	// recommendation-invalidation event in the same transaction.
+	ReopenConfirmedIdentity(ctx context.Context, arg ReopenConfirmedIdentityParams) (MarketProductIdentity, error)
 	// Return a capability to 'unknown' (disconnect). Clears last_verified_at so a
 	// stale verification can never read as current.
 	ResetConnectorCapability(ctx context.Context, marketplaceAccountID uuid.UUID) error

@@ -18,6 +18,9 @@ type gatewayServer struct {
 	// auth backs the /auth/* routes and the permission middleware (ACC-002).
 	// Nil until wired; auth routes fail closed when it is absent.
 	auth AuthService
+	// identity backs the /identity/* routes (CAT-002, journey 4). Nil until wired;
+	// the handlers fail closed with a structured error when it is absent.
+	identity IdentityService
 	// cookieSecure sets the Secure attribute on the session cookie. Defaults to
 	// true (production posture); local plain-HTTP dev may disable it.
 	cookieSecure CookieSecure

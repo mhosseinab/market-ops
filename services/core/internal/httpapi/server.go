@@ -45,6 +45,14 @@ func WithAuth(a AuthService) Option {
 	}
 }
 
+// WithIdentity injects the identity-mapping service backing the /identity/*
+// routes (CAT-002, journey 4). Without it those routes fail closed with a
+// structured error, so no review queue or confirm/reject/defer is served on an
+// unwired identity plane.
+func WithIdentity(i IdentityService) Option {
+	return func(s *gatewayServer) { s.identity = i }
+}
+
 // WithCookieSecure overrides the Secure attribute of the session cookie. Default
 // is true; local plain-HTTP dev sets it false so the browser sends the cookie.
 func WithCookieSecure(secure bool) Option {
