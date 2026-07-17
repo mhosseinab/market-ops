@@ -81,7 +81,7 @@ jobs:
         with:
           node-version: '22'
           cache: pnpm
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - run: pnpm install --frozen-lockfile
@@ -133,11 +133,16 @@ jobs:
         with:
           go-version-file: services/core/go.mod
           cache-dependency-path: services/core/go.sum
-      # Toolchain the go job needs beyond the compiler: linter, migration + query
-      # + job-queue CLIs (carry-forward from S5 — river joined task doctor).
+      # Install the linter through its official action. It owns binary and lint
+      # caching and avoids rebuilding or relying on a mutable shell installer.
+      - name: install golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-only: true
       # setup-go caches GOMODCACHE/GOCACHE but not installed binaries, so keep a
-      # separate exact-version cache for the four CLIs that otherwise rebuild on
-      # every run. No restore-keys: a tool-version change must produce a cold miss.
+      # separate exact-version cache for migration, query, and job-queue CLIs.
+      # No restore-keys: a tool-version change must produce a cold miss.
       - name: configure Go CLI path
         run: |
           mkdir -p "$GOBIN"
@@ -147,17 +152,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.GOBIN }}
-          key: go-tools-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-golangci-${{ env.GOLANGCI_LINT_VERSION }}-goose-${{ env.GOOSE_VERSION }}-sqlc-${{ env.SQLC_VERSION }}-river-${{ env.RIVER_VERSION }}
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-goose-${{ env.GOOSE_VERSION }}-sqlc-${{ env.SQLC_VERSION }}-river-${{ env.RIVER_VERSION }}
       - name: install missing Go CLIs
         run: |
-          if [ -x "$GOBIN/golangci-lint" ]; then
-            echo "golangci-lint restored from cache"
-          else
-            echo "installing golangci-lint ${GOLANGCI_LINT_VERSION}"
-            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-              | sh -s -- -b "$GOBIN" "$GOLANGCI_LINT_VERSION"
-          fi
-
           install_go_cli() {
             binary="$1"
             package="$2"
@@ -205,7 +202,7 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       # Pin semgrep to the version the local money guard was validated against
@@ -231,7 +228,7 @@ jobs:
           mkdir -p "$HOME/.local/bin"
           curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: astral-sh/setup-uv@v8
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - run: uv sync --frozen --group dev
