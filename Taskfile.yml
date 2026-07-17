@@ -133,9 +133,38 @@ tasks:
         psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "{{.FIXTURES}}"
         echo "Dev database '${appdb}' recreated: schema + River + fixtures applied."
 
+  migrate:verify:
+    desc: Assert every migration is reversible (goose up → reset → up) against $DATABASE_URL.
+    silent: true
+    vars:
+      MIGRATIONS: services/core/migrations
+    cmds:
+      # Mirrors the CI go job's goose up/down assertion. Locally this runs against
+      # $DATABASE_URL; in CI it runs against the fresh postgres:18 service container.
+      # `reset` exercises every migration's `down`, then `up` re-applies — proving
+      # each migration is reversible (every migration ships a working `down`).
+      - |
+        if [ -z "${DATABASE_URL:-}" ]; then
+          echo "DATABASE_URL is not set; export it before running migrate:verify." >&2
+          echo "  e.g. export DATABASE_URL='postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable'" >&2
+          exit 1
+        fi
+        echo "goose up (apply all)..."
+        goose -dir "{{.MIGRATIONS}}" postgres "$DATABASE_URL" up
+        echo "goose reset (down all — exercises every down)..."
+        goose -dir "{{.MIGRATIONS}}" postgres "$DATABASE_URL" reset
+        echo "goose up (re-apply all)..."
+        goose -dir "{{.MIGRATIONS}}" postgres "$DATABASE_URL" up
+        echo "Migration up/down/up reversibility verified."
+
   ci:local:
     desc: Everything CI runs, in order — the pre-merge gate.
     cmds:
       - task: contracts:drift
       - task: lint:all
       - task: test:all
+      - task: migrate:verify
+      - task: ts:build
+      # S25 wires the pseudo-locale + copy-lint gate (LOC-011) here and in the ts
+      # CI job. Until then the ts:pseudoloc task is a stub; leave it commented:
+      # - task: ts:pseudoloc
