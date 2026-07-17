@@ -99,6 +99,24 @@ services:
       - "8025:8025"   # web UI
     restart: unless-stopped
 
+  # ─── mock DK Seller API — offline stand-in for connector dev/tests ──────
+  # Serves the auth + §15.2 probe endpoints (internal/mockdk) so the connector
+  # is developed against the mock, never live DK (CLAUDE.md). Runs via `go run`
+  # off the mounted repo; no custom image needed. Fault modes via MOCKDK_MODE.
+  mockdk:
+    image: golang:1.25
+    working_dir: /src/services/core
+    command: ["go", "run", "./cmd/mockdk"]
+    environment:
+      GOWORK: "off"
+      GOFLAGS: "-mod=mod"
+      MOCKDK_ADDR: ":8090"
+    volumes:
+      - ../:/src
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
+
   # ─── Spotlight — dev-observability sidecar UI (:8969). DEV-ONLY. ────────
   # Sinks the Sentry/OTLP dev stream referenced by SENTRY_SPOTLIGHT. It never
   # appears in deploy/compose.prod.yml.

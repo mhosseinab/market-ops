@@ -14,14 +14,29 @@ type Querier interface {
 	CreateMarketplaceAccount(ctx context.Context, arg CreateMarketplaceAccountParams) (MarketplaceAccount, error)
 	CreateOrganization(ctx context.Context, name string) (Organization, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// Sever the connection and purge sealed tokens (ACC-001). Idempotent.
+	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
+	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
 	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (MarketplaceAccount, error)
 	GetMarketplaceAccountByNativeID(ctx context.Context, nativeAccountID string) (MarketplaceAccount, error)
 	GetMarketplaceAccountByOrganization(ctx context.Context, organizationID uuid.UUID) (MarketplaceAccount, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
+	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
 	RenameOrganization(ctx context.Context, arg RenameOrganizationParams) (Organization, error)
+	// Return a capability to 'unknown' (disconnect). Clears last_verified_at so a
+	// stale verification can never read as current.
+	ResetConnectorCapability(ctx context.Context, marketplaceAccountID uuid.UUID) error
+	// Insert a capability at 'unknown' if absent; leave an existing row untouched so
+	// a prior probe result is not clobbered by a re-seed (capability-gating invariant).
+	SeedConnectorCapability(ctx context.Context, arg SeedConnectorCapabilityParams) error
+	// Record a probe result. Only a probe calls this; status is set explicitly and
+	// last_verified_at stamps when it was determined.
+	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
+	// Establish or update the connection with sealed tokens (connect / refresh).
+	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)
 }
 
 var _ Querier = (*Queries)(nil)

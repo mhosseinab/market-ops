@@ -22,12 +22,27 @@ type BuildInfo struct {
 	BuildTime string
 }
 
+// Option customizes the server built by NewServer. Options are additive so
+// existing callers keep working as later steps wire in dependencies.
+type Option func(*gatewayServer)
+
+// WithConnector injects the connector service backing the /connector/* routes.
+// Without it those routes fail closed with a structured error (no silent healthy
+// state), preserving the capability-gating invariant even when unwired.
+func WithConnector(c ConnectorService) Option {
+	return func(s *gatewayServer) { s.connector = c }
+}
+
 // NewServer builds the core HTTP server bound to addr with the generated gateway
 // routes and safe timeouts. It does not start listening; the caller runs
 // ListenAndServe and drives graceful shutdown.
-func NewServer(addr string, info BuildInfo, logger *slog.Logger) *http.Server {
+func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option) *http.Server {
 	mux := http.NewServeMux()
-	strict := gateway.NewStrictHandler(&gatewayServer{build: info}, nil)
+	gs := &gatewayServer{build: info}
+	for _, opt := range opts {
+		opt(gs)
+	}
+	strict := gateway.NewStrictHandler(gs, nil)
 	handler := gateway.HandlerFromMux(strict, mux)
 
 	return &http.Server{
