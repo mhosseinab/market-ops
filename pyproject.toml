@@ -1,0 +1,47 @@
+[project]
+name = "market-ops"
+version = "0.0.0"
+description = "DK Marketplace Intelligence — uv workspace root (LLM plane lives in services/llm)."
+requires-python = ">=3.12"
+# The workspace root depends on every Python member so `uv sync` installs them
+# editable into the single shared root .venv (dk-p0-monorepo.md §2).
+dependencies = ["llm"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+# Explicit member list, no globs (dk-p0-monorepo.md §2). gen/python is added in S4.
+members = ["services/llm"]
+
+[tool.uv.sources]
+llm = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "mypy>=1.10",
+    "ruff>=0.5",
+    "respx>=0.21",
+    "httpx>=0.27",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = ["gen/python"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+mypy_path = "services/llm/src"
+explicit_package_bases = true
+exclude = ["gen/python"]
+
+[[tool.mypy.overrides]]
+module = ["gen.python.*"]
+follow_imports = "skip"

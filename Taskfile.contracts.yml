@@ -1,0 +1,18 @@
+version: '3'
+
+# Contracts tasks. The contracts/ layer (OpenAPI source of truth) and the
+# generators (oapi-codegen, openapi-typescript, openapi-python-client) are
+# wired in S4. Until then `generate` is an inert stub and `drift` guards the
+# committed gen/ tree so the pre-merge gate stays meaningful.
+
+tasks:
+  generate:
+    desc: Generate OpenAPI clients into gen/ (wired in S4).
+    silent: true
+    cmds:
+      - echo "task contracts:generate is a stub until S4 (contracts/ layer lands then)."
+
+  drift:
+    desc: Fail if committed generated code drifts from its contract source.
+    cmds:
+      - git diff --exit-code -- contracts gen

@@ -1,0 +1,80 @@
+version: '3'
+
+# Root Task orchestration — the single entry point for the polyglot monorepo.
+# Language-specific tasks live in Taskfile.{go,py,ts,contracts}.yml.
+# Canonical command reference: docs/implementation/dk-p0-monorepo.md §3.
+
+includes:
+  go: ./Taskfile.go.yml
+  py: ./Taskfile.py.yml
+  ts: ./Taskfile.ts.yml
+  contracts: ./Taskfile.contracts.yml
+
+tasks:
+  doctor:
+    desc: Verify the required toolchain binaries are installed.
+    silent: true
+    cmds:
+      - |
+        missing=0
+        for tool in node pnpm uv go golangci-lint oapi-codegen goose sqlc docker jq; do
+          if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "MISSING: $tool"
+            missing=1
+          fi
+        done
+        if [ "$missing" -ne 0 ]; then
+          echo "task doctor: required tools are missing (see MISSING lines above)."
+          exit 1
+        fi
+        echo "All tools present"
+
+  setup:
+    desc: Bootstrap a fresh clone (pnpm + uv + go.work + codegen).
+    cmds:
+      - pnpm install --frozen-lockfile
+      - uv sync --group dev
+      - task: go:init
+      - task: go:sync
+      - task: contracts:generate
+
+  dev:
+    desc: Local dev stack (PostgreSQL 18, otel/grafana, watchers). Wired in S2.
+    silent: true
+    cmds:
+      - echo "task dev requires deploy/compose.dev.yml — lands in S2."
+
+  build:all:
+    desc: Build every plane (contracts first, then each language).
+    cmds:
+      - task: contracts:generate
+      - task: go:build
+      - task: py:build
+      - task: ts:build
+
+  test:all:
+    desc: Run every language test suite in parallel.
+    deps:
+      - go:test
+      - py:test
+      - ts:test
+
+  lint:all:
+    desc: Run every language linter in parallel.
+    deps:
+      - go:lint
+      - py:lint
+      - ts:lint
+
+  db:reset:
+    desc: Drop + recreate the dev DB, apply migrations, seed fixtures. Wired in S2.
+    silent: true
+    cmds:
+      - echo "task db:reset requires the dev database — lands in S2."
+
+  ci:local:
+    desc: Everything CI runs, in order — the pre-merge gate.
+    cmds:
+      - task: contracts:drift
+      - task: lint:all
+      - task: test:all

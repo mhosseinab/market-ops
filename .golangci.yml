@@ -1,0 +1,36 @@
+version: "2"
+
+# golangci-lint config for services/core (run per module with GOWORK=off).
+# Generated code under gen/ is excluded. The forbidigo money/float rules below
+# encode the PRD §9.1 static guard; internal/{money,margin,policy,approval} do
+# not exist yet in S1, so they are inert today. S5 lands the money package and
+# S7 adds a semgrep rule as a second layer. Import-boundary (depguard) rules are
+# added alongside the packages they constrain in later steps.
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - forbidigo
+  settings:
+    forbidigo:
+      # No floating point on any money path (PRD §9.1). Kept repo-wide and
+      # conservative in P0; non-money code that legitimately needs floats gets a
+      # scoped exclusion when it appears.
+      forbid:
+        - pattern: '^float(32|64)$'
+          msg: "no floating point on money-adjacent paths (PRD §9.1); use Money/basis points"
+  exclusions:
+    generated: lax
+    paths:
+      - gen
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    paths:
+      - gen

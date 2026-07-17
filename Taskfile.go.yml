@@ -1,0 +1,53 @@
+version: '3'
+
+# Go tasks. go.work is local-only (gitignored); CI sets GOWORK=off explicitly.
+# A fresh clone has no go.work — `go:init` creates it and every task depends on it.
+
+tasks:
+  init:
+    desc: Create the local go.work (gitignored) if it is absent.
+    status:
+      - test -f go.work
+    cmds:
+      - go work init ./services/core
+
+  sync:
+    desc: Sync the go workspace.
+    deps: [init]
+    cmds:
+      - go work sync
+
+  build:
+    desc: Build the Go core.
+    deps: [init]
+    dir: services/core
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+    cmds:
+      - go build ./...
+
+  test:
+    desc: Run Go tests with the race detector.
+    deps: [init]
+    dir: services/core
+    cmds:
+      - go test ./... -race
+
+  lint:
+    desc: Run golangci-lint per module with GOWORK=off.
+    dir: services/core
+    env:
+      GOWORK: off
+    cmds:
+      - golangci-lint run ./...
+
+  tidy:
+    desc: Tidy the module and fail if go.mod/go.sum changed.
+    dir: services/core
+    env:
+      GOWORK: off
+    cmds:
+      - go mod tidy
+      - git diff --exit-code go.mod go.sum

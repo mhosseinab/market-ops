@@ -1,0 +1,31 @@
+version: '3'
+
+# TypeScript tasks. pnpm workspaces; gen/ts is a workspace member (workspace:*).
+
+tasks:
+  test:
+    desc: Run vitest across every workspace member.
+    cmds:
+      - pnpm -r test
+
+  lint:
+    desc: Typecheck every member and run biome across the repo.
+    cmds:
+      - pnpm -r typecheck
+      - pnpm biome check .
+
+  fmt:
+    desc: Format the repo with biome.
+    cmds:
+      - pnpm biome check --write .
+
+  build:
+    desc: Build the web app and extension.
+    cmds:
+      - pnpm -r build
+
+  pseudoloc:
+    desc: Pseudo-locale + copy-lint gate (LOC-011). Wired in S25.
+    silent: true
+    cmds:
+      - echo "task ts:pseudoloc — pseudo-locale + copy-lint gate lands in S25."
