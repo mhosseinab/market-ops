@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
@@ -47,7 +49,12 @@ func (s *gatewayServer) GetEvent(
 	}
 	row, err := s.event.Get(ctx, req.Params.EventId)
 	if err != nil {
-		return gateway.GetEventdefaultJSONResponse{StatusCode: 404, Body: eventErr(err)}, nil
+		// A missing event is a 404; any other failure is a 500 — never conflate a
+		// not-found with an infrastructure error.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return gateway.GetEventdefaultJSONResponse{StatusCode: 404, Body: eventErr(err)}, nil
+		}
+		return gateway.GetEventdefaultJSONResponse{StatusCode: 500, Body: eventErr(err)}, nil
 	}
 	return gateway.GetEvent200JSONResponse(toGatewayEvent(row)), nil
 }

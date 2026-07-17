@@ -1,6 +1,7 @@
 package event
 
 import (
+	"math/big"
 	"strconv"
 	"strings"
 	"time"
@@ -15,11 +16,18 @@ import (
 // against (EVT-002). ID/Version are recorded on the event so the trigger is
 // reproducible. Only the knobs relevant to a type are read; the rest are ignored.
 type Threshold struct {
-	ID                uuid.UUID
-	Version           int32
-	MoveBp            money.BasisPoints // competitor price movement threshold
-	SellerCountDelta  int               // seller-count movement threshold
-	ChallengeMarginBp money.BasisPoints // winning-state "challenged" proximity
+	ID               uuid.UUID
+	Version          int32
+	MoveBp           money.BasisPoints // competitor price movement threshold
+	SellerCountDelta int               // seller-count movement threshold
+	// ChallengeMarginBp is the winning-state "challenged" proximity threshold.
+	// DetectWinningState does NOT read it directly: the caller resolves the
+	// observed lead margin against this knob and passes the boolean result as
+	// WinningStateInput.Challenged, so the (possibly quality-gated) proximity
+	// decision lives with the caller that holds the observed offer prices. The
+	// knob is carried on the Threshold purely so the caller has one versioned
+	// source (EVT-002) and the fired event records that version.
+	ChallengeMarginBp money.BasisPoints
 }
 
 // confidenceOf maps an observed evidence quality to the confidence ranking factor
@@ -199,8 +207,12 @@ func movementBasisPoints(prev, curr, unit string) (int64, bool) {
 	if diff < 0 {
 		diff = -diff
 	}
-	// basis points = diff * 10000 / prev, integer division (toward zero).
-	return diff * 10000 / p, true
+	// basis points = diff * 10000 / prev, integer division (toward zero). Computed
+	// in big.Int so a very large same-unit token can never overflow int64 on the
+	// multiply before the divide (dimensionless ratio — not a money path).
+	bp := new(big.Int).Mul(big.NewInt(diff), big.NewInt(10000))
+	bp.Quo(bp, big.NewInt(p))
+	return bp.Int64(), true
 }
 
 // --- (3) Seller-count movement --------------------------------------------
