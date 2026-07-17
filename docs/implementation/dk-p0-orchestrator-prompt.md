@@ -62,8 +62,12 @@ SETUP (once, before S1):
 
 RUNTIME MAPPING (Claude Code; any other runtime maps its equivalents per agent guide §8):
 - Subagents: dispatch workers/reviewers with the Agent tool using the .claude/agents/ profile
-  the §8 crosswalk selects (verify the set is loaded with /agents). Reviews route to the
-  read-only safety_release_reviewer profile where the table says so.
+  the §8 crosswalk selects (verify the set is loaded with /agents). Effort split (fixed in
+  profile frontmatter; there is no per-dispatch effort override): implementing profiles run
+  Opus at medium effort; every review runs at high effort. Area reviews dispatch the
+  read-only area_code_reviewer profile with the area charter file
+  (.claude/agents/<profile>.md) named in the packet; invariant/security/adversarial reviews
+  dispatch the read-only safety_release_reviewer profile where the table says so.
 - Concurrency: launch ALL independent eligible steps as multiple Agent calls in ONE message —
   they run concurrently in the background and you are notified as each completes. Never poll
   or sleep while waiting.
@@ -112,9 +116,11 @@ in parallel — but SERIALIZE: (a) any two steps marked [C] (they all touch cont
      reports a concrete blocker. It never marks its own step passed and never edits the
      progress file (agent guide §10).
 
-2) REVIEW (a FRESH subagent — the reviewer chosen by the routing table above; full contract
-   in agent guide §11):
-   - "Review the diff of dk-p0/S<N> vs dk-p0/main against your agent charter. Judge:
+2) REVIEW (a FRESH subagent running the read-only area_code_reviewer profile, with the area
+   charter the routing table above selects named in the packet; full contract in agent
+   guide §11):
+   - "Your area charter is .claude/agents/<area profile>.md — read it FIRST and adopt its
+     rules. Review the diff of dk-p0/S<N> vs dk-p0/main against that charter. Judge:
      correctness vs the step's Goal and the PRD sections it cites; the never-cut invariants
      (money correctness, identity quarantine, quality states, dedup, policy order, approval
      versioning, idempotency, reconciliation, audit, free-text containment, screens-only

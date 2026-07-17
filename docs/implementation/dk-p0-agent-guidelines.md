@@ -109,6 +109,8 @@ The capability role is canonical. Runtime profile names are adapters selected by
 
 The profile file is the detailed charter. This table routes work; it does not expand a profile's authority. A step not named in the Primary-steps column routes by the file paths its diff touches (the orchestrator prompt's SETUP routing table), with §7's riskiest-boundary rule selecting the reviewer.
 
+Claude runtime effort split: reasoning effort is fixed per profile frontmatter (no per-dispatch override), so implementation and review use different profiles. Implementation dispatches run the listed Claude adapter directly (Opus, `effort: medium`). Area-review dispatches run the read-only `area_code_reviewer` profile (Opus, `effort: high`) with the listed adapter's charter file named in the assignment packet; `invariant-review`, `security-review`, and `adversarial-review` run `safety_release_reviewer` (Opus, `effort: high`). Reviews always run at higher effort than implementation.
+
 Runtimes fulfill this contract with their native mechanisms — parallel background subagent dispatch, per-step worktree isolation, and pre-authorized command allowlists (`dk-p0-preflight.md` §3) — without persisting vendor or runtime names into product code, contracts, tests, or release evidence. The orchestrator prompt's RUNTIME MAPPING section is the Claude Code reference; other runtimes map equivalently.
 
 ## 9. Assignment packet

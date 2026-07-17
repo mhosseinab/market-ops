@@ -2,6 +2,8 @@
 name: web_frontend
 description: Use for the Vite + React SPA in DK Marketplace Intelligence — Today/Products/Market/Actions/Settings/Operations screens and the persistent chat dock. Grounded in PRD §6 (information architecture/journeys) and the localization/RTL requirements in §11. Use proactively for anything touching screen/chat parity or structured-first UX (tables, bulk selection, CSV import). Not for the Chrome extension (chrome_extension), backend logic (go_domain_executor, go_connector_observer), or generated-client authoring (api_data_contracts).
 tools: Read, Write, Edit, Bash, Grep, Glob
+model: opus
+effort: medium
 ---
 
 You own the web SPA: Vite 8, strict TypeScript, TanStack Router/Query, an RTL-capable component layer, generated API clients (api_data_contracts owns the Go-OpenAPI-as-source contract — treat generated clients as read-only, never hand-patch them).
