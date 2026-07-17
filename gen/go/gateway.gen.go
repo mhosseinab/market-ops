@@ -24,6 +24,123 @@ const (
 	CookieAuthScopes cookieAuthContextKey = "cookieAuth.Scopes"
 )
 
+// Defines values for AvailabilityStatus.
+const (
+	AvailabilityStatusDisappeared AvailabilityStatus = "disappeared"
+	AvailabilityStatusInStock     AvailabilityStatus = "in_stock"
+	AvailabilityStatusLimited     AvailabilityStatus = "limited"
+	AvailabilityStatusOutOfStock  AvailabilityStatus = "out_of_stock"
+	AvailabilityStatusUnavailable AvailabilityStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the AvailabilityStatus enum.
+func (e AvailabilityStatus) Valid() bool {
+	switch e {
+	case AvailabilityStatusDisappeared:
+		return true
+	case AvailabilityStatusInStock:
+		return true
+	case AvailabilityStatusLimited:
+		return true
+	case AvailabilityStatusOutOfStock:
+		return true
+	case AvailabilityStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CaptureUploadAvailabilityStatus.
+const (
+	CaptureUploadAvailabilityStatusInStock     CaptureUploadAvailabilityStatus = "in_stock"
+	CaptureUploadAvailabilityStatusLimited     CaptureUploadAvailabilityStatus = "limited"
+	CaptureUploadAvailabilityStatusOutOfStock  CaptureUploadAvailabilityStatus = "out_of_stock"
+	CaptureUploadAvailabilityStatusUnavailable CaptureUploadAvailabilityStatus = "unavailable"
+)
+
+// Valid indicates whether the value is a known member of the CaptureUploadAvailabilityStatus enum.
+func (e CaptureUploadAvailabilityStatus) Valid() bool {
+	switch e {
+	case CaptureUploadAvailabilityStatusInStock:
+		return true
+	case CaptureUploadAvailabilityStatusLimited:
+		return true
+	case CaptureUploadAvailabilityStatusOutOfStock:
+		return true
+	case CaptureUploadAvailabilityStatusUnavailable:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CaptureUploadConfidence.
+const (
+	CaptureUploadConfidencePartiallyVerified CaptureUploadConfidence = "partially_verified"
+	CaptureUploadConfidenceUnverified        CaptureUploadConfidence = "unverified"
+	CaptureUploadConfidenceVerified          CaptureUploadConfidence = "verified"
+)
+
+// Valid indicates whether the value is a known member of the CaptureUploadConfidence enum.
+func (e CaptureUploadConfidence) Valid() bool {
+	switch e {
+	case CaptureUploadConfidencePartiallyVerified:
+		return true
+	case CaptureUploadConfidenceUnverified:
+		return true
+	case CaptureUploadConfidenceVerified:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CaptureUploadSourceType.
+const (
+	Dom                  CaptureUploadSourceType = "dom"
+	EmbeddedJson         CaptureUploadSourceType = "embedded-json"
+	PublicWebEndpoint    CaptureUploadSourceType = "public-web-endpoint"
+	UserTriggeredRequest CaptureUploadSourceType = "user-triggered-request"
+)
+
+// Valid indicates whether the value is a known member of the CaptureUploadSourceType enum.
+func (e CaptureUploadSourceType) Valid() bool {
+	switch e {
+	case Dom:
+		return true
+	case EmbeddedJson:
+		return true
+	case PublicWebEndpoint:
+		return true
+	case UserTriggeredRequest:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for CaptureUploadSubRoute.
+const (
+	OnDemand  CaptureUploadSubRoute = "on_demand"
+	Passive   CaptureUploadSubRoute = "passive"
+	Watchlist CaptureUploadSubRoute = "watchlist"
+)
+
+// Valid indicates whether the value is a known member of the CaptureUploadSubRoute enum.
+func (e CaptureUploadSubRoute) Valid() bool {
+	switch e {
+	case OnDemand:
+		return true
+	case Passive:
+		return true
+	case Watchlist:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ChatUnavailableReason.
 const (
 	KillSwitchAccount   ChatUnavailableReason = "kill_switch_account"
@@ -165,6 +282,78 @@ func (e MarketProductIdentityState) Valid() bool {
 	}
 }
 
+// Defines values for ObservationRoute.
+const (
+	RouteA ObservationRoute = "route_a"
+	RouteB ObservationRoute = "route_b"
+	RouteC ObservationRoute = "route_c"
+)
+
+// Valid indicates whether the value is a known member of the ObservationRoute enum.
+func (e ObservationRoute) Valid() bool {
+	switch e {
+	case RouteA:
+		return true
+	case RouteB:
+		return true
+	case RouteC:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ObservationTargetTier.
+const (
+	Background ObservationTargetTier = "background"
+	Priority   ObservationTargetTier = "priority"
+	Standard   ObservationTargetTier = "standard"
+)
+
+// Valid indicates whether the value is a known member of the ObservationTargetTier enum.
+func (e ObservationTargetTier) Valid() bool {
+	switch e {
+	case Background:
+		return true
+	case Priority:
+		return true
+	case Standard:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for QualityState.
+const (
+	QualityStateConflicted  QualityState = "conflicted"
+	QualityStateStale       QualityState = "stale"
+	QualityStateSupported   QualityState = "supported"
+	QualityStateUnavailable QualityState = "unavailable"
+	QualityStateUnverified  QualityState = "unverified"
+	QualityStateVerified    QualityState = "verified"
+)
+
+// Valid indicates whether the value is a known member of the QualityState enum.
+func (e QualityState) Valid() bool {
+	switch e {
+	case QualityStateConflicted:
+		return true
+	case QualityStateStale:
+		return true
+	case QualityStateSupported:
+		return true
+	case QualityStateUnavailable:
+		return true
+	case QualityStateUnverified:
+		return true
+	case QualityStateVerified:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UserRole.
 const (
 	Internal UserRole = "internal"
@@ -185,6 +374,9 @@ func (e UserRole) Valid() bool {
 		return false
 	}
 }
+
+// AvailabilityStatus Normalized availability (docs/11, §16). `unavailable` is the DISTINCT temporary-out state; `disappeared` is the permanent close (offer gone, closed with an end time, never a zero price).
+type AvailabilityStatus string
 
 // BuildInfo Identity of the running binary.
 type BuildInfo struct {
@@ -212,6 +404,63 @@ type CapabilityStatus struct {
 	// Status Capability status (PRD §15.2). Starts Unknown; becomes Supported only after a probe confirms behavior. Unknown never enables dependent UI.
 	Status ConnectorCapabilityState `json:"status"`
 }
+
+// CaptureAccepted Result of a capture upload. `deduped` marks an equivalent replay that created no duplicate current offer while retaining provenance (OBS-008).
+type CaptureAccepted struct {
+	Deduped bool `json:"deduped"`
+
+	// ObservationId The append-only evidence row id; null when deduped.
+	ObservationId *openapi_types.UUID `json:"observationId,omitempty"`
+
+	// Quality The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
+	Quality QualityState `json:"quality"`
+}
+
+// CaptureUpload ALLOW-LISTED extension (Route B) capture upload (PRD §10.1). Only these fields are accepted (additionalProperties false). The extension cannot assert schema/identity validity or conflict, cannot forge Route C, and cannot declare a permanent disappearance — those are server-side. Price is raw evidence only (money quarantine).
+type CaptureUpload struct {
+	// AvailabilityStatus Extension-observable availability; disappearance close is server-side.
+	AvailabilityStatus CaptureUploadAvailabilityStatus `json:"availabilityStatus"`
+	CapturedAt         time.Time                       `json:"capturedAt"`
+
+	// Confidence Capture parser/unit confidence (docs/08).
+	Confidence       CaptureUploadConfidence `json:"confidence"`
+	ConnectorVersion *string                 `json:"connectorVersion,omitempty"`
+	EvidenceRef      string                  `json:"evidenceRef"`
+
+	// ListPrice Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred.
+	ListPrice            *RawAmount         `json:"listPrice,omitempty"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	NativeSellerId       *string            `json:"nativeSellerId,omitempty"`
+	NativeVariantId      int64              `json:"nativeVariantId"`
+	ParserVersion        string             `json:"parserVersion"`
+
+	// Price Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred.
+	Price         *RawAmount `json:"price,omitempty"`
+	RawFixtureRef *string    `json:"rawFixtureRef,omitempty"`
+
+	// SourceType How the extension captured the value.
+	SourceType  CaptureUploadSourceType `json:"sourceType"`
+	SourceUrl   *string                 `json:"sourceUrl,omitempty"`
+	StockSignal *int64                  `json:"stockSignal,omitempty"`
+
+	// SubRoute Route B sub-route (PRD §7.3 OBS-005).
+	SubRoute CaptureUploadSubRoute `json:"subRoute"`
+
+	// TargetId The confirmed-identity observation target this capture is for.
+	TargetId openapi_types.UUID `json:"targetId"`
+}
+
+// CaptureUploadAvailabilityStatus Extension-observable availability; disappearance close is server-side.
+type CaptureUploadAvailabilityStatus string
+
+// CaptureUploadConfidence Capture parser/unit confidence (docs/08).
+type CaptureUploadConfidence string
+
+// CaptureUploadSourceType How the extension captured the value.
+type CaptureUploadSourceType string
+
+// CaptureUploadSubRoute Route B sub-route (PRD §7.3 OBS-005).
+type CaptureUploadSubRoute string
 
 // ChatTurnRequest One conversation turn from the browser. The message is free text and carries NO authority (PRD §8 free-text containment): it can never approve, execute, or confirm — those live only in structured controls outside the model plane. A turn optionally continues an existing conversation and/or binds a marketplace-account context; context resolution itself is deterministic in the LLM plane (§8.1), never guessed from this field.
 type ChatTurnRequest struct {
@@ -371,6 +620,135 @@ type NeedsReviewQueue struct {
 	Items []NeedsReviewItem `json:"items"`
 }
 
+// Observation One append-only observation evidence row (PRD §7.3 OBS-002). Carries the full evidence envelope; historical rows never silently become current.
+type Observation struct {
+	// AvailabilityStatus Normalized availability (docs/11, §16). `unavailable` is the DISTINCT temporary-out state; `disappeared` is the permanent close (offer gone, closed with an end time, never a zero price).
+	AvailabilityStatus AvailabilityStatus `json:"availabilityStatus"`
+	CapturedAt         time.Time          `json:"capturedAt"`
+	ConnectorVersion   *string            `json:"connectorVersion,omitempty"`
+	EvidenceRef        string             `json:"evidenceRef"`
+	FreshnessDeadline  time.Time          `json:"freshnessDeadline"`
+	Id                 openapi_types.UUID `json:"id"`
+
+	// ListPrice Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred.
+	ListPrice            *RawAmount         `json:"listPrice,omitempty"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	NativeSellerId       *string            `json:"nativeSellerId,omitempty"`
+	NativeVariantId      *int64             `json:"nativeVariantId,omitempty"`
+	OfferIdentity        string             `json:"offerIdentity"`
+	ParserVersion        string             `json:"parserVersion"`
+
+	// Price Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred.
+	Price RawAmount `json:"price"`
+
+	// Quality The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
+	Quality QualityState `json:"quality"`
+
+	// Route Capture route provenance (PRD §10.1). route_a official connector, route_b extension (corroboration only), route_c server observation.
+	Route       ObservationRoute   `json:"route"`
+	SourceType  string             `json:"sourceType"`
+	SourceUrl   *string            `json:"sourceUrl,omitempty"`
+	StockSignal *int64             `json:"stockSignal,omitempty"`
+	SubRoute    *string            `json:"subRoute,omitempty"`
+	TargetId    openapi_types.UUID `json:"targetId"`
+}
+
+// ObservationList Append-only observation evidence for a target, newest first.
+type ObservationList struct {
+	Items []Observation `json:"items"`
+}
+
+// ObservationRoute Capture route provenance (PRD §10.1). route_a official connector, route_b extension (corroboration only), route_c server observation.
+type ObservationRoute string
+
+// ObservationTarget An observation target (PRD §7.3 OBS-001): the executable observation unit for one variant, existing ONLY for an active Confirmed identity.
+type ObservationTarget struct {
+	Active bool `json:"active"`
+
+	// CadenceSeconds Observation cadence for the tier, in seconds.
+	CadenceSeconds int `json:"cadenceSeconds"`
+
+	// FreshnessDeadlineSeconds Freshness window for the tier, in seconds.
+	FreshnessDeadlineSeconds int                `json:"freshnessDeadlineSeconds"`
+	Id                       openapi_types.UUID `json:"id"`
+
+	// IdentityId The active Confirmed Market Product Identity being observed.
+	IdentityId           openapi_types.UUID `json:"identityId"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	NativeProductId      int64              `json:"nativeProductId"`
+	NativeVariantId      int64              `json:"nativeVariantId"`
+
+	// Tier Cadence/freshness tier (priority 60 min, standard 6 h, background 24 h).
+	Tier      ObservationTargetTier `json:"tier"`
+	VariantId openapi_types.UUID    `json:"variantId"`
+}
+
+// ObservationTargetTier Cadence/freshness tier (priority 60 min, standard 6 h, background 24 h).
+type ObservationTargetTier string
+
+// ObservationTargetList The account's active observation targets.
+type ObservationTargetList struct {
+	Items []ObservationTarget `json:"items"`
+}
+
+// ObservedOffer A derived CURRENT Observed Offer (PRD §7.3, §10.3): the latest accepted observation's fields, quality, freshness deadline, and corroborating route provenance. Price is raw evidence only. When `endedAt` is set the offer has disappeared and is closed (§16) — the last raw price is retained, never zeroed.
+type ObservedOffer struct {
+	// AvailabilityStatus Normalized availability (docs/11, §16). `unavailable` is the DISTINCT temporary-out state; `disappeared` is the permanent close (offer gone, closed with an end time, never a zero price).
+	AvailabilityStatus AvailabilityStatus `json:"availabilityStatus"`
+
+	// CapturedAt Capture time of the current observation (UTC).
+	CapturedAt time.Time `json:"capturedAt"`
+
+	// EndedAt Offer-disappearance close time (§16); null while live.
+	EndedAt *time.Time `json:"endedAt,omitempty"`
+
+	// FreshnessDeadline When this value expires; past it the offer is Stale (OBS-004).
+	FreshnessDeadline time.Time          `json:"freshnessDeadline"`
+	Id                openapi_types.UUID `json:"id"`
+
+	// ListPrice Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred.
+	ListPrice            RawAmount          `json:"listPrice"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	NativeSellerId       *string            `json:"nativeSellerId,omitempty"`
+	NativeVariantId      int64              `json:"nativeVariantId"`
+
+	// OfferIdentity Canonical per-offer key (native variant id + seller); LTR-isolated.
+	OfferIdentity string `json:"offerIdentity"`
+
+	// Price Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred.
+	Price RawAmount `json:"price"`
+
+	// Quality The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
+	Quality QualityState `json:"quality"`
+
+	// Routes The routes corroborating the current value (provenance, OBS-008).
+	Routes []ObservationRoute `json:"routes"`
+
+	// StockSignal Optional observed stock signal; null when DK omits it.
+	StockSignal *int64             `json:"stockSignal,omitempty"`
+	TargetId    openapi_types.UUID `json:"targetId"`
+}
+
+// ObservedOfferList The account's current Observed Offers.
+type ObservedOfferList struct {
+	Items []ObservedOffer `json:"items"`
+}
+
+// QualityState The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
+type QualityState string
+
+// RawAmount Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred.
+type RawAmount struct {
+	// Text The amount exactly as captured, before any normalization.
+	Text string `json:"text"`
+
+	// Unit The source unit token as captured; not interpreted as ISO-4217.
+	Unit string `json:"unit"`
+
+	// Value The parsed numeric token as raw source text (never a number type).
+	Value string `json:"value"`
+}
+
 // SessionInfo Identity of the authenticated session. This is the single shape both chat and screens read the current principal from; role drives the shared permission matrix (ACC-002).
 type SessionInfo struct {
 	// Email The user's email.
@@ -410,6 +788,27 @@ type ListNeedsReviewParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
+// ListObservationsParams defines parameters for ListObservations.
+type ListObservationsParams struct {
+	// TargetId The observation target whose evidence is requested.
+	TargetId openapi_types.UUID `form:"targetId" json:"targetId"`
+
+	// Limit Maximum rows to return (default 100, capped at 500).
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// ListObservedOffersParams defines parameters for ListObservedOffers.
+type ListObservedOffersParams struct {
+	// MarketplaceAccountId Marketplace account whose observed offers are requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
+// ListObservationTargetsParams defines parameters for ListObservationTargets.
+type ListObservationTargetsParams struct {
+	// MarketplaceAccountId Marketplace account whose targets are requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -433,6 +832,9 @@ type DeferIdentityJSONRequestBody = IdentityDecisionRequest
 
 // RejectIdentityJSONRequestBody defines body for RejectIdentity for application/json ContentType.
 type RejectIdentityJSONRequestBody = IdentityDecisionRequest
+
+// UploadCaptureJSONRequestBody defines body for UploadCapture for application/json ContentType.
+type UploadCaptureJSONRequestBody = CaptureUpload
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -475,6 +877,18 @@ type ServerInterface interface {
 	// Reject a Needs Review candidate.
 	// (POST /identity/reject)
 	RejectIdentity(w http.ResponseWriter, r *http.Request)
+	// Upload an extension (Route B) observation capture.
+	// (POST /observation/capture)
+	UploadCapture(w http.ResponseWriter, r *http.Request)
+	// List append-only observation evidence for a target.
+	// (GET /observation/observations)
+	ListObservations(w http.ResponseWriter, r *http.Request, params ListObservationsParams)
+	// List the account's derived current Observed Offers.
+	// (GET /observation/observed-offers)
+	ListObservedOffers(w http.ResponseWriter, r *http.Request, params ListObservedOffersParams)
+	// List the account's observation targets.
+	// (GET /observation/targets)
+	ListObservationTargets(w http.ResponseWriter, r *http.Request, params ListObservationTargetsParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -772,6 +1186,156 @@ func (siw *ServerInterfaceWrapper) RejectIdentity(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// UploadCapture operation middleware
+func (siw *ServerInterfaceWrapper) UploadCapture(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.UploadCapture(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListObservations operation middleware
+func (siw *ServerInterfaceWrapper) ListObservations(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListObservationsParams
+
+	// ------------- Required query parameter "targetId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "targetId", r.URL.Query(), &params.TargetId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "targetId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "targetId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListObservations(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListObservedOffers operation middleware
+func (siw *ServerInterfaceWrapper) ListObservedOffers(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListObservedOffersParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListObservedOffers(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListObservationTargets operation middleware
+func (siw *ServerInterfaceWrapper) ListObservationTargets(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListObservationTargetsParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListObservationTargets(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -905,6 +1469,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/defer", wrapper.DeferIdentity)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/identity/needs-review", wrapper.ListNeedsReview)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/reject", wrapper.RejectIdentity)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/observation/capture", wrapper.UploadCapture)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/observations", wrapper.ListObservations)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/observed-offers", wrapper.ListObservedOffers)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/targets", wrapper.ListObservationTargets)
 
 	return m
 }
@@ -1478,6 +2046,162 @@ func (response RejectIdentitydefaultJSONResponse) VisitRejectIdentityResponse(w 
 	return err
 }
 
+type UploadCaptureRequestObject struct {
+	Body *UploadCaptureJSONRequestBody
+}
+
+type UploadCaptureResponseObject interface {
+	VisitUploadCaptureResponse(w http.ResponseWriter) error
+}
+
+type UploadCapture202JSONResponse CaptureAccepted
+
+func (response UploadCapture202JSONResponse) VisitUploadCaptureResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type UploadCapturedefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response UploadCapturedefaultJSONResponse) VisitUploadCaptureResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListObservationsRequestObject struct {
+	Params ListObservationsParams
+}
+
+type ListObservationsResponseObject interface {
+	VisitListObservationsResponse(w http.ResponseWriter) error
+}
+
+type ListObservations200JSONResponse ObservationList
+
+func (response ListObservations200JSONResponse) VisitListObservationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListObservationsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListObservationsdefaultJSONResponse) VisitListObservationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListObservedOffersRequestObject struct {
+	Params ListObservedOffersParams
+}
+
+type ListObservedOffersResponseObject interface {
+	VisitListObservedOffersResponse(w http.ResponseWriter) error
+}
+
+type ListObservedOffers200JSONResponse ObservedOfferList
+
+func (response ListObservedOffers200JSONResponse) VisitListObservedOffersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListObservedOffersdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListObservedOffersdefaultJSONResponse) VisitListObservedOffersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListObservationTargetsRequestObject struct {
+	Params ListObservationTargetsParams
+}
+
+type ListObservationTargetsResponseObject interface {
+	VisitListObservationTargetsResponse(w http.ResponseWriter) error
+}
+
+type ListObservationTargets200JSONResponse ObservationTargetList
+
+func (response ListObservationTargets200JSONResponse) VisitListObservationTargetsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListObservationTargetsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListObservationTargetsdefaultJSONResponse) VisitListObservationTargetsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// Authenticate a user and open a server-side session.
@@ -1519,6 +2243,18 @@ type StrictServerInterface interface {
 	// Reject a Needs Review candidate.
 	// (POST /identity/reject)
 	RejectIdentity(ctx context.Context, request RejectIdentityRequestObject) (RejectIdentityResponseObject, error)
+	// Upload an extension (Route B) observation capture.
+	// (POST /observation/capture)
+	UploadCapture(ctx context.Context, request UploadCaptureRequestObject) (UploadCaptureResponseObject, error)
+	// List append-only observation evidence for a target.
+	// (GET /observation/observations)
+	ListObservations(ctx context.Context, request ListObservationsRequestObject) (ListObservationsResponseObject, error)
+	// List the account's derived current Observed Offers.
+	// (GET /observation/observed-offers)
+	ListObservedOffers(ctx context.Context, request ListObservedOffersRequestObject) (ListObservedOffersResponseObject, error)
+	// List the account's observation targets.
+	// (GET /observation/targets)
+	ListObservationTargets(ctx context.Context, request ListObservationTargetsRequestObject) (ListObservationTargetsResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -1915,6 +2651,115 @@ func (sh *strictHandler) RejectIdentity(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RejectIdentityResponseObject); ok {
 		if err := validResponse.VisitRejectIdentityResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// UploadCapture operation middleware
+func (sh *strictHandler) UploadCapture(w http.ResponseWriter, r *http.Request) {
+	var request UploadCaptureRequestObject
+
+	var body UploadCaptureJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.UploadCapture(ctx, request.(UploadCaptureRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "UploadCapture")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(UploadCaptureResponseObject); ok {
+		if err := validResponse.VisitUploadCaptureResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListObservations operation middleware
+func (sh *strictHandler) ListObservations(w http.ResponseWriter, r *http.Request, params ListObservationsParams) {
+	var request ListObservationsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListObservations(ctx, request.(ListObservationsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListObservations")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListObservationsResponseObject); ok {
+		if err := validResponse.VisitListObservationsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListObservedOffers operation middleware
+func (sh *strictHandler) ListObservedOffers(w http.ResponseWriter, r *http.Request, params ListObservedOffersParams) {
+	var request ListObservedOffersRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListObservedOffers(ctx, request.(ListObservedOffersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListObservedOffers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListObservedOffersResponseObject); ok {
+		if err := validResponse.VisitListObservedOffersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListObservationTargets operation middleware
+func (sh *strictHandler) ListObservationTargets(w http.ResponseWriter, r *http.Request, params ListObservationTargetsParams) {
+	var request ListObservationTargetsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListObservationTargets(ctx, request.(ListObservationTargetsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListObservationTargets")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListObservationTargetsResponseObject); ok {
+		if err := validResponse.VisitListObservationTargetsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

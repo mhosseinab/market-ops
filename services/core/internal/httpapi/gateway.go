@@ -21,6 +21,9 @@ type gatewayServer struct {
 	// identity backs the /identity/* routes (CAT-002, journey 4). Nil until wired;
 	// the handlers fail closed with a structured error when it is absent.
 	identity IdentityService
+	// observation backs the /observation/* routes (PRD §7.3). Nil until wired; the
+	// handlers fail closed with a structured error when it is absent.
+	observation ObservationService
 	// cookieSecure sets the Secure attribute on the session cookie. Defaults to
 	// true (production posture); local plain-HTTP dev may disable it.
 	cookieSecure CookieSecure

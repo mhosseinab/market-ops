@@ -133,6 +133,120 @@ type MarketplaceAccount struct {
 	UpdatedAt       time.Time
 }
 
+type Observation struct {
+	ID                   uuid.UUID
+	CapturedAt           time.Time
+	TargetID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	NativeVariantID      int64
+	NativeSellerID       string
+	OfferIdentity        string
+	Route                string
+	SubRoute             string
+	ParserVersion        string
+	ConnectorVersion     string
+	SourceUrl            string
+	SourceType           string
+	EvidenceRef          string
+	RawFixtureRef        string
+	PriceRawText         string
+	PriceRawValue        string
+	PriceRawUnit         string
+	ListPriceRawText     string
+	ListPriceRawValue    string
+	ListPriceRawUnit     string
+	AvailabilityStatus   string
+	StockSignal          pgtype.Int8
+	Quality              string
+	FreshnessDeadline    time.Time
+	DedupKey             string
+	SchemaValid          bool
+	IdentityValid        bool
+	Confidence           string
+	ParsingWarnings      []byte
+}
+
+type ObservationDedup struct {
+	DedupKey      string
+	TargetID      uuid.UUID
+	Route         string
+	OfferIdentity string
+	FirstSeenAt   time.Time
+}
+
+type ObservationTarget struct {
+	ID                       uuid.UUID
+	MarketplaceAccountID     uuid.UUID
+	IdentityID               uuid.UUID
+	VariantID                uuid.UUID
+	NativeVariantID          int64
+	NativeProductID          int64
+	Tier                     string
+	CadenceSeconds           int32
+	FreshnessDeadlineSeconds int32
+	Active                   bool
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+}
+
+type ObservationsDefault struct {
+	ID                   uuid.UUID
+	CapturedAt           time.Time
+	TargetID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	NativeVariantID      int64
+	NativeSellerID       string
+	OfferIdentity        string
+	Route                string
+	SubRoute             string
+	ParserVersion        string
+	ConnectorVersion     string
+	SourceUrl            string
+	SourceType           string
+	EvidenceRef          string
+	RawFixtureRef        string
+	PriceRawText         string
+	PriceRawValue        string
+	PriceRawUnit         string
+	ListPriceRawText     string
+	ListPriceRawValue    string
+	ListPriceRawUnit     string
+	AvailabilityStatus   string
+	StockSignal          pgtype.Int8
+	Quality              string
+	FreshnessDeadline    time.Time
+	DedupKey             string
+	SchemaValid          bool
+	IdentityValid        bool
+	Confidence           string
+	ParsingWarnings      []byte
+}
+
+type ObservedOffer struct {
+	ID                   uuid.UUID
+	TargetID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	OfferIdentity        string
+	NativeVariantID      int64
+	NativeSellerID       string
+	PriceRawText         string
+	PriceRawValue        string
+	PriceRawUnit         string
+	ListPriceRawText     string
+	ListPriceRawValue    string
+	ListPriceRawUnit     string
+	AvailabilityStatus   string
+	StockSignal          pgtype.Int8
+	Quality              string
+	CapturedAt           time.Time
+	FreshnessDeadline    time.Time
+	Routes               []byte
+	LastObservationID    uuid.UUID
+	EndedAt              pgtype.Timestamptz
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
 type Organization struct {
 	ID        uuid.UUID
 	Name      string

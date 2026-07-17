@@ -264,6 +264,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/observation/targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the account's observation targets.
+         * @description Returns the account's active observation targets (PRD §7.3 OBS-001). A target exists ONLY for an active Confirmed Market Product Identity — an unconfirmed/NeedsReview/Rejected/Obsolete identity is never observable.
+         */
+        get: operations["listObservationTargets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/observation/observed-offers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the account's derived current Observed Offers.
+         * @description Returns the derived CURRENT view of the observed market (PRD §7.3, §10.3): one Observed Offer per (target, offer identity), carrying its quality state, the raw price evidence (money quarantine — never a Money), the freshness deadline, and the corroborating route provenance. An expired offer is Stale and renders age-only; a disappeared offer is closed with an end time and is never a zero price (§16).
+         */
+        get: operations["listObservedOffers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/observation/observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List append-only observation evidence for a target.
+         * @description Returns the append-only observation evidence for one target, newest first (PRD §7.3 OBS-002/OBS-004). Historical values never silently become current: each row carries its captured time, quality, and freshness deadline so an expired value renders with age and cannot satisfy a current-data gate.
+         */
+        get: operations["listObservations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/observation/capture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload an extension (Route B) observation capture.
+         * @description The server-side ingestion contract the Chrome extension calls into (PRD §10.1 Route B — corroboration / opportunistic refresh only). The request schema is ALLOW-LISTED (additionalProperties false): the extension may submit only Route B captures with the permitted fields, and may NOT self-certify schema/identity validity, conflict, or forge Route C freshness — those are server-side determinations. Price is raw evidence only (money quarantine); a capture never carries a Money. An equivalent replay is deduplicated (OBS-008): it creates no duplicate current offer and retains route provenance.
+         */
+        post: operations["uploadCapture"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -497,6 +577,194 @@ export interface components {
             identityId: string;
             /** @description Optional reviewer note stored as append-only audit evidence. */
             note?: string;
+        };
+        /**
+         * @description The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
+         * @enum {string}
+         */
+        QualityState: "verified" | "supported" | "unverified" | "conflicted" | "stale" | "unavailable";
+        /**
+         * @description Capture route provenance (PRD §10.1). route_a official connector, route_b extension (corroboration only), route_c server observation.
+         * @enum {string}
+         */
+        ObservationRoute: "route_a" | "route_b" | "route_c";
+        /**
+         * @description Normalized availability (docs/11, §16). `unavailable` is the DISTINCT temporary-out state; `disappeared` is the permanent close (offer gone, closed with an end time, never a zero price).
+         * @enum {string}
+         */
+        AvailabilityStatus: "in_stock" | "out_of_stock" | "limited" | "unavailable" | "disappeared";
+        /** @description Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred. */
+        RawAmount: {
+            /** @description The amount exactly as captured, before any normalization. */
+            text: string;
+            /** @description The parsed numeric token as raw source text (never a number type). */
+            value: string;
+            /** @description The source unit token as captured; not interpreted as ISO-4217. */
+            unit: string;
+        };
+        /** @description An observation target (PRD §7.3 OBS-001): the executable observation unit for one variant, existing ONLY for an active Confirmed identity. */
+        ObservationTarget: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /**
+             * Format: uuid
+             * @description The active Confirmed Market Product Identity being observed.
+             */
+            identityId: string;
+            /** Format: uuid */
+            variantId: string;
+            /** Format: int64 */
+            nativeVariantId: number;
+            /** Format: int64 */
+            nativeProductId: number;
+            /**
+             * @description Cadence/freshness tier (priority 60 min, standard 6 h, background 24 h).
+             * @enum {string}
+             */
+            tier: "priority" | "standard" | "background";
+            /** @description Observation cadence for the tier, in seconds. */
+            cadenceSeconds: number;
+            /** @description Freshness window for the tier, in seconds. */
+            freshnessDeadlineSeconds: number;
+            active: boolean;
+        };
+        /** @description The account's active observation targets. */
+        ObservationTargetList: {
+            items: components["schemas"]["ObservationTarget"][];
+        };
+        /** @description A derived CURRENT Observed Offer (PRD §7.3, §10.3): the latest accepted observation's fields, quality, freshness deadline, and corroborating route provenance. Price is raw evidence only. When `endedAt` is set the offer has disappeared and is closed (§16) — the last raw price is retained, never zeroed. */
+        ObservedOffer: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            targetId: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** @description Canonical per-offer key (native variant id + seller); LTR-isolated. */
+            offerIdentity: string;
+            /** Format: int64 */
+            nativeVariantId: number;
+            nativeSellerId?: string;
+            price: components["schemas"]["RawAmount"];
+            listPrice: components["schemas"]["RawAmount"];
+            availabilityStatus: components["schemas"]["AvailabilityStatus"];
+            /**
+             * Format: int64
+             * @description Optional observed stock signal; null when DK omits it.
+             */
+            stockSignal?: number | null;
+            quality: components["schemas"]["QualityState"];
+            /**
+             * Format: date-time
+             * @description Capture time of the current observation (UTC).
+             */
+            capturedAt: string;
+            /**
+             * Format: date-time
+             * @description When this value expires; past it the offer is Stale (OBS-004).
+             */
+            freshnessDeadline: string;
+            /** @description The routes corroborating the current value (provenance, OBS-008). */
+            routes: components["schemas"]["ObservationRoute"][];
+            /**
+             * Format: date-time
+             * @description Offer-disappearance close time (§16); null while live.
+             */
+            endedAt?: string | null;
+        };
+        /** @description The account's current Observed Offers. */
+        ObservedOfferList: {
+            items: components["schemas"]["ObservedOffer"][];
+        };
+        /** @description One append-only observation evidence row (PRD §7.3 OBS-002). Carries the full evidence envelope; historical rows never silently become current. */
+        Observation: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            targetId: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: int64 */
+            nativeVariantId?: number;
+            nativeSellerId?: string;
+            offerIdentity: string;
+            route: components["schemas"]["ObservationRoute"];
+            subRoute?: string;
+            parserVersion: string;
+            connectorVersion?: string;
+            sourceUrl?: string;
+            sourceType: string;
+            evidenceRef: string;
+            price: components["schemas"]["RawAmount"];
+            listPrice?: components["schemas"]["RawAmount"];
+            availabilityStatus: components["schemas"]["AvailabilityStatus"];
+            /** Format: int64 */
+            stockSignal?: number | null;
+            quality: components["schemas"]["QualityState"];
+            /** Format: date-time */
+            capturedAt: string;
+            /** Format: date-time */
+            freshnessDeadline: string;
+        };
+        /** @description Append-only observation evidence for a target, newest first. */
+        ObservationList: {
+            items: components["schemas"]["Observation"][];
+        };
+        /** @description ALLOW-LISTED extension (Route B) capture upload (PRD §10.1). Only these fields are accepted (additionalProperties false). The extension cannot assert schema/identity validity or conflict, cannot forge Route C, and cannot declare a permanent disappearance — those are server-side. Price is raw evidence only (money quarantine). */
+        CaptureUpload: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /**
+             * Format: uuid
+             * @description The confirmed-identity observation target this capture is for.
+             */
+            targetId: string;
+            /** Format: int64 */
+            nativeVariantId: number;
+            nativeSellerId?: string;
+            /**
+             * @description Route B sub-route (PRD §7.3 OBS-005).
+             * @enum {string}
+             */
+            subRoute: "passive" | "on_demand" | "watchlist";
+            /**
+             * @description How the extension captured the value.
+             * @enum {string}
+             */
+            sourceType: "public-web-endpoint" | "embedded-json" | "dom" | "user-triggered-request";
+            sourceUrl?: string;
+            parserVersion: string;
+            connectorVersion?: string;
+            evidenceRef: string;
+            rawFixtureRef?: string;
+            price?: components["schemas"]["RawAmount"];
+            listPrice?: components["schemas"]["RawAmount"];
+            /**
+             * @description Extension-observable availability; disappearance close is server-side.
+             * @enum {string}
+             */
+            availabilityStatus: "in_stock" | "out_of_stock" | "limited" | "unavailable";
+            /** Format: int64 */
+            stockSignal?: number | null;
+            /** Format: date-time */
+            capturedAt: string;
+            /**
+             * @description Capture parser/unit confidence (docs/08).
+             * @enum {string}
+             */
+            confidence: "verified" | "partially_verified" | "unverified";
+        };
+        /** @description Result of a capture upload. `deduped` marks an equivalent replay that created no duplicate current offer while retaining provenance (OBS-008). */
+        CaptureAccepted: {
+            deduped: boolean;
+            /**
+             * Format: uuid
+             * @description The append-only evidence row id; null when deduped.
+             */
+            observationId?: string | null;
+            quality: components["schemas"]["QualityState"];
         };
         /** @description Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator. */
         ErrorEnvelope: {
@@ -945,6 +1213,137 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarketProductIdentity"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listObservationTargets: {
+        parameters: {
+            query: {
+                /** @description Marketplace account whose targets are requested. */
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's active observation targets. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservationTargetList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listObservedOffers: {
+        parameters: {
+            query: {
+                /** @description Marketplace account whose observed offers are requested. */
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's current Observed Offers. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservedOfferList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listObservations: {
+        parameters: {
+            query: {
+                /** @description The observation target whose evidence is requested. */
+                targetId: string;
+                /** @description Maximum rows to return (default 100, capped at 500). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The append-only observation evidence for the target. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservationList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    uploadCapture: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CaptureUpload"];
+            };
+        };
+        responses: {
+            /** @description Capture accepted (or deduplicated) and reflected in the current view. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureAccepted"];
                 };
             };
             /** @description Unexpected error. */

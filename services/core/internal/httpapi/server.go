@@ -53,6 +53,14 @@ func WithIdentity(i IdentityService) Option {
 	return func(s *gatewayServer) { s.identity = i }
 }
 
+// WithObservation injects the observation-store service backing the
+// /observation/* routes (PRD §7.3). Without it those routes fail closed with a
+// structured error, so no target list, observed offer, evidence, or capture upload
+// is served on an unwired observation plane.
+func WithObservation(o ObservationService) Option {
+	return func(s *gatewayServer) { s.observation = o }
+}
+
 // WithCookieSecure overrides the Secure attribute of the session cookie. Default
 // is true; local plain-HTTP dev sets it false so the browser sends the cookie.
 func WithCookieSecure(secure bool) Option {

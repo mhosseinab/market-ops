@@ -14,6 +14,15 @@ type Querier interface {
 	// Persist page progress after a page is fully applied. next_page is the resume
 	// cursor an interrupted import continues from; counters accumulate.
 	AdvanceCatalogSyncRun(ctx context.Context, arg AdvanceCatalogSyncRunParams) (CatalogSyncRun, error)
+	// OBS-008 atomic dedup. A returned row = first sighting (accept the observation);
+	// an empty result = replay (dedup — create no duplicate current offer). The key
+	// carries the route, so a different route observing the same value is a distinct
+	// claim and is retained: route provenance is never collapsed away.
+	ClaimDedupKey(ctx context.Context, arg ClaimDedupKeyParams) ([]ObservationDedup, error)
+	// §16 offer disappearance: close the current offer with an END TIME. The last raw
+	// price is left intact — it is NEVER converted to a zero price. Availability
+	// becomes 'disappeared' and quality 'unavailable'.
+	CloseObservedOffer(ctx context.Context, arg CloseObservedOfferParams) (ObservedOffer, error)
 	CompleteCatalogSyncRun(ctx context.Context, arg CompleteCatalogSyncRunParams) (CatalogSyncRun, error)
 	// Transition NeedsReview -> Confirmed. Guarded WHERE state='needs_review' so a
 	// concurrent/duplicate confirm is a no-op (returns no row). The partial unique
@@ -45,6 +54,10 @@ type Querier interface {
 	// human confirms it. Fuzzy suggestion is P0.5 and not created here.
 	CreateIdentityCandidate(ctx context.Context, arg CreateIdentityCandidateParams) (MarketProductIdentity, error)
 	CreateMarketplaceAccount(ctx context.Context, arg CreateMarketplaceAccountParams) (MarketplaceAccount, error)
+	// OBS-001 auto-create: a target for EXACTLY the account's active Confirmed
+	// mappings that do not yet have one. NeedsReview/Rejected/Obsolete are excluded by
+	// construction, and the trigger is a second guard. Idempotent via ON CONFLICT.
+	CreateObservationTargetsFromConfirmed(ctx context.Context, arg CreateObservationTargetsFromConfirmedParams) ([]ObservationTarget, error)
 	CreateOrganization(ctx context.Context, name string) (Organization, error)
 	// Open a server-side session. token_hash is the SHA-256 of the opaque cookie
 	// token; the raw token never reaches the database.
@@ -75,6 +88,8 @@ type Querier interface {
 	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (MarketplaceAccount, error)
 	GetMarketplaceAccountByNativeID(ctx context.Context, nativeAccountID string) (MarketplaceAccount, error)
 	GetMarketplaceAccountByOrganization(ctx context.Context, organizationID uuid.UUID) (MarketplaceAccount, error)
+	GetObservationTarget(ctx context.Context, id uuid.UUID) (ObservationTarget, error)
+	GetObservedOffer(ctx context.Context, arg GetObservedOfferParams) (ObservedOffer, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
 	// Resolve a live session to its principal (user + role + organization). Rows
 	// at/after expiry are excluded, so an expired cookie fails closed.
@@ -91,6 +106,19 @@ type Querier interface {
 	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
 	// INSERT; there is deliberately no UPDATE/DELETE query.
 	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)
+	// APPEND-ONLY evidence write (OBS-002). Every field of the evidence envelope is
+	// required; the domain rejects incomplete evidence before reaching here.
+	InsertObservation(ctx context.Context, arg InsertObservationParams) (InsertObservationRow, error)
+	// Observation store queries (PRD §7.3, §10.3, §16). Two write disciplines:
+	//   * observations + observation_dedup are APPEND-ONLY — there is deliberately NO
+	//     UPDATE or DELETE query here (never-cut invariant).
+	//   * observation_targets and observed_offers are current-state projections;
+	//     observed_offers is the derived current view, swept and upserted, never the
+	//     evidence of record.
+	// Create ONE observation target. The BEFORE INSERT trigger rejects this unless
+	// identity_id is an active Confirmed mapping (OBS-001) — the negative test drives
+	// exactly this path with an unconfirmed identity and asserts the raise.
+	InsertObservationTarget(ctx context.Context, arg InsertObservationTargetParams) (ObservationTarget, error)
 	// APPEND-ONLY event emit (§16). dedup_key carries the event-dedup invariant: a
 	// unique-violation on re-emit is swallowed by the producer, so a retry never
 	// double-expires downstream recommendations.
@@ -101,10 +129,22 @@ type Querier interface {
 	ListConfirmedObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketProductIdentity, error)
 	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
 	ListIdentityDecisions(ctx context.Context, identityID uuid.UUID) ([]MarketProductIdentityDecision, error)
+	// OBS-003/§16 cross-route analysis from APPEND-ONLY evidence. For one offer,
+	// returns the LATEST observation per route that is STILL IN WINDOW at :now
+	// (freshness_deadline > now) — i.e. the routes whose evidence is currently fresh,
+	// with the value each currently attests. The domain derives Verified (a DIFFERENT
+	// route agreeing within window), Conflicted (a different route disagreeing within
+	// window), and recent history (a prior in-window sighting) from this — never from
+	// a retained string set that has no per-route freshness.
+	ListInWindowRouteValues(ctx context.Context, arg ListInWindowRouteValuesParams) ([]ListInWindowRouteValuesRow, error)
 	// The Needs Review queue (journey 4): each pending candidate joined to its
 	// variant/product so the row carries SKU (supplier_code), variant + product title,
 	// and the native-id evidence a reviewer needs to confirm/reject/defer.
 	ListNeedsReviewQueue(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListNeedsReviewQueueRow, error)
+	ListObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservationTarget, error)
+	// Append-only evidence, newest first (bounded by the caller).
+	ListObservationsByTarget(ctx context.Context, arg ListObservationsByTargetParams) ([]Observation, error)
+	ListObservedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservedOffer, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
@@ -113,6 +153,17 @@ type Querier interface {
 	// and never stacks duplicate candidates. A previously rejected/obsolete variant
 	// becomes eligible again for a fresh candidate.
 	ListVariantsWithoutActiveIdentity(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListVariantsWithoutActiveIdentityRow, error)
+	// OBS-004 expiry sweep on the derived current view: any live offer past its
+	// freshness deadline becomes Stale (renders age-only, never satisfies a
+	// current-data gate — that decision is in the domain). Closed offers are left as
+	// Unavailable. Evidence rows are untouched (append-only).
+	MarkExpiredObservedOffersStale(ctx context.Context, arg MarkExpiredObservedOffersStaleParams) (int64, error)
+	// §16 "Routes disagree → Conflicted; block". A newer disagreeing value must NOT
+	// silently overwrite the current offer: the price/availability of record are LEFT
+	// INTACT and only the quality is set to 'conflicted' (which blocks recommend and
+	// execute in the §10.3 matrix). The disagreeing capture is still retained as
+	// append-only evidence; last_observation_id points at it for traceability.
+	MarkObservedOfferConflicted(ctx context.Context, arg MarkObservedOfferConflictedParams) (ObservedOffer, error)
 	// Transition NeedsReview -> Rejected and deactivate. A rejected mapping never
 	// feeds an executable path and frees the variant for a fresh candidate later.
 	RejectIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
@@ -140,6 +191,11 @@ type Querier interface {
 	// Establish or update the connection with sealed tokens (connect / refresh).
 	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)
 	UpsertListing(ctx context.Context, arg UpsertListingParams) (UpsertListingRow, error)
+	// Derived current view (OBS-008). One row per (target, offer identity); the latest
+	// accepted observation's fields, quality, freshness deadline, and the corroborating
+	// route-provenance set (computed by the domain and passed verbatim). Re-opening a
+	// previously closed offer clears ended_at.
+	UpsertObservedOffer(ctx context.Context, arg UpsertObservedOfferParams) (ObservedOffer, error)
 	// Money quarantine (§9.1): price is stored ONLY as raw evidence text; there is no
 	// Money/currency column and no conversion path. last_seen_run_id stamps the run
 	// that observed this offer for the reconciliation drift pass.
