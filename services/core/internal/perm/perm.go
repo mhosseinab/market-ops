@@ -115,9 +115,17 @@ const (
 	// converse — authority for any prepared action still resolves through this
 	// same Matrix by the user's role, never from the chat surface itself.
 	ActionChatConverse Action = "chat.converse"
+	// ActionReadNeedsReview authorizes reading the identity-mapping Needs Review
+	// queue (CAT-002, journey 4). Reading is always L1 (§8.3); a machine data-read
+	// tool may hold it.
+	ActionReadNeedsReview Action = "read.needs_review"
 
 	// --- L2 reversible configuration ----------------------------------------
-	ActionConnectorConnect    Action = "connector.connect"
+	ActionConnectorConnect Action = "connector.connect"
+	// ActionResolveIdentity authorizes confirm/reject/defer on a Market Product
+	// Identity candidate (CAT-002, journey 4). It is a reversible data-resolution
+	// task — Owner + Operator, never the machine gateway principal (an L2 write).
+	ActionResolveIdentity     Action = "identity.resolve"
 	ActionConnectorRefresh    Action = "connector.refresh"
 	ActionConnectorDisconnect Action = "connector.disconnect"
 	ActionSetNotificationTime Action = "config.notification_time"
@@ -173,6 +181,7 @@ var Matrix = []Rule{
 	{ActionSessionRead, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionSessionLogout, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionChatConverse, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	{ActionReadNeedsReview, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 
 	// L2 reversible configuration. Account-lifecycle connector actions are
 	// account management — Owner only (PRD §2.2 "Connect account") — a valid
@@ -185,6 +194,9 @@ var Matrix = []Rule{
 	{ActionSetWatchlist, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	{ActionSetMonitoringTier, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	{ActionSetSingleCostValue, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
+	// Identity resolution is a reversible data task within the L2 baseline
+	// {Owner, Operator}; Internal diagnoses but does not resolve mappings.
+	{ActionResolveIdentity, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 
 	// L3 commercial guardrail — Owner only. Operator and Internal are denied:
 	// this is the §2.2/§8.3 guardrail invariant (Operator cannot change floors,

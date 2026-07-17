@@ -73,6 +73,10 @@ var routePolicies = []routePolicy{
 	{http.MethodPost, "/connector/disconnect", kindProtected, perm.ActionConnectorDisconnect},
 	{http.MethodGet, "/connector/status", kindProtected, perm.ActionConnectorInspect},
 	{http.MethodPost, "/chat", kindProtected, perm.ActionChatConverse},
+	{http.MethodGet, "/identity/needs-review", kindProtected, perm.ActionReadNeedsReview},
+	{http.MethodPost, "/identity/confirm", kindProtected, perm.ActionResolveIdentity},
+	{http.MethodPost, "/identity/reject", kindProtected, perm.ActionResolveIdentity},
+	{http.MethodPost, "/identity/defer", kindProtected, perm.ActionResolveIdentity},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.

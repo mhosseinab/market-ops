@@ -18,7 +18,12 @@ from .connector_status import ConnectorStatus
 from .error_envelope import ErrorEnvelope
 from .health import Health
 from .health_status import HealthStatus
+from .identity_decision_request import IdentityDecisionRequest
 from .login_request import LoginRequest
+from .market_product_identity import MarketProductIdentity
+from .market_product_identity_state import MarketProductIdentityState
+from .needs_review_item import NeedsReviewItem
+from .needs_review_queue import NeedsReviewQueue
 from .session_info import SessionInfo
 from .user_role import UserRole
 
@@ -41,7 +46,12 @@ __all__ = (
     "ErrorEnvelope",
     "Health",
     "HealthStatus",
+    "IdentityDecisionRequest",
     "LoginRequest",
+    "MarketProductIdentity",
+    "MarketProductIdentityState",
+    "NeedsReviewItem",
+    "NeedsReviewQueue",
     "SessionInfo",
     "UserRole",
 )

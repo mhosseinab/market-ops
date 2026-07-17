@@ -141,6 +141,30 @@ func (e HealthStatus) Valid() bool {
 	}
 }
 
+// Defines values for MarketProductIdentityState.
+const (
+	Confirmed   MarketProductIdentityState = "confirmed"
+	NeedsReview MarketProductIdentityState = "needs_review"
+	Obsolete    MarketProductIdentityState = "obsolete"
+	Rejected    MarketProductIdentityState = "rejected"
+)
+
+// Valid indicates whether the value is a known member of the MarketProductIdentityState enum.
+func (e MarketProductIdentityState) Valid() bool {
+	switch e {
+	case Confirmed:
+		return true
+	case NeedsReview:
+		return true
+	case Obsolete:
+		return true
+	case Rejected:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UserRole.
 const (
 	Internal UserRole = "internal"
@@ -277,6 +301,15 @@ type Health struct {
 // HealthStatus Liveness marker; "ok" when the service is live.
 type HealthStatus string
 
+// IdentityDecisionRequest A confirm / reject / defer decision on a Needs Review candidate. The optional note is free text captured as audit evidence; it carries NO authority (PRD §8): the structured operation itself is the decision.
+type IdentityDecisionRequest struct {
+	// IdentityId The Market Product Identity to act on.
+	IdentityId openapi_types.UUID `json:"identityId"`
+
+	// Note Optional reviewer note stored as append-only audit evidence.
+	Note *string `json:"note,omitempty"`
+}
+
 // LoginRequest Email/password credential presented to open a session.
 type LoginRequest struct {
 	// Email Login identifier (the user's email).
@@ -284,6 +317,58 @@ type LoginRequest struct {
 
 	// Password Plaintext password, presented only over TLS and never stored; verified against the argon2id hash and discarded.
 	Password string `json:"password"`
+}
+
+// MarketProductIdentity A variant's mapping to a public DK product record, with its versioned state. Separate canonical entity from the owned Variant/Listing (CAT-001).
+type MarketProductIdentity struct {
+	// Active Whether this is the variant's live mapping.
+	Active bool `json:"active"`
+
+	// CandidateSource How the candidate was created (P0 is exact_native_id only).
+	CandidateSource string `json:"candidateSource"`
+
+	// Id Stable mapping id.
+	Id                   openapi_types.UUID `json:"id"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+
+	// NativeProductId The public DK product record the variant is mapped to.
+	NativeProductId int64 `json:"nativeProductId"`
+
+	// NativeVariantId DK native variant id (LTR technical identifier).
+	NativeVariantId int64 `json:"nativeVariantId"`
+
+	// State Versioned Market Product Identity state (PRD §7.2 CAT-002). Only `confirmed` may drive an executable path; `needs_review`, `rejected`, and `obsolete` never can (identity quarantine).
+	State MarketProductIdentityState `json:"state"`
+
+	// VariantId The owned variant this mapping resolves.
+	VariantId openapi_types.UUID `json:"variantId"`
+
+	// Version Monotonic per-mapping version, bumped on every state transition.
+	Version int `json:"version"`
+}
+
+// MarketProductIdentityState Versioned Market Product Identity state (PRD §7.2 CAT-002). Only `confirmed` may drive an executable path; `needs_review`, `rejected`, and `obsolete` never can (identity quarantine).
+type MarketProductIdentityState string
+
+// NeedsReviewItem One Needs Review queue row (journey 4 step 1): the pending candidate plus the SKU / variant title / product title / native-id evidence a reviewer needs to confirm, reject, or defer.
+type NeedsReviewItem struct {
+	CandidateSource string             `json:"candidateSource"`
+	IdentityId      openapi_types.UUID `json:"identityId"`
+	NativeProductId int64              `json:"nativeProductId"`
+	NativeVariantId int64              `json:"nativeVariantId"`
+	ProductTitle    string             `json:"productTitle"`
+
+	// SupplierCode Seller SKU / supplier code (LTR technical identifier).
+	SupplierCode string             `json:"supplierCode"`
+	VariantId    openapi_types.UUID `json:"variantId"`
+	VariantTitle string             `json:"variantTitle"`
+	Version      int                `json:"version"`
+}
+
+// NeedsReviewQueue The account's pending Needs Review identity-mapping candidates.
+type NeedsReviewQueue struct {
+	// Items Pending candidates; empty when the queue is clear.
+	Items []NeedsReviewItem `json:"items"`
 }
 
 // SessionInfo Identity of the authenticated session. This is the single shape both chat and screens read the current principal from; role drives the shared permission matrix (ACC-002).
@@ -319,6 +404,12 @@ type GetConnectorStatusParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
+// ListNeedsReviewParams defines parameters for ListNeedsReview.
+type ListNeedsReviewParams struct {
+	// MarketplaceAccountId Marketplace account whose review queue is requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -333,6 +424,15 @@ type DisconnectConnectorJSONRequestBody = ConnectorAccountRef
 
 // RefreshConnectorJSONRequestBody defines body for RefreshConnector for application/json ContentType.
 type RefreshConnectorJSONRequestBody = ConnectorAccountRef
+
+// ConfirmIdentityJSONRequestBody defines body for ConfirmIdentity for application/json ContentType.
+type ConfirmIdentityJSONRequestBody = IdentityDecisionRequest
+
+// DeferIdentityJSONRequestBody defines body for DeferIdentity for application/json ContentType.
+type DeferIdentityJSONRequestBody = IdentityDecisionRequest
+
+// RejectIdentityJSONRequestBody defines body for RejectIdentity for application/json ContentType.
+type RejectIdentityJSONRequestBody = IdentityDecisionRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
@@ -363,6 +463,18 @@ type ServerInterface interface {
 	// Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
+	// Confirm a Needs Review candidate as the variant's active mapping.
+	// (POST /identity/confirm)
+	ConfirmIdentity(w http.ResponseWriter, r *http.Request)
+	// Defer a Needs Review candidate, keeping it in the queue.
+	// (POST /identity/defer)
+	DeferIdentity(w http.ResponseWriter, r *http.Request)
+	// List the Needs Review identity-mapping queue for an account.
+	// (GET /identity/needs-review)
+	ListNeedsReview(w http.ResponseWriter, r *http.Request, params ListNeedsReviewParams)
+	// Reject a Needs Review candidate.
+	// (POST /identity/reject)
+	RejectIdentity(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -561,6 +673,105 @@ func (siw *ServerInterfaceWrapper) GetHealthz(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// ConfirmIdentity operation middleware
+func (siw *ServerInterfaceWrapper) ConfirmIdentity(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ConfirmIdentity(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// DeferIdentity operation middleware
+func (siw *ServerInterfaceWrapper) DeferIdentity(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.DeferIdentity(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListNeedsReview operation middleware
+func (siw *ServerInterfaceWrapper) ListNeedsReview(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListNeedsReviewParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListNeedsReview(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RejectIdentity operation middleware
+func (siw *ServerInterfaceWrapper) RejectIdentity(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, BearerAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RejectIdentity(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -690,6 +901,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/refresh", wrapper.RefreshConnector)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/connector/status", wrapper.GetConnectorStatus)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/healthz", wrapper.GetHealthz)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/confirm", wrapper.ConfirmIdentity)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/defer", wrapper.DeferIdentity)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/identity/needs-review", wrapper.ListNeedsReview)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/reject", wrapper.RejectIdentity)
 
 	return m
 }
@@ -1107,6 +1322,162 @@ func (response GetHealthzdefaultJSONResponse) VisitGetHealthzResponse(w http.Res
 	return err
 }
 
+type ConfirmIdentityRequestObject struct {
+	Body *ConfirmIdentityJSONRequestBody
+}
+
+type ConfirmIdentityResponseObject interface {
+	VisitConfirmIdentityResponse(w http.ResponseWriter) error
+}
+
+type ConfirmIdentity200JSONResponse MarketProductIdentity
+
+func (response ConfirmIdentity200JSONResponse) VisitConfirmIdentityResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConfirmIdentitydefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ConfirmIdentitydefaultJSONResponse) VisitConfirmIdentityResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeferIdentityRequestObject struct {
+	Body *DeferIdentityJSONRequestBody
+}
+
+type DeferIdentityResponseObject interface {
+	VisitDeferIdentityResponse(w http.ResponseWriter) error
+}
+
+type DeferIdentity200JSONResponse MarketProductIdentity
+
+func (response DeferIdentity200JSONResponse) VisitDeferIdentityResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type DeferIdentitydefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response DeferIdentitydefaultJSONResponse) VisitDeferIdentityResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNeedsReviewRequestObject struct {
+	Params ListNeedsReviewParams
+}
+
+type ListNeedsReviewResponseObject interface {
+	VisitListNeedsReviewResponse(w http.ResponseWriter) error
+}
+
+type ListNeedsReview200JSONResponse NeedsReviewQueue
+
+func (response ListNeedsReview200JSONResponse) VisitListNeedsReviewResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNeedsReviewdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListNeedsReviewdefaultJSONResponse) VisitListNeedsReviewResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectIdentityRequestObject struct {
+	Body *RejectIdentityJSONRequestBody
+}
+
+type RejectIdentityResponseObject interface {
+	VisitRejectIdentityResponse(w http.ResponseWriter) error
+}
+
+type RejectIdentity200JSONResponse MarketProductIdentity
+
+func (response RejectIdentity200JSONResponse) VisitRejectIdentityResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RejectIdentitydefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response RejectIdentitydefaultJSONResponse) VisitRejectIdentityResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// Authenticate a user and open a server-side session.
@@ -1136,6 +1507,18 @@ type StrictServerInterface interface {
 	// Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(ctx context.Context, request GetHealthzRequestObject) (GetHealthzResponseObject, error)
+	// Confirm a Needs Review candidate as the variant's active mapping.
+	// (POST /identity/confirm)
+	ConfirmIdentity(ctx context.Context, request ConfirmIdentityRequestObject) (ConfirmIdentityResponseObject, error)
+	// Defer a Needs Review candidate, keeping it in the queue.
+	// (POST /identity/defer)
+	DeferIdentity(ctx context.Context, request DeferIdentityRequestObject) (DeferIdentityResponseObject, error)
+	// List the Needs Review identity-mapping queue for an account.
+	// (GET /identity/needs-review)
+	ListNeedsReview(ctx context.Context, request ListNeedsReviewRequestObject) (ListNeedsReviewResponseObject, error)
+	// Reject a Needs Review candidate.
+	// (POST /identity/reject)
+	RejectIdentity(ctx context.Context, request RejectIdentityRequestObject) (RejectIdentityResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -1413,6 +1796,125 @@ func (sh *strictHandler) GetHealthz(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetHealthzResponseObject); ok {
 		if err := validResponse.VisitGetHealthzResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ConfirmIdentity operation middleware
+func (sh *strictHandler) ConfirmIdentity(w http.ResponseWriter, r *http.Request) {
+	var request ConfirmIdentityRequestObject
+
+	var body ConfirmIdentityJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ConfirmIdentity(ctx, request.(ConfirmIdentityRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ConfirmIdentity")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ConfirmIdentityResponseObject); ok {
+		if err := validResponse.VisitConfirmIdentityResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// DeferIdentity operation middleware
+func (sh *strictHandler) DeferIdentity(w http.ResponseWriter, r *http.Request) {
+	var request DeferIdentityRequestObject
+
+	var body DeferIdentityJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.DeferIdentity(ctx, request.(DeferIdentityRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "DeferIdentity")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(DeferIdentityResponseObject); ok {
+		if err := validResponse.VisitDeferIdentityResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListNeedsReview operation middleware
+func (sh *strictHandler) ListNeedsReview(w http.ResponseWriter, r *http.Request, params ListNeedsReviewParams) {
+	var request ListNeedsReviewRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListNeedsReview(ctx, request.(ListNeedsReviewRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListNeedsReview")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListNeedsReviewResponseObject); ok {
+		if err := validResponse.VisitListNeedsReviewResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RejectIdentity operation middleware
+func (sh *strictHandler) RejectIdentity(w http.ResponseWriter, r *http.Request) {
+	var request RejectIdentityRequestObject
+
+	var body RejectIdentityJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RejectIdentity(ctx, request.(RejectIdentityRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RejectIdentity")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RejectIdentityResponseObject); ok {
+		if err := validResponse.VisitRejectIdentityResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

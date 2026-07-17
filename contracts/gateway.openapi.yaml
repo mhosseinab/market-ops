@@ -360,6 +360,134 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /identity/needs-review:
+    get:
+      operationId: listNeedsReview
+      tags:
+        - identity
+      summary: List the Needs Review identity-mapping queue for an account.
+      description: >-
+        Returns the account's pending Market Product Identity candidates
+        (journey 4 step 1): each row carries SKU (supplier code), variant and
+        product title, and the native-id evidence a reviewer needs. Only
+        NeedsReview candidates appear here — Confirmed/Rejected/Obsolete mappings
+        are never in the queue. Confirming a candidate is the ONLY thing that
+        makes a variant an observation target (CAT-002, OBS-001).
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose review queue is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The pending Needs Review candidates for the account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NeedsReviewQueue'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /identity/confirm:
+    post:
+      operationId: confirmIdentity
+      tags:
+        - identity
+      summary: Confirm a Needs Review candidate as the variant's active mapping.
+      description: >-
+        Transitions a NeedsReview candidate to Confirmed (journey 4 step 2). At
+        most one active Confirmed mapping may exist per variant (CAT-002,
+        enforced by a partial unique index); a second confirm for the same
+        variant is rejected. Only after confirmation does the variant become an
+        observation target (OBS-001). The decision is recorded in an append-only
+        audit (who/when/evidence).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityDecisionRequest'
+      responses:
+        '200':
+          description: Candidate confirmed; the updated mapping is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketProductIdentity'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /identity/reject:
+    post:
+      operationId: rejectIdentity
+      tags:
+        - identity
+      summary: Reject a Needs Review candidate.
+      description: >-
+        Transitions a NeedsReview candidate to Rejected (journey 4 step 2). A
+        rejected mapping never feeds an executable path and frees the variant for
+        a fresh candidate later. The decision is recorded in an append-only audit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityDecisionRequest'
+      responses:
+        '200':
+          description: Candidate rejected; the updated mapping is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketProductIdentity'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /identity/defer:
+    post:
+      operationId: deferIdentity
+      tags:
+        - identity
+      summary: Defer a Needs Review candidate, keeping it in the queue.
+      description: >-
+        Leaves a NeedsReview candidate in the queue (journey 4 step 2) and
+        records the deferral in the append-only audit. It never promotes the
+        mapping to an executable state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityDecisionRequest'
+      responses:
+        '200':
+          description: Candidate deferred; the unchanged mapping is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketProductIdentity'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -715,6 +843,140 @@ components:
         deepLink:
           type: string
           description: Path to the structured screen that completes the task deterministically.
+      additionalProperties: false
+
+    MarketProductIdentityState:
+      type: string
+      description: >-
+        Versioned Market Product Identity state (PRD §7.2 CAT-002). Only
+        `confirmed` may drive an executable path; `needs_review`, `rejected`, and
+        `obsolete` never can (identity quarantine).
+      enum:
+        - confirmed
+        - needs_review
+        - rejected
+        - obsolete
+
+    MarketProductIdentity:
+      type: object
+      description: >-
+        A variant's mapping to a public DK product record, with its versioned
+        state. Separate canonical entity from the owned Variant/Listing (CAT-001).
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - nativeVariantId
+        - nativeProductId
+        - state
+        - active
+        - candidateSource
+        - version
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Stable mapping id.
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+          description: The owned variant this mapping resolves.
+        nativeVariantId:
+          type: integer
+          format: int64
+          description: DK native variant id (LTR technical identifier).
+        nativeProductId:
+          type: integer
+          format: int64
+          description: The public DK product record the variant is mapped to.
+        state:
+          $ref: '#/components/schemas/MarketProductIdentityState'
+        active:
+          type: boolean
+          description: Whether this is the variant's live mapping.
+        candidateSource:
+          type: string
+          description: How the candidate was created (P0 is exact_native_id only).
+        version:
+          type: integer
+          description: Monotonic per-mapping version, bumped on every state transition.
+      additionalProperties: false
+
+    NeedsReviewItem:
+      type: object
+      description: >-
+        One Needs Review queue row (journey 4 step 1): the pending candidate plus
+        the SKU / variant title / product title / native-id evidence a reviewer
+        needs to confirm, reject, or defer.
+      required:
+        - identityId
+        - variantId
+        - nativeVariantId
+        - nativeProductId
+        - supplierCode
+        - variantTitle
+        - productTitle
+        - candidateSource
+        - version
+      properties:
+        identityId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        nativeVariantId:
+          type: integer
+          format: int64
+        nativeProductId:
+          type: integer
+          format: int64
+        supplierCode:
+          type: string
+          description: Seller SKU / supplier code (LTR technical identifier).
+        variantTitle:
+          type: string
+        productTitle:
+          type: string
+        candidateSource:
+          type: string
+        version:
+          type: integer
+      additionalProperties: false
+
+    NeedsReviewQueue:
+      type: object
+      description: The account's pending Needs Review identity-mapping candidates.
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          description: Pending candidates; empty when the queue is clear.
+          items:
+            $ref: '#/components/schemas/NeedsReviewItem'
+      additionalProperties: false
+
+    IdentityDecisionRequest:
+      type: object
+      description: >-
+        A confirm / reject / defer decision on a Needs Review candidate. The
+        optional note is free text captured as audit evidence; it carries NO
+        authority (PRD §8): the structured operation itself is the decision.
+      required:
+        - identityId
+      properties:
+        identityId:
+          type: string
+          format: uuid
+          description: The Market Product Identity to act on.
+        note:
+          type: string
+          maxLength: 2000
+          description: Optional reviewer note stored as append-only audit evidence.
       additionalProperties: false
 
     ErrorEnvelope:

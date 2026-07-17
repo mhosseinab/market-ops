@@ -64,6 +64,27 @@ type ConnectorConnection struct {
 	UpdatedAt            time.Time
 }
 
+type Conversation struct {
+	ID                   uuid.UUID
+	OrganizationID       uuid.UUID
+	OpenedByUserID       uuid.UUID
+	MarketplaceAccountID pgtype.UUID
+	Title                string
+	Pinned               bool
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	RetentionExpiresAt   time.Time
+}
+
+type ConversationMessage struct {
+	ID             uuid.UUID
+	ConversationID uuid.UUID
+	Author         string
+	Body           string
+	Envelope       []byte
+	CreatedAt      time.Time
+}
+
 type Listing struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -73,6 +94,34 @@ type Listing struct {
 	ProductUrl           string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+type MarketProductIdentity struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	NativeVariantID      int64
+	NativeProductID      int64
+	State                string
+	Active               bool
+	CandidateSource      string
+	Version              int32
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+}
+
+type MarketProductIdentityDecision struct {
+	ID                   uuid.UUID
+	IdentityID           uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	Decision             string
+	FromState            string
+	ToState              string
+	Reason               string
+	Evidence             []byte
+	DecidedBy            pgtype.UUID
+	DecidedAt            time.Time
 }
 
 type MarketplaceAccount struct {
@@ -116,6 +165,16 @@ type Product struct {
 	ProductUrl           string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+type RecommendationInvalidationEvent struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	IdentityID           uuid.UUID
+	Reason               string
+	DedupKey             string
+	EmittedAt            time.Time
 }
 
 type Session struct {
