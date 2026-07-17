@@ -633,6 +633,206 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /cost/import/preview:
+    post:
+      operationId: previewCostImport
+      tags:
+        - cost
+      summary: Build a CSV cost-import preview (no commit).
+      description: >-
+        Parses a UTF-8 cost CSV (Persian/Latin digits normalized, LOC-007),
+        resolves SKUs, and returns a per-row disposition preview (CST-001). NO
+        cost value is committed here — the returned batch is in 'preview' and must
+        be confirmed via /cost/import/commit. Every non-accept row carries a
+        stated reason; duplicate (SKU, component) rows are a 'duplicate' conflict
+        that blocks commit until resolved (§16).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostImportPreviewRequest'
+      responses:
+        '200':
+          description: The preview batch with per-row dispositions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostImportPreview'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/import:
+    get:
+      operationId: getCostImportPreview
+      tags:
+        - cost
+      summary: Re-fetch a stored cost-import preview batch.
+      description: >-
+        Returns a previously created preview batch and its disposition rows
+        (CST-001), e.g. to restore the preview after a reload before confirmation.
+      parameters:
+        - name: batchId
+          in: query
+          required: true
+          description: The preview batch to fetch.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The preview batch with per-row dispositions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostImportPreview'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/import/commit:
+    post:
+      operationId: commitCostImport
+      tags:
+        - cost
+      summary: Commit a confirmed cost-import preview.
+      description: >-
+        Commits the ACCEPTED rows of a preview batch into append-only,
+        component-versioned cost profiles (CST-001/CST-002) and recomputes margin
+        readiness for every affected SKU. A batch that is not in 'preview', or
+        that still has duplicate conflicts, is refused (§16 no-commit-until-
+        resolved).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostImportCommitRequest'
+      responses:
+        '200':
+          description: The committed batch and the affected SKUs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostImportCommitResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/value:
+    post:
+      operationId: enterSingleCost
+      tags:
+        - cost
+      summary: Record a single cost-component value.
+      description: >-
+        Records ONE component value for a SKU as a new append-only cost-profile
+        version and recomputes readiness (CST-002/CST-003). Used by the guided
+        cost-blocker flow. The value is parsed to an exact integer money amount
+        (no float, §9.1); the raw entered text/unit is preserved as evidence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SingleCostEntryRequest'
+      responses:
+        '200':
+          description: The newly recorded cost-profile version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostProfileVersion'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/profiles:
+    get:
+      operationId: listCostProfiles
+      tags:
+        - cost
+      summary: List the in-force cost-profile versions for a SKU at a time.
+      description: >-
+        Returns the EXACT in-force version of each cost component for a variant at
+        `asOf` (CST-002 point-in-time lookup). Omitting `asOf` returns the current
+        in-force versions. This reproduces the cost profile that produced a
+        historical number, never the current one.
+      parameters:
+        - name: variantId
+          in: query
+          required: true
+          description: The variant (SKU) whose cost profile is requested.
+          schema:
+            type: string
+            format: uuid
+        - name: asOf
+          in: query
+          required: false
+          description: Point-in-time instant (RFC 3339). Defaults to now.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: The in-force cost-profile versions per component.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostProfileList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/readiness:
+    get:
+      operationId: getMarginReadiness
+      tags:
+        - cost
+      summary: Read a SKU's margin readiness.
+      description: >-
+        Returns the derived margin readiness for a variant (CST-003): one of
+        Complete, Partial, Stale, Missing, with the components that block or limit
+        it. Only Complete drives an executable recommendation (enforced
+        downstream); Partial may show analysis but no approval control.
+      parameters:
+        - name: variantId
+          in: query
+          required: true
+          description: The variant (SKU) whose readiness is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The SKU's margin readiness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarginReadiness'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -1520,6 +1720,400 @@ components:
           description: The append-only evidence row id; null when deduped.
         quality:
           $ref: '#/components/schemas/QualityState'
+      additionalProperties: false
+
+    CostComponent:
+      type: string
+      description: >-
+        A cost component of the §9.2 contribution model. The set is closed. COGS
+        and commission are always required; fulfillment/shipping/promotion are
+        required when applicable to the listing; packaging/ads/returns are optional
+        in P0 (an account policy may still require them).
+      enum:
+        - cogs
+        - commission
+        - fulfillment
+        - shipping
+        - packaging
+        - promotion
+        - ads
+        - returns
+
+    CostImportDisposition:
+      type: string
+      description: >-
+        The outcome of a preview row (CST-001, §16). `accept` will commit;
+        `reject` cannot commit and carries a reason; `duplicate` is a (SKU,
+        component) conflict within the file that blocks commit until resolved.
+      enum:
+        - accept
+        - reject
+        - duplicate
+
+    MarginReadinessState:
+      type: string
+      description: >-
+        The four closed margin-readiness states (CST-003). Only `complete` may
+        drive an executable recommendation; `partial` may show analysis but no
+        approval control; `stale` and `missing` block.
+      enum:
+        - complete
+        - partial
+        - stale
+        - missing
+
+    MoneyAmount:
+      type: object
+      description: >-
+        An exact monetary amount as the (mantissa, currency, exponent) triple
+        (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO
+        float: mantissa is an exact integer. A cost amount is representable because
+        the account's entry currency is known; it stays excluded from executable
+        paths until S16+S35.
+      required:
+        - mantissa
+        - currency
+        - exponent
+      properties:
+        mantissa:
+          type: integer
+          format: int64
+          description: Exact integer mantissa.
+        currency:
+          type: string
+          description: ISO-4217 currency code.
+        exponent:
+          type: integer
+          description: Base-10 exponent applied to the mantissa.
+      additionalProperties: false
+
+    ColumnComponentMapping:
+      type: object
+      description: Maps one CSV header column to the cost component it supplies.
+      required:
+        - header
+        - component
+      properties:
+        header:
+          type: string
+          description: The CSV header text of the column.
+        component:
+          $ref: '#/components/schemas/CostComponent'
+      additionalProperties: false
+
+    DetectedMapping:
+      type: object
+      description: >-
+        How the import interpreted the CSV columns, echoed for the seller to
+        confirm the mapping (CST-001 mapping preview).
+      required:
+        - skuColumn
+        - componentColumns
+      properties:
+        skuColumn:
+          type: string
+          description: The header text detected/used as the SKU column.
+        componentColumns:
+          type: array
+          items:
+            $ref: '#/components/schemas/ColumnComponentMapping'
+      additionalProperties: false
+
+    CostImportPreviewRequest:
+      type: object
+      description: >-
+        Request to build a CSV cost-import preview. `csv` is the UTF-8 file
+        content. An explicit column mapping is optional; when omitted the columns
+        are auto-detected from the header row.
+      required:
+        - marketplaceAccountId
+        - csv
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: The account the costs belong to.
+        filename:
+          type: string
+          description: Original file name, for the audit/preview display.
+        csv:
+          type: string
+          description: The UTF-8 CSV content.
+        skuColumn:
+          type: string
+          description: Explicit SKU column header (optional; auto-detected when omitted).
+        componentColumns:
+          type: array
+          description: Explicit component column mapping (optional; auto-detected when omitted).
+          items:
+            $ref: '#/components/schemas/ColumnComponentMapping'
+      additionalProperties: false
+
+    CostImportCounts:
+      type: object
+      description: Disposition tally backing the preview cards and the commit guard.
+      required:
+        - accept
+        - reject
+        - duplicate
+      properties:
+        accept:
+          type: integer
+        reject:
+          type: integer
+        duplicate:
+          type: integer
+      additionalProperties: false
+
+    CostImportRow:
+      type: object
+      description: >-
+        One preview row: raw evidence, resolution, the parsed amount (when
+        acceptable), and the disposition + reason (CST-001).
+      required:
+        - rowNumber
+        - sku
+        - component
+        - rawValue
+        - normalizedValue
+        - disposition
+        - reason
+      properties:
+        rowNumber:
+          type: integer
+          description: 1-based data-row number in the file.
+        sku:
+          type: string
+          description: The raw SKU token from the file (LTR-isolated identifier).
+        component:
+          $ref: '#/components/schemas/CostComponent'
+        rawValue:
+          type: string
+          description: The value cell exactly as entered.
+        normalizedValue:
+          type: string
+          description: The digit-normalized numeric token (LOC-007).
+        variantId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The resolved variant; null when the SKU did not resolve.
+        amount:
+          allOf:
+            - $ref: '#/components/schemas/MoneyAmount'
+          nullable: true
+          description: The parsed amount; null when the row is not an accept.
+        disposition:
+          $ref: '#/components/schemas/CostImportDisposition'
+        reason:
+          type: string
+          description: Stable machine reason for a non-accept row; empty for accept.
+      additionalProperties: false
+
+    CostImportPreview:
+      type: object
+      description: A preview batch (status 'preview') with its per-row dispositions.
+      required:
+        - batchId
+        - marketplaceAccountId
+        - status
+        - counts
+        - rows
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        status:
+          type: string
+          enum:
+            - preview
+            - committed
+            - cancelled
+        counts:
+          $ref: '#/components/schemas/CostImportCounts'
+        detected:
+          $ref: '#/components/schemas/DetectedMapping'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostImportRow'
+      additionalProperties: false
+
+    CostImportCommitRequest:
+      type: object
+      description: Confirm and commit a preview batch (CST-001).
+      required:
+        - batchId
+      properties:
+        batchId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    CostImportCommitResult:
+      type: object
+      description: Result of committing a preview batch.
+      required:
+        - batchId
+        - status
+        - committedRows
+        - affectedVariantIds
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - committed
+        committedRows:
+          type: integer
+          description: Number of accepted rows committed as cost-profile versions.
+        affectedVariantIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+      additionalProperties: false
+
+    SingleCostEntryRequest:
+      type: object
+      description: >-
+        Record one cost-component value for a SKU (CST-002). effectiveFrom
+        defaults to now; staleAfter is an optional review-by instant.
+      required:
+        - marketplaceAccountId
+        - variantId
+        - component
+        - rawValue
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        component:
+          $ref: '#/components/schemas/CostComponent'
+        rawValue:
+          type: string
+          description: The value as entered (Persian/Latin digits normalized, LOC-007).
+        rawUnit:
+          type: string
+          description: The unit as entered, preserved verbatim as evidence.
+        effectiveFrom:
+          type: string
+          format: date-time
+          description: When this version takes effect (RFC 3339). Defaults to now.
+        staleAfter:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional review-by instant; past ⇒ the value is stale for readiness.
+      additionalProperties: false
+
+    CostProfileVersion:
+      type: object
+      description: >-
+        One append-only, effective-dated cost-profile version for a component
+        (CST-002). The exact version in force at a time reproduces a historical
+        number.
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - component
+        - version
+        - amount
+        - effectiveFrom
+        - source
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        component:
+          $ref: '#/components/schemas/CostComponent'
+        version:
+          type: integer
+          description: Monotonic version per (variant, component).
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        rawText:
+          type: string
+        rawValue:
+          type: string
+        rawUnit:
+          type: string
+        effectiveFrom:
+          type: string
+          format: date-time
+        staleAfter:
+          type: string
+          format: date-time
+          nullable: true
+        source:
+          type: string
+          enum:
+            - csv_import
+            - single_value
+            - connector
+      additionalProperties: false
+
+    CostProfileList:
+      type: object
+      description: The in-force cost-profile version per component at a point in time.
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostProfileVersion'
+      additionalProperties: false
+
+    MarginReadiness:
+      type: object
+      description: >-
+        Derived margin readiness for a SKU (CST-003). Only `complete` drives an
+        executable recommendation.
+      required:
+        - variantId
+        - marketplaceAccountId
+        - state
+        - missingComponents
+        - staleComponents
+        - computedAt
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        state:
+          $ref: '#/components/schemas/MarginReadinessState'
+        missingComponents:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostComponent'
+        staleComponents:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostComponent'
+        computedAt:
+          type: string
+          format: date-time
       additionalProperties: false
 
     ErrorEnvelope:
