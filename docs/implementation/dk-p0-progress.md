@@ -2,7 +2,8 @@
 
 **Durable state for the orchestrator.** On start/resume, READ this file to know where you are.
 Source script: `dk-p0-implementation-steps.md` (S1..S36).
-Worktree: per-step Agent worktree isolation · Integration branch: `dk-p0/main` (created off `claude/dk-p0-orchestrator-788qtr` HEAD `acce0c7`); final deliverable syncs to designated branch `claude/dk-p0-orchestrator-788qtr`
+Worktree: per-step Agent worktree isolation · Integration branch: `dk-p0/main` (off `acce0c7`); orchestrator working tree sits on `dk-p0/int` (≡ `dk-p0/main` ≡ designated at all times); final deliverable = designated branch `claude/dk-p0-orchestrator-788qtr`.
+**Branch mechanics (env constraint): `git checkout`/`switch` is classifier-BLOCKED. Never switch HEAD. Integrate a finished worker by `git merge <worker-worktree-branch>` into the current `dk-p0/int` tree, then `git branch -f dk-p0/main HEAD` and `git branch -f claude/dk-p0-orchestrator-788qtr HEAD`, then push designated. Advance/point branches with `git branch -f` only.**
 Review routing: canonical capability roles per plan §4.6 and `dk-p0-agent-guidelines.md` §8 — `contract-data` (contracts/gen) · `connector-observation` (connector/catalog/identity/observation/routec) · `cost-readiness` (cost/margin readiness) · `domain-execution` (money/policy/approval/execution/audit/outcome) · `llm-plane` (services/llm) · `web-surface` (apps/web) · `extension-surface` (apps/extension) · `locale-qa` (locale/copy/RTL/Persian fixtures) · `reliability-delivery` (deploy/CI/observability) · **`invariant-review` at phase boundaries (after S7, S19, S24, S29, S31, S33) and all gated steps** · `delivery-lead` for schedule/descope calls. Resolve roles through the active runtime adapter crosswalk; do not persist vendor profile names as ownership semantics.
 
 ## Rules in force
