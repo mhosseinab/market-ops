@@ -4,7 +4,7 @@ Profit-aware competitive-pricing intelligence for professional Digikala (DK) sel
 
 The architecture is model-selection-, OpenAI-compatible-endpoint-, agent-runtime-, and deployment-platform-agnostic at its owned boundaries. Every LLM provider must expose an OpenAI-compatible API; the product uses one owned transport port instead of vendor SDK abstractions. Volatile integrations are substitutable adapters, and implementation steps deliver complete producer-to-consumer seams with SOLID/DRY/KISS but no speculative framework layers.
 
-**Status:** planning complete, pre-scaffold. The product baseline is final (`docs/PRD.md` v1.3); the implementation is fully sequenced and ready to execute (`docs/implementation/`). Code lands via the orchestrated steps S1–S36.
+**Status:** implementation in progress. The product baseline is final (`docs/PRD.md` v1.3), work is sequenced as S1–S36, and current step status is tracked in [`docs/implementation/dk-p0-progress.md`](docs/implementation/dk-p0-progress.md).
 
 ## Repo map
 
@@ -38,20 +38,48 @@ Everything money- or action-bearing ships **dark**: connector capabilities start
 
 ## Getting started
 
-Today (pre-scaffold): read `docs/PRD.md`, then `docs/implementation/dk-p0-plan.md`.
+Read `docs/PRD.md`, then `docs/implementation/dk-p0-plan.md`.
 
 To execute the build: read the [`agent operating guide`](docs/implementation/dk-p0-agent-guidelines.md), complete [`docs/implementation/dk-p0-preflight.md`](docs/implementation/dk-p0-preflight.md) (git/GitHub setup, toolchain, agent permissions, and the schedule of human-only inputs — production accounts are the long pole), then use the fenced block from [`docs/implementation/dk-p0-orchestrator-prompt.md`](docs/implementation/dk-p0-orchestrator-prompt.md) in a subagent-capable session at the repo root. It drives S1–S36 through worker→reviewer→fix loops, tracks state in `dk-p0-progress.md`, files GitHub issues for blocked steps, and stops for a human "go" at S34 (deploy), S35 (live probes), S36 (alpha sign-off).
 
-Once S1 lands, the developer entry points are (see `dk-p0-monorepo.md` §3 for the full table):
+Run `task --list` for the authoritative command list; the current developer commands are below.
 
-```
-task doctor      # verify toolchains (node/pnpm, uv, go, docker, jq, …)
-task setup       # bootstrap a fresh clone (pnpm + uv + go.work + codegen)
-task dev         # local stack: PostgreSQL 18, otel/grafana, mock DK, watchers
-task test:all    # all three languages
-task lint:all    # biome / ruff+mypy / golangci-lint
-task ci:local    # everything CI runs — the pre-merge gate
-```
+## Task commands
+
+| Command | Description |
+|---|---|
+| `task doctor` | Verify that every required toolchain binary is installed. |
+| `task setup` | Bootstrap a fresh clone with pnpm, uv, `go.work`, and generated contracts. |
+| `task dev` | Start the local PostgreSQL and observability services. |
+| `task build:all` | Generate contracts, then build every language plane. |
+| `task test:all` | Run all Go, Python, and TypeScript test suites in parallel. |
+| `task lint:all` | Run all language linters and the money static guard in parallel. |
+| `task ci:local` | Run the complete local pre-merge CI gate in CI order. |
+| `task contracts:generate` | Regenerate every committed client and server artifact from the OpenAPI sources. |
+| `task contracts:drift` | Regenerate contracts and fail if `contracts/` or `gen/` changes. |
+| `task contracts:gen:go` | Generate the Go gateway server types and strict-server stubs. |
+| `task contracts:gen:dkgo` | Generate the DK Seller Go client from the normalized frozen specification. |
+| `task contracts:gen:python` | Generate the Python gateway client. |
+| `task contracts:gen:ts` | Generate the TypeScript gateway schema types. |
+| `task db:reset` | Recreate the development database, apply Goose and River migrations, and seed fixtures. |
+| `task migrate:verify` | Prove migration reversibility with a Goose up/reset/up cycle. |
+| `task go:init` | Create the local, ignored `go.work` file when needed. |
+| `task go:sync` | Synchronize the Go workspace modules. |
+| `task go:build` | Build the Go core binary into `services/core/bin/core`. |
+| `task go:test` | Run the Go test suite with the race detector. |
+| `task go:lint` | Run golangci-lint for the core module with workspace mode disabled. |
+| `task go:tidy` | Run `go mod tidy` and fail if `go.mod` or `go.sum` changes. |
+| `task lint:money` | Enforce the raw-arithmetic and floating-point bans on money-domain paths. |
+| `task py:build` | Build the LLM-plane Python wheel. |
+| `task py:test` | Run the LLM-plane pytest suite. |
+| `task py:lint` | Run Ruff and strict mypy checks for the LLM plane. |
+| `task py:fmt` | Format Python sources with Ruff. |
+| `task ts:build` | Build the web application and browser extension. |
+| `task ts:test` | Run Vitest across all pnpm workspace packages. |
+| `task ts:lint` | Type-check every workspace package and run Biome. |
+| `task ts:fmt` | Format TypeScript sources with Biome. |
+| `task ts:copylint` | Reject inline user-facing copy and Persian text in UI components. |
+| `task ts:pseudoloc` | Run copy-lint and pseudo-localization tests for the locale and web packages. |
 
 ## Rules
 
