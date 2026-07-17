@@ -77,6 +77,14 @@ func WithEvent(e EventService) Option {
 	return func(s *gatewayServer) { s.event = e }
 }
 
+// WithApproval injects the recommendation/approval service backing the
+// /approvals/* routes (PRD §7.5 APR-001, §8.4). Without it those routes fail
+// closed with a structured error, so no card view, individual confirmation, or
+// bulk confirmation is served on an unwired approval plane.
+func WithApproval(a ApprovalService) Option {
+	return func(s *gatewayServer) { s.approval = a }
+}
+
 // WithCookieSecure overrides the Secure attribute of the session cookie. Default
 // is true; local plain-HTTP dev sets it false so the browser sends the cookie.
 func WithCookieSecure(secure bool) Option {

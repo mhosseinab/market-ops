@@ -12,9 +12,17 @@ import (
 )
 
 type Querier interface {
+	// FROM-guarded §8.4 transition on the current-state projection. The WHERE clause
+	// is the optimistic guard: only a card still in from_state advances; a card that
+	// already moved matches nothing and returns no row (the service treats that as a
+	// rejected transition — no blind overwrite). The append-only history row is
+	// inserted separately in the same transaction (AppendApprovalCardState).
+	AdvanceApprovalCardState(ctx context.Context, arg AdvanceApprovalCardStateParams) (ApprovalCard, error)
 	// Persist page progress after a page is fully applied. next_page is the resume
 	// cursor an interrupted import continues from; counters accumulate.
 	AdvanceCatalogSyncRun(ctx context.Context, arg AdvanceCatalogSyncRunParams) (CatalogSyncRun, error)
+	// APPEND-ONLY §8.4 history. One row per state change; INSERT only.
+	AppendApprovalCardState(ctx context.Context, arg AppendApprovalCardStateParams) (ApprovalCardState, error)
 	CancelCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	// OBS-008 atomic dedup. A returned row = first sighting (accept the observation);
 	// an empty result = replay (dedup — create no duplicate current offer). The key
@@ -49,6 +57,7 @@ type Querier interface {
 	CountOwnedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountProducts(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountRecommendationInvalidationsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error)
+	CountSelectionSetMembers(ctx context.Context, selectionSetID uuid.UUID) (int64, error)
 	CountVariants(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
 	CreateCostImportBatch(ctx context.Context, arg CreateCostImportBatchParams) (CostImportBatch, error)
@@ -131,9 +140,15 @@ type Querier interface {
 	// when it is Confirmed AND active. A NeedsReview/Rejected/Obsolete mapping yields
 	// no row, so no executable recommendation can be built on an unconfirmed identity.
 	GetActiveConfirmedIdentityForVariant(ctx context.Context, variantID uuid.UUID) (MarketProductIdentity, error)
+	GetApprovalCard(ctx context.Context, id uuid.UUID) (ApprovalCard, error)
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
 	GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
+	// The greatest-version card for a lineage (the live card version).
+	GetCurrentApprovalCard(ctx context.Context, lineageID uuid.UUID) (ApprovalCard, error)
+	// The greatest-version row for a lineage (the current recommendation).
+	GetCurrentRecommendation(ctx context.Context, lineageID uuid.UUID) (Recommendation, error)
+	GetCurrentSelectionSet(ctx context.Context, lineageID uuid.UUID) (SelectionSet, error)
 	GetEvent(ctx context.Context, id uuid.UUID) (MarketEvent, error)
 	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
@@ -151,6 +166,8 @@ type Querier interface {
 	GetObservedOffer(ctx context.Context, arg GetObservedOfferParams) (ObservedOffer, error)
 	GetOpenEventByDedupKey(ctx context.Context, dedupKey string) (MarketEvent, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
+	GetRecommendation(ctx context.Context, id uuid.UUID) (Recommendation, error)
+	GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error)
 	// Resolve a live session to its principal (user + role + organization). Rows
 	// at/after expiry are excluded, so an expired cookie fails closed.
 	GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error)
@@ -164,6 +181,13 @@ type Querier interface {
 	// The account a variant belongs to — used to recompute readiness for a variant
 	// when the caller only has the variant id (e.g. the readiness read endpoint).
 	GetVariantAccountID(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// Approval card queries (PRD §7.5 APR-001, §8.4 state machine). Write discipline:
+	//   * approval_cards is APPEND-ONLY within a lineage (a price edit is a new
+	//     version). The `state` column is a CURRENT-state projection advanced by a
+	//     FROM-guarded UPDATE (a checked §8.4 transition, never a blind overwrite).
+	//   * approval_card_states is STRICTLY APPEND-ONLY: INSERT only, no UPDATE/DELETE.
+	//     It is the authoritative lifecycle history reconstructable for audit (AUD-001).
+	InsertApprovalCard(ctx context.Context, arg InsertApprovalCardParams) (ApprovalCard, error)
 	// APPEND-ONLY: the only write path to this table is INSERT. Raw item JSON kept
 	// verbatim as evidence (plan §4.7). No UPDATE/DELETE query exists by design.
 	InsertCatalogPayloadSnapshot(ctx context.Context, arg InsertCatalogPayloadSnapshotParams) error
@@ -198,6 +222,11 @@ type Querier interface {
 	// identity_id is an active Confirmed mapping (OBS-001) — the negative test drives
 	// exactly this path with an unconfirmed identity and asserts the raise.
 	InsertObservationTarget(ctx context.Context, arg InsertObservationTargetParams) (ObservationTarget, error)
+	// Recommendation queries (PRD §7.5 PRC-001/002). recommendations is APPEND-ONLY
+	// within a lineage: a new version is a new row whose version is the greatest in
+	// the lineage plus one (computed in SQL, never floated). There is NO UPDATE/DELETE
+	// here — the "current" recommendation is the greatest version per lineage.
+	InsertRecommendation(ctx context.Context, arg InsertRecommendationParams) (Recommendation, error)
 	// APPEND-ONLY event emit (§16). dedup_key carries the event-dedup invariant: a
 	// unique-violation on re-emit is swallowed by the producer, so a retry never
 	// double-expires downstream recommendations.
@@ -205,6 +234,12 @@ type Querier interface {
 	// APPEND-ONLY relevance history (EVT-005). Each vote is a new row; a mute is a
 	// feedback record, never a delete of the event.
 	InsertRelevanceFeedback(ctx context.Context, arg InsertRelevanceFeedbackParams) (EventRelevanceFeedback, error)
+	// Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
+	// within a lineage: a set change is a new version. A bulk approval binds ONE
+	// version, so any set/evidence change (a new version) invalidates it. No
+	// UPDATE/DELETE — the current set is the greatest version per lineage.
+	InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error)
+	InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error)
 	// The rows a commit turns into cost_profile versions: accepted rows with a
 	// resolved variant. Duplicate/reject rows are excluded by construction.
 	ListAcceptedCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
@@ -214,6 +249,8 @@ type Querier interface {
 	// a reopened identity stops being fetched. Ordered by account then native id so
 	// per-account planning/capping is a simple contiguous group.
 	ListActiveTargetsByTier(ctx context.Context, tier string) ([]ObservationTarget, error)
+	// The append-only lifecycle history for a card, in occurrence order (AUD-001).
+	ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) ([]ApprovalCardState, error)
 	// EXECUTABLE-PATH query (OBS-001): the observation targets an account may create
 	// are EXACTLY its active Confirmed mappings. NeedsReview/Rejected/Obsolete are
 	// excluded by construction — no target exists for an unconfirmed identity.
@@ -236,6 +273,10 @@ type Querier interface {
 	// window), and recent history (a prior in-window sighting) from this — never from
 	// a retained string set that has no per-route freshness.
 	ListInWindowRouteValues(ctx context.Context, arg ListInWindowRouteValuesParams) ([]ListInWindowRouteValuesRow, error)
+	// Live (control-bearing or revalidating) cards for a variant. Used by the
+	// identity-reopen consumer to expire dependent recommendations (§16): a reopened
+	// mapping invalidates any card whose control could still authorize a write.
+	ListLiveCardsForVariant(ctx context.Context, variantID uuid.UUID) ([]ApprovalCard, error)
 	ListMarginReadinessByAccount(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarginReadiness, error)
 	ListMaterialityThresholds(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MaterialityThreshold, error)
 	// The Needs Review queue (journey 4): each pending candidate joined to its
@@ -253,7 +294,9 @@ type Querier interface {
 	ListOpenEvents(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketEvent, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
+	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)
+	ListSelectionSetMembers(ctx context.Context, selectionSetID uuid.UUID) ([]SelectionSetMember, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
 	// Candidate-generation source (rule-based exact-native-id). Returns variants that
 	// have no pending (NeedsReview) or Confirmed mapping, so generation is idempotent

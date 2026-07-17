@@ -1,0 +1,38 @@
+-- Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
+-- within a lineage: a set change is a new version. A bulk approval binds ONE
+-- version, so any set/evidence change (a new version) invalidates it. No
+-- UPDATE/DELETE — the current set is the greatest version per lineage.
+
+-- name: InsertSelectionSet :one
+INSERT INTO selection_sets (
+    marketplace_account_id, lineage_id, version, name, criteria, member_count,
+    aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent
+) VALUES (
+    $1, $2,
+    (SELECT COALESCE(MAX(version), 0) + 1 FROM selection_sets WHERE lineage_id = $2),
+    $3, $4, $5, $6, $7, $8, $9
+)
+RETURNING *;
+
+-- name: GetSelectionSet :one
+SELECT * FROM selection_sets WHERE id = $1;
+
+-- name: GetCurrentSelectionSet :one
+SELECT * FROM selection_sets
+WHERE lineage_id = $1
+ORDER BY version DESC
+LIMIT 1;
+
+-- name: InsertSelectionSetMember :one
+INSERT INTO selection_set_members (
+    selection_set_id, variant_id, recommendation_id, disposition
+) VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: ListSelectionSetMembers :many
+SELECT * FROM selection_set_members
+WHERE selection_set_id = $1
+ORDER BY created_at, id;
+
+-- name: CountSelectionSetMembers :one
+SELECT count(*) FROM selection_set_members WHERE selection_set_id = $1;

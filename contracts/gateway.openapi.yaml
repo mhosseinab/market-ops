@@ -1004,6 +1004,112 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /approvals/card:
+    get:
+      operationId: getApprovalCard
+      tags:
+        - approval
+      summary: Get an approval card and its append-only §8.4 state history.
+      description: >-
+        Returns one versioned approval card (PRD §7.5 APR-001) with its current
+        §8.4 state and the APPEND-ONLY lifecycle history (AUD-001). The structured
+        control's bound versions (action id, parameter/context/policy/cost versions,
+        evidence versions, expiry) are surfaced so the surface can present the
+        control and re-verify it on confirmation. This is a read; it never advances
+        state.
+      parameters:
+        - name: cardId
+          in: query
+          required: true
+          description: The approval card id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The approval card, its state, and its append-only history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalCardView'
+        default:
+          description: Unexpected error (including a missing card).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /approvals/confirm:
+    post:
+      operationId: confirmApproval
+      tags:
+        - approval
+      summary: Activate the structured control on an individual approval card (APR-001).
+      description: >-
+        The ONLY individual approval path (§8, never-cut free-text containment):
+        activates the structured, version-bound control on a card in
+        AwaitingConfirmation. The request MUST carry the exact bound versions
+        (action id, parameter/context/policy/cost versions, evidence versions);
+        the server re-verifies EVERY one against the live card. ANY changed
+        dimension routes to Invalidated and an elapsed expiry to Expired — only a
+        fully-matching, live control reaches Approved (§8.4). Free text can never
+        satisfy this contract. Execution itself (the Revalidating → Executing
+        boundary) lands in S18 and is stubbed closed here: an Approved card reports
+        `executionPending` true and performs no write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalConfirmRequest'
+      responses:
+        '200':
+          description: The confirmation outcome (approved, invalidated, or expired).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalConfirmResult'
+        default:
+          description: Unexpected error (including a card with no control, PRC-002).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /approvals/bulk/confirm:
+    post:
+      operationId: confirmBulkApproval
+      tags:
+        - approval
+      summary: Confirm a bulk approval bound to one selection-set version (CHAT-052).
+      description: >-
+        Confirms a bulk approval against a SINGLE, exact selection-set version
+        (PRD §7.5, CHAT-051/052). The request binds the selection-set lineage and
+        the exact version it previewed; the server rejects the confirmation when
+        that version is no longer current (any set or evidence change mints a new
+        version). A valid bulk confirmation reports `executionPending` true —
+        per-item execution lands in S18. This never approves from free text and
+        never re-queries the set (no drift).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkApprovalConfirmRequest'
+      responses:
+        '200':
+          description: The bulk confirmation outcome (bound or invalidated).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkApprovalConfirmResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -2836,4 +2942,249 @@ components:
         requestId:
           type: string
           description: Correlation id for tracing this request across planes.
+      additionalProperties: false
+
+    ApprovalState:
+      type: string
+      description: >-
+        One node of the §8.4 approval state machine. The set is closed; it is the
+        authoritative lifecycle vocabulary for a card and its history.
+      enum:
+        - draft
+        - ready_for_review
+        - blocked
+        - awaiting_confirmation
+        - approved
+        - expired
+        - invalidated
+        - revalidating
+        - executing
+        - accepted
+        - rejected
+        - pending_reconciliation
+        - failed
+
+    ApprovalInvalidationReason:
+      type: string
+      description: >-
+        The exact bound dimension that invalidated an approval control (APR-001,
+        §16). Empty means the control is still valid.
+      enum:
+        - ""
+        - action_mismatch
+        - parameter_version_changed
+        - context_version_changed
+        - policy_version_changed
+        - cost_version_changed
+        - evidence_version_changed
+        - expired
+
+    EvidenceVersion:
+      type: object
+      description: One cited observation bound to the exact evidence version used (APR-001).
+      required:
+        - observationId
+        - version
+      properties:
+        observationId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+      additionalProperties: false
+
+    ApprovalBinding:
+      type: object
+      description: >-
+        The APR-001 version binding of an approval control: the exact action id,
+        parameter/context/policy/cost versions, evidence versions, and expiry. ANY
+        change to a bound dimension, or a reached expiry, invalidates the control.
+      required:
+        - actionId
+        - parameterVersion
+        - contextVersion
+        - policyVersion
+        - costProfileVersion
+        - evidenceVersions
+        - expiresAt
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        parameterVersion:
+          type: integer
+          format: int64
+        contextVersion:
+          type: integer
+          format: int64
+        policyVersion:
+          type: integer
+          format: int64
+        costProfileVersion:
+          type: integer
+          format: int64
+        evidenceVersions:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvidenceVersion'
+        expiresAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ApprovalStateHistoryEntry:
+      type: object
+      description: One append-only §8.4 state-history row (AUD-001).
+      required:
+        - toState
+        - reason
+        - occurredAt
+      properties:
+        fromState:
+          $ref: '#/components/schemas/ApprovalState'
+        toState:
+          $ref: '#/components/schemas/ApprovalState'
+        reason:
+          type: string
+          description: Invalidation dimension or transition note (never authority).
+        occurredAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ApprovalCardView:
+      type: object
+      description: >-
+        A versioned approval card (APR-001) with its current §8.4 state, its bound
+        control versions, its authoritative Money price, and its append-only
+        history. A card carries a control ONLY in `awaiting_confirmation`.
+      required:
+        - id
+        - recommendationId
+        - version
+        - state
+        - binding
+        - price
+        - hasControl
+        - history
+      properties:
+        id:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+        state:
+          $ref: '#/components/schemas/ApprovalState'
+        binding:
+          $ref: '#/components/schemas/ApprovalBinding'
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        idempotencyKey:
+          type: string
+          description: Stable execution hand-off key (EXE-002 seam); execution is S18.
+        hasControl:
+          type: boolean
+          description: True only when the card is in awaiting_confirmation (a live control).
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalStateHistoryEntry'
+      additionalProperties: false
+
+    ApprovalConfirmRequest:
+      type: object
+      description: >-
+        The structured individual-approval control activation (§8, APR-001). It
+        MUST carry the exact bound versions; the server re-verifies every one
+        against the live card. This is the only individual approval path — free
+        text cannot satisfy it.
+      required:
+        - cardId
+        - binding
+      properties:
+        cardId:
+          type: string
+          format: uuid
+        binding:
+          $ref: '#/components/schemas/ApprovalBinding'
+      additionalProperties: false
+
+    ApprovalConfirmResult:
+      type: object
+      description: >-
+        The outcome of activating a structured control (§8.4). `state` is one of
+        approved, invalidated, or expired. When invalidated, `reason` names the
+        changed dimension (APR-001). `executionPending` is true when the card
+        reached Approved: per PRD the Revalidating → Executing boundary lands in
+        S18, so no write occurs here.
+      required:
+        - cardId
+        - state
+        - reason
+        - executionPending
+      properties:
+        cardId:
+          type: string
+          format: uuid
+        state:
+          $ref: '#/components/schemas/ApprovalState'
+        reason:
+          $ref: '#/components/schemas/ApprovalInvalidationReason'
+        executionPending:
+          type: boolean
+          description: True when Approved; execution/reconciliation is S18.
+      additionalProperties: false
+
+    BulkApprovalConfirmRequest:
+      type: object
+      description: >-
+        A bulk approval confirmation bound to ONE exact selection-set version
+        (CHAT-052). The server rejects it when the bound version is no longer
+        current (any set/evidence change mints a new version).
+      required:
+        - selectionSetLineage
+        - boundVersion
+      properties:
+        selectionSetLineage:
+          type: string
+          format: uuid
+          description: The selection-set lineage the preview was built from.
+        boundVersion:
+          type: integer
+          format: int64
+          description: The exact selection-set version the preview bound to.
+      additionalProperties: false
+
+    BulkApprovalConfirmResult:
+      type: object
+      description: >-
+        The outcome of a bulk confirmation. `valid` is false when the bound
+        selection-set version is stale (invalidated by a set/evidence change).
+        `executionPending` is true for a valid bulk confirmation — per-item
+        execution lands in S18.
+      required:
+        - selectionSetLineage
+        - boundVersion
+        - valid
+        - executionPending
+      properties:
+        selectionSetLineage:
+          type: string
+          format: uuid
+        boundVersion:
+          type: integer
+          format: int64
+        currentVersion:
+          type: integer
+          format: int64
+          description: The current selection-set version (differs from bound when stale).
+        valid:
+          type: boolean
+        executionPending:
+          type: boolean
       additionalProperties: false

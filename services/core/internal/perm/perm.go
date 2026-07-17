@@ -132,6 +132,11 @@ const (
 	// ranked Today feed (PRD §7.4 EVT-001..004). Reading is always L1 (§8.3); a
 	// machine data-read tool may hold it.
 	ActionReadEvents Action = "read.events"
+	// ActionReadApprovals authorizes reading an approval card, its bound versions,
+	// and its append-only §8.4 history (PRD §7.5 APR-001 / AUD-001). Reading is
+	// always L1 (§8.3); it exposes NO control by itself — the control is activated
+	// only through the L4 approve action, never by a read.
+	ActionReadApprovals Action = "read.approvals"
 
 	// --- L2 reversible configuration ----------------------------------------
 	ActionConnectorConnect Action = "connector.connect"
@@ -216,6 +221,9 @@ var Matrix = []Rule{
 	{ActionSimulatePolicy, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	// Market events / Today feed reads (§7.4) — L1 read, every role.
 	{ActionReadEvents, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	// Approval card + history reads (§7.5 APR-001 / AUD-001) — L1 read, every role.
+	// A read never carries a control; approval is the separate L4 action.
+	{ActionReadApprovals, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 
 	// L2 reversible configuration. Account-lifecycle connector actions are
 	// account management — Owner only (PRD §2.2 "Connect account") — a valid

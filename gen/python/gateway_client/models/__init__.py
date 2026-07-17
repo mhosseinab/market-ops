@@ -1,7 +1,16 @@
 """Contains all the data models used in inputs/outputs"""
 
+from .approval_binding import ApprovalBinding
+from .approval_card_view import ApprovalCardView
+from .approval_confirm_request import ApprovalConfirmRequest
+from .approval_confirm_result import ApprovalConfirmResult
+from .approval_invalidation_reason import ApprovalInvalidationReason
+from .approval_state import ApprovalState
+from .approval_state_history_entry import ApprovalStateHistoryEntry
 from .availability_status import AvailabilityStatus
 from .build_info import BuildInfo
+from .bulk_approval_confirm_request import BulkApprovalConfirmRequest
+from .bulk_approval_confirm_result import BulkApprovalConfirmResult
 from .capability_status import CapabilityStatus
 from .capture_accepted import CaptureAccepted
 from .capture_upload import CaptureUpload
@@ -50,6 +59,7 @@ from .event_relevance_recorded import EventRelevanceRecorded
 from .event_relevance_request import EventRelevanceRequest
 from .event_severity import EventSeverity
 from .event_type import EventType
+from .evidence_version import EvidenceVersion
 from .health import Health
 from .health_status import HealthStatus
 from .identity_decision_request import IdentityDecisionRequest
@@ -90,8 +100,17 @@ from .today_feed import TodayFeed
 from .user_role import UserRole
 
 __all__ = (
+    "ApprovalBinding",
+    "ApprovalCardView",
+    "ApprovalConfirmRequest",
+    "ApprovalConfirmResult",
+    "ApprovalInvalidationReason",
+    "ApprovalState",
+    "ApprovalStateHistoryEntry",
     "AvailabilityStatus",
     "BuildInfo",
+    "BulkApprovalConfirmRequest",
+    "BulkApprovalConfirmResult",
     "CapabilityStatus",
     "CaptureAccepted",
     "CaptureUpload",
@@ -140,6 +159,7 @@ __all__ = (
     "EventRelevanceRequest",
     "EventSeverity",
     "EventType",
+    "EvidenceVersion",
     "Health",
     "HealthStatus",
     "IdentityDecisionRequest",

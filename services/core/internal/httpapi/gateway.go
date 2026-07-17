@@ -31,6 +31,10 @@ type gatewayServer struct {
 	// EVT-001..005). Nil until wired; the handlers fail closed with a structured
 	// error when it is absent.
 	event EventService
+	// approval backs the /approvals/* routes (PRD §7.5 APR-001, §8.4). Nil until
+	// wired; the handlers fail closed with a structured error when it is absent, so
+	// no card, confirmation, or bulk approval is served on an unwired plane.
+	approval ApprovalService
 	// cookieSecure sets the Secure attribute on the session cookie. Defaults to
 	// true (production posture); local plain-HTTP dev may disable it.
 	cookieSecure CookieSecure
