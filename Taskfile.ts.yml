@@ -27,8 +27,20 @@ tasks:
       # picks up each real build automatically as it arrives.
       - pnpm -r --if-present build
 
-  pseudoloc:
-    desc: Pseudo-locale + copy-lint gate (LOC-011). Wired in S25.
-    silent: true
+  copylint:
+    desc: >-
+      Copy-lint (LOC-002): fail on any inline string literal / Persian-script text
+      in UI components. All user-facing copy must flow through catalog keys.
     cmds:
-      - echo "task ts:pseudoloc — pseudo-locale + copy-lint gate lands in S25."
+      - node tools/copylint/copylint.mjs apps/web/src
+
+  pseudoloc:
+    desc: >-
+      Pseudo-localization + copy-lint gate (LOC-011). Copy-lint proves no inline
+      copy; the vitest pseudo suite renders components under the expanded /
+      bracketed / forced-LTR pack and fails on untranslated, clipped, or
+      direction-broken output.
+    cmds:
+      - task: copylint
+      - pnpm --filter @market-ops/locale test
+      - pnpm --filter @market-ops/web test

@@ -189,6 +189,6 @@ tasks:
       - task: test:all
       - task: migrate:verify
       - task: ts:build
-      # S25 wires the pseudo-locale + copy-lint gate (LOC-011) here and in the ts
-      # CI job. Until then the ts:pseudoloc task is a stub; leave it commented:
-      # - task: ts:pseudoloc
+      # Pseudo-locale + copy-lint gate (LOC-011), wired in S25. Runs copy-lint plus
+      # the pseudo-localization vitest suite (mirrors the ts CI job).
+      - task: ts:pseudoloc

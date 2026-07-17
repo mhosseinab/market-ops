@@ -4,7 +4,33 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit -p tsconfig.json && vite build",
+    "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "copylint": "node ../../tools/copylint/copylint.mjs apps/web/src",
+    "assert:prod-clean": "node scripts/assert-prod-clean.mjs"
+  },
+  "dependencies": {
+    "@market-ops/gen-ts": "workspace:*",
+    "@market-ops/locale": "workspace:*",
+    "@sentry/react": "10.66.0",
+    "@tanstack/react-query": "5.101.2",
+    "@tanstack/react-router": "1.170.18",
+    "i18next": "26.3.6",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "react-i18next": "17.0.10"
+  },
+  "devDependencies": {
+    "@testing-library/dom": "10.4.1",
+    "@testing-library/jest-dom": "6.9.1",
+    "@testing-library/react": "16.3.2",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "@vitejs/plugin-react": "6.0.3",
+    "jsdom": "29.1.1",
+    "vite": "8.1.5"
   }
 }

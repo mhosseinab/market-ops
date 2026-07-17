@@ -214,6 +214,5 @@ jobs:
       - run: task ts:lint
       - run: task ts:test
       - run: task ts:build
-      # S25 wires the pseudo-locale + copy-lint gate (LOC-011); until then the
-      # ts:pseudoloc task is a stub. Uncomment when S25 lands:
-      # - run: task ts:pseudoloc
+      # Pseudo-locale + copy-lint merge gate (LOC-011), live from S25.
+      - run: task ts:pseudoloc
