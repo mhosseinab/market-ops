@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 )
@@ -226,25 +227,91 @@ func TestHealthzPublicUnderAuth(t *testing.T) {
 	}
 }
 
-// TestEveryGatewayRouteHasPolicy asserts every mounted authoritative route has a
-// routePolicy entry, so a new contract route cannot ship silently unprotected.
-func TestEveryGatewayRouteHasPolicy(t *testing.T) {
-	mounted := []struct {
-		method, path string
-	}{
-		{http.MethodGet, "/healthz"},
-		{http.MethodPost, "/auth/login"},
-		{http.MethodGet, "/auth/me"},
-		{http.MethodPost, "/auth/logout"},
-		{http.MethodPost, "/connector/connect"},
-		{http.MethodPost, "/connector/refresh"},
-		{http.MethodPost, "/connector/disconnect"},
-		{http.MethodGet, "/connector/status"},
-	}
-	for _, m := range mounted {
-		if _, ok := lookupPolicy(m.method, m.path); !ok {
-			t.Errorf("route %s %s has no permission policy — would be unprotected", m.method, m.path)
+// recordingMux implements gateway.ServeMux and records every route pattern the
+// generated router registers, without serving anything. It lets the coverage
+// test derive the ACTUAL mounted route set structurally instead of hand-syncing
+// a hardcoded list.
+type recordingMux struct {
+	patterns []string
+}
+
+func (m *recordingMux) HandleFunc(pattern string, _ func(http.ResponseWriter, *http.Request)) {
+	m.patterns = append(m.patterns, pattern)
+}
+
+func (m *recordingMux) ServeHTTP(http.ResponseWriter, *http.Request) {}
+
+// mountedRoutes returns the set of "METHOD /path" keys the generated router
+// mounts, derived by feeding a recordingMux into gateway.HandlerFromMux. The
+// generated patterns have the form "METHOD /path" (BaseURL empty).
+func mountedRoutes(t *testing.T) map[string]bool {
+	t.Helper()
+	rec := &recordingMux{}
+	_ = gateway.HandlerFromMux(nil, rec)
+	routes := make(map[string]bool, len(rec.patterns))
+	for _, pat := range rec.patterns {
+		parts := strings.SplitN(pat, " ", 2)
+		if len(parts) != 2 {
+			t.Fatalf("unexpected generated route pattern %q", pat)
 		}
+		routes[parts[0]+" "+parts[1]] = true
+	}
+	if len(routes) == 0 {
+		t.Fatal("generated router mounted no routes — recordingMux wiring is wrong")
+	}
+	return routes
+}
+
+// TestEveryGatewayRouteHasPolicy asserts the routePolicies key set EQUALS the set
+// of routes the generated router actually mounts: every mounted route has a
+// policy (no route ships unauthenticated) and there are no stale policy entries.
+// It is structural — any future generated route without a policy fails the build.
+func TestEveryGatewayRouteHasPolicy(t *testing.T) {
+	mounted := mountedRoutes(t)
+
+	policies := make(map[string]bool, len(routePolicies))
+	for _, p := range routePolicies {
+		policies[p.method+" "+p.path] = true
+	}
+
+	for key := range mounted {
+		if !policies[key] {
+			t.Errorf("mounted route %q has no permission policy — would ship UNAUTHENTICATED", key)
+		}
+	}
+	for key := range policies {
+		if !mounted[key] {
+			t.Errorf("policy %q references a route not mounted by the generated router (stale entry)", key)
+		}
+	}
+}
+
+// TestUnlistedRouteDefaultDeniedWithoutSession proves the middleware fails closed:
+// a request to a path with no routePolicy entry and no session is DENIED (401),
+// never passed through to the mux.
+func TestUnlistedRouteDefaultDeniedWithoutSession(t *testing.T) {
+	fa := newFakeAuth()
+	srv := serverWithAuth(t, fa)
+	req := httptest.NewRequest(http.MethodGet, "/no/such/route", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unlisted route without session = %d, want 401 (default-deny, not passthrough)", rec.Code)
+	}
+}
+
+// TestUnlistedRouteDefaultDeniedWithSession proves an authenticated caller hitting
+// an unpolicied route is DENIED (403), not served.
+func TestUnlistedRouteDefaultDeniedWithSession(t *testing.T) {
+	fa := newFakeAuth()
+	fa.principals["tok-owner"] = principal(perm.RoleOwner)
+	srv := serverWithAuth(t, fa)
+	req := httptest.NewRequest(http.MethodGet, "/no/such/route", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unlisted route with session = %d, want 403 (default-deny)", rec.Code)
 	}
 }
 

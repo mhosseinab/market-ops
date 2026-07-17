@@ -57,9 +57,12 @@ type routePolicy struct {
 }
 
 // routePolicies is the authorization map for every mounted gateway route. Paths
-// are exact (the generated mux registers exact patterns). Any route not listed
-// is treated as unknown and denied (fail closed) — except that the mux will
-// 404 genuinely unknown paths before authority matters.
+// are exact (the generated mux registers exact patterns). Any (method, path) not
+// listed here is denied by default (fail closed): the middleware never passes an
+// unlisted request through to the mux. A structural test
+// (TestEveryGatewayRouteHasPolicy) derives the mounted route set from the
+// generated router and asserts it equals this table's key set, so a new contract
+// route missing a policy fails the build rather than shipping unauthenticated.
 var routePolicies = []routePolicy{
 	{http.MethodGet, "/healthz", kindPublic, ""},
 	{http.MethodPost, "/auth/login", kindPublic, ""},
@@ -95,9 +98,12 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		policy, known := lookupPolicy(r.Method, r.URL.Path)
 		if !known {
-			// Not a mounted authoritative route: let the mux answer (404 for a
-			// genuinely unknown path). No protected resource lives here.
-			next.ServeHTTP(w, r)
+			// Fail closed: any (method, path) without an explicit policy is
+			// denied, never passed through to the mux. This is the structural
+			// guarantee — a future contract route mounted without a routePolicy
+			// entry cannot be served unauthenticated. 401 when there is no valid
+			// session, else 403 (authenticated but no policy grants this route).
+			m.denyUnlisted(w, r)
 			return
 		}
 
@@ -139,6 +145,22 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, forbiddenErr())
 		}
 	})
+}
+
+// denyUnlisted rejects a request whose route has no policy entry. It resolves
+// the session only to choose the correct status: 401 when there is no valid
+// session (or resolution errors as no-session), 500 on an unexpected auth error,
+// 403 when the caller is authenticated but no policy grants this route.
+func (m *authMiddleware) denyUnlisted(w http.ResponseWriter, r *http.Request) {
+	_, err := m.auth.Resolve(r.Context(), sessionToken(r))
+	switch {
+	case err == nil:
+		writeError(w, http.StatusForbidden, forbiddenErr())
+	case errors.Is(err, auth.ErrNoSession):
+		writeError(w, http.StatusUnauthorized, noSessionErr())
+	default:
+		writeError(w, http.StatusInternalServerError, internalErr())
+	}
 }
 
 // sessionToken extracts the raw session token from the request cookie.

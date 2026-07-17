@@ -3,6 +3,7 @@ package auth_test
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -62,13 +63,16 @@ func TestAuthLifecycleDBBacked(t *testing.T) {
 		t.Fatalf("set password: %v", err)
 	}
 
-	// The stored credential is an argon2id hash, never the plaintext.
+	// The stored credential is an argon2id PHC-encoded hash, never the plaintext.
 	cred, err := q.GetUserCredential(ctx, u.ID)
 	if err != nil {
 		t.Fatalf("get credential: %v", err)
 	}
 	if cred.PasswordHash == password {
 		t.Fatal("plaintext password stored — must be an argon2id hash")
+	}
+	if !strings.HasPrefix(cred.PasswordHash, "$argon2id$") {
+		t.Fatalf("stored credential is not an argon2id PHC hash: prefix = %.16q", cred.PasswordHash)
 	}
 
 	sess, err := svc.Login(ctx, u.Email, password)
