@@ -141,6 +141,37 @@ jobs:
       - name: migration up/down/up reversibility (scratch postgres:18)
         run: task migrate:verify
 
+  money-guard:
+    name: money guard (semgrep)
+    needs: detect
+    # Money paths (internal/{money,margin,policy,approval}) live under
+    # services/core, so the `go` filter covers them. forbidigo (run by the go
+    # job) cannot match binary operators, so this semgrep pass is the ONLY layer
+    # catching raw integer arithmetic on money paths — it MUST run whenever core
+    # changes (PRD §9.1 / §4.6, a never-cut invariant).
+    if: ${{ needs.detect.outputs.go == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install Task
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # Pin semgrep to the version the local money guard was validated against
+      # (matches the `task doctor` toolchain). uv tool installs a shim on PATH.
+      - name: install semgrep
+        run: |
+          uv tool install semgrep==1.170.0
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      # Fail-closed money static guard: bans raw integer arithmetic + float on
+      # the money paths (task lint:money → semgrep --config tools/semgrep/money.yml).
+      - name: money static guard
+        run: task lint:money
+
   py:
     name: py
     needs: detect

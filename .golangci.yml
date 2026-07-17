@@ -17,12 +17,28 @@ linters:
     - depguard
   settings:
     forbidigo:
-      # No floating point on any money path (PRD §9.1). Kept repo-wide and
-      # conservative in P0; non-money code that legitimately needs floats gets a
-      # scoped exclusion when it appears.
+      # PRD §9.1 static guard, forbidigo layer. This linter matches forbidden
+      # identifiers/calls; it cannot match binary operators, so the "no raw
+      # integer arithmetic" half of the guard is enforced by the semgrep second
+      # layer (tools/semgrep/money.yml, run via `task lint:money`). forbidigo
+      # here owns the "no float on any money path" half.
+      #
+      # Kept repo-wide and conservative in P0; non-money code that legitimately
+      # needs floats gets a scoped exclusion when it appears.
       forbid:
+        # No floating-point value enters a money path (PRD §9.1): ban the float
+        # types outright...
         - pattern: '^float(32|64)$'
           msg: "no floating point on money-adjacent paths (PRD §9.1); use Money/basis points"
+        # ...and the arbitrary-precision *float* constructors, which would smuggle
+        # non-integer money math past the int-type ban. Integer big.Int math is
+        # still allowed (money uses it for exact rate application).
+        - pattern: '^big\.NewFloat$'
+          msg: "no floating point on money paths (PRD §9.1); use big.Int / basis points"
+        - pattern: '^big\.ParseFloat$'
+          msg: "no floating point on money paths (PRD §9.1); use big.Int / basis points"
+        - pattern: '^strconv\.ParseFloat$'
+          msg: "no floating point on money paths (PRD §9.1); parse to integer minor units"
     depguard:
       # Import-boundary rules (dk-p0-monorepo.md §5). The referenced packages
       # (gen/go, internal/money) land in later steps; these rules are inert until
