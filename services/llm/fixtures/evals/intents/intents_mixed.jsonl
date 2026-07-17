@@ -1,0 +1,56 @@
+{"id": "int-mixed-016", "message": "margin؟", "lang": "mixed", "expected_intent": "Question", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-017", "message": "قیمت SKU-9931 چند شد؟", "lang": "mixed", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-018", "message": "این محصول stale شده؟", "lang": "mixed", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-019", "message": "floor چقدره برای این کالا؟", "lang": "mixed", "expected_intent": "Question", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-020", "message": "رقیب #2 چند می‌فروشه؟", "lang": "mixed", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-021", "message": "وضعیت این listing چیه؟", "lang": "mixed", "expected_intent": "Question", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-022", "message": "چند درصد زیر buy box هستیم؟", "lang": "mixed", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-023", "message": "delta قیمت با دیروز چقدره؟", "lang": "mixed", "expected_intent": "Question", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-024", "message": "exposure کل حساب چقدره؟", "lang": "mixed", "expected_intent": "Question", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-036", "message": "اگه price رو بذارم ۹۹۰۰۰ چی می‌شه؟", "lang": "mixed", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-037", "message": "simulate کن اگر به buy box برسم", "lang": "mixed", "expected_intent": "Simulation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-038", "message": "what-if برای ۲۰٪ تخفیف", "lang": "mixed", "expected_intent": "Simulation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-039", "message": "تأثیر margin رو شبیه‌سازی کن", "lang": "mixed", "expected_intent": "Simulation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-040", "message": "فرض کن floor رو hit کنم", "lang": "mixed", "expected_intent": "Simulation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-046", "message": "simulate کن ۳ حالت مختلف", "lang": "mixed", "expected_intent": "Simulation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-048", "message": "preview only، اعمال نکن", "lang": "mixed", "expected_intent": "Simulation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-049", "message": "what-if قیمت را ۱۰k کنم", "lang": "mixed", "expected_intent": "Simulation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-050", "message": "تخمین بزن اگر cost کاهش یابد", "lang": "mixed", "expected_intent": "Simulation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-055", "message": "یک پیش‌نویس برای رساندن به buy box بساز", "lang": "mixed", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-061", "message": "draft کن قیمت ۸۹۰۰۰ رو", "lang": "mixed", "expected_intent": "PrepareAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-062", "message": "prepare کن یه card برای این کالا", "lang": "mixed", "expected_intent": "PrepareAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-063", "message": "پیش‌نویس price change رو بساز", "lang": "mixed", "expected_intent": "PrepareAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-064", "message": "یک draft برای اصلاح بها آماده کن", "lang": "mixed", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-071", "message": "یک selection set پیش‌نویس بساز", "lang": "mixed", "expected_intent": "PrepareAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-072", "message": "draft کن تغییرات رو برای review", "lang": "mixed", "expected_intent": "PrepareAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-086", "message": "review کن این draft رو", "lang": "mixed", "expected_intent": "ReviewAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-087", "message": "جزئیات این card رو باز کن", "lang": "mixed", "expected_intent": "ReviewAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-088", "message": "evidence این توصیه رو نشون بده", "lang": "mixed", "expected_intent": "ReviewAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-089", "message": "expiry این اقدام کِیه؟", "lang": "mixed", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-090", "message": "readiness این کارت چیه؟", "lang": "mixed", "expected_intent": "ReviewAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-096", "message": "این selection set رو review کن", "lang": "mixed", "expected_intent": "ReviewAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-111", "message": "yes تأیید کن همین رو", "lang": "mixed", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-112", "message": "approve کن این card رو", "lang": "mixed", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-113", "message": "okay اعمالش کن", "lang": "mixed", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-114", "message": "تأیید approve همین حالا", "lang": "mixed", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-115", "message": "ship it، تأیید", "lang": "mixed", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-134", "message": "confirm کن نتیجه رو", "lang": "mixed", "expected_intent": "ConfirmResult", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-135", "message": "این result رو تأیید نهایی کن", "lang": "mixed", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-136", "message": "نتیجه accepted شد، ثبت کن", "lang": "mixed", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-137", "message": "reconcile شد، تأییدش کن", "lang": "mixed", "expected_intent": "ConfirmResult", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-146", "message": "confirm که در بازار ثبت شد", "lang": "mixed", "expected_intent": "ConfirmResult", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-147", "message": "finalize نتیجه این اجرا", "lang": "mixed", "expected_intent": "ConfirmResult", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-148", "message": "نتیجه pending reconciliation را قطعی کن", "lang": "mixed", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-161", "message": "watchlist رو update کن", "lang": "mixed", "expected_intent": "Administration", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-162", "message": "notification time رو بذار ۷ صبح", "lang": "mixed", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-mixed-163", "message": "tier پایش رو عوض کن", "lang": "mixed", "expected_intent": "Administration", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-164", "message": "connection status چیه؟", "lang": "mixed", "expected_intent": "Administration", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-165", "message": "cost readiness رو نشون بده", "lang": "mixed", "expected_intent": "Administration", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-172", "message": "watchlist من چند تا کالا داره؟", "lang": "mixed", "expected_intent": "Administration", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-186", "message": "برو به products", "lang": "mixed", "expected_intent": "Navigation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-187", "message": "settings رو باز کن", "lang": "mixed", "expected_intent": "Navigation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-188", "message": "open کن صفحه operations رو", "lang": "mixed", "expected_intent": "Navigation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-189", "message": "منو ببر به actions", "lang": "mixed", "expected_intent": "Navigation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-190", "message": "today رو نشون بده", "lang": "mixed", "expected_intent": "Navigation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-197", "message": "صفحه‌ی این کالا رو باز کن", "lang": "mixed", "expected_intent": "Navigation", "shorthand": true, "pending_native_review": true}
+{"id": "int-mixed-198", "message": "nav به settings", "lang": "mixed", "expected_intent": "Navigation", "shorthand": true, "pending_native_review": true}
