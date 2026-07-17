@@ -56,6 +56,10 @@ type Config struct {
 	PerCap     map[string]Mode
 	AuthMode   Mode
 	WriteScope bool
+	// Catalog, when set, makes GET /open-api/v1/variants serve a paginated
+	// seller-variants fixture (S10 catalog sync). Nil keeps the empty-page probe
+	// behavior used by the §15.2 owned_offer_read probe.
+	Catalog *CatalogFixture
 }
 
 // DefaultConfig is the all-happy configuration with a write scope granted.
@@ -116,7 +120,17 @@ func Handler(cfg Config) http.Handler {
 	}
 
 	capRoute("GET", "/open-api/v1/products/seller", CapCatalogRead, func() any { return pagedEnvelope() })
-	capRoute("GET", "/open-api/v1/variants", CapOwnedOfferRead, func() any { return pagedEnvelope() })
+	// /variants serves the paginated catalog fixture when configured (S10),
+	// otherwise the empty-page probe response for owned_offer_read.
+	mux.HandleFunc("GET /open-api/v1/variants", func(w http.ResponseWriter, r *http.Request) {
+		if cfg.serveVariants(w, r) {
+			return
+		}
+		if serveCapFault(w, cfg.modeFor(CapOwnedOfferRead)) {
+			return
+		}
+		writeJSON(w, 200, pagedEnvelope())
+	})
 	capRoute("GET", "/open-api/v1/inventories", CapStockRead, func() any { return pagedEnvelope() })
 	capRoute("GET", "/open-api/v1/pricing/buybox/price-suggestion/winning-price", CapBuyboxRead, func() any { return dataEnvelope(map[string]any{"winning_price": 100000}) })
 	capRoute("GET", "/open-api/v1/pricing/price-stats/{variantId}/boundary", CapBoundaryRead, func() any { return dataEnvelope(map[string]any{"min_price": 1, "max_price": 2}) })
