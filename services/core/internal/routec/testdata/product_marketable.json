@@ -1,0 +1,32 @@
+{
+  "status": 200,
+  "data": {
+    "product": {
+      "id": 900100,
+      "title_fa": "کالای نمونه",
+      "status": "marketable",
+      "variants": [
+        {
+          "id": 555001,
+          "status": "marketable",
+          "seller": { "id": 71001, "code": "H4SHM" },
+          "price": {
+            "selling_price": 450000000,
+            "rrp_price": 500000000,
+            "marketable_stock": 12
+          }
+        },
+        {
+          "id": 555002,
+          "status": "marketable",
+          "seller": { "id": 71002, "code": "ACME1" },
+          "price": {
+            "selling_price": 448000000,
+            "rrp_price": 500000000,
+            "marketable_stock": 3
+          }
+        }
+      ]
+    }
+  }
+}

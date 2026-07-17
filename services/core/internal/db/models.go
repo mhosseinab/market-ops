@@ -360,6 +360,16 @@ type RecommendationInvalidationEvent struct {
 	EmittedAt            time.Time
 }
 
+type RouteKillSwitch struct {
+	ID        uuid.UUID
+	Scope     string
+	AccountID pgtype.UUID
+	TargetID  pgtype.UUID
+	Reason    string
+	EngagedBy pgtype.UUID
+	EngagedAt time.Time
+}
+
 type Session struct {
 	TokenHash string
 	UserID    uuid.UUID
