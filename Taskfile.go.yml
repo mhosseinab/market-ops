@@ -6,8 +6,12 @@ version: '3'
 tasks:
   init:
     desc: Create the local go.work (gitignored) if it is absent.
+    # Under GOWORK=off (every CI go step — monorepo §7) each module builds in
+    # module mode via its committed `replace` directives; go.work must not exist
+    # and `go work` commands cannot run, so init is a no-op. The status line
+    # short-circuits when the workspace is disabled OR already present.
     status:
-      - test -f go.work
+      - '[ "$GOWORK" = off ] || test -f go.work'
     cmds:
       # Pin the workspace go line to the module's required version so a fresh
       # clone on an older toolchain (< the module's `go` directive) still resolves
