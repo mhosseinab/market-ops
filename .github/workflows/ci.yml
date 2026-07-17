@@ -11,7 +11,7 @@ name: ci
 
 on:
   push:
-    branches: [dk-p0/main]
+    branches: [main]
   pull_request:
 
 # Cancel superseded runs on the same ref to save runner minutes.
@@ -33,11 +33,11 @@ jobs:
       py: ${{ steps.filter.outputs.py }}
       ts: ${{ steps.filter.outputs.ts }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - id: filter
-        uses: dorny/paths-filter@v3
+        uses: dorny/paths-filter@v4
         with:
           filters: |
             contracts:
@@ -64,22 +64,24 @@ jobs:
     if: ${{ needs.detect.outputs.contracts == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install Task
         run: |
           mkdir -p "$HOME/.local/bin"
           curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: services/core/go.mod
           cache-dependency-path: services/core/go.sum
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.13.1
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: pnpm
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - run: pnpm install --frozen-lockfile
@@ -100,9 +102,8 @@ jobs:
       GOWORK: "off"
       DATABASE_URL: postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable
       GOBIN: ${{ github.workspace }}/.cache/go-tools/bin
-      GOLANGCI_LINT_VERSION: v2.5.0
+      GOLANGCI_LINT_VERSION: v2.12.2
       GOOSE_VERSION: v3.27.2
-      SQLC_VERSION: v1.31.1
       RIVER_VERSION: v0.40.0
     services:
       # Scratch Postgres for the goose up/down assertion and any DB-touching tests.
@@ -120,42 +121,43 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install Task
         run: |
           mkdir -p "$HOME/.local/bin"
           curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         id: setup-go
         with:
           go-version-file: services/core/go.mod
           cache-dependency-path: services/core/go.sum
-      # Toolchain the go job needs beyond the compiler: linter, migration + query
-      # + job-queue CLIs (carry-forward from S5 — river joined task doctor).
+      # Install the linter through its official action. It owns binary and lint
+      # caching and avoids rebuilding or relying on a mutable shell installer.
+      - name: install golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: ${{ env.GOLANGCI_LINT_VERSION }}
+          install-only: true
+      - name: install sqlc
+        uses: sqlc-dev/setup-sqlc@v3
+        with:
+          sqlc-version: '1.31.1'
       # setup-go caches GOMODCACHE/GOCACHE but not installed binaries, so keep a
-      # separate exact-version cache for the four CLIs that otherwise rebuild on
-      # every run. No restore-keys: a tool-version change must produce a cold miss.
+      # separate exact-version cache for migration and job-queue CLIs.
+      # No restore-keys: a tool-version change must produce a cold miss.
       - name: configure Go CLI path
         run: |
           mkdir -p "$GOBIN"
           echo "$GOBIN" >> "$GITHUB_PATH"
       - name: restore Go CLI cache
         id: go-tools-cache
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ env.GOBIN }}
-          key: go-tools-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-golangci-${{ env.GOLANGCI_LINT_VERSION }}-goose-${{ env.GOOSE_VERSION }}-sqlc-${{ env.SQLC_VERSION }}-river-${{ env.RIVER_VERSION }}
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-goose-${{ env.GOOSE_VERSION }}-river-${{ env.RIVER_VERSION }}
       - name: install missing Go CLIs
         run: |
-          if [ -x "$GOBIN/golangci-lint" ]; then
-            echo "golangci-lint restored from cache"
-          else
-            echo "installing golangci-lint ${GOLANGCI_LINT_VERSION}"
-            curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh \
-              | sh -s -- -b "$GOBIN" "$GOLANGCI_LINT_VERSION"
-          fi
-
           install_go_cli() {
             binary="$1"
             package="$2"
@@ -169,7 +171,6 @@ jobs:
           }
 
           install_go_cli goose github.com/pressly/goose/v3/cmd/goose "$GOOSE_VERSION"
-          install_go_cli sqlc github.com/sqlc-dev/sqlc/cmd/sqlc "$SQLC_VERSION"
           install_go_cli river github.com/riverqueue/river/cmd/river "$RIVER_VERSION"
       - name: golangci-lint
         run: task go:lint
@@ -197,13 +198,13 @@ jobs:
     if: ${{ needs.detect.outputs.go == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install Task
         run: |
           mkdir -p "$HOME/.local/bin"
           curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       # Pin semgrep to the version the local money guard was validated against
@@ -223,13 +224,13 @@ jobs:
     if: ${{ needs.detect.outputs.py == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install Task
         run: |
           mkdir -p "$HOME/.local/bin"
           curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
         with:
           enable-cache: true
       - run: uv sync --frozen --group dev
@@ -243,14 +244,16 @@ jobs:
     if: ${{ needs.detect.outputs.ts == 'true' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: install Task
         run: |
           mkdir -p "$HOME/.local/bin"
           curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.13.1
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           cache: pnpm

@@ -38,6 +38,7 @@ These rules apply to every implementation profile:
 - Before answering or coding against a third-party library, framework, SDK, API, CLI, provider, or cloud/infra service, verify its current primary documentation through Context7. Record the relevant version or behavior in the handoff when it materially affects the implementation. Use an official provider-specific documentation tool only as a lookup adapter; never let it shape the product architecture.
 - Preserve existing user changes. Inspect the working tree before editing, stage files by name, and never discard unrelated work.
 - Write focused tests for required behavior and negative paths. Never delete or weaken a guard, assertion, fixture, or acceptance threshold merely to pass verification.
+- **Test-Driven Development is binding** (CLAUDE.md §"Test-Driven Development"): Red → Green → Refactor is the default for deterministic code. Mandatory TDD covers every never-cut invariant — money arithmetic, policy evaluation and ordering, approval versioning and idempotency, event deduplication, permission matrix, connector capability transitions, free-text containment, Route C parser/normalization, observability field emission. Strongly preferred for the rest of `internal/{money,margin,policy,approval}`, sqlc query wrappers, owned-contract validation, and LangGraph state transitions. Bug fixes begin with a failing reproduction test named after the issue/PR. Refactor only under green. Negative tests ("Unknown never enables", "free text never approves", "mismatched currency rejects", append-only invariants) are written before the happy path. TDD does not apply to `gen/`, exploratory scripts, visual-only UI layout, or codegen runs — those are validated by generators and drift/gate checks. TDD does not replace the step's Verify block — both must pass.
 - Generated files are outputs, not editing surfaces. Change their source and regenerate them with the repository task.
 
 ## 4. Architecture principles
@@ -132,6 +133,7 @@ Before editing, the worker confirms that dependencies are `passed`, reads the na
 A worker:
 
 - implements only the assigned step;
+- follows TDD (Red → Green → Refactor) per CLAUDE.md for all deterministic code, with mandatory TDD on never-cut invariants and test-first bug fixes;
 - delivers every touched seam completely per §6, except an explicitly required fail-closed staged stub;
 - keeps deterministic logic independent of model selection, OpenAI-compatible endpoint, agent runtime, connector SDK, and deployment platform;
 - applies SOLID/DRY/KISS as constrained by §4 rather than as a reason to build speculative frameworks;
@@ -153,6 +155,7 @@ The reviewer is independent and does not fix findings inline. It reviews the act
 - the `CLAUDE.md` never-cut invariants;
 - trust boundaries, credentials, privacy, and account isolation;
 - required negative, property, transition, replay, concurrency, and fault tests;
+- TDD compliance (CLAUDE.md §"Test-Driven Development"): never-cut invariant code and bug fixes must show test-first evidence (failing test → fix → green); a diff that adds deterministic domain logic without a corresponding test is a blocker, not a follow-up;
 - same-commit codegen and reversible migration evidence;
 - complete producer-to-consumer seam coverage and port/adapter conformance;
 - OpenAI-compatible transport/provider-specific leakage into canonical contracts or deterministic domain code;
