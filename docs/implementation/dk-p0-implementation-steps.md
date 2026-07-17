@@ -67,7 +67,13 @@ root pyproject.toml (uv workspace, ruff/mypy strict config, dev group) + uv.lock
 go.mod placeholder module github.com/mhosseinab/market-ops/services/core with a doc.go, services/llm
 minimal package with one passing pytest, apps/web + apps/extension + packages/locale + gen/ts
 placeholder pnpm members with one passing vitest each, .golangci.yml, .editorconfig, lefthook.yml
-(monorepo doc §6, glob_matcher: doublestar), .gitignore/.dockerignore, .env.example. README.md
+(monorepo doc §6, glob_matcher: doublestar), .gitignore/.dockerignore, .env.example. The repo
+root already carries .mcp.json (Context7 server, HTTP transport); extend it with a `postgres`
+MCP server entry for the dev database: pick a currently maintained Postgres MCP server that
+runs without a locally compiled binary (verify the choice through Context7 at implementation
+time), wire it to ${DATABASE_URL} env expansion, and configure it read-only — no write mode,
+matching the repo's least-privilege posture. The dev database itself arrives in S2, so only
+the config lands here; the live connection is exercised by S2's Verify. README.md
 and CLAUDE.md already exist at the repo root — verify they match monorepo doc §5 (never-cut
 list, money rules, codegen trigger, command table, commit convention, design-doc references)
 and extend them where the scaffold makes something concrete; do not rewrite them and keep the
@@ -75,7 +81,7 @@ never-cut list verbatim. Do not implement any product logic. Run the Verify bloc
 actual output.
 ```
 
-**Verify:** on a fresh clone of the branch: `task doctor` exit 0; `task setup` exit 0; `task test:all` and `task lint:all` exit 0; `lefthook run pre-commit --all-files` exit 0; `CLAUDE.md` contains the twelve never-cut invariants verbatim.
+**Verify:** on a fresh clone of the branch: `task doctor` exit 0; `task setup` exit 0; `task test:all` and `task lint:all` exit 0; `lefthook run pre-commit --all-files` exit 0; `CLAUDE.md` contains the twelve never-cut invariants verbatim; `jq . .mcp.json` exit 0 and the file contains both the `context7` and `postgres` server entries, with the postgres entry read-only and referencing `${DATABASE_URL}` (live connection is checked in S2, not here).
 
 ---
 
@@ -93,7 +99,7 @@ now it just recreates the database). Add .env.example entries for DATABASE_URL a
 endpoint. No production compose yet (S34). Run Verify and paste output.
 ```
 
-**Verify:** `task dev` exit 0; `docker compose -f deploy/compose.dev.yml ps` shows all services healthy/running; `psql "$DATABASE_URL" -c "select version()"` reports PostgreSQL 18.x; `task db:reset` exit 0.
+**Verify:** `task dev` exit 0; `docker compose -f deploy/compose.dev.yml ps` shows all services healthy/running; `psql "$DATABASE_URL" -c "select version()"` reports PostgreSQL 18.x; `task db:reset` exit 0; the `postgres` MCP server from `.mcp.json` (S1) connects and answers a read-only query against the dev DB, and rejects writes.
 
 ---
 
