@@ -160,8 +160,8 @@ Jobs (each `if:` its filter): **contracts** — `task contracts:generate` + `git
 
 ## 8. Environments, deployment, secrets
 
-- One `.env` at repo root for dev (gitignored; `.env.example` committed): Go via env parsing, Python via `pydantic-settings`, web via Vite env. **No secrets in source** — seller tokens, DB credentials, model keys are env/secret-store only; the LLM plane gets `LLM_GATEWAY_TOKEN` (read/Draft-only) and **no** DB URL.
-- `deploy/compose.dev.yml`: postgres:18, otel-collector, grafana/loki/tempo, mailpit (email testing), a mock-DK server (from S9) — everything a laptop needs.
+- One `.env` at repo root for dev (gitignored; `.env.example` committed): Go via env parsing, Python via `pydantic-settings`, web via Vite env. **No secrets in source** — seller tokens, DB credentials, model keys are env/secret-store only; the LLM plane gets `LLM_GATEWAY_TOKEN` (read/Draft-only) and **no** DB URL. Dev-observability toggles live here too: `SENTRY_SPOTLIGHT` (Spotlight sidecar; unset ⇒ all Sentry wiring disabled in every plane) and `LANGSMITH_TRACING`/`LANGSMITH_API_KEY` (LLM-call tracing; opt-in, never set in CI — traces send prompts to LangSmith's cloud).
+- `deploy/compose.dev.yml`: postgres:18, otel-collector, grafana/loki/tempo, mailpit (email testing), Spotlight sidecar (`ghcr.io/getsentry/spotlight`, dev-observability UI on :8969 — dev-only, never in prod compose), a mock-DK server (from S9) — everything a laptop needs.
 - `deploy/compose.prod.yml`: core (distroless static Go image), llm (uv `--no-editable --frozen --package llm` multi-stage image, build context = repo root, `.dockerignore` excludes node/go trees), caddy (ingress + static web `dist/`), postgres 18 + WAL backup to the isolated destination, otel stack. Single VPS per PRD §19.3.
 - Extension ships via `pnpm --filter extension build` → zip artifact in CI.
 

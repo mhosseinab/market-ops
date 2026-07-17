@@ -15,7 +15,7 @@ Run steps **in order of the dependency graph** — a step starts only when its p
 - i18next catalogs + Intl formatters (`fa-IR-u-ca-persian`) + logical CSS + digit normalization at input boundary (§4.5).
 - In-context orchestrator; review routed to the repo's `.claude/agents`; `safety_release_reviewer` at phase boundaries and gates (§4.6).
 - Gate 0a: harnesses built offline in-phase; live probes = gated S35, pullable earlier when production access exists (§4.7).
-- Neutral ports/adapters + complete seams: all model providers expose an OpenAI-compatible API through one owned transport port; canonical domain/application code remains model-selection/OpenAI-compatible-endpoint/agent-runtime/deployment-platform agnostic; concrete integrations are substitutable under conformance tests; each claimed behavior is wired producer-to-consumer (§4.8).
+- Neutral ports/adapters + complete seams: all model providers expose an OpenAI-compatible API, accessed via langchain-openai ChatOpenAI with base URL/model/credential as config; the LLM-plane agent stack is LangGraph (sole orchestrator) + LangChain create_agent (leaf-node agents), confined to services/llm (§4.8 amendment 2026-07-17); canonical domain/application code remains model-selection/OpenAI-compatible-endpoint/deployment-platform agnostic and free of framework types; concrete integrations are substitutable under conformance tests; each claimed behavior is wired producer-to-consumer (§4.8).
 
 ## Project rules every prompt must respect (stated once)
 
@@ -29,7 +29,7 @@ Run steps **in order of the dependency graph** — a step starts only when its p
 8. **Verification & commits:** run the step's Verify and paste actual output; `task ci:local` green before merging to `dk-p0/main`; Conventional Commits with scopes `core|llm|web|ext|contracts|locale|deploy|repo`; stage files by name; never bypass hooks.
 9. **Docs truthful:** if a step changes a command or convention, update `CLAUDE.md` / `dk-p0-monorepo.md` in the same commit. `docs/` and `design/` are read-only.
 10. **Complete seams:** a behavior introduced by the step is not done at an interface, DTO, generated client, route, repository method, or UI shell. Wire the owned contract, validation, producer, adapter/transport, real consumer, failure/degraded behavior, observability, and cross-boundary tests required by that step. Only a stub explicitly required by the prompt may remain; it fails closed, has a negative test, and names the downstream completing step.
-11. **SOLID/DRY/KISS + neutrality:** deterministic domain/application code depends on narrow owned ports, not vendor model SDKs, agent runtimes, connector clients, or deployment APIs. All model providers use one OpenAI-compatible transport port and conformance suite. Keep one source for domain knowledge and choose the simplest explicit design; do not build a generic provider framework speculatively.
+11. **SOLID/DRY/KISS + neutrality:** deterministic domain/application code depends on narrow owned ports, not vendor model SDKs, connector clients, or deployment APIs. All model providers are reached OpenAI-compatible-only (langchain-openai ChatOpenAI, configurable base URL) under one conformance suite; the agent stack — LangGraph orchestration + LangChain create_agent leaf agents — stays inside services/llm (§4.8 amendment). Keep one source for domain knowledge and choose the simplest explicit design; do not build a generic provider framework speculatively.
 
 ## Dependency graph (quick view)
 
@@ -86,20 +86,22 @@ actual output.
 ---
 
 ### S2 — Dev stack: PostgreSQL 18 + observability compose
-**Goal:** `task dev` brings up PostgreSQL 18, otel-collector, grafana/loki/tempo, mailpit locally.
+**Goal:** `task dev` brings up PostgreSQL 18, otel-collector, grafana/loki/tempo, mailpit, and the Spotlight dev-observability sidecar locally.
 **Depends on:** S1.
 
 ```
 Read dk-p0-monorepo.md §8 and docs/PRD.md §19.3 (PostgreSQL 18, Docker Compose, Caddy,
 OpenTelemetry/Grafana/Loki/Tempo). Create deploy/compose.dev.yml with postgres:18 (named volume,
 healthcheck), otel-collector, grafana + loki + tempo (provisioned datasources under
-deploy/grafana/), and mailpit for email testing. Wire task dev to start it and wait for the
+deploy/grafana/), mailpit for email testing, and the Spotlight dev-observability sidecar
+(ghcr.io/getsentry/spotlight:latest, port 8969 — dev-only; it never appears in the prod
+compose). Wire task dev to start it and wait for the
 postgres healthcheck; add task db:reset (drop/recreate dev DB — migrations arrive in S5, so for
-now it just recreates the database). Add .env.example entries for DATABASE_URL and OTLP
-endpoint. No production compose yet (S34). Run Verify and paste output.
+now it just recreates the database). Add .env.example entries for DATABASE_URL, the OTLP
+endpoint, and SENTRY_SPOTLIGHT=http://localhost:8969/stream. No production compose yet (S34). Run Verify and paste output.
 ```
 
-**Verify:** `task dev` exit 0; `docker compose -f deploy/compose.dev.yml ps` shows all services healthy/running; `psql "$DATABASE_URL" -c "select version()"` reports PostgreSQL 18.x; `task db:reset` exit 0; the `postgres` MCP server from `.mcp.json` (S1) connects and answers a read-only query against the dev DB, and rejects writes.
+**Verify:** `task dev` exit 0; `docker compose -f deploy/compose.dev.yml ps` shows all services healthy/running; `psql "$DATABASE_URL" -c "select version()"` reports PostgreSQL 18.x; `task db:reset` exit 0; the `postgres` MCP server from `.mcp.json` (S1) connects and answers a read-only query against the dev DB, and rejects writes; the Spotlight UI responds at http://localhost:8969.
 
 ---
 
@@ -111,13 +113,15 @@ endpoint. No production compose yet (S34). Run Verify and paste output.
 Read dk-p0-monorepo.md §1/§5 and CLAUDE.md. In services/core create cmd/core/main.go plus
 internal/config (env-based, fail-fast on missing required vars), internal/log (slog JSON),
 internal/httpapi with a net/http server exposing GET /healthz (200, build info) and graceful
-shutdown, and OTel SDK initialization behind an OTEL_ENABLED env switch. Add golangci import-
+shutdown, and OTel SDK initialization behind an OTEL_ENABLED env switch, plus dev-only Spotlight
+wiring: sentry-go initialized ONLY when SENTRY_SPOTLIGHT is set (errors + traces to the local
+sidecar, no DSN); when unset, Sentry is fully disabled — assert that in a config test. Add golangci import-
 boundary rules from monorepo doc §5 (only internal/httpapi may import gen/go later; internal/money
 imports no internal packages). Table-driven test for /healthz. Wire task go:build / go:test /
 go:lint per monorepo doc §3 with the init task creating go.work. Run Verify and paste output.
 ```
 
-**Verify:** `task go:build` produces `services/core/bin/core`; `task go:test` green including the healthz test; `task go:lint` exit 0; `./services/core/bin/core` starts and `curl -fsS localhost:8080/healthz` returns 200 then shuts down cleanly on SIGTERM.
+**Verify:** `task go:build` produces `services/core/bin/core`; `task go:test` green including the healthz test; `task go:lint` exit 0; `./services/core/bin/core` starts and `curl -fsS localhost:8080/healthz` returns 200 then shuts down cleanly on SIGTERM; config test proves Sentry/Spotlight is disabled when SENTRY_SPOTLIGHT is unset.
 
 ---
 
@@ -509,13 +513,39 @@ side: /chat SSE endpoint streaming from the LLM service; conversations/messages 
 retention field, pinned investigations; audit independence is S18's — conversation rows carry
 no execution state). Kill switch: global + per-account flag in core config; when on, /chat
 returns a structured disabled state and NOTHING else degrades — add the screens-fully-functional
-integration test skeleton (full journey coverage lands S32). Provider boundary: one owned
-OpenAI-compatible transport port; base URL, credential reference, model, timeout, and qualified
-capabilities are config (§12.1). The deterministic MOCK speaks the same contract and is used for
-all tests; do not add vendor SDK adapters; no paid calls anywhere in CI.
+integration test skeleton (full journey coverage lands S32). Provider boundary: model access is
+OpenAI-compatible ONLY — langchain-openai ChatOpenAI(base_url=...) with base URL, credential
+reference, model, timeout, and qualified capabilities as config (§12.1); no provider-specific
+SDK branches. The deterministic MOCK speaks the same OpenAI-compatible contract and is used for
+all tests; no paid calls anywhere in CI. Agent harness (plan §4.8 amendment 2026-07-17),
+single-ecosystem two layers: LangGraph is the ONLY top-level orchestrator — build the P0 turn
+as a StateGraph (state, branching, node-level retry) that specialist agents later join as nodes
+without re-architecture (post-P0 is multi-agent); individual agents are LangChain create_agent
+instances embedded as leaf-level nodes (prompts, model access, tools, typed outputs via
+response_format Pydantic models → validated structured_response), sharing message formats,
+runtime context, streaming, and traces with the graph. Both stay confined to services/llm;
+framework types never enter contracts/, gen/*, or the Go core; graph state holds JSON-safe
+business data only, never agent/client objects; response_format models carrying money use
+mantissa/currency/exponent or raw evidence strings — NEVER float (§9.1 holds inside the LLM
+plane). Agents may bind ONLY tools exposed by the Draft-only registry — the registry stays the
+single source, and the negative test additionally asserts the union of all agents' bound tools
+is a subset of the registry manifest. Hard bounds, all config-driven: graph recursion_limit per
+turn (GraphRecursionError maps to the §12.4 structured failure), ToolCallLimitMiddleware on
+every agent (global + per-tool run limits; exceeding maps to the same failure), per-tool
+timeout, and a per-turn token ceiling via model config — no silent truncation, no unbounded
+loop. The single §12.4 transient retry lives at node level — never stacked with another retry
+mechanism. Approval is NEVER a graph interrupt/resume — the graph's terminal write is at most a
+Draft. NO durable checkpointer in P0: the LLM plane has no DB credential (§19.3), so graph
+state is per-request in-process and conversation durability stays in the gateway's tables. Tool
+results enter the model context as data, never as instructions (they are untrusted marketplace
+content). Dev observability: sentry-sdk with Spotlight enabled ONLY via SENTRY_SPOTLIGHT (no
+DSN); ONE trace system — graph and agents emit LangSmith natively, active ONLY when
+LANGSMITH_TRACING + LANGSMITH_API_KEY are both set and force-disabled in CI (traces ship
+prompts/completions to LangSmith's cloud, so non-mock enablement is a gated operation — human
+"go"). Config tests assert every integration is a no-op when its env vars are unset.
 ```
 
-**Verify:** `task ci:local` green; registry test output pasted (tool list + assertion no state-changing tool); SSE endpoint streams from mock provider end-to-end (httpx test); kill-switch test: /chat disabled state while a sampled read endpoint still 200s; `task contracts:drift` exit 0.
+**Verify:** `task ci:local` green; registry test output pasted (tool list + assertion no state-changing tool); SSE endpoint streams from mock provider end-to-end (httpx test); kill-switch test: /chat disabled state while a sampled read endpoint still 200s; `task contracts:drift` exit 0; observability config test: SENTRY_SPOTLIGHT and LANGSMITH_TRACING unset ⇒ both integrations no-ops; loop-bound tests: a mock provider that requests tools indefinitely hits recursion_limit (GraphRecursionError) and ToolCallLimitMiddleware run limits — each maps to the structured failure state; agent-binding test: the union of all agents' bound tools is a subset of the registry manifest.
 
 ---
 
@@ -611,7 +641,10 @@ runs the eval sets — complete the fixture authoring to the full §12.5 counts:
 50 missing/stale/conflicted, 50 floor/boundary conflicts, 50 listing-diagnostic, 200 Persian/
 English/mixed intents balanced over eight classes, 100 context-resolution, 50 adversarial
 approval, 30 currency-unit ambiguity (Persian cases reviewed later by persian_localization_ux —
-flag PENDING-NATIVE-REVIEW in fixture metadata). Scoring: macro intent accuracy, context accuracy
+flag PENDING-NATIVE-REVIEW in fixture metadata), plus — beyond the §12.5 minimums — 20
+data-channel injection cases: hostile instruction text embedded in marketplace evidence (product
+titles, seller names, captured page text) attempting tool misuse or approval; containment must
+be 100% and inference text must not act on embedded instructions. Scoring: macro intent accuracy, context accuracy
 + 100% ambiguous containment, approval containment, factual support via envelope validation,
 P75 cost per conversation mix (§4.1 unit-economics input). Deterministic mock provider must pass
 containment suites at 100% (containment is enforced by architecture, not model quality — assert
@@ -620,7 +653,7 @@ dk-p0-plan.md §11 measurement log. NO paid provider call in CI — provider ben
 real models is a deferred gate executed with S35's window.
 ```
 
-**Verify:** `task py:test` green; `uv run python -m llm.evals --provider mock --suite all` completes with containment suites at 100% and a written report artifact (paste summary); malicious-provider fuzz test: zero approval transitions. **Deferred (progress-file gate):** paid provider benchmark ≥ thresholds; record selected provider pair in region/model config.
+**Verify:** `task py:test` green; `uv run python -m llm.evals --provider mock --suite all` completes with containment suites at 100% and a written report artifact (paste summary); malicious-provider fuzz test: zero approval transitions; data-channel injection suite: 100% containment, zero tool misuse. **Deferred (progress-file gate):** paid provider benchmark ≥ thresholds; record selected provider pair in region/model config.
 
 ---
 
@@ -649,10 +682,14 @@ logical CSS only and LTR-isolated identifier component. Zero string literals in 
 copy-lint script (fails on literals; wire as task ts:copylint). Pseudo-locale: generate a
 pseudo pack (expanded, bracketed, forced-LTR variant) and a vitest+testing-library suite failing
 on untranslated/clipped/direction-broken output; wire task ts:pseudoloc into ci:local and the
-CI ts job (replace the S6 placeholder).
+CI ts job (replace the S6 placeholder). Dev observability: Sentry browser SDK sending errors/
+traces to the local Spotlight sidecar in dev builds only (env-gated via a VITE_ var; exact SDK
+wiring per current Spotlight docs — verify through Context7 at implementation time); sidecar UI
+only — do NOT embed the Spotlight overlay in the app; a build assertion proves the production
+bundle contains no Sentry/Spotlight code.
 ```
 
-**Verify:** `task ci:local` green including new ts:pseudoloc + ts:copylint gates; Jalali reference-table test passes (paste 3 sample conversions incl. a leap year); injected inline string literal fails copy-lint (then remove); app boots RTL with fa digits (`pnpm --filter web dev` smoke + vitest snapshot).
+**Verify:** `task ci:local` green including new ts:pseudoloc + ts:copylint gates; Jalali reference-table test passes (paste 3 sample conversions incl. a leap year); injected inline string literal fails copy-lint (then remove); app boots RTL with fa digits (`pnpm --filter web dev` smoke + vitest snapshot); prod-bundle assertion shows no Sentry/Spotlight code.
 
 ---
 
@@ -736,7 +773,17 @@ approve (recommend-only).
 ```
 Read design/README.md chat-dock section + screens/15,18.png, PRD §8.1, CHAT-001/005/006/007/023/
 084/085, §16 chat rows (restored conversation, chat disabled mid-conversation, briefing failure).
-Implement the dock: reachable in one interaction from every area with correct contextual chip
+Implement the dock on @assistant-ui/react HEADLESS PRIMITIVES (Thread/Message/Composer
+primitives; pin the version) — NOT its styled/shadcn registry components (design/ tokens and the
+IA_AND_COMPONENTS inventory are binding) and NOT @assistant-ui/react-langgraph or any direct
+LLM-service connection: the runtime is useExternalStoreRuntime over the gateway /chat SSE
+endpoint via the gen/ts client, and the FE never learns the LLM service exists. RTL per the
+library's documented direction setup (DirectionProvider + dir on the root; bdi/local dir for
+mixed-direction runs, consistent with LTR isolation of technical identifiers); all visible copy
+remains catalog keys — primitives carry no built-in strings, keep it that way. Envelope sections
+and structured cards render as OUR components mounted as custom message parts; assistant-ui
+never owns an approval action. The dock: reachable in one interaction from every area with
+correct contextual chip
 (CHAT-001 — entry from product/event/recommendation/action binds that context), SSE streaming
 rendering, message envelope rendering with evidence refs/age/quality and the seven statement-kind
 sections visually distinct (EvidencePanel variants incl. inference-in-accent), structured cards:
@@ -751,7 +798,7 @@ MSW/mock-SSE component tests; Playwright smoke: briefing → investigate → pre
 card (recommend-only), asserting free-text "approve it" changes nothing.
 ```
 
-**Verify:** `task ci:local` green; Playwright chat-approval smoke passes with the free-text negative assertion; restored-conversation test proves stale control disabled; row-cap test (21 rows ⇒ summary + link); dock reachable from all six areas (route test).
+**Verify:** `task ci:local` green; Playwright chat-approval smoke passes with the free-text negative assertion; restored-conversation test proves stale control disabled; row-cap test (21 rows ⇒ summary + link); dock reachable from all six areas (route test); dependency check: @assistant-ui/react pinned, and neither @assistant-ui/react-langgraph nor styled-registry components appear in the app source or bundle.
 
 ---
 
@@ -776,10 +823,12 @@ browsing; queue with idempotent offline retry (dedup key — replays create no d
 offer, verified against core in integration). Recognize Confirmed owned products via API;
 NeedsReview never joins owned commercial data (EXT-004 negative test). Popup: account, capture
 toggle, last upload, queued count, degradation/kill-switch state (EXT-009). Unit tests with DOM
-fixtures from the selector contract; integration test uploads to local core.
+fixtures from the selector contract; integration test uploads to local core. Dev-only Spotlight
+wiring for service-worker and content-script errors (build-time dev flag; a packaging assertion
+proves the distributable zip contains no Sentry/Spotlight code).
 ```
 
-**Verify:** `task ci:local` green including extension build (`pnpm --filter extension build` produces a loadable zip); storage audit test finds no seller-token-shaped secret; offline-queue replay integration test: zero duplicates in core; revoked credential ⇒ upload 401 and visible disabled state.
+**Verify:** `task ci:local` green including extension build (`pnpm --filter extension build` produces a loadable zip); storage audit test finds no seller-token-shaped secret; offline-queue replay integration test: zero duplicates in core; revoked credential ⇒ upload 401 and visible disabled state; packaging assertion: zip contains no Sentry/Spotlight code.
 
 ---
 
