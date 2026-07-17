@@ -370,6 +370,99 @@ func (e CostProfileVersionSource) Valid() bool {
 	}
 }
 
+// Defines values for EventLifecycleState.
+const (
+	Expired  EventLifecycleState = "expired"
+	Open     EventLifecycleState = "open"
+	Resolved EventLifecycleState = "resolved"
+	Updated  EventLifecycleState = "updated"
+)
+
+// Valid indicates whether the value is a known member of the EventLifecycleState enum.
+func (e EventLifecycleState) Valid() bool {
+	switch e {
+	case Expired:
+		return true
+	case Open:
+		return true
+	case Resolved:
+		return true
+	case Updated:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EventRelevanceKind.
+const (
+	Muted       EventRelevanceKind = "muted"
+	NotRelevant EventRelevanceKind = "not_relevant"
+	Relevant    EventRelevanceKind = "relevant"
+)
+
+// Valid indicates whether the value is a known member of the EventRelevanceKind enum.
+func (e EventRelevanceKind) Valid() bool {
+	switch e {
+	case Muted:
+		return true
+	case NotRelevant:
+		return true
+	case Relevant:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EventSeverity.
+const (
+	Critical EventSeverity = "critical"
+	Info     EventSeverity = "info"
+	Warning  EventSeverity = "warning"
+)
+
+// Valid indicates whether the value is a known member of the EventSeverity enum.
+func (e EventSeverity) Valid() bool {
+	switch e {
+	case Critical:
+		return true
+	case Info:
+		return true
+	case Warning:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for EventType.
+const (
+	CompetitorPrice     EventType = "competitor_price"
+	ContributionFloor   EventType = "contribution_floor"
+	SellerCount         EventType = "seller_count"
+	SuppressionBoundary EventType = "suppression_boundary"
+	WinningState        EventType = "winning_state"
+)
+
+// Valid indicates whether the value is a known member of the EventType enum.
+func (e EventType) Valid() bool {
+	switch e {
+	case CompetitorPrice:
+		return true
+	case ContributionFloor:
+		return true
+	case SellerCount:
+		return true
+	case SuppressionBoundary:
+		return true
+	case WinningState:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HealthStatus.
 const (
 	Ok HealthStatus = "ok"
@@ -990,6 +1083,60 @@ type ErrorEnvelope struct {
 	RequestId *string `json:"requestId,omitempty"`
 }
 
+// EventExposure An event's business impact (PRD §7.4 EVT-004/EVT-005). It is EITHER a known Money amount (derived from margin/sales context) OR explicitly unknown. When `known` is false there is NO `amount` at all — a missing sales/cost context is never a fabricated number (EVT-005).
+type EventExposure struct {
+	// Amount An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Amount *MoneyAmount `json:"amount,omitempty"`
+
+	// Known Whether a numeric exposure exists. False ⇒ impact unknown.
+	Known bool `json:"known"`
+}
+
+// EventLifecycleState The §15.1 market-event lifecycle state. A duplicate signal updates the open record (EVT-003); resolved/expired free the dedup key.
+type EventLifecycleState string
+
+// EventRankFactors The three EVT-004 ranking factors for one event, exposed so the UI can show why an event ranks where it does. Confidence and urgency are basis points (0..10000); exposure is the EventExposure (unknown stays unknown).
+type EventRankFactors struct {
+	// ConfidenceBp Confidence factor in basis points (0..10000), from evidence quality.
+	ConfidenceBp int `json:"confidenceBp"`
+
+	// Exposure An event's business impact (PRD §7.4 EVT-004/EVT-005). It is EITHER a known Money amount (derived from margin/sales context) OR explicitly unknown. When `known` is false there is NO `amount` at all — a missing sales/cost context is never a fabricated number (EVT-005).
+	Exposure EventExposure `json:"exposure"`
+
+	// UrgencyBp Urgency factor in basis points (0..10000), from severity.
+	UrgencyBp int `json:"urgencyBp"`
+}
+
+// EventRelevanceKind The closed relevance-feedback set (EVT-005).
+type EventRelevanceKind string
+
+// EventRelevanceRecorded defines model for EventRelevanceRecorded.
+type EventRelevanceRecorded struct {
+	CreatedAt time.Time          `json:"createdAt"`
+	EventId   openapi_types.UUID `json:"eventId"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// Relevance The closed relevance-feedback set (EVT-005).
+	Relevance EventRelevanceKind `json:"relevance"`
+}
+
+// EventRelevanceRequest Record relevance feedback on a market event (EVT-005, append-only). Never approves or executes anything.
+type EventRelevanceRequest struct {
+	EventId openapi_types.UUID `json:"eventId"`
+
+	// Note Optional free-text note. Carries no authority (§8 free-text containment).
+	Note *string `json:"note,omitempty"`
+
+	// Relevance The closed relevance-feedback set (EVT-005).
+	Relevance EventRelevanceKind `json:"relevance"`
+}
+
+// EventSeverity The closed, ordered severity set for a market event.
+type EventSeverity string
+
+// EventType One of the five P0 market-event types (PRD §7.4 EVT-001). The set is closed.
+type EventType string
+
 // Health Liveness plus build identity, returned by GET /healthz.
 type Health struct {
 	// Build Identity of the running binary.
@@ -1034,6 +1181,51 @@ type MarginReadiness struct {
 
 // MarginReadinessState The four closed margin-readiness states (CST-003). Only `complete` may drive an executable recommendation; `partial` may show analysis but no approval control; `stale` and `missing` block.
 type MarginReadinessState string
+
+// MarketEvent A market event lifecycle record (PRD §7.4, §15.1). It cites its observation evidence with the observed quality state as-is (never upgraded) and carries its versioned materiality-threshold provenance (EVT-002). Exposure obeys EVT-005.
+type MarketEvent struct {
+	// EvidenceObservationId The cited observation, when the event has one.
+	EvidenceObservationId *openapi_types.UUID `json:"evidenceObservationId,omitempty"`
+
+	// EvidenceQuality The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
+	EvidenceQuality QualityState `json:"evidenceQuality"`
+
+	// EvidenceRef Opaque reference to the cited evidence.
+	EvidenceRef *string `json:"evidenceRef,omitempty"`
+
+	// EvidenceUpdateCount How many times a duplicate signal updated this open record (EVT-003).
+	EvidenceUpdateCount int       `json:"evidenceUpdateCount"`
+	ExpiresAt           time.Time `json:"expiresAt"`
+
+	// Factors The three EVT-004 ranking factors for one event, exposed so the UI can show why an event ranks where it does. Confidence and urgency are basis points (0..10000); exposure is the EventExposure (unknown stays unknown).
+	Factors              EventRankFactors   `json:"factors"`
+	FirstDetectedAt      time.Time          `json:"firstDetectedAt"`
+	Id                   openapi_types.UUID `json:"id"`
+	LastEvidenceAt       time.Time          `json:"lastEvidenceAt"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	ResolvedAt           *time.Time         `json:"resolvedAt,omitempty"`
+
+	// Severity The closed, ordered severity set for a market event.
+	Severity EventSeverity `json:"severity"`
+
+	// State The §15.1 market-event lifecycle state. A duplicate signal updates the open record (EVT-003); resolved/expired free the dedup key.
+	State EventLifecycleState `json:"state"`
+
+	// TargetId The observation target, when the event has one.
+	TargetId *openapi_types.UUID `json:"targetId,omitempty"`
+
+	// ThresholdVersion The materiality threshold version that fired the event (EVT-002).
+	ThresholdVersion *int `json:"thresholdVersion,omitempty"`
+
+	// Type One of the five P0 market-event types (PRD §7.4 EVT-001). The set is closed.
+	Type      EventType          `json:"type"`
+	VariantId openapi_types.UUID `json:"variantId"`
+}
+
+// MarketEventList defines model for MarketEventList.
+type MarketEventList struct {
+	Items []MarketEvent `json:"items"`
+}
 
 // MarketProductIdentity A variant's mapping to a public DK product record, with its versioned state. Separate canonical entity from the owned Variant/Listing (CAT-001).
 type MarketProductIdentity struct {
@@ -1330,6 +1522,18 @@ type PolicyStrategy string
 // QualityState The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
 type QualityState string
 
+// RankedEvent One event placed in the deterministic Today order (EVT-004). Rank is 1-based; factors exposes all three ranking inputs.
+type RankedEvent struct {
+	// Event A market event lifecycle record (PRD §7.4, §15.1). It cites its observation evidence with the observed quality state as-is (never upgraded) and carries its versioned materiality-threshold provenance (EVT-002). Exposure obeys EVT-005.
+	Event MarketEvent `json:"event"`
+
+	// Factors The three EVT-004 ranking factors for one event, exposed so the UI can show why an event ranks where it does. Confidence and urgency are basis points (0..10000); exposure is the EventExposure (unknown stays unknown).
+	Factors EventRankFactors `json:"factors"`
+
+	// Rank 1-based deterministic rank in the Today feed.
+	Rank int `json:"rank"`
+}
+
 // RawAmount Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved verbatim and NEVER promoted to Money: no currency, no exponent, no conversion. The source unit is validation-gated (Gate 0a) and unknown; an absent unit token stays quarantined, never inferred.
 type RawAmount struct {
 	// Text The amount exactly as captured, before any normalization.
@@ -1380,6 +1584,11 @@ type SingleCostEntryRequest struct {
 	VariantId  openapi_types.UUID `json:"variantId"`
 }
 
+// TodayFeed The ranked Today feed (PRD §7.4 EVT-004).
+type TodayFeed struct {
+	Items []RankedEvent `json:"items"`
+}
+
 // UserRole Product role (PRD §2.2). Owner governs commercial boundaries and users; Operator executes day-to-day within Owner-defined permissions; Internal diagnoses data/execution and cannot change seller commercial rules.
 type UserRole string
 
@@ -1410,6 +1619,18 @@ type GetMarginReadinessParams struct {
 	VariantId openapi_types.UUID `form:"variantId" json:"variantId"`
 }
 
+// GetEventParams defines parameters for GetEvent.
+type GetEventParams struct {
+	// EventId The market event id.
+	EventId openapi_types.UUID `form:"eventId" json:"eventId"`
+}
+
+// ListEventsParams defines parameters for ListEvents.
+type ListEventsParams struct {
+	// MarketplaceAccountId Marketplace account whose open events are requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
 // ListNeedsReviewParams defines parameters for ListNeedsReview.
 type ListNeedsReviewParams struct {
 	// MarketplaceAccountId Marketplace account whose review queue is requested.
@@ -1437,6 +1658,12 @@ type ListObservationTargetsParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
+// GetTodayFeedParams defines parameters for GetTodayFeed.
+type GetTodayFeedParams struct {
+	// MarketplaceAccountId Marketplace account whose Today feed is requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -1460,6 +1687,9 @@ type PreviewCostImportJSONRequestBody = CostImportPreviewRequest
 
 // EnterSingleCostJSONRequestBody defines body for EnterSingleCost for application/json ContentType.
 type EnterSingleCostJSONRequestBody = SingleCostEntryRequest
+
+// RecordEventRelevanceJSONRequestBody defines body for RecordEventRelevance for application/json ContentType.
+type RecordEventRelevanceJSONRequestBody = EventRelevanceRequest
 
 // ConfirmIdentityJSONRequestBody defines body for ConfirmIdentity for application/json ContentType.
 type ConfirmIdentityJSONRequestBody = IdentityDecisionRequest
@@ -1520,6 +1750,15 @@ type ServerInterface interface {
 	// EnterSingleCost Record a single cost-component value.
 	// (POST /cost/value)
 	EnterSingleCost(w http.ResponseWriter, r *http.Request)
+	// GetEvent Get a single market event by id.
+	// (GET /event)
+	GetEvent(w http.ResponseWriter, r *http.Request, params GetEventParams)
+	// ListEvents List the account's open market events.
+	// (GET /events)
+	ListEvents(w http.ResponseWriter, r *http.Request, params ListEventsParams)
+	// RecordEventRelevance Record relevance feedback on a market event.
+	// (POST /events/relevance)
+	RecordEventRelevance(w http.ResponseWriter, r *http.Request)
 	// GetHealthz Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
@@ -1550,6 +1789,9 @@ type ServerInterface interface {
 	// SimulatePolicy Simulate the contribution + six-stage policy engines (non-executable).
 	// (POST /policy/simulate)
 	SimulatePolicy(w http.ResponseWriter, r *http.Request)
+	// GetTodayFeed Get the ranked Today feed for the account.
+	// (GET /today)
+	GetTodayFeed(w http.ResponseWriter, r *http.Request, params GetTodayFeedParams)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -1846,6 +2088,86 @@ func (siw *ServerInterfaceWrapper) EnterSingleCost(w http.ResponseWriter, r *htt
 	handler.ServeHTTP(w, r)
 }
 
+// GetEvent operation middleware
+func (siw *ServerInterfaceWrapper) GetEvent(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetEventParams
+
+	// ------------- Required query parameter "eventId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "eventId", r.URL.Query(), &params.EventId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "eventId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "eventId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetEvent(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListEvents operation middleware
+func (siw *ServerInterfaceWrapper) ListEvents(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListEventsParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListEvents(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RecordEventRelevance operation middleware
+func (siw *ServerInterfaceWrapper) RecordEventRelevance(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RecordEventRelevance(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(w http.ResponseWriter, r *http.Request) {
 
@@ -2075,6 +2397,39 @@ func (siw *ServerInterfaceWrapper) SimulatePolicy(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// GetTodayFeed operation middleware
+func (siw *ServerInterfaceWrapper) GetTodayFeed(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetTodayFeedParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetTodayFeed(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 type UnescapedCookieParamError struct {
 	ParamName string
 	Err       error
@@ -2219,6 +2574,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/profiles", wrapper.ListCostProfiles)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/readiness", wrapper.GetMarginReadiness)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/policy/simulate", wrapper.SimulatePolicy)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/events", wrapper.ListEvents)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/event", wrapper.GetEvent)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/today", wrapper.GetTodayFeed)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/events/relevance", wrapper.RecordEventRelevance)
 
 	return m
 }
@@ -2832,6 +3191,123 @@ func (response EnterSingleCostdefaultJSONResponse) VisitEnterSingleCostResponse(
 	return err
 }
 
+type GetEventRequestObject struct {
+	Params GetEventParams
+}
+
+type GetEventResponseObject interface {
+	VisitGetEventResponse(w http.ResponseWriter) error
+}
+
+type GetEvent200JSONResponse MarketEvent
+
+func (response GetEvent200JSONResponse) VisitGetEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetEventdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetEventdefaultJSONResponse) VisitGetEventResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListEventsRequestObject struct {
+	Params ListEventsParams
+}
+
+type ListEventsResponseObject interface {
+	VisitListEventsResponse(w http.ResponseWriter) error
+}
+
+type ListEvents200JSONResponse MarketEventList
+
+func (response ListEvents200JSONResponse) VisitListEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListEventsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListEventsdefaultJSONResponse) VisitListEventsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RecordEventRelevanceRequestObject struct {
+	Body *RecordEventRelevanceJSONRequestBody
+}
+
+type RecordEventRelevanceResponseObject interface {
+	VisitRecordEventRelevanceResponse(w http.ResponseWriter) error
+}
+
+type RecordEventRelevance202JSONResponse EventRelevanceRecorded
+
+func (response RecordEventRelevance202JSONResponse) VisitRecordEventRelevanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(202)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RecordEventRelevancedefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response RecordEventRelevancedefaultJSONResponse) VisitRecordEventRelevanceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthzRequestObject struct {
 }
 
@@ -3221,6 +3697,45 @@ func (response SimulatePolicydefaultJSONResponse) VisitSimulatePolicyResponse(w 
 	return err
 }
 
+type GetTodayFeedRequestObject struct {
+	Params GetTodayFeedParams
+}
+
+type GetTodayFeedResponseObject interface {
+	VisitGetTodayFeedResponse(w http.ResponseWriter) error
+}
+
+type GetTodayFeed200JSONResponse TodayFeed
+
+func (response GetTodayFeed200JSONResponse) VisitGetTodayFeedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetTodayFeeddefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetTodayFeeddefaultJSONResponse) VisitGetTodayFeedResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
 	// Login Authenticate a user and open a server-side session.
@@ -3265,6 +3780,15 @@ type StrictServerInterface interface {
 	// EnterSingleCost Record a single cost-component value.
 	// (POST /cost/value)
 	EnterSingleCost(ctx context.Context, request EnterSingleCostRequestObject) (EnterSingleCostResponseObject, error)
+	// GetEvent Get a single market event by id.
+	// (GET /event)
+	GetEvent(ctx context.Context, request GetEventRequestObject) (GetEventResponseObject, error)
+	// ListEvents List the account's open market events.
+	// (GET /events)
+	ListEvents(ctx context.Context, request ListEventsRequestObject) (ListEventsResponseObject, error)
+	// RecordEventRelevance Record relevance feedback on a market event.
+	// (POST /events/relevance)
+	RecordEventRelevance(ctx context.Context, request RecordEventRelevanceRequestObject) (RecordEventRelevanceResponseObject, error)
 	// GetHealthz Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(ctx context.Context, request GetHealthzRequestObject) (GetHealthzResponseObject, error)
@@ -3295,6 +3819,9 @@ type StrictServerInterface interface {
 	// SimulatePolicy Simulate the contribution + six-stage policy engines (non-executable).
 	// (POST /policy/simulate)
 	SimulatePolicy(ctx context.Context, request SimulatePolicyRequestObject) (SimulatePolicyResponseObject, error)
+	// GetTodayFeed Get the ranked Today feed for the account.
+	// (GET /today)
+	GetTodayFeed(ctx context.Context, request GetTodayFeedRequestObject) (GetTodayFeedResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -3736,6 +4263,89 @@ func (sh *strictHandler) EnterSingleCost(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// GetEvent operation middleware
+func (sh *strictHandler) GetEvent(w http.ResponseWriter, r *http.Request, params GetEventParams) {
+	var request GetEventRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetEvent(ctx, request.(GetEventRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetEvent")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetEventResponseObject); ok {
+		if err := validResponse.VisitGetEventResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListEvents operation middleware
+func (sh *strictHandler) ListEvents(w http.ResponseWriter, r *http.Request, params ListEventsParams) {
+	var request ListEventsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListEvents(ctx, request.(ListEventsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListEvents")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListEventsResponseObject); ok {
+		if err := validResponse.VisitListEventsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RecordEventRelevance operation middleware
+func (sh *strictHandler) RecordEventRelevance(w http.ResponseWriter, r *http.Request) {
+	var request RecordEventRelevanceRequestObject
+
+	var body RecordEventRelevanceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RecordEventRelevance(ctx, request.(RecordEventRelevanceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RecordEventRelevance")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RecordEventRelevanceResponseObject); ok {
+		if err := validResponse.VisitRecordEventRelevanceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetHealthz operation middleware
 func (sh *strictHandler) GetHealthz(w http.ResponseWriter, r *http.Request) {
 	var request GetHealthzRequestObject
@@ -4012,6 +4622,32 @@ func (sh *strictHandler) SimulatePolicy(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(SimulatePolicyResponseObject); ok {
 		if err := validResponse.VisitSimulatePolicyResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetTodayFeed operation middleware
+func (sh *strictHandler) GetTodayFeed(w http.ResponseWriter, r *http.Request, params GetTodayFeedParams) {
+	var request GetTodayFeedRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetTodayFeed(ctx, request.(GetTodayFeedRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetTodayFeed")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetTodayFeedResponseObject); ok {
+		if err := validResponse.VisitGetTodayFeedResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

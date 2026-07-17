@@ -42,12 +42,22 @@ from .cost_profile_version import CostProfileVersion
 from .cost_profile_version_source import CostProfileVersionSource
 from .detected_mapping import DetectedMapping
 from .error_envelope import ErrorEnvelope
+from .event_exposure import EventExposure
+from .event_lifecycle_state import EventLifecycleState
+from .event_rank_factors import EventRankFactors
+from .event_relevance_kind import EventRelevanceKind
+from .event_relevance_recorded import EventRelevanceRecorded
+from .event_relevance_request import EventRelevanceRequest
+from .event_severity import EventSeverity
+from .event_type import EventType
 from .health import Health
 from .health_status import HealthStatus
 from .identity_decision_request import IdentityDecisionRequest
 from .login_request import LoginRequest
 from .margin_readiness import MarginReadiness
 from .margin_readiness_state import MarginReadinessState
+from .market_event import MarketEvent
+from .market_event_list import MarketEventList
 from .market_product_identity import MarketProductIdentity
 from .market_product_identity_state import MarketProductIdentityState
 from .money_amount import MoneyAmount
@@ -72,9 +82,11 @@ from .policy_simulation_result import PolicySimulationResult
 from .policy_stage import PolicyStage
 from .policy_strategy import PolicyStrategy
 from .quality_state import QualityState
+from .ranked_event import RankedEvent
 from .raw_amount import RawAmount
 from .session_info import SessionInfo
 from .single_cost_entry_request import SingleCostEntryRequest
+from .today_feed import TodayFeed
 from .user_role import UserRole
 
 __all__ = (
@@ -120,12 +132,22 @@ __all__ = (
     "CostProfileVersionSource",
     "DetectedMapping",
     "ErrorEnvelope",
+    "EventExposure",
+    "EventLifecycleState",
+    "EventRankFactors",
+    "EventRelevanceKind",
+    "EventRelevanceRecorded",
+    "EventRelevanceRequest",
+    "EventSeverity",
+    "EventType",
     "Health",
     "HealthStatus",
     "IdentityDecisionRequest",
     "LoginRequest",
     "MarginReadiness",
     "MarginReadinessState",
+    "MarketEvent",
+    "MarketEventList",
     "MarketProductIdentity",
     "MarketProductIdentityState",
     "MoneyAmount",
@@ -150,8 +172,10 @@ __all__ = (
     "PolicyStage",
     "PolicyStrategy",
     "QualityState",
+    "RankedEvent",
     "RawAmount",
     "SessionInfo",
     "SingleCostEntryRequest",
+    "TodayFeed",
     "UserRole",
 )

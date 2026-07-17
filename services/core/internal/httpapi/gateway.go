@@ -27,6 +27,10 @@ type gatewayServer struct {
 	// cost backs the /cost/* routes (PRD §7.2 CST-001..003). Nil until wired; the
 	// handlers fail closed with a structured error when it is absent.
 	cost CostService
+	// event backs the /events, /event, /today, /events/relevance routes (PRD §7.4
+	// EVT-001..005). Nil until wired; the handlers fail closed with a structured
+	// error when it is absent.
+	event EventService
 	// cookieSecure sets the Secure attribute on the session cookie. Defaults to
 	// true (production posture); local plain-HTTP dev may disable it.
 	cookieSecure CookieSecure

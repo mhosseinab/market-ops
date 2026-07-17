@@ -92,6 +92,12 @@ var routePolicies = []routePolicy{
 	{http.MethodGet, "/cost/readiness", kindProtected, perm.ActionReadCostReadiness},
 	// Contribution + policy simulation (§9.2/§9.3) — non-executable L1 analysis.
 	{http.MethodPost, "/policy/simulate", kindProtected, perm.ActionSimulatePolicy},
+	// Market events + Today feed reads (§7.4) — L1 read.events.
+	{http.MethodGet, "/events", kindProtected, perm.ActionReadEvents},
+	{http.MethodGet, "/event", kindProtected, perm.ActionReadEvents},
+	{http.MethodGet, "/today", kindProtected, perm.ActionReadEvents},
+	// Event relevance feedback (EVT-005) — reversible seller-data write (L2).
+	{http.MethodPost, "/events/relevance", kindProtected, perm.ActionEventRelevanceFeedback},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.
