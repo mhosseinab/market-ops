@@ -1,0 +1,73 @@
+[
+  {
+    "name": "absolute-only-full-profile",
+    "description": "Every §9.2 component supplied as an absolute amount; commission as a rate; exact.",
+    "netProceeds": "IRR:1000000:0",
+    "rateBase": "IRR:1000000:0",
+    "readiness": "complete",
+    "components": [
+      { "component": "cogs", "kind": "absolute", "amount": "IRR:600000:0", "version": 1 },
+      { "component": "commission", "kind": "rate", "rateBp": 1200, "version": 1 },
+      { "component": "fulfillment", "kind": "absolute", "amount": "IRR:30000:0", "version": 1 },
+      { "component": "shipping", "kind": "absolute", "amount": "IRR:20000:0", "version": 1 },
+      { "component": "packaging", "kind": "absolute", "amount": "IRR:5000:0", "version": 1 },
+      { "component": "promotion", "kind": "absolute", "amount": "IRR:10000:0", "version": 1 },
+      { "component": "ads", "kind": "absolute", "amount": "IRR:8000:0", "version": 1 },
+      { "component": "returns", "kind": "absolute", "amount": "IRR:7000:0", "version": 1 }
+    ],
+    "expectedContribution": "IRR:200000:0",
+    "toleranceMantissa": 0
+  },
+  {
+    "name": "commission-rate-rounds-away",
+    "description": "12.5% commission of 999999 = 124999.875, half-even rounds away to 125000.",
+    "netProceeds": "IRR:999999:0",
+    "rateBase": "IRR:999999:0",
+    "readiness": "complete",
+    "components": [
+      { "component": "cogs", "kind": "absolute", "amount": "IRR:500000:0", "version": 3 },
+      { "component": "commission", "kind": "rate", "rateBp": 1250, "version": 2 }
+    ],
+    "expectedContribution": "IRR:374999:0",
+    "toleranceMantissa": 0
+  },
+  {
+    "name": "commission-rate-exact-half-to-even",
+    "description": "50% of 3 = 1.5, an exact half; banker's rounding goes to the even neighbour 2.",
+    "netProceeds": "IRR:100:0",
+    "rateBase": "IRR:3:0",
+    "readiness": "complete",
+    "components": [
+      { "component": "cogs", "kind": "absolute", "amount": "IRR:10:0", "version": 1 },
+      { "component": "commission", "kind": "rate", "rateBp": 5000, "version": 1 }
+    ],
+    "expectedContribution": "IRR:88:0",
+    "toleranceMantissa": 0
+  },
+  {
+    "name": "partial-readiness-analysis-number",
+    "description": "Partial readiness still yields an analysis contribution (not executable).",
+    "netProceeds": "IRR:500000:0",
+    "rateBase": "IRR:500000:0",
+    "readiness": "partial",
+    "components": [
+      { "component": "cogs", "kind": "absolute", "amount": "IRR:300000:0", "version": 5 },
+      { "component": "commission", "kind": "absolute", "amount": "IRR:50000:0", "version": 5 }
+    ],
+    "expectedContribution": "IRR:150000:0",
+    "toleranceMantissa": 0
+  },
+  {
+    "name": "negative-contribution-reported-faithfully",
+    "description": "Costs exceed proceeds; the engine reports the exact negative number (the zero-cross guard lives in policy, not margin).",
+    "netProceeds": "IRR:100000:0",
+    "rateBase": "IRR:100000:0",
+    "readiness": "complete",
+    "components": [
+      { "component": "cogs", "kind": "absolute", "amount": "IRR:90000:0", "version": 1 },
+      { "component": "commission", "kind": "rate", "rateBp": 2000, "version": 1 }
+    ],
+    "expectedContribution": "IRR:-10000:0",
+    "toleranceMantissa": 0
+  }
+]
