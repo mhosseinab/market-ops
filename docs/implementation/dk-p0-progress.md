@@ -15,7 +15,13 @@ Review routing: canonical capability roles per plan §4.6 and `dk-p0-agent-guide
 - Never auto-run paid/live operations (deploy, production migration/write, paid eval, secret rotation).
 - PRD §4.6 never-cut invariants override any convenience; a genuine PRD gap escalates to the human — the PRD is final, workers don't improvise product decisions.
 
+## 🖥️ Environment (host state — re-establish after any container recycle)
+- **Egress is allowlisted to language package registries only** (npmjs, pypi, files.pythonhosted, crates, proxy.golang.org). General web + Docker image CDNs (Docker Hub `production.cloudfront.docker.com`, GHCR `pkg-containers.githubusercontent.com`) + `www/apt.postgresql.org` + `mcp.context7.com` are policy-DENIED (403). ⇒ **no Docker image can be pulled/booted; PG18 cannot be fetched.** Do not route around it (per /root/.ccr/README.md).
+- **Native PostgreSQL 16.13** installed & running (cluster `16/main`, port 5432, human-authorized 2026-07-17 in lieu of Docker/PG18). App role+db created. Workers needing a DB must use: `DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable` (pass in every DB-step packet; server persists on host, not in worktrees). Restart after recycle: `pg_ctlcluster 16 main start`.
+- **Context7 MCP unreachable** (egress-blocked) — workers validate third-party behavior empirically instead; note this in handoffs.
+
 ## ⚠️ Deferred verification gate (run before S36 sign-off)
+- S2: Docker-compose runtime boot of the observability stack (otel-collector/grafana/loki/tempo/mailpit/spotlight) + `task dev` exit 0 + PostgreSQL **18.x** version assertion + Spotlight UI :8969 — all Docker-image-gated; run on an unrestricted host. (DB-path verification done locally against native PG16.13.)
 - S6: first push to GitHub — all CI jobs green (offline check was `task ci:local` + `actionlint`).
 - S24: paid model-provider benchmark via the eval harness — select the lowest-cost qualifying provider pair; record P75 cost (needs budget authorization).
 - S34: first production deploy + backup restore drill (human-witnessed).
@@ -31,10 +37,8 @@ Review routing: canonical capability roles per plan §4.6 and `dk-p0-agent-guide
 | Step | Title | Status | Attempts | Branch | Commit SHA | Note |
 |------|-------|--------|----------|--------|-----------|------|
 | S1 | Scaffold monorepo + rules doc | passed | 1 | dk-p0/S1 | fd58883 | PASS 1st cycle (reliability-delivery); merged. CF: forbidigo float ban is repo-wide (.golangci.yml) — S5/S7 must keep money-path guard when scoping; Go core has no smoke test (per-spec); postgres-mcp `--access-mode=restricted`; generator tools (oapi-codegen/goose/sqlc) unpinned → S4 pins per monorepo §4 |
-| S2 | Dev stack (PG18 + otel compose) | in_progress | 1 | dk-p0/S2 | — | dispatched |
-| S3 | Go core service skeleton | in_progress | 1 | dk-p0/S3 | — | dispatched |
-| S2 | Dev stack (PG18 + otel compose) | pending | 0 | — | — | |
-| S3 | Go core service skeleton | pending | 0 | — | — | |
+| S2 | Dev stack (PG18 + otel compose) | in_progress | 1 | dk-p0/S2 | c88c599 | worker done; compose config valid (7 svcs). HUMAN-AUTHORIZED env deviation: native PG16.13 installed (Docker + apt.postgresql.org both egress-blocked → PG18 unobtainable) so DB-path verification runs live vs PG16 at $DATABASE_URL; compose still targets pg18 for real deploy. Docker-only observability boot (otel/grafana/loki/tempo/mailpit/spotlight) + PG18.x assertion → DEFERRED GATE (unrestricted host, pre-S36). In review |
+| S3 | Go core service skeleton | in_progress | 1 | dk-p0/S3 | 2bf32cf | worker done (/healthz skeleton); pending review |
 | S4 | Contracts pipeline + drift check [C] | pending | 0 | — | — | |
 | S5 | DB foundation (goose+sqlc+River) | pending | 0 | — | — | |
 | S6 | CI pipeline | pending | 0 | — | — | first-GitHub-run deferred |
@@ -93,3 +97,4 @@ Parallel tracks after Phase A: Go domain chain (S8–S19), Python chain (S20–S
 - 2026-07-16: Docs authored and progress seeded (S1..S36 = pending). Next: orchestrator SETUP, then S1.
 - 2026-07-17: SETUP done. 11 agent profiles loaded; integration branch `dk-p0/main` created off `acce0c7`. Dispatched S1 (worktree isolation, capability role connector/reliability→reliability-delivery for scaffold; reviewer reliability-delivery area charter platform_reliability). Verification commands don't exist pre-S1; S1 bootstraps them.
 - 2026-07-17: S1 PASSED (1 cycle, reviewer independently reproduced Verify) → merged into dk-p0/main (worker fd58883). `task ci:local`/toolchains confirmed live. Eligible now: S2 (dev stack) + S3 (Go core skeleton) — both depend only on S1, disjoint files, neither [C] → dispatched concurrently. Next after: S3→S4[C], {S2,S3}→S5, S3→S7.
+- 2026-07-17: RECONCILED from git after compaction — S1 merged+passed (a29e384). S2 (c88c599) & S3 (2bf32cf) workers done, pending review. S2 hit Docker-egress block; human authorized native PG16.13 install (Docker+apt.postgresql.org both blocked) — DB path now live-verifiable, Docker observability boot deferred to gate. Cleaned duplicate seed rows. Next: review S2 + S3 concurrently.
