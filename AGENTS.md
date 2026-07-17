@@ -22,12 +22,13 @@ Before changing anything, read `CLAUDE.md`; it is the shared, binding project-ru
 - Run the step's exact Verify block and preserve actual output. Run `task ci:local` before merge once S6 provides it.
 - Steps marked `[C]` serialize on `contracts/` and `gen/`; never overlap two `[C]` steps.
 - Contract, sqlc query, and migration sources regenerate their committed outputs in the same commit. Never hand-edit `gen/`.
-- Preserve every never-cut invariant and negative test in `CLAUDE.md`. Stop rather than weakening a rule to make a check pass.
+- Preserve every never-cut invariant and negative test in `CLAUDE.md`, and follow its Test-Driven Development section. Stop rather than weakening a rule to make a check pass.
 - S34, S35, and S36 are hard gates. Do not deploy, contact production DK, perform a production write, run a paid benchmark, rotate secrets, or claim sign-off without the specified explicit human approval.
 
 ## Engineering method
 
 - Use clear names, small cohesive functions, direct control flow, typed or validated boundaries, actionable errors, and minimal duplication. Keep changes scoped to the assigned step.
+- **Test-Driven Development is binding** per `CLAUDE.md` §"Test-Driven Development": Red → Green → Refactor is the default for deterministic code. Mandatory TDD covers every never-cut invariant (money, policy, approval, idempotency, deduplication, permissions, capability transitions, free-text containment, Route C parsing, observability fields); strongly preferred for the rest of the deterministic core and LangGraph state transitions. Bug fixes start with a failing reproduction test. Negative tests are first-class. Exclusions (`gen/`, exploratory scripts, visual-only UI layout, codegen runs) are validated by their generators and drift/gate checks. TDD does not replace the step's Verify block — both must pass.
 - Verify current primary documentation through Context7 before answering or coding against third-party libraries, frameworks, SDKs, APIs, CLIs, providers, or cloud/infra tools. Provider-specific documentation tooling is a lookup adapter, not an architectural dependency.
 - Outside an explicitly started S1–S36 orchestrated run, ask for permission before activating multiple agents for independent parallel work. The orchestrator prompt itself grants delegation permission only for its local worker/reviewer loop, never for live or paid operations.
 - Keep deterministic domain code and owned contracts model-selection-, OpenAI-compatible-endpoint-, agent-runtime-, marketplace-SDK-, and deployment-platform-agnostic. All LLM providers are assumed to expose an OpenAI-compatible API; isolate that transport behind one owned port and shared conformance tests rather than adding vendor SDK abstractions.
