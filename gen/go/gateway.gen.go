@@ -19,6 +19,93 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for ApprovalInvalidationReason.
+const (
+	ApprovalInvalidationReasonActionMismatch          ApprovalInvalidationReason = "action_mismatch"
+	ApprovalInvalidationReasonContextVersionChanged   ApprovalInvalidationReason = "context_version_changed"
+	ApprovalInvalidationReasonCostVersionChanged      ApprovalInvalidationReason = "cost_version_changed"
+	ApprovalInvalidationReasonEmpty                   ApprovalInvalidationReason = ""
+	ApprovalInvalidationReasonEvidenceVersionChanged  ApprovalInvalidationReason = "evidence_version_changed"
+	ApprovalInvalidationReasonExpired                 ApprovalInvalidationReason = "expired"
+	ApprovalInvalidationReasonParameterVersionChanged ApprovalInvalidationReason = "parameter_version_changed"
+	ApprovalInvalidationReasonPolicyVersionChanged    ApprovalInvalidationReason = "policy_version_changed"
+)
+
+// Valid indicates whether the value is a known member of the ApprovalInvalidationReason enum.
+func (e ApprovalInvalidationReason) Valid() bool {
+	switch e {
+	case ApprovalInvalidationReasonActionMismatch:
+		return true
+	case ApprovalInvalidationReasonContextVersionChanged:
+		return true
+	case ApprovalInvalidationReasonCostVersionChanged:
+		return true
+	case ApprovalInvalidationReasonEmpty:
+		return true
+	case ApprovalInvalidationReasonEvidenceVersionChanged:
+		return true
+	case ApprovalInvalidationReasonExpired:
+		return true
+	case ApprovalInvalidationReasonParameterVersionChanged:
+		return true
+	case ApprovalInvalidationReasonPolicyVersionChanged:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ApprovalState.
+const (
+	ApprovalStateAccepted              ApprovalState = "accepted"
+	ApprovalStateApproved              ApprovalState = "approved"
+	ApprovalStateAwaitingConfirmation  ApprovalState = "awaiting_confirmation"
+	ApprovalStateBlocked               ApprovalState = "blocked"
+	ApprovalStateDraft                 ApprovalState = "draft"
+	ApprovalStateExecuting             ApprovalState = "executing"
+	ApprovalStateExpired               ApprovalState = "expired"
+	ApprovalStateFailed                ApprovalState = "failed"
+	ApprovalStateInvalidated           ApprovalState = "invalidated"
+	ApprovalStatePendingReconciliation ApprovalState = "pending_reconciliation"
+	ApprovalStateReadyForReview        ApprovalState = "ready_for_review"
+	ApprovalStateRejected              ApprovalState = "rejected"
+	ApprovalStateRevalidating          ApprovalState = "revalidating"
+)
+
+// Valid indicates whether the value is a known member of the ApprovalState enum.
+func (e ApprovalState) Valid() bool {
+	switch e {
+	case ApprovalStateAccepted:
+		return true
+	case ApprovalStateApproved:
+		return true
+	case ApprovalStateAwaitingConfirmation:
+		return true
+	case ApprovalStateBlocked:
+		return true
+	case ApprovalStateDraft:
+		return true
+	case ApprovalStateExecuting:
+		return true
+	case ApprovalStateExpired:
+		return true
+	case ApprovalStateFailed:
+		return true
+	case ApprovalStateInvalidated:
+		return true
+	case ApprovalStatePendingReconciliation:
+		return true
+	case ApprovalStateReadyForReview:
+		return true
+	case ApprovalStateRejected:
+		return true
+	case ApprovalStateRevalidating:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for AvailabilityStatus.
 const (
 	AvailabilityStatusDisappeared AvailabilityStatus = "disappeared"
@@ -372,22 +459,22 @@ func (e CostProfileVersionSource) Valid() bool {
 
 // Defines values for EventLifecycleState.
 const (
-	Expired  EventLifecycleState = "expired"
-	Open     EventLifecycleState = "open"
-	Resolved EventLifecycleState = "resolved"
-	Updated  EventLifecycleState = "updated"
+	EventLifecycleStateExpired  EventLifecycleState = "expired"
+	EventLifecycleStateOpen     EventLifecycleState = "open"
+	EventLifecycleStateResolved EventLifecycleState = "resolved"
+	EventLifecycleStateUpdated  EventLifecycleState = "updated"
 )
 
 // Valid indicates whether the value is a known member of the EventLifecycleState enum.
 func (e EventLifecycleState) Valid() bool {
 	switch e {
-	case Expired:
+	case EventLifecycleStateExpired:
 		return true
-	case Open:
+	case EventLifecycleStateOpen:
 		return true
-	case Resolved:
+	case EventLifecycleStateResolved:
 		return true
-	case Updated:
+	case EventLifecycleStateUpdated:
 		return true
 	default:
 		return false
@@ -504,22 +591,22 @@ func (e MarginReadinessState) Valid() bool {
 
 // Defines values for MarketProductIdentityState.
 const (
-	Confirmed   MarketProductIdentityState = "confirmed"
-	NeedsReview MarketProductIdentityState = "needs_review"
-	Obsolete    MarketProductIdentityState = "obsolete"
-	Rejected    MarketProductIdentityState = "rejected"
+	MarketProductIdentityStateConfirmed   MarketProductIdentityState = "confirmed"
+	MarketProductIdentityStateNeedsReview MarketProductIdentityState = "needs_review"
+	MarketProductIdentityStateObsolete    MarketProductIdentityState = "obsolete"
+	MarketProductIdentityStateRejected    MarketProductIdentityState = "rejected"
 )
 
 // Valid indicates whether the value is a known member of the MarketProductIdentityState enum.
 func (e MarketProductIdentityState) Valid() bool {
 	switch e {
-	case Confirmed:
+	case MarketProductIdentityStateConfirmed:
 		return true
-	case NeedsReview:
+	case MarketProductIdentityStateNeedsReview:
 		return true
-	case Obsolete:
+	case MarketProductIdentityStateObsolete:
 		return true
-	case Rejected:
+	case MarketProductIdentityStateRejected:
 		return true
 	default:
 		return false
@@ -724,6 +811,79 @@ func (e UserRole) Valid() bool {
 	}
 }
 
+// ApprovalBinding The APR-001 version binding of an approval control: the exact action id, parameter/context/policy/cost versions, evidence versions, and expiry. ANY change to a bound dimension, or a reached expiry, invalidates the control.
+type ApprovalBinding struct {
+	ActionId           openapi_types.UUID `json:"actionId"`
+	ContextVersion     int64              `json:"contextVersion"`
+	CostProfileVersion int64              `json:"costProfileVersion"`
+	EvidenceVersions   []EvidenceVersion  `json:"evidenceVersions"`
+	ExpiresAt          time.Time          `json:"expiresAt"`
+	ParameterVersion   int64              `json:"parameterVersion"`
+	PolicyVersion      int64              `json:"policyVersion"`
+}
+
+// ApprovalCardView A versioned approval card (APR-001) with its current §8.4 state, its bound control versions, its authoritative Money price, and its append-only history. A card carries a control ONLY in `awaiting_confirmation`.
+type ApprovalCardView struct {
+	// Binding The APR-001 version binding of an approval control: the exact action id, parameter/context/policy/cost versions, evidence versions, and expiry. ANY change to a bound dimension, or a reached expiry, invalidates the control.
+	Binding ApprovalBinding `json:"binding"`
+
+	// HasControl True only when the card is in awaiting_confirmation (a live control).
+	HasControl bool                        `json:"hasControl"`
+	History    []ApprovalStateHistoryEntry `json:"history"`
+	Id         openapi_types.UUID          `json:"id"`
+
+	// IdempotencyKey Stable execution hand-off key (EXE-002 seam); execution is S18.
+	IdempotencyKey *string `json:"idempotencyKey,omitempty"`
+
+	// Price An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Price            MoneyAmount        `json:"price"`
+	RecommendationId openapi_types.UUID `json:"recommendationId"`
+
+	// State One node of the §8.4 approval state machine. The set is closed; it is the authoritative lifecycle vocabulary for a card and its history.
+	State   ApprovalState `json:"state"`
+	Version int64         `json:"version"`
+}
+
+// ApprovalConfirmRequest The structured individual-approval control activation (§8, APR-001). It MUST carry the exact bound versions; the server re-verifies every one against the live card. This is the only individual approval path — free text cannot satisfy it.
+type ApprovalConfirmRequest struct {
+	// Binding The APR-001 version binding of an approval control: the exact action id, parameter/context/policy/cost versions, evidence versions, and expiry. ANY change to a bound dimension, or a reached expiry, invalidates the control.
+	Binding ApprovalBinding    `json:"binding"`
+	CardId  openapi_types.UUID `json:"cardId"`
+}
+
+// ApprovalConfirmResult The outcome of activating a structured control (§8.4). `state` is one of approved, invalidated, or expired. When invalidated, `reason` names the changed dimension (APR-001). `executionPending` is true when the card reached Approved: per PRD the Revalidating → Executing boundary lands in S18, so no write occurs here.
+type ApprovalConfirmResult struct {
+	CardId openapi_types.UUID `json:"cardId"`
+
+	// ExecutionPending True when Approved; execution/reconciliation is S18.
+	ExecutionPending bool `json:"executionPending"`
+
+	// Reason The exact bound dimension that invalidated an approval control (APR-001, §16). Empty means the control is still valid.
+	Reason ApprovalInvalidationReason `json:"reason"`
+
+	// State One node of the §8.4 approval state machine. The set is closed; it is the authoritative lifecycle vocabulary for a card and its history.
+	State ApprovalState `json:"state"`
+}
+
+// ApprovalInvalidationReason The exact bound dimension that invalidated an approval control (APR-001, §16). Empty means the control is still valid.
+type ApprovalInvalidationReason string
+
+// ApprovalState One node of the §8.4 approval state machine. The set is closed; it is the authoritative lifecycle vocabulary for a card and its history.
+type ApprovalState string
+
+// ApprovalStateHistoryEntry One append-only §8.4 state-history row (AUD-001).
+type ApprovalStateHistoryEntry struct {
+	// FromState One node of the §8.4 approval state machine. The set is closed; it is the authoritative lifecycle vocabulary for a card and its history.
+	FromState  *ApprovalState `json:"fromState,omitempty"`
+	OccurredAt time.Time      `json:"occurredAt"`
+
+	// Reason Invalidation dimension or transition note (never authority).
+	Reason string `json:"reason"`
+
+	// ToState One node of the §8.4 approval state machine. The set is closed; it is the authoritative lifecycle vocabulary for a card and its history.
+	ToState ApprovalState `json:"toState"`
+}
+
 // AvailabilityStatus Normalized availability (docs/11, §16). `unavailable` is the DISTINCT temporary-out state; `disappeared` is the permanent close (offer gone, closed with an end time, never a zero price).
 type AvailabilityStatus string
 
@@ -737,6 +897,26 @@ type BuildInfo struct {
 
 	// Version Semantic version or dev marker of the running binary.
 	Version string `json:"version"`
+}
+
+// BulkApprovalConfirmRequest A bulk approval confirmation bound to ONE exact selection-set version (CHAT-052). The server rejects it when the bound version is no longer current (any set/evidence change mints a new version).
+type BulkApprovalConfirmRequest struct {
+	// BoundVersion The exact selection-set version the preview bound to.
+	BoundVersion int64 `json:"boundVersion"`
+
+	// SelectionSetLineage The selection-set lineage the preview was built from.
+	SelectionSetLineage openapi_types.UUID `json:"selectionSetLineage"`
+}
+
+// BulkApprovalConfirmResult The outcome of a bulk confirmation. `valid` is false when the bound selection-set version is stale (invalidated by a set/evidence change). `executionPending` is true for a valid bulk confirmation — per-item execution lands in S18.
+type BulkApprovalConfirmResult struct {
+	BoundVersion int64 `json:"boundVersion"`
+
+	// CurrentVersion The current selection-set version (differs from bound when stale).
+	CurrentVersion      *int64             `json:"currentVersion,omitempty"`
+	ExecutionPending    bool               `json:"executionPending"`
+	SelectionSetLineage openapi_types.UUID `json:"selectionSetLineage"`
+	Valid               bool               `json:"valid"`
 }
 
 // CapabilityStatus One capability's current status and last-verified time (ACC-001).
@@ -1136,6 +1316,12 @@ type EventSeverity string
 
 // EventType One of the five P0 market-event types (PRD §7.4 EVT-001). The set is closed.
 type EventType string
+
+// EvidenceVersion One cited observation bound to the exact evidence version used (APR-001).
+type EvidenceVersion struct {
+	ObservationId openapi_types.UUID `json:"observationId"`
+	Version       int64              `json:"version"`
+}
 
 // Health Liveness plus build identity, returned by GET /healthz.
 type Health struct {
@@ -1592,6 +1778,12 @@ type TodayFeed struct {
 // UserRole Product role (PRD §2.2). Owner governs commercial boundaries and users; Operator executes day-to-day within Owner-defined permissions; Internal diagnoses data/execution and cannot change seller commercial rules.
 type UserRole string
 
+// GetApprovalCardParams defines parameters for GetApprovalCard.
+type GetApprovalCardParams struct {
+	// CardId The approval card id.
+	CardId openapi_types.UUID `form:"cardId" json:"cardId"`
+}
+
 // GetConnectorStatusParams defines parameters for GetConnectorStatus.
 type GetConnectorStatusParams struct {
 	// MarketplaceAccountId Marketplace account whose connector status is requested.
@@ -1664,6 +1856,12 @@ type GetTodayFeedParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
+// ConfirmBulkApprovalJSONRequestBody defines body for ConfirmBulkApproval for application/json ContentType.
+type ConfirmBulkApprovalJSONRequestBody = BulkApprovalConfirmRequest
+
+// ConfirmApprovalJSONRequestBody defines body for ConfirmApproval for application/json ContentType.
+type ConfirmApprovalJSONRequestBody = ApprovalConfirmRequest
+
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
@@ -1708,6 +1906,15 @@ type SimulatePolicyJSONRequestBody = PolicySimulationRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ConfirmBulkApproval Confirm a bulk approval bound to one selection-set version (CHAT-052).
+	// (POST /approvals/bulk/confirm)
+	ConfirmBulkApproval(w http.ResponseWriter, r *http.Request)
+	// GetApprovalCard Get an approval card and its append-only §8.4 state history.
+	// (GET /approvals/card)
+	GetApprovalCard(w http.ResponseWriter, r *http.Request, params GetApprovalCardParams)
+	// ConfirmApproval Activate the structured control on an individual approval card (APR-001).
+	// (POST /approvals/confirm)
+	ConfirmApproval(w http.ResponseWriter, r *http.Request)
 	// Login Authenticate a user and open a server-side session.
 	// (POST /auth/login)
 	Login(w http.ResponseWriter, r *http.Request)
@@ -1802,6 +2009,67 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ConfirmBulkApproval operation middleware
+func (siw *ServerInterfaceWrapper) ConfirmBulkApproval(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ConfirmBulkApproval(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetApprovalCard operation middleware
+func (siw *ServerInterfaceWrapper) GetApprovalCard(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetApprovalCardParams
+
+	// ------------- Required query parameter "cardId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "cardId", r.URL.Query(), &params.CardId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cardId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cardId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetApprovalCard(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ConfirmApproval operation middleware
+func (siw *ServerInterfaceWrapper) ConfirmApproval(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ConfirmApproval(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // Login operation middleware
 func (siw *ServerInterfaceWrapper) Login(w http.ResponseWriter, r *http.Request) {
@@ -2578,8 +2846,128 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/event", wrapper.GetEvent)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/today", wrapper.GetTodayFeed)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/events/relevance", wrapper.RecordEventRelevance)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/approvals/card", wrapper.GetApprovalCard)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/approvals/confirm", wrapper.ConfirmApproval)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/approvals/bulk/confirm", wrapper.ConfirmBulkApproval)
 
 	return m
+}
+
+type ConfirmBulkApprovalRequestObject struct {
+	Body *ConfirmBulkApprovalJSONRequestBody
+}
+
+type ConfirmBulkApprovalResponseObject interface {
+	VisitConfirmBulkApprovalResponse(w http.ResponseWriter) error
+}
+
+type ConfirmBulkApproval200JSONResponse BulkApprovalConfirmResult
+
+func (response ConfirmBulkApproval200JSONResponse) VisitConfirmBulkApprovalResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConfirmBulkApprovaldefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ConfirmBulkApprovaldefaultJSONResponse) VisitConfirmBulkApprovalResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetApprovalCardRequestObject struct {
+	Params GetApprovalCardParams
+}
+
+type GetApprovalCardResponseObject interface {
+	VisitGetApprovalCardResponse(w http.ResponseWriter) error
+}
+
+type GetApprovalCard200JSONResponse ApprovalCardView
+
+func (response GetApprovalCard200JSONResponse) VisitGetApprovalCardResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetApprovalCarddefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetApprovalCarddefaultJSONResponse) VisitGetApprovalCardResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConfirmApprovalRequestObject struct {
+	Body *ConfirmApprovalJSONRequestBody
+}
+
+type ConfirmApprovalResponseObject interface {
+	VisitConfirmApprovalResponse(w http.ResponseWriter) error
+}
+
+type ConfirmApproval200JSONResponse ApprovalConfirmResult
+
+func (response ConfirmApproval200JSONResponse) VisitConfirmApprovalResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ConfirmApprovaldefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ConfirmApprovaldefaultJSONResponse) VisitConfirmApprovalResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type LoginRequestObject struct {
@@ -3738,6 +4126,15 @@ func (response GetTodayFeeddefaultJSONResponse) VisitGetTodayFeedResponse(w http
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ConfirmBulkApproval Confirm a bulk approval bound to one selection-set version (CHAT-052).
+	// (POST /approvals/bulk/confirm)
+	ConfirmBulkApproval(ctx context.Context, request ConfirmBulkApprovalRequestObject) (ConfirmBulkApprovalResponseObject, error)
+	// GetApprovalCard Get an approval card and its append-only §8.4 state history.
+	// (GET /approvals/card)
+	GetApprovalCard(ctx context.Context, request GetApprovalCardRequestObject) (GetApprovalCardResponseObject, error)
+	// ConfirmApproval Activate the structured control on an individual approval card (APR-001).
+	// (POST /approvals/confirm)
+	ConfirmApproval(ctx context.Context, request ConfirmApprovalRequestObject) (ConfirmApprovalResponseObject, error)
 	// Login Authenticate a user and open a server-side session.
 	// (POST /auth/login)
 	Login(ctx context.Context, request LoginRequestObject) (LoginResponseObject, error)
@@ -3861,6 +4258,94 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ConfirmBulkApproval operation middleware
+func (sh *strictHandler) ConfirmBulkApproval(w http.ResponseWriter, r *http.Request) {
+	var request ConfirmBulkApprovalRequestObject
+
+	var body ConfirmBulkApprovalJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ConfirmBulkApproval(ctx, request.(ConfirmBulkApprovalRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ConfirmBulkApproval")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ConfirmBulkApprovalResponseObject); ok {
+		if err := validResponse.VisitConfirmBulkApprovalResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetApprovalCard operation middleware
+func (sh *strictHandler) GetApprovalCard(w http.ResponseWriter, r *http.Request, params GetApprovalCardParams) {
+	var request GetApprovalCardRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetApprovalCard(ctx, request.(GetApprovalCardRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetApprovalCard")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetApprovalCardResponseObject); ok {
+		if err := validResponse.VisitGetApprovalCardResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ConfirmApproval operation middleware
+func (sh *strictHandler) ConfirmApproval(w http.ResponseWriter, r *http.Request) {
+	var request ConfirmApprovalRequestObject
+
+	var body ConfirmApprovalJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ConfirmApproval(ctx, request.(ConfirmApprovalRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ConfirmApproval")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ConfirmApprovalResponseObject); ok {
+		if err := validResponse.VisitConfirmApprovalResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // Login operation middleware

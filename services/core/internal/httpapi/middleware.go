@@ -98,6 +98,14 @@ var routePolicies = []routePolicy{
 	{http.MethodGet, "/today", kindProtected, perm.ActionReadEvents},
 	// Event relevance feedback (EVT-005) — reversible seller-data write (L2).
 	{http.MethodPost, "/events/relevance", kindProtected, perm.ActionEventRelevanceFeedback},
+	// Approval card + history read (§7.5 APR-001 / AUD-001) — L1 read.approvals.
+	{http.MethodGet, "/approvals/card", kindProtected, perm.ActionReadApprovals},
+	// Individual approval confirmation (§8.4 / APR-001) — L4 price.approve. Only
+	// Owner/Operator; the machine principal is never granted this action.
+	{http.MethodPost, "/approvals/confirm", kindProtected, perm.ActionApprovePriceChange},
+	// Bulk approval confirmation bound to one selection-set version (CHAT-052) —
+	// L4 price.approve.
+	{http.MethodPost, "/approvals/bulk/confirm", kindProtected, perm.ActionApprovePriceChange},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.

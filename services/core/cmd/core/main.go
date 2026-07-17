@@ -25,6 +25,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/httpapi"
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
 	"github.com/mhosseinab/market-ops/services/core/internal/obs"
+	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
 // Build identity, injected at build time via -ldflags; defaults keep the binary
@@ -141,6 +142,12 @@ func run() error {
 		// materiality, type-specific dedup, and the deterministic Today ranking.
 		serverOpts = append(serverOpts, httpapi.WithEvent(event.NewService(pool)))
 		logger.Info("event service wired")
+
+		// Wire the recommendation/approval plane (PRC-001/002, APR-001, §8.4): the
+		// version-bound approval control and the append-only state machine. Execution
+		// itself lands in S18; the Revalidating→Executing boundary is stubbed closed.
+		serverOpts = append(serverOpts, httpapi.WithApproval(recommendation.NewService(pool)))
+		logger.Info("approval service wired")
 	} else {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
 	}

@@ -20,6 +20,37 @@ type AccountCostPolicy struct {
 	UpdatedAt                  time.Time
 }
 
+type ApprovalCard struct {
+	ID                   uuid.UUID
+	RecommendationID     uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	LineageID            uuid.UUID
+	Version              int32
+	ActionID             uuid.UUID
+	ParameterVersion     int64
+	ContextVersion       int64
+	PolicyVersion        int64
+	CostProfileVersion   int64
+	EvidenceVersions     []byte
+	IdempotencyKey       string
+	State                string
+	PriceMantissa        int64
+	PriceCurrency        string
+	PriceExponent        int16
+	ExpiresAt            time.Time
+	CreatedAt            time.Time
+}
+
+type ApprovalCardState struct {
+	ID          uuid.UUID
+	CardID      uuid.UUID
+	CardVersion int32
+	FromState   pgtype.Text
+	ToState     string
+	Reason      string
+	OccurredAt  time.Time
+}
+
 type CatalogPayloadSnapshot struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -402,6 +433,56 @@ type Product struct {
 	UpdatedAt            time.Time
 }
 
+type Recommendation struct {
+	ID                            uuid.UUID
+	MarketplaceAccountID          uuid.UUID
+	VariantID                     uuid.UUID
+	LineageID                     uuid.UUID
+	Version                       int32
+	EventID                       pgtype.UUID
+	Objective                     string
+	CurrentPriceMantissa          int64
+	CurrentPriceCurrency          string
+	CurrentPriceExponent          int16
+	ProposedPriceAvailable        bool
+	ProposedPriceMantissa         pgtype.Int8
+	ProposedPriceCurrency         string
+	ProposedPriceExponent         int16
+	ProposedPriceReason           string
+	CurrentContributionAvailable  bool
+	CurrentContributionMantissa   pgtype.Int8
+	CurrentContributionCurrency   string
+	CurrentContributionExponent   int16
+	CurrentContributionReason     string
+	ProposedContributionAvailable bool
+	ProposedContributionMantissa  pgtype.Int8
+	ProposedContributionCurrency  string
+	ProposedContributionExponent  int16
+	ProposedContributionReason    string
+	AllowedRangeAvailable         bool
+	AllowedRangeMinMantissa       pgtype.Int8
+	AllowedRangeMaxMantissa       pgtype.Int8
+	AllowedRangeCurrency          string
+	AllowedRangeExponent          int16
+	AllowedRangeReason            string
+	Readiness                     string
+	EvidenceQuality               string
+	EvidenceObservationID         pgtype.UUID
+	EvidenceRefs                  []byte
+	EvidenceAsOf                  pgtype.Timestamptz
+	CostProfileVersion            int64
+	PolicyVersion                 int64
+	ContextVersion                int64
+	ParameterVersion              int64
+	Inputs                        []byte
+	Assumptions                   []byte
+	Blockers                      []byte
+	Approvable                    bool
+	Simulation                    bool
+	ExpiresAt                     pgtype.Timestamptz
+	CreatedAt                     time.Time
+}
+
 type RecommendationInvalidationEvent struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -420,6 +501,30 @@ type RouteKillSwitch struct {
 	Reason    string
 	EngagedBy pgtype.UUID
 	EngagedAt time.Time
+}
+
+type SelectionSet struct {
+	ID                      uuid.UUID
+	MarketplaceAccountID    uuid.UUID
+	LineageID               uuid.UUID
+	Version                 int32
+	Name                    string
+	Criteria                []byte
+	MemberCount             int32
+	AggregateImpactKnown    bool
+	AggregateImpactMantissa pgtype.Int8
+	AggregateImpactCurrency string
+	AggregateImpactExponent int16
+	CreatedAt               time.Time
+}
+
+type SelectionSetMember struct {
+	ID               uuid.UUID
+	SelectionSetID   uuid.UUID
+	VariantID        uuid.UUID
+	RecommendationID pgtype.UUID
+	Disposition      string
+	CreatedAt        time.Time
 }
 
 type Session struct {

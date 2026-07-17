@@ -564,6 +564,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/approvals/card": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an approval card and its append-only §8.4 state history.
+         * @description Returns one versioned approval card (PRD §7.5 APR-001) with its current §8.4 state and the APPEND-ONLY lifecycle history (AUD-001). The structured control's bound versions (action id, parameter/context/policy/cost versions, evidence versions, expiry) are surfaced so the surface can present the control and re-verify it on confirmation. This is a read; it never advances state.
+         */
+        get: operations["getApprovalCard"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate the structured control on an individual approval card (APR-001).
+         * @description The ONLY individual approval path (§8, never-cut free-text containment): activates the structured, version-bound control on a card in AwaitingConfirmation. The request MUST carry the exact bound versions (action id, parameter/context/policy/cost versions, evidence versions); the server re-verifies EVERY one against the live card. ANY changed dimension routes to Invalidated and an elapsed expiry to Expired — only a fully-matching, live control reaches Approved (§8.4). Free text can never satisfy this contract. Execution itself (the Revalidating → Executing boundary) lands in S18 and is stubbed closed here: an Approved card reports `executionPending` true and performs no write.
+         */
+        post: operations["confirmApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/bulk/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm a bulk approval bound to one selection-set version (CHAT-052).
+         * @description Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The request binds the selection-set lineage and the exact version it previewed; the server rejects the confirmation when that version is no longer current (any set or evidence change mints a new version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in S18. This never approves from free text and never re-queries the set (no drift).
+         */
+        post: operations["confirmBulkApproval"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1406,6 +1466,107 @@ export interface components {
             detail?: string;
             /** @description Correlation id for tracing this request across planes. */
             requestId?: string;
+        };
+        /**
+         * @description One node of the §8.4 approval state machine. The set is closed; it is the authoritative lifecycle vocabulary for a card and its history.
+         * @enum {string}
+         */
+        ApprovalState: "draft" | "ready_for_review" | "blocked" | "awaiting_confirmation" | "approved" | "expired" | "invalidated" | "revalidating" | "executing" | "accepted" | "rejected" | "pending_reconciliation" | "failed";
+        /**
+         * @description The exact bound dimension that invalidated an approval control (APR-001, §16). Empty means the control is still valid.
+         * @enum {string}
+         */
+        ApprovalInvalidationReason: "" | "action_mismatch" | "parameter_version_changed" | "context_version_changed" | "policy_version_changed" | "cost_version_changed" | "evidence_version_changed" | "expired";
+        /** @description One cited observation bound to the exact evidence version used (APR-001). */
+        EvidenceVersion: {
+            /** Format: uuid */
+            observationId: string;
+            /** Format: int64 */
+            version: number;
+        };
+        /** @description The APR-001 version binding of an approval control: the exact action id, parameter/context/policy/cost versions, evidence versions, and expiry. ANY change to a bound dimension, or a reached expiry, invalidates the control. */
+        ApprovalBinding: {
+            /** Format: uuid */
+            actionId: string;
+            /** Format: int64 */
+            parameterVersion: number;
+            /** Format: int64 */
+            contextVersion: number;
+            /** Format: int64 */
+            policyVersion: number;
+            /** Format: int64 */
+            costProfileVersion: number;
+            evidenceVersions: components["schemas"]["EvidenceVersion"][];
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        /** @description One append-only §8.4 state-history row (AUD-001). */
+        ApprovalStateHistoryEntry: {
+            fromState?: components["schemas"]["ApprovalState"];
+            toState: components["schemas"]["ApprovalState"];
+            /** @description Invalidation dimension or transition note (never authority). */
+            reason: string;
+            /** Format: date-time */
+            occurredAt: string;
+        };
+        /** @description A versioned approval card (APR-001) with its current §8.4 state, its bound control versions, its authoritative Money price, and its append-only history. A card carries a control ONLY in `awaiting_confirmation`. */
+        ApprovalCardView: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            recommendationId: string;
+            /** Format: int64 */
+            version: number;
+            state: components["schemas"]["ApprovalState"];
+            binding: components["schemas"]["ApprovalBinding"];
+            price: components["schemas"]["MoneyAmount"];
+            /** @description Stable execution hand-off key (EXE-002 seam); execution is S18. */
+            idempotencyKey?: string;
+            /** @description True only when the card is in awaiting_confirmation (a live control). */
+            hasControl: boolean;
+            history: components["schemas"]["ApprovalStateHistoryEntry"][];
+        };
+        /** @description The structured individual-approval control activation (§8, APR-001). It MUST carry the exact bound versions; the server re-verifies every one against the live card. This is the only individual approval path — free text cannot satisfy it. */
+        ApprovalConfirmRequest: {
+            /** Format: uuid */
+            cardId: string;
+            binding: components["schemas"]["ApprovalBinding"];
+        };
+        /** @description The outcome of activating a structured control (§8.4). `state` is one of approved, invalidated, or expired. When invalidated, `reason` names the changed dimension (APR-001). `executionPending` is true when the card reached Approved: per PRD the Revalidating → Executing boundary lands in S18, so no write occurs here. */
+        ApprovalConfirmResult: {
+            /** Format: uuid */
+            cardId: string;
+            state: components["schemas"]["ApprovalState"];
+            reason: components["schemas"]["ApprovalInvalidationReason"];
+            /** @description True when Approved; execution/reconciliation is S18. */
+            executionPending: boolean;
+        };
+        /** @description A bulk approval confirmation bound to ONE exact selection-set version (CHAT-052). The server rejects it when the bound version is no longer current (any set/evidence change mints a new version). */
+        BulkApprovalConfirmRequest: {
+            /**
+             * Format: uuid
+             * @description The selection-set lineage the preview was built from.
+             */
+            selectionSetLineage: string;
+            /**
+             * Format: int64
+             * @description The exact selection-set version the preview bound to.
+             */
+            boundVersion: number;
+        };
+        /** @description The outcome of a bulk confirmation. `valid` is false when the bound selection-set version is stale (invalidated by a set/evidence change). `executionPending` is true for a valid bulk confirmation — per-item execution lands in S18. */
+        BulkApprovalConfirmResult: {
+            /** Format: uuid */
+            selectionSetLineage: string;
+            /** Format: int64 */
+            boundVersion: number;
+            /**
+             * Format: int64
+             * @description The current selection-set version (differs from bound when stale).
+             */
+            currentVersion?: number;
+            valid: boolean;
+            executionPending: boolean;
         };
     };
     responses: never;
@@ -2333,6 +2494,104 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EventRelevanceRecorded"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getApprovalCard: {
+        parameters: {
+            query: {
+                /** @description The approval card id. */
+                cardId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The approval card, its state, and its append-only history. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalCardView"];
+                };
+            };
+            /** @description Unexpected error (including a missing card). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    confirmApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description The confirmation outcome (approved, invalidated, or expired). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalConfirmResult"];
+                };
+            };
+            /** @description Unexpected error (including a card with no control, PRC-002). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    confirmBulkApproval: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkApprovalConfirmRequest"];
+            };
+        };
+        responses: {
+            /** @description The bulk confirmation outcome (bound or invalidated). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkApprovalConfirmResult"];
                 };
             };
             /** @description Unexpected error. */
