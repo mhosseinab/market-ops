@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
@@ -68,6 +69,33 @@ func run() error {
 
 	info := httpapi.BuildInfo{Version: version, Commit: commit, BuildTime: buildTime}
 
+	// Chat kill switch (CHAT-009) is always wired from config: it is authoritative
+	// even when the LLM plane is down, and it degrades chat ONLY — screens stay
+	// fully functional. Invalid account ids in the config are dropped (logged),
+	// never silently treated as "kill everything".
+	var killAccounts []uuid.UUID
+	for _, raw := range cfg.ChatKillSwitchAccounts {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			logger.Warn("ignoring invalid CHAT_KILL_SWITCH_ACCOUNTS entry", "value", raw)
+			continue
+		}
+		killAccounts = append(killAccounts, id)
+	}
+	serverOptsChat := []httpapi.Option{
+		httpapi.WithChatKillSwitch(httpapi.NewStaticKillSwitch(cfg.ChatKillSwitchGlobal, killAccounts)),
+	}
+	// Wire the LLM plane seam only when its base URL is configured. Without it
+	// /chat fails closed with a structured provider_unavailable state (§19.3);
+	// screens are unaffected.
+	if cfg.LLMServiceBaseURL != "" {
+		serverOptsChat = append(serverOptsChat,
+			httpapi.WithLLMChat(httpapi.NewHTTPLLMChat(cfg.LLMServiceBaseURL, cfg.LLMGatewayToken)))
+		logger.Info("LLM plane seam wired", "llm_service_url", cfg.LLMServiceBaseURL)
+	} else {
+		logger.Warn("LLM_SERVICE_URL unset; /chat fails closed (provider_unavailable). Screens unaffected.")
+	}
+
 	// A single pgx pool backs every DB-backed route. When DATABASE_URL is unset
 	// the server serves only public routes; nothing DB-backed is wired.
 	var serverOpts []httpapi.Option
@@ -104,6 +132,7 @@ func run() error {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
 	}
 
+	serverOpts = append(serverOpts, serverOptsChat...)
 	srv := httpapi.NewServer(cfg.HTTPAddr, info, logger, serverOpts...)
 
 	serveErr := make(chan error, 1)

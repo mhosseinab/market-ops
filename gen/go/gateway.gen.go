@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -22,6 +23,27 @@ const (
 	BearerAuthScopes bearerAuthContextKey = "bearerAuth.Scopes"
 	CookieAuthScopes cookieAuthContextKey = "cookieAuth.Scopes"
 )
+
+// Defines values for ChatUnavailableReason.
+const (
+	KillSwitchAccount   ChatUnavailableReason = "kill_switch_account"
+	KillSwitchGlobal    ChatUnavailableReason = "kill_switch_global"
+	ProviderUnavailable ChatUnavailableReason = "provider_unavailable"
+)
+
+// Valid indicates whether the value is a known member of the ChatUnavailableReason enum.
+func (e ChatUnavailableReason) Valid() bool {
+	switch e {
+	case KillSwitchAccount:
+		return true
+	case KillSwitchGlobal:
+		return true
+	case ProviderUnavailable:
+		return true
+	default:
+		return false
+	}
+}
 
 // Defines values for ConnectorCapability.
 const (
@@ -167,6 +189,33 @@ type CapabilityStatus struct {
 	Status ConnectorCapabilityState `json:"status"`
 }
 
+// ChatTurnRequest One conversation turn from the browser. The message is free text and carries NO authority (PRD §8 free-text containment): it can never approve, execute, or confirm — those live only in structured controls outside the model plane. A turn optionally continues an existing conversation and/or binds a marketplace-account context; context resolution itself is deterministic in the LLM plane (§8.1), never guessed from this field.
+type ChatTurnRequest struct {
+	// ConversationId Existing conversation to continue. Absent on the first turn; the gateway opens a new conversation and returns its id in the stream.
+	ConversationId *openapi_types.UUID `json:"conversationId,omitempty"`
+
+	// MarketplaceAccountId Optional account context for the turn. Exactly one context is active per conversation; ambiguity is resolved by a structured picker, never inferred (CHAT-007).
+	MarketplaceAccountId *openapi_types.UUID `json:"marketplaceAccountId,omitempty"`
+
+	// Message The user's free-text message. Bounded; carries no authority.
+	Message string `json:"message"`
+}
+
+// ChatUnavailable Structured disabled state for /chat. The web client renders the suggested-prompts + structured-screens fallback (§12.1) from this; it is NOT an error the way a 5xx failure is — screens remain fully usable.
+type ChatUnavailable struct {
+	// Code Stable machine-readable code (screaming_snake_case).
+	Code string `json:"code"`
+
+	// Message Human-readable summary. Localized at the edge, never in core.
+	Message string `json:"message"`
+
+	// Reason Why chat is unavailable. All three degrade chat ONLY — every structured screen stays fully functional (CHAT-009). Never inferred; set by the gateway from the kill-switch config or LLM-plane reachability.
+	Reason ChatUnavailableReason `json:"reason"`
+}
+
+// ChatUnavailableReason Why chat is unavailable. All three degrade chat ONLY — every structured screen stays fully functional (CHAT-009). Never inferred; set by the gateway from the kill-switch config or LLM-plane reachability.
+type ChatUnavailableReason string
+
 // ConnectorAccountRef References the marketplace account a connector operation targets.
 type ConnectorAccountRef struct {
 	// MarketplaceAccountId Marketplace account (PRD §15.1) the operation applies to.
@@ -273,6 +322,9 @@ type GetConnectorStatusParams struct {
 // LoginJSONRequestBody defines body for Login for application/json ContentType.
 type LoginJSONRequestBody = LoginRequest
 
+// ChatJSONRequestBody defines body for Chat for application/json ContentType.
+type ChatJSONRequestBody = ChatTurnRequest
+
 // ConnectConnectorJSONRequestBody defines body for ConnectConnector for application/json ContentType.
 type ConnectConnectorJSONRequestBody = ConnectorConnectRequest
 
@@ -293,6 +345,9 @@ type ServerInterface interface {
 	// Return the identity of the current session.
 	// (GET /auth/me)
 	GetCurrentSession(w http.ResponseWriter, r *http.Request)
+	// Converse with the LLM plane over a Server-Sent Events stream.
+	// (POST /chat)
+	Chat(w http.ResponseWriter, r *http.Request)
 	// Connect the DK account for a marketplace account.
 	// (POST /connector/connect)
 	ConnectConnector(w http.ResponseWriter, r *http.Request)
@@ -364,6 +419,26 @@ func (siw *ServerInterfaceWrapper) GetCurrentSession(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetCurrentSession(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// Chat operation middleware
+func (siw *ServerInterfaceWrapper) Chat(w http.ResponseWriter, r *http.Request) {
+
+	ctx := r.Context()
+
+	ctx = context.WithValue(ctx, CookieAuthScopes, []string{})
+
+	r = r.WithContext(ctx)
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.Chat(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -609,6 +684,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/login", wrapper.Login)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/logout", wrapper.Logout)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/me", wrapper.GetCurrentSession)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/chat", wrapper.Chat)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/connect", wrapper.ConnectConnector)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/disconnect", wrapper.DisconnectConnector)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/refresh", wrapper.RefreshConnector)
@@ -744,6 +820,88 @@ type GetCurrentSessiondefaultJSONResponse struct {
 }
 
 func (response GetCurrentSessiondefaultJSONResponse) VisitGetCurrentSessionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ChatRequestObject struct {
+	Body *ChatJSONRequestBody
+}
+
+type ChatResponseObject interface {
+	VisitChatResponse(w http.ResponseWriter) error
+}
+
+type Chat200TexteventStreamResponse struct {
+	Body          io.Reader
+	ContentLength int64
+}
+
+func (response Chat200TexteventStreamResponse) VisitChatResponse(w http.ResponseWriter) error {
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	if response.ContentLength != 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(response.ContentLength))
+	}
+	w.WriteHeader(200)
+
+	if closer, ok := response.Body.(io.ReadCloser); ok {
+		defer closer.Close()
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		// If w doesn't support flushing, fall back to io.Copy.
+		_, err := io.Copy(w, response.Body)
+		return err
+	}
+	// text/event-stream messages are typically small; use a
+	// modest buffer and flush after each chunk so clients see
+	// events immediately instead of waiting on OS buffering.
+	buf := make([]byte, 4096)
+	for {
+		n, err := response.Body.Read(buf)
+		if n > 0 {
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
+			flusher.Flush()
+		}
+		if err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+type Chat503JSONResponse ChatUnavailable
+
+func (response Chat503JSONResponse) VisitChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ChatdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ChatdefaultJSONResponse) VisitChatResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -960,6 +1118,9 @@ type StrictServerInterface interface {
 	// Return the identity of the current session.
 	// (GET /auth/me)
 	GetCurrentSession(ctx context.Context, request GetCurrentSessionRequestObject) (GetCurrentSessionResponseObject, error)
+	// Converse with the LLM plane over a Server-Sent Events stream.
+	// (POST /chat)
+	Chat(ctx context.Context, request ChatRequestObject) (ChatResponseObject, error)
 	// Connect the DK account for a marketplace account.
 	// (POST /connector/connect)
 	ConnectConnector(ctx context.Context, request ConnectConnectorRequestObject) (ConnectConnectorResponseObject, error)
@@ -1078,6 +1239,37 @@ func (sh *strictHandler) GetCurrentSession(w http.ResponseWriter, r *http.Reques
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetCurrentSessionResponseObject); ok {
 		if err := validResponse.VisitGetCurrentSessionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// Chat operation middleware
+func (sh *strictHandler) Chat(w http.ResponseWriter, r *http.Request) {
+	var request ChatRequestObject
+
+	var body ChatJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.Chat(ctx, request.(ChatRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "Chat")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ChatResponseObject); ok {
+		if err := validResponse.VisitChatResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
