@@ -23,6 +23,10 @@ from .connector_capability_state import ConnectorCapabilityState
 from .connector_connect_request import ConnectorConnectRequest
 from .connector_connection_state import ConnectorConnectionState
 from .connector_status import ConnectorStatus
+from .contribution import Contribution
+from .contribution_component_input import ContributionComponentInput
+from .contribution_component_kind import ContributionComponentKind
+from .contribution_deduction import ContributionDeduction
 from .cost_component import CostComponent
 from .cost_import_commit_request import CostImportCommitRequest
 from .cost_import_commit_result import CostImportCommitResult
@@ -57,6 +61,16 @@ from .observation_target_list import ObservationTargetList
 from .observation_target_tier import ObservationTargetTier
 from .observed_offer import ObservedOffer
 from .observed_offer_list import ObservedOfferList
+from .policy_blocker import PolicyBlocker
+from .policy_blocker_code import PolicyBlockerCode
+from .policy_boundary import PolicyBoundary
+from .policy_config import PolicyConfig
+from .policy_objective import PolicyObjective
+from .policy_proposal import PolicyProposal
+from .policy_simulation_request import PolicySimulationRequest
+from .policy_simulation_result import PolicySimulationResult
+from .policy_stage import PolicyStage
+from .policy_strategy import PolicyStrategy
 from .quality_state import QualityState
 from .raw_amount import RawAmount
 from .session_info import SessionInfo
@@ -87,6 +101,10 @@ __all__ = (
     "ConnectorConnectionState",
     "ConnectorConnectRequest",
     "ConnectorStatus",
+    "Contribution",
+    "ContributionComponentInput",
+    "ContributionComponentKind",
+    "ContributionDeduction",
     "CostComponent",
     "CostImportCommitRequest",
     "CostImportCommitResult",
@@ -121,6 +139,16 @@ __all__ = (
     "ObservationTargetTier",
     "ObservedOffer",
     "ObservedOfferList",
+    "PolicyBlocker",
+    "PolicyBlockerCode",
+    "PolicyBoundary",
+    "PolicyConfig",
+    "PolicyObjective",
+    "PolicyProposal",
+    "PolicySimulationRequest",
+    "PolicySimulationResult",
+    "PolicyStage",
+    "PolicyStrategy",
     "QualityState",
     "RawAmount",
     "SessionInfo",

@@ -123,6 +123,11 @@ const (
 	// current Observed Offers, and append-only observation evidence (PRD §7.3).
 	// Reading is always L1 (§8.3); a machine data-read tool may hold it.
 	ActionReadObservations Action = "read.observations"
+	// ActionSimulatePolicy authorizes a NON-EXECUTABLE contribution + policy
+	// simulation (PRD §9.2/§9.3, PRC-003/004). A simulation only computes a
+	// what-if and NEVER carries an approval control (§8, §12.3), so it is an L1
+	// read every authenticated role — including the machine read token — may run.
+	ActionSimulatePolicy Action = "policy.simulate"
 
 	// --- L2 reversible configuration ----------------------------------------
 	ActionConnectorConnect Action = "connector.connect"
@@ -197,6 +202,8 @@ var Matrix = []Rule{
 	{ActionChatConverse, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionReadNeedsReview, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionReadObservations, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	// Policy simulation is a non-executable read/analysis (§9.2/§9.3): all roles.
+	{ActionSimulatePolicy, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 
 	// L2 reversible configuration. Account-lifecycle connector actions are
 	// account management — Owner only (PRD §2.2 "Connect account") — a valid

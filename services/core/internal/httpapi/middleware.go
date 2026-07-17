@@ -90,6 +90,8 @@ var routePolicies = []routePolicy{
 	// Cost profile + readiness reads (CST-002/CST-003) — L1 read.cost_readiness.
 	{http.MethodGet, "/cost/profiles", kindProtected, perm.ActionReadCostReadiness},
 	{http.MethodGet, "/cost/readiness", kindProtected, perm.ActionReadCostReadiness},
+	// Contribution + policy simulation (§9.2/§9.3) — non-executable L1 analysis.
+	{http.MethodPost, "/policy/simulate", kindProtected, perm.ActionSimulatePolicy},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.
