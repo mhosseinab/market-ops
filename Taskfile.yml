@@ -39,10 +39,30 @@ tasks:
       - task: contracts:generate
 
   dev:
-    desc: Local dev stack (PostgreSQL 18, otel/grafana, watchers). Wired in S2.
+    desc: Bring up the local dev stack (PostgreSQL 18, otel/grafana/loki/tempo, mailpit, spotlight).
     silent: true
+    vars:
+      COMPOSE: docker compose -f deploy/compose.dev.yml
     cmds:
-      - echo "task dev requires deploy/compose.dev.yml — lands in S2."
+      - "{{.COMPOSE}} up -d"
+      # Wait for the PostgreSQL healthcheck before returning (migrations/watchers
+      # wire in with the S5 DB foundation).
+      - |
+        echo "Waiting for PostgreSQL 18 to become healthy..."
+        for i in $(seq 1 60); do
+          status=$({{.COMPOSE}} ps postgres --format '{{`{{.Health}}`}}' 2>/dev/null || true)
+          if [ "$status" = "healthy" ]; then
+            echo "PostgreSQL is healthy. Dev stack is up:"
+            echo "  Grafana   http://localhost:3000   (anonymous admin)"
+            echo "  Mailpit   http://localhost:8025"
+            echo "  Spotlight http://localhost:8969"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "PostgreSQL did not become healthy in time." >&2
+        {{.COMPOSE}} logs postgres >&2
+        exit 1
 
   build:all:
     desc: Build every plane (contracts first, then each language).
@@ -67,10 +87,42 @@ tasks:
       - ts:lint
 
   db:reset:
-    desc: Drop + recreate the dev DB, apply migrations, seed fixtures. Wired in S2.
+    desc: Drop + recreate the dev database (migrations + fixtures wire in with S5).
     silent: true
     cmds:
-      - echo "task db:reset requires the dev database — lands in S2."
+      # Docker-free: operate entirely through $DATABASE_URL. Derive a maintenance
+      # connection by swapping the target DB in the URL path to the always-present
+      # `postgres` database, parse the app DB name from the URL, then DROP/CREATE
+      # from there. FORCE terminates open sessions (PostgreSQL 13+). Works against
+      # any reachable server — native or the compose Postgres. Migrations (goose)
+      # and River migrate + fixtures land with the S5 DB foundation.
+      - |
+        if [ -z "${DATABASE_URL:-}" ]; then
+          echo "DATABASE_URL is not set; export it before running db:reset." >&2
+          echo "  e.g. export DATABASE_URL='postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable'" >&2
+          exit 1
+        fi
+        # Strip the scheme, then take the path segment (after host[:port]) up to
+        # any '?' query string. That segment is the target database name.
+        no_scheme="${DATABASE_URL#*://}"
+        path_and_query="${no_scheme#*/}"
+        appdb="${path_and_query%%\?*}"
+        if [ -z "$appdb" ] || [ "$appdb" = "$no_scheme" ]; then
+          echo "Could not parse a database name from DATABASE_URL." >&2
+          exit 1
+        fi
+        # Maintenance URL: same server/credentials/query, database = `postgres`.
+        query=""
+        case "$DATABASE_URL" in
+          *\?*) query="?${DATABASE_URL#*\?}" ;;
+        esac
+        prefix="${DATABASE_URL%%\?*}"                 # drop any query string
+        server="${prefix%/*}"                          # drop the trailing /<appdb>
+        maint_url="${server}/postgres${query}"
+        echo "Resetting database '${appdb}' via maintenance DB 'postgres'..."
+        psql "$maint_url" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${appdb}\" WITH (FORCE);"
+        psql "$maint_url" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${appdb}\";"
+        echo "Dev database '${appdb}' recreated (migrations + fixtures arrive in S5)."
 
   ci:local:
     desc: Everything CI runs, in order — the pre-merge gate.

@@ -1,0 +1,40 @@
+# deploy/loki/config.yaml — single-binary Loki for dev (PRD §19.3).
+# Filesystem storage; native OTLP log ingest (used by the collector) is on by
+# default in Loki 3.x at /otlp/v1/logs.
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Structured metadata is required for OTLP ingest.
+  allow_structured_metadata: true
+  volume_enabled: true
+
+analytics:
+  reporting_enabled: false

@@ -1,0 +1,24 @@
+# deploy/grafana/provisioning/datasources/datasources.yaml
+# Auto-provisioned Grafana datasources for the dev stack (PRD §19.3).
+# Grafana loads everything under /etc/grafana/provisioning at startup.
+
+apiVersion: 1
+
+datasources:
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    access: proxy
+    url: http://tempo:3200
+    isDefault: false
+    jsonData:
+      # Correlate a trace's log lines through the shared Loki datasource.
+      tracesToLogsV2:
+        datasourceUid: loki
+
+  - name: Loki
+    type: loki
+    uid: loki
+    access: proxy
+    url: http://loki:3100
+    isDefault: true
