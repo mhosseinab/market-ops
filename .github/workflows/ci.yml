@@ -127,7 +127,7 @@ jobs:
       # Toolchain the go job needs beyond the compiler: linter, migration + query
       # + job-queue CLIs (carry-forward from S5 — river joined task doctor).
       - name: install golangci-lint
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v1.64.8
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b "$(go env GOPATH)/bin" v2.5.0
       - name: install goose + sqlc + river
         run: |
           go install github.com/pressly/goose/v3/cmd/goose@latest
