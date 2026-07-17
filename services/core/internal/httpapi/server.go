@@ -1,51 +1,42 @@
-// Package httpapi is the HTTP transport adapter for the core service. In S3 it
-// serves only GET /healthz; later steps mount the gen/go gateway interfaces
-// here (this is the ONLY package permitted to import gen/go — see .golangci.yml
-// depguard rules).
+// Package httpapi is the HTTP transport adapter for the core service. It mounts
+// the generated gateway routes (gen/go) onto a std net/http mux. This is the
+// ONLY package permitted to import gen/go — see the gen-go-boundary depguard
+// rule in .golangci.yml. In S4 the sole route is GET /healthz, implemented via
+// the generated strict-server interface; later [C] steps add more operations.
 package httpapi
 
 import (
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
+
+	gateway "github.com/mhosseinab/market-ops/gen/go"
 )
 
-// BuildInfo describes the running binary, surfaced by /healthz.
+// BuildInfo describes the running binary, surfaced by /healthz. It is the
+// transport-boundary type the command layer passes in; httpapi maps it onto the
+// generated gateway types so the command layer never imports gen/go.
 type BuildInfo struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit"`
-	BuildTime string `json:"buildTime"`
+	Version   string
+	Commit    string
+	BuildTime string
 }
 
-// NewServer builds the core HTTP server bound to addr with a route table and
-// safe timeouts. It does not start listening; the caller runs ListenAndServe
-// and drives graceful shutdown.
+// NewServer builds the core HTTP server bound to addr with the generated gateway
+// routes and safe timeouts. It does not start listening; the caller runs
+// ListenAndServe and drives graceful shutdown.
 func NewServer(addr string, info BuildInfo, logger *slog.Logger) *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", healthzHandler(info))
+	strict := gateway.NewStrictHandler(&gatewayServer{build: info}, nil)
+	handler := gateway.HandlerFromMux(strict, mux)
 
 	return &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
-	}
-}
-
-// healthResponse is the /healthz body: liveness plus build identity.
-type healthResponse struct {
-	Status string    `json:"status"`
-	Build  BuildInfo `json:"build"`
-}
-
-func healthzHandler(info BuildInfo) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(healthResponse{Status: "ok", Build: info})
 	}
 }
