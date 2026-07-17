@@ -17,7 +17,7 @@ tasks:
     cmds:
       - |
         missing=0
-        for tool in node pnpm uv go golangci-lint oapi-codegen goose sqlc docker jq; do
+        for tool in node pnpm uv go golangci-lint oapi-codegen goose sqlc river docker jq; do
           if ! command -v "$tool" >/dev/null 2>&1; then
             echo "MISSING: $tool"
             missing=1
@@ -87,15 +87,18 @@ tasks:
       - ts:lint
 
   db:reset:
-    desc: Drop + recreate the dev database (migrations + fixtures wire in with S5).
+    desc: Drop + recreate the dev DB, then goose up + river migrate-up + seed fixtures.
     silent: true
+    vars:
+      MIGRATIONS: services/core/migrations
+      FIXTURES: services/core/fixtures/dev_seed.sql
     cmds:
       # Docker-free: operate entirely through $DATABASE_URL. Derive a maintenance
       # connection by swapping the target DB in the URL path to the always-present
       # `postgres` database, parse the app DB name from the URL, then DROP/CREATE
       # from there. FORCE terminates open sessions (PostgreSQL 13+). Works against
-      # any reachable server — native or the compose Postgres. Migrations (goose)
-      # and River migrate + fixtures land with the S5 DB foundation.
+      # any reachable server — native or the compose Postgres. Then apply the
+      # goose schema, River's own migration set, and minimal fixture rows.
       - |
         if [ -z "${DATABASE_URL:-}" ]; then
           echo "DATABASE_URL is not set; export it before running db:reset." >&2
@@ -122,7 +125,13 @@ tasks:
         echo "Resetting database '${appdb}' via maintenance DB 'postgres'..."
         psql "$maint_url" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${appdb}\" WITH (FORCE);"
         psql "$maint_url" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${appdb}\";"
-        echo "Dev database '${appdb}' recreated (migrations + fixtures arrive in S5)."
+        echo "Applying goose schema migrations..."
+        goose -dir "{{.MIGRATIONS}}" postgres "$DATABASE_URL" up
+        echo "Applying River migration set..."
+        river migrate-up --database-url "$DATABASE_URL"
+        echo "Seeding minimal fixture rows..."
+        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "{{.FIXTURES}}"
+        echo "Dev database '${appdb}' recreated: schema + River + fixtures applied."
 
   ci:local:
     desc: Everything CI runs, in order — the pre-merge gate.
