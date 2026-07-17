@@ -89,26 +89,40 @@ tasks:
   db:reset:
     desc: Drop + recreate the dev database (migrations + fixtures wire in with S5).
     silent: true
-    vars:
-      COMPOSE: docker compose -f deploy/compose.dev.yml
     cmds:
-      # Ensure Postgres is up and healthy before touching it.
-      - "{{.COMPOSE}} up -d postgres"
+      # Docker-free: operate entirely through $DATABASE_URL. Derive a maintenance
+      # connection by swapping the target DB in the URL path to the always-present
+      # `postgres` database, parse the app DB name from the URL, then DROP/CREATE
+      # from there. FORCE terminates open sessions (PostgreSQL 13+). Works against
+      # any reachable server — native or the compose Postgres. Migrations (goose)
+      # and River migrate + fixtures land with the S5 DB foundation.
       - |
-        for i in $(seq 1 60); do
-          status=$({{.COMPOSE}} ps postgres --format '{{`{{.Health}}`}}' 2>/dev/null || true)
-          [ "$status" = "healthy" ] && break
-          sleep 2
-        done
-        if [ "$status" != "healthy" ]; then
-          echo "PostgreSQL is not healthy; cannot reset." >&2
+        if [ -z "${DATABASE_URL:-}" ]; then
+          echo "DATABASE_URL is not set; export it before running db:reset." >&2
+          echo "  e.g. export DATABASE_URL='postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable'" >&2
           exit 1
         fi
-      # Drop and recreate from the maintenance DB. FORCE terminates open sessions
-      # (PostgreSQL 13+). Migrations (goose) and River migrate + fixtures land in S5.
-      - "{{.COMPOSE}} exec -T postgres psql -v ON_ERROR_STOP=1 -U market_ops -d postgres -c \"DROP DATABASE IF EXISTS market_ops WITH (FORCE);\""
-      - "{{.COMPOSE}} exec -T postgres psql -v ON_ERROR_STOP=1 -U market_ops -d postgres -c \"CREATE DATABASE market_ops OWNER market_ops;\""
-      - echo "Dev database 'market_ops' recreated (migrations + fixtures arrive in S5)."
+        # Strip the scheme, then take the path segment (after host[:port]) up to
+        # any '?' query string. That segment is the target database name.
+        no_scheme="${DATABASE_URL#*://}"
+        path_and_query="${no_scheme#*/}"
+        appdb="${path_and_query%%\?*}"
+        if [ -z "$appdb" ] || [ "$appdb" = "$no_scheme" ]; then
+          echo "Could not parse a database name from DATABASE_URL." >&2
+          exit 1
+        fi
+        # Maintenance URL: same server/credentials/query, database = `postgres`.
+        query=""
+        case "$DATABASE_URL" in
+          *\?*) query="?${DATABASE_URL#*\?}" ;;
+        esac
+        prefix="${DATABASE_URL%%\?*}"                 # drop any query string
+        server="${prefix%/*}"                          # drop the trailing /<appdb>
+        maint_url="${server}/postgres${query}"
+        echo "Resetting database '${appdb}' via maintenance DB 'postgres'..."
+        psql "$maint_url" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${appdb}\" WITH (FORCE);"
+        psql "$maint_url" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${appdb}\";"
+        echo "Dev database '${appdb}' recreated (migrations + fixtures arrive in S5)."
 
   ci:local:
     desc: Everything CI runs, in order — the pre-merge gate.
