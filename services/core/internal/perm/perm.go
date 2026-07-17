@@ -128,6 +128,10 @@ const (
 	// what-if and NEVER carries an approval control (§8, §12.3), so it is an L1
 	// read every authenticated role — including the machine read token — may run.
 	ActionSimulatePolicy Action = "policy.simulate"
+	// ActionReadEvents authorizes reading market events, event detail, and the
+	// ranked Today feed (PRD §7.4 EVT-001..004). Reading is always L1 (§8.3); a
+	// machine data-read tool may hold it.
+	ActionReadEvents Action = "read.events"
 
 	// --- L2 reversible configuration ----------------------------------------
 	ActionConnectorConnect Action = "connector.connect"
@@ -151,6 +155,12 @@ const (
 	// L2 baseline {Owner, Operator}; Internal is not a seller-data actor, and the
 	// machine gateway principal never imports costs.
 	ActionImportCosts Action = "cost.import"
+	// ActionEventRelevanceFeedback authorizes recording relevance feedback on a
+	// market event (PRD §7.4 EVT-005 "relevance feedback is stored"). It is a
+	// reversible seller-data task within the L2 baseline {Owner, Operator};
+	// Internal is not a seller-feedback actor, and the machine gateway principal
+	// (read + Draft-only) never records feedback.
+	ActionEventRelevanceFeedback Action = "event.relevance_feedback"
 
 	// --- L3 commercial guardrail (Owner only) -------------------------------
 	ActionSetContributionFloor  Action = "guardrail.contribution_floor"
@@ -204,6 +214,8 @@ var Matrix = []Rule{
 	{ActionReadObservations, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	// Policy simulation is a non-executable read/analysis (§9.2/§9.3): all roles.
 	{ActionSimulatePolicy, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	// Market events / Today feed reads (§7.4) — L1 read, every role.
+	{ActionReadEvents, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 
 	// L2 reversible configuration. Account-lifecycle connector actions are
 	// account management — Owner only (PRD §2.2 "Connect account") — a valid
@@ -222,6 +234,9 @@ var Matrix = []Rule{
 	// Identity resolution is a reversible data task within the L2 baseline
 	// {Owner, Operator}; Internal diagnoses but does not resolve mappings.
 	{ActionResolveIdentity, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
+	// Event relevance feedback is a reversible seller-data task within the L2
+	// baseline {Owner, Operator}; Internal is not a seller-feedback actor.
+	{ActionEventRelevanceFeedback, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	// Extension capture upload is a reversible data-ingestion task within the L2
 	// baseline {Owner, Operator}; Internal is not an ingestor.
 	{ActionUploadCapture, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},

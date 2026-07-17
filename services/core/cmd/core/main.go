@@ -21,6 +21,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/connector"
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/event"
 	"github.com/mhosseinab/market-ops/services/core/internal/httpapi"
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
 	"github.com/mhosseinab/market-ops/services/core/internal/obs"
@@ -135,6 +136,11 @@ func run() error {
 		// values stay OUT of executable paths until S16+S35.
 		serverOpts = append(serverOpts, httpapi.WithCost(cost.NewService(pool)))
 		logger.Info("cost service wired")
+
+		// Wire the event engine (EVT-001..005): five detectors, versioned
+		// materiality, type-specific dedup, and the deterministic Today ranking.
+		serverOpts = append(serverOpts, httpapi.WithEvent(event.NewService(pool)))
+		logger.Info("event service wired")
 	} else {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
 	}

@@ -69,6 +69,14 @@ func WithCost(c CostService) Option {
 	return func(s *gatewayServer) { s.cost = c }
 }
 
+// WithEvent injects the event-engine service backing the /events, /event,
+// /today, and /events/relevance routes (PRD §7.4 EVT-001..005). Without it those
+// routes fail closed with a structured error, so no event list, detail, Today
+// feed, or relevance write is served on an unwired event plane.
+func WithEvent(e EventService) Option {
+	return func(s *gatewayServer) { s.event = e }
+}
+
 // WithCookieSecure overrides the Secure attribute of the session cookie. Default
 // is true; local plain-HTTP dev sets it false so the browser sends the cookie.
 func WithCookieSecure(secure bool) Option {

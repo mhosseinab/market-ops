@@ -114,6 +114,10 @@ type Querier interface {
 	EngageGlobalKillSwitch(ctx context.Context, arg EngageGlobalKillSwitchParams) error
 	// Stop Route C for one target. Idempotent per target.
 	EngageTargetKillSwitch(ctx context.Context, arg EngageTargetKillSwitchParams) error
+	// Lifecycle expiry sweep (§15.1): open|updated events past their expiry deadline
+	// become 'expired'. Like resolution this frees the dedup_key. Evidence is left
+	// intact; expiry is a lifecycle transition, not a delete.
+	ExpireStaleEvents(ctx context.Context, arg ExpireStaleEventsParams) (int64, error)
 	FailCatalogSyncRun(ctx context.Context, arg FailCatalogSyncRunParams) (CatalogSyncRun, error)
 	// Cost profile / CSV import / margin readiness queries (PRD §7.2 CST-001..003,
 	// §9.2, §16). Write disciplines:
@@ -130,6 +134,7 @@ type Querier interface {
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
 	GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
+	GetEvent(ctx context.Context, id uuid.UUID) (MarketEvent, error)
 	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
 	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (CatalogSyncRun, error)
@@ -137,8 +142,14 @@ type Querier interface {
 	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (MarketplaceAccount, error)
 	GetMarketplaceAccountByNativeID(ctx context.Context, nativeAccountID string) (MarketplaceAccount, error)
 	GetMarketplaceAccountByOrganization(ctx context.Context, organizationID uuid.UUID) (MarketplaceAccount, error)
+	GetMaterialityThreshold(ctx context.Context, id uuid.UUID) (MaterialityThreshold, error)
+	// Point-in-time in-force threshold (EVT-002): the greatest effective_from <= asof
+	// for (account, category, event_type). This is the version a detector fires
+	// against and stores on the event, so the trigger is reproducible.
+	GetMaterialityThresholdAsOf(ctx context.Context, arg GetMaterialityThresholdAsOfParams) (MaterialityThreshold, error)
 	GetObservationTarget(ctx context.Context, id uuid.UUID) (ObservationTarget, error)
 	GetObservedOffer(ctx context.Context, arg GetObservedOfferParams) (ObservedOffer, error)
+	GetOpenEventByDedupKey(ctx context.Context, dedupKey string) (MarketEvent, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
 	// Resolve a live session to its principal (user + role + organization). Rows
 	// at/after expiry are excluded, so an expired cookie fails closed.
@@ -164,6 +175,16 @@ type Querier interface {
 	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
 	// INSERT; there is deliberately no UPDATE/DELETE query.
 	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)
+	// Event engine queries (PRD §7.4 EVT-001..005, §15.1, §16). Write disciplines:
+	//   * materiality_thresholds and event_relevance_feedback are APPEND-ONLY — there
+	//     is deliberately NO UPDATE or DELETE query here (versioned config / history).
+	//   * market_events is the §15.1 lifecycle record: OpenEvent inserts a new open
+	//     row; UpdateOpenEvent mutates the SAME open record on a dedup hit (EVT-003);
+	//     Resolve/Expire advance its lifecycle. There is no arbitrary UPDATE.
+	// APPEND-ONLY versioned materiality config (EVT-002). A new version for a
+	// (category, event_type) is a new row with its own effective_from; prior versions
+	// are never mutated, so an event that stored a threshold_id reproduces its knobs.
+	InsertMaterialityThreshold(ctx context.Context, arg InsertMaterialityThresholdParams) (MaterialityThreshold, error)
 	// APPEND-ONLY evidence write (OBS-002). Every field of the evidence envelope is
 	// required; the domain rejects incomplete evidence before reaching here.
 	InsertObservation(ctx context.Context, arg InsertObservationParams) (InsertObservationRow, error)
@@ -181,6 +202,9 @@ type Querier interface {
 	// unique-violation on re-emit is swallowed by the producer, so a retry never
 	// double-expires downstream recommendations.
 	InsertRecommendationInvalidation(ctx context.Context, arg InsertRecommendationInvalidationParams) (RecommendationInvalidationEvent, error)
+	// APPEND-ONLY relevance history (EVT-005). Each vote is a new row; a mute is a
+	// feedback record, never a delete of the event.
+	InsertRelevanceFeedback(ctx context.Context, arg InsertRelevanceFeedbackParams) (EventRelevanceFeedback, error)
 	// The rows a commit turns into cost_profile versions: accepted rows with a
 	// resolved variant. Duplicate/reject rows are excluded by construction.
 	ListAcceptedCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
@@ -213,6 +237,7 @@ type Querier interface {
 	// a retained string set that has no per-route freshness.
 	ListInWindowRouteValues(ctx context.Context, arg ListInWindowRouteValuesParams) ([]ListInWindowRouteValuesRow, error)
 	ListMarginReadinessByAccount(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarginReadiness, error)
+	ListMaterialityThresholds(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MaterialityThreshold, error)
 	// The Needs Review queue (journey 4): each pending candidate joined to its
 	// variant/product so the row carries SKU (supplier_code), variant + product title,
 	// and the native-id evidence a reviewer needs to confirm/reject/defer.
@@ -221,8 +246,14 @@ type Querier interface {
 	// Append-only evidence, newest first (bounded by the caller).
 	ListObservationsByTarget(ctx context.Context, arg ListObservationsByTargetParams) ([]Observation, error)
 	ListObservedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservedOffer, error)
+	// Today feed source (EVT-004): every open|updated event for the account. Ordering
+	// here is stable but NOT the ranking — the domain computes the deterministic
+	// exposure×confidence×urgency rank over these rows so all three factors are
+	// exposed. Newest evidence first gives a stable base order.
+	ListOpenEvents(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketEvent, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
+	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
 	// Candidate-generation source (rule-based exact-native-id). Returns variants that
 	// have no pending (NeedsReview) or Confirmed mapping, so generation is idempotent
@@ -246,6 +277,14 @@ type Querier interface {
 	// execute in the §10.3 matrix). The disagreeing capture is still retained as
 	// append-only evidence; last_observation_id points at it for traceability.
 	MarkObservedOfferConflicted(ctx context.Context, arg MarkObservedOfferConflictedParams) (ObservedOffer, error)
+	// Open a NEW market event (EVT-001). The partial unique index
+	// (uq_market_events_open_dedup) guarantees at most one open|updated row per
+	// dedup_key: ON CONFLICT DO NOTHING means a concurrent/duplicate open collides
+	// and returns NO row, so the caller falls back to UpdateOpenEvent — a duplicate
+	// NEVER creates a second events row (EVT-003, §16). Exposure obeys EVT-005: an
+	// unknown exposure passes exposure_known=false with NULL mantissa (the CHECK
+	// rejects a fabricated number).
+	OpenEvent(ctx context.Context, arg OpenEventParams) (MarketEvent, error)
 	// Transition NeedsReview -> Rejected and deactivate. A rejected mapping never
 	// feeds an executable path and frees the variant for a fresh candidate later.
 	RejectIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
@@ -260,6 +299,10 @@ type Querier interface {
 	// Return a capability to 'unknown' (disconnect). Clears last_verified_at so a
 	// stale verification can never read as current.
 	ResetConnectorCapability(ctx context.Context, marketplaceAccountID uuid.UUID) error
+	// Lifecycle transition (§15.1): the triggering condition cleared, so the event is
+	// resolved. This leaves the partial-unique predicate, freeing the dedup_key so a
+	// genuinely new future occurrence can open a fresh event.
+	ResolveEvent(ctx context.Context, arg ResolveEventParams) (MarketEvent, error)
 	// Resolve a CSV SKU token to variants within an account. Zero rows ⇒ unknown SKU;
 	// more than one ⇒ ambiguous (both are preview rejects with a stated reason).
 	ResolveVariantsBySupplierCode(ctx context.Context, arg ResolveVariantsBySupplierCodeParams) ([]ResolveVariantsBySupplierCodeRow, error)
@@ -273,6 +316,12 @@ type Querier interface {
 	// Record a probe result. Only a probe calls this; status is set explicitly and
 	// last_verified_at stamps when it was determined.
 	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
+	// EVT-003 / §16: a duplicate detection UPDATES the open record in place — it
+	// refreshes the evidence, factors, exposure, severity, and expiry, marks the row
+	// 'updated', and bumps evidence_update_count. It produces ZERO new events rows,
+	// so the Today feed still shows exactly one item. The dedup_key and the opening
+	// identity are preserved. Exposure still obeys EVT-005 via the table CHECK.
+	UpdateOpenEvent(ctx context.Context, arg UpdateOpenEventParams) (MarketEvent, error)
 	UpsertAccountCostPolicy(ctx context.Context, arg UpsertAccountCostPolicyParams) (AccountCostPolicy, error)
 	// Establish or update the connection with sealed tokens (connect / refresh).
 	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)

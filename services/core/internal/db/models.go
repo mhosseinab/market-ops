@@ -145,6 +145,15 @@ type CostProfile struct {
 	CreatedAt            time.Time
 }
 
+type EventRelevanceFeedback struct {
+	ID        uuid.UUID
+	EventID   uuid.UUID
+	UserID    pgtype.UUID
+	Relevance string
+	Note      string
+	CreatedAt time.Time
+}
+
 type Listing struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -163,6 +172,35 @@ type MarginReadiness struct {
 	MissingComponents    []byte
 	StaleComponents      []byte
 	ComputedAt           time.Time
+}
+
+type MarketEvent struct {
+	ID                    uuid.UUID
+	MarketplaceAccountID  uuid.UUID
+	VariantID             uuid.UUID
+	TargetID              pgtype.UUID
+	EventType             string
+	Severity              string
+	State                 string
+	DedupKey              string
+	ThresholdID           pgtype.UUID
+	ThresholdVersion      pgtype.Int4
+	ExposureKnown         bool
+	ExposureMantissa      pgtype.Int8
+	ExposureCurrency      string
+	ExposureExponent      int16
+	ConfidenceBp          int32
+	UrgencyBp             int32
+	EvidenceObservationID pgtype.UUID
+	EvidenceQuality       string
+	EvidenceRef           string
+	EvidenceDetail        []byte
+	FirstDetectedAt       time.Time
+	LastEvidenceAt        time.Time
+	ExpiresAt             time.Time
+	ResolvedAt            pgtype.Timestamptz
+	UpdatedAt             time.Time
+	EvidenceUpdateCount   int32
 }
 
 type MarketProductIdentity struct {
@@ -200,6 +238,20 @@ type MarketplaceAccount struct {
 	DisplayName     string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+}
+
+type MaterialityThreshold struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	Category             string
+	EventType            string
+	Version              int32
+	MoveBp               pgtype.Int4
+	SellerCountDelta     pgtype.Int4
+	ChallengeMarginBp    pgtype.Int4
+	EffectiveFrom        time.Time
+	CreatedBy            pgtype.UUID
+	CreatedAt            time.Time
 }
 
 type Observation struct {

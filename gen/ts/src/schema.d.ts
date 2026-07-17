@@ -484,6 +484,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the account's open market events.
+         * @description Returns the account's open|updated market events (PRD §7.4 EVT-001), the §15.1 lifecycle records. Each event cites its observation evidence with the observed quality state as-is (never upgraded) and carries its versioned materiality threshold provenance (EVT-002). Exposure is either a known Money amount or explicitly unknown — a missing sales/cost context is never a fabricated number (EVT-005). Ordering here is the stable base order; the deterministic exposure×confidence×urgency rank is on /today.
+         */
+        get: operations["listEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/event": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a single market event by id.
+         * @description Returns one market event with its full lifecycle, ranking factors, exposure (known Money or explicitly unknown, EVT-005), and cited evidence (PRD §7.4). The threshold version that fired it is included for reproducibility (EVT-002).
+         */
+        get: operations["getEvent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/today": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the ranked Today feed for the account.
+         * @description Returns the account's open events ranked for the Today screen (PRD §7.4 EVT-004): ordering is exposure × confidence × urgency with a DETERMINISTIC final rank and a stable tie-break. All THREE ranking factors are exposed on every item. Known-exposure events rank ahead of unknown-exposure ones; an unknown exposure is never coerced into a number (EVT-005).
+         */
+        get: operations["getTodayFeed"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/events/relevance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record relevance feedback on a market event.
+         * @description Appends a relevance-feedback record for a market event (PRD §7.4 EVT-005 "relevance feedback is stored"). Feedback is APPEND-ONLY history — a mute is a feedback record, never a deletion of the event. This is a reversible seller-data write (L2, Owner/Operator); it never approves or executes anything.
+         */
+        post: operations["recordEventRelevance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1212,6 +1292,109 @@ export interface components {
             contribution: components["schemas"]["Contribution"];
             proposal?: components["schemas"]["PolicyProposal"];
             blockers: components["schemas"]["PolicyBlocker"][];
+        };
+        /**
+         * @description One of the five P0 market-event types (PRD §7.4 EVT-001). The set is closed.
+         * @enum {string}
+         */
+        EventType: "winning_state" | "competitor_price" | "seller_count" | "suppression_boundary" | "contribution_floor";
+        /**
+         * @description The closed, ordered severity set for a market event.
+         * @enum {string}
+         */
+        EventSeverity: "info" | "warning" | "critical";
+        /**
+         * @description The §15.1 market-event lifecycle state. A duplicate signal updates the open record (EVT-003); resolved/expired free the dedup key.
+         * @enum {string}
+         */
+        EventLifecycleState: "open" | "updated" | "resolved" | "expired";
+        /** @description An event's business impact (PRD §7.4 EVT-004/EVT-005). It is EITHER a known Money amount (derived from margin/sales context) OR explicitly unknown. When `known` is false there is NO `amount` at all — a missing sales/cost context is never a fabricated number (EVT-005). */
+        EventExposure: {
+            /** @description Whether a numeric exposure exists. False ⇒ impact unknown. */
+            known: boolean;
+            amount?: components["schemas"]["MoneyAmount"];
+        };
+        /** @description The three EVT-004 ranking factors for one event, exposed so the UI can show why an event ranks where it does. Confidence and urgency are basis points (0..10000); exposure is the EventExposure (unknown stays unknown). */
+        EventRankFactors: {
+            exposure: components["schemas"]["EventExposure"];
+            /** @description Confidence factor in basis points (0..10000), from evidence quality. */
+            confidenceBp: number;
+            /** @description Urgency factor in basis points (0..10000), from severity. */
+            urgencyBp: number;
+        };
+        /** @description A market event lifecycle record (PRD §7.4, §15.1). It cites its observation evidence with the observed quality state as-is (never upgraded) and carries its versioned materiality-threshold provenance (EVT-002). Exposure obeys EVT-005. */
+        MarketEvent: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: uuid */
+            variantId: string;
+            /**
+             * Format: uuid
+             * @description The observation target, when the event has one.
+             */
+            targetId?: string;
+            type: components["schemas"]["EventType"];
+            severity: components["schemas"]["EventSeverity"];
+            state: components["schemas"]["EventLifecycleState"];
+            factors: components["schemas"]["EventRankFactors"];
+            /** @description The materiality threshold version that fired the event (EVT-002). */
+            thresholdVersion?: number;
+            /**
+             * Format: uuid
+             * @description The cited observation, when the event has one.
+             */
+            evidenceObservationId?: string;
+            evidenceQuality: components["schemas"]["QualityState"];
+            /** @description Opaque reference to the cited evidence. */
+            evidenceRef?: string;
+            /** Format: date-time */
+            firstDetectedAt: string;
+            /** Format: date-time */
+            lastEvidenceAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            resolvedAt?: string;
+            /** @description How many times a duplicate signal updated this open record (EVT-003). */
+            evidenceUpdateCount: number;
+        };
+        MarketEventList: {
+            items: components["schemas"]["MarketEvent"][];
+        };
+        /** @description One event placed in the deterministic Today order (EVT-004). Rank is 1-based; factors exposes all three ranking inputs. */
+        RankedEvent: {
+            event: components["schemas"]["MarketEvent"];
+            /** @description 1-based deterministic rank in the Today feed. */
+            rank: number;
+            factors: components["schemas"]["EventRankFactors"];
+        };
+        /** @description The ranked Today feed (PRD §7.4 EVT-004). */
+        TodayFeed: {
+            items: components["schemas"]["RankedEvent"][];
+        };
+        /**
+         * @description The closed relevance-feedback set (EVT-005).
+         * @enum {string}
+         */
+        EventRelevanceKind: "relevant" | "not_relevant" | "muted";
+        /** @description Record relevance feedback on a market event (EVT-005, append-only). Never approves or executes anything. */
+        EventRelevanceRequest: {
+            /** Format: uuid */
+            eventId: string;
+            relevance: components["schemas"]["EventRelevanceKind"];
+            /** @description Optional free-text note. Carries no authority (§8 free-text containment). */
+            note?: string;
+        };
+        EventRelevanceRecorded: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            eventId: string;
+            relevance: components["schemas"]["EventRelevanceKind"];
+            /** Format: date-time */
+            createdAt: string;
         };
         /** @description Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator. */
         ErrorEnvelope: {
@@ -2024,6 +2207,135 @@ export interface operations {
                 };
             };
             /** @description Unexpected error (including a rejected loose cap/cooldown, PRC-004). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listEvents: {
+        parameters: {
+            query: {
+                /** @description Marketplace account whose open events are requested. */
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's open market events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketEventList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getEvent: {
+        parameters: {
+            query: {
+                /** @description The market event id. */
+                eventId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The requested market event. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarketEvent"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getTodayFeed: {
+        parameters: {
+            query: {
+                /** @description Marketplace account whose Today feed is requested. */
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The ranked Today feed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TodayFeed"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    recordEventRelevance: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EventRelevanceRequest"];
+            };
+        };
+        responses: {
+            /** @description Relevance feedback recorded. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EventRelevanceRecorded"];
+                };
+            };
+            /** @description Unexpected error. */
             default: {
                 headers: {
                     [name: string]: unknown;

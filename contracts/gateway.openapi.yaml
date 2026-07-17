@@ -869,6 +869,141 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /events:
+    get:
+      operationId: listEvents
+      tags:
+        - event
+      summary: List the account's open market events.
+      description: >-
+        Returns the account's open|updated market events (PRD §7.4 EVT-001), the
+        §15.1 lifecycle records. Each event cites its observation evidence with the
+        observed quality state as-is (never upgraded) and carries its versioned
+        materiality threshold provenance (EVT-002). Exposure is either a known
+        Money amount or explicitly unknown — a missing sales/cost context is never
+        a fabricated number (EVT-005). Ordering here is the stable base order; the
+        deterministic exposure×confidence×urgency rank is on /today.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose open events are requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's open market events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketEventList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /event:
+    get:
+      operationId: getEvent
+      tags:
+        - event
+      summary: Get a single market event by id.
+      description: >-
+        Returns one market event with its full lifecycle, ranking factors,
+        exposure (known Money or explicitly unknown, EVT-005), and cited evidence
+        (PRD §7.4). The threshold version that fired it is included for
+        reproducibility (EVT-002).
+      parameters:
+        - name: eventId
+          in: query
+          required: true
+          description: The market event id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The requested market event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketEvent'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /today:
+    get:
+      operationId: getTodayFeed
+      tags:
+        - event
+      summary: Get the ranked Today feed for the account.
+      description: >-
+        Returns the account's open events ranked for the Today screen (PRD §7.4
+        EVT-004): ordering is exposure × confidence × urgency with a DETERMINISTIC
+        final rank and a stable tie-break. All THREE ranking factors are exposed on
+        every item. Known-exposure events rank ahead of unknown-exposure ones; an
+        unknown exposure is never coerced into a number (EVT-005).
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose Today feed is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The ranked Today feed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TodayFeed'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /events/relevance:
+    post:
+      operationId: recordEventRelevance
+      tags:
+        - event
+      summary: Record relevance feedback on a market event.
+      description: >-
+        Appends a relevance-feedback record for a market event (PRD §7.4 EVT-005
+        "relevance feedback is stored"). Feedback is APPEND-ONLY history — a mute is
+        a feedback record, never a deletion of the event. This is a reversible
+        seller-data write (L2, Owner/Operator); it never approves or executes
+        anything.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventRelevanceRequest'
+      responses:
+        '202':
+          description: Relevance feedback recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventRelevanceRecorded'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -2447,6 +2582,236 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PolicyBlocker'
+      additionalProperties: false
+
+    EventType:
+      type: string
+      description: >-
+        One of the five P0 market-event types (PRD §7.4 EVT-001). The set is
+        closed.
+      enum:
+        - winning_state
+        - competitor_price
+        - seller_count
+        - suppression_boundary
+        - contribution_floor
+
+    EventSeverity:
+      type: string
+      description: The closed, ordered severity set for a market event.
+      enum:
+        - info
+        - warning
+        - critical
+
+    EventLifecycleState:
+      type: string
+      description: >-
+        The §15.1 market-event lifecycle state. A duplicate signal updates the open
+        record (EVT-003); resolved/expired free the dedup key.
+      enum:
+        - open
+        - updated
+        - resolved
+        - expired
+
+    EventExposure:
+      type: object
+      description: >-
+        An event's business impact (PRD §7.4 EVT-004/EVT-005). It is EITHER a known
+        Money amount (derived from margin/sales context) OR explicitly unknown.
+        When `known` is false there is NO `amount` at all — a missing sales/cost
+        context is never a fabricated number (EVT-005).
+      required:
+        - known
+      properties:
+        known:
+          type: boolean
+          description: Whether a numeric exposure exists. False ⇒ impact unknown.
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+      additionalProperties: false
+
+    EventRankFactors:
+      type: object
+      description: >-
+        The three EVT-004 ranking factors for one event, exposed so the UI can show
+        why an event ranks where it does. Confidence and urgency are basis points
+        (0..10000); exposure is the EventExposure (unknown stays unknown).
+      required:
+        - exposure
+        - confidenceBp
+        - urgencyBp
+      properties:
+        exposure:
+          $ref: '#/components/schemas/EventExposure'
+        confidenceBp:
+          type: integer
+          description: Confidence factor in basis points (0..10000), from evidence quality.
+        urgencyBp:
+          type: integer
+          description: Urgency factor in basis points (0..10000), from severity.
+      additionalProperties: false
+
+    MarketEvent:
+      type: object
+      description: >-
+        A market event lifecycle record (PRD §7.4, §15.1). It cites its observation
+        evidence with the observed quality state as-is (never upgraded) and carries
+        its versioned materiality-threshold provenance (EVT-002). Exposure obeys
+        EVT-005.
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - type
+        - severity
+        - state
+        - factors
+        - evidenceQuality
+        - firstDetectedAt
+        - lastEvidenceAt
+        - expiresAt
+        - evidenceUpdateCount
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+          description: The observation target, when the event has one.
+        type:
+          $ref: '#/components/schemas/EventType'
+        severity:
+          $ref: '#/components/schemas/EventSeverity'
+        state:
+          $ref: '#/components/schemas/EventLifecycleState'
+        factors:
+          $ref: '#/components/schemas/EventRankFactors'
+        thresholdVersion:
+          type: integer
+          description: The materiality threshold version that fired the event (EVT-002).
+        evidenceObservationId:
+          type: string
+          format: uuid
+          description: The cited observation, when the event has one.
+        evidenceQuality:
+          $ref: '#/components/schemas/QualityState'
+        evidenceRef:
+          type: string
+          description: Opaque reference to the cited evidence.
+        firstDetectedAt:
+          type: string
+          format: date-time
+        lastEvidenceAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type: string
+          format: date-time
+        evidenceUpdateCount:
+          type: integer
+          description: How many times a duplicate signal updated this open record (EVT-003).
+      additionalProperties: false
+
+    MarketEventList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketEvent'
+      additionalProperties: false
+
+    RankedEvent:
+      type: object
+      description: >-
+        One event placed in the deterministic Today order (EVT-004). Rank is
+        1-based; factors exposes all three ranking inputs.
+      required:
+        - event
+        - rank
+        - factors
+      properties:
+        event:
+          $ref: '#/components/schemas/MarketEvent'
+        rank:
+          type: integer
+          description: 1-based deterministic rank in the Today feed.
+        factors:
+          $ref: '#/components/schemas/EventRankFactors'
+      additionalProperties: false
+
+    TodayFeed:
+      type: object
+      description: The ranked Today feed (PRD §7.4 EVT-004).
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RankedEvent'
+      additionalProperties: false
+
+    EventRelevanceKind:
+      type: string
+      description: The closed relevance-feedback set (EVT-005).
+      enum:
+        - relevant
+        - not_relevant
+        - muted
+
+    EventRelevanceRequest:
+      type: object
+      description: >-
+        Record relevance feedback on a market event (EVT-005, append-only). Never
+        approves or executes anything.
+      required:
+        - eventId
+        - relevance
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        relevance:
+          $ref: '#/components/schemas/EventRelevanceKind'
+        note:
+          type: string
+          description: Optional free-text note. Carries no authority (§8 free-text containment).
+      additionalProperties: false
+
+    EventRelevanceRecorded:
+      type: object
+      required:
+        - id
+        - eventId
+        - relevance
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        relevance:
+          $ref: '#/components/schemas/EventRelevanceKind'
+        createdAt:
+          type: string
+          format: date-time
       additionalProperties: false
 
     ErrorEnvelope:
