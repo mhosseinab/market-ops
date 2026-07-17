@@ -39,10 +39,30 @@ tasks:
       - task: contracts:generate
 
   dev:
-    desc: Local dev stack (PostgreSQL 18, otel/grafana, watchers). Wired in S2.
+    desc: Bring up the local dev stack (PostgreSQL 18, otel/grafana/loki/tempo, mailpit, spotlight).
     silent: true
+    vars:
+      COMPOSE: docker compose -f deploy/compose.dev.yml
     cmds:
-      - echo "task dev requires deploy/compose.dev.yml — lands in S2."
+      - "{{.COMPOSE}} up -d"
+      # Wait for the PostgreSQL healthcheck before returning (migrations/watchers
+      # wire in with the S5 DB foundation).
+      - |
+        echo "Waiting for PostgreSQL 18 to become healthy..."
+        for i in $(seq 1 60); do
+          status=$({{.COMPOSE}} ps postgres --format '{{`{{.Health}}`}}' 2>/dev/null || true)
+          if [ "$status" = "healthy" ]; then
+            echo "PostgreSQL is healthy. Dev stack is up:"
+            echo "  Grafana   http://localhost:3000   (anonymous admin)"
+            echo "  Mailpit   http://localhost:8025"
+            echo "  Spotlight http://localhost:8969"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "PostgreSQL did not become healthy in time." >&2
+        {{.COMPOSE}} logs postgres >&2
+        exit 1
 
   build:all:
     desc: Build every plane (contracts first, then each language).
@@ -67,10 +87,28 @@ tasks:
       - ts:lint
 
   db:reset:
-    desc: Drop + recreate the dev DB, apply migrations, seed fixtures. Wired in S2.
+    desc: Drop + recreate the dev database (migrations + fixtures wire in with S5).
     silent: true
+    vars:
+      COMPOSE: docker compose -f deploy/compose.dev.yml
     cmds:
-      - echo "task db:reset requires the dev database — lands in S2."
+      # Ensure Postgres is up and healthy before touching it.
+      - "{{.COMPOSE}} up -d postgres"
+      - |
+        for i in $(seq 1 60); do
+          status=$({{.COMPOSE}} ps postgres --format '{{`{{.Health}}`}}' 2>/dev/null || true)
+          [ "$status" = "healthy" ] && break
+          sleep 2
+        done
+        if [ "$status" != "healthy" ]; then
+          echo "PostgreSQL is not healthy; cannot reset." >&2
+          exit 1
+        fi
+      # Drop and recreate from the maintenance DB. FORCE terminates open sessions
+      # (PostgreSQL 13+). Migrations (goose) and River migrate + fixtures land in S5.
+      - "{{.COMPOSE}} exec -T postgres psql -v ON_ERROR_STOP=1 -U market_ops -d postgres -c \"DROP DATABASE IF EXISTS market_ops WITH (FORCE);\""
+      - "{{.COMPOSE}} exec -T postgres psql -v ON_ERROR_STOP=1 -U market_ops -d postgres -c \"CREATE DATABASE market_ops OWNER market_ops;\""
+      - echo "Dev database 'market_ops' recreated (migrations + fixtures arrive in S5)."
 
   ci:local:
     desc: Everything CI runs, in order — the pre-merge gate.

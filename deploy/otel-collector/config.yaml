@@ -1,0 +1,43 @@
+# deploy/otel-collector/config.yaml — dev OpenTelemetry collector (PRD §19.3).
+#
+# One OTLP ingest for every plane (Go core, Python LLM, web). Traces fan out to
+# Tempo, logs to Loki via their native OTLP endpoints. A debug exporter mirrors
+# both so the collector's own stdout is useful during local development.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch: {}
+
+exporters:
+  # Traces → Tempo (OTLP/gRPC, in-cluster, TLS off for dev).
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+  # Logs → Loki native OTLP ingest endpoint.
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+  debug:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo, debug]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/loki, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [debug]
