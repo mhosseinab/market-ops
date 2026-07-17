@@ -46,8 +46,12 @@ SETUP (once, before S1):
    - A diff spanning areas gets the reviewer of its riskiest area plus the primary one.
    - ADDITIONALLY: before merging the LAST step of each phase (S7, S19, S24, S29, S31, S33)
      and for every gated step, run the invariant-review role (read-only) over the accumulated
-     phase diff vs the previous phase boundary. Consult the delivery-lead role on any schedule/
-     descope question (PRD §4.6 order) instead of cutting scope yourself.
+     phase diff vs the previous phase boundary. Add the security-review role as co-reviewer
+     whenever a diff touches authn/z, credentials or token storage, the LLM tool registry,
+     extension permissions/storage, secrets, or a public/session boundary; the
+     adversarial-review role reviews S23–S24 and S32 (agent guide §11). Consult the
+     delivery-lead role on any schedule/descope question (PRD §4.6 order) instead of cutting
+     scope yourself.
    If a role adapter is unavailable, fall back to a fresh reviewer subagent with the checklist
    in REVIEW below, and note it in the progress file.
 3. Verification commands: before S1 they don't exist (greenfield). S1's own Verify bootstraps
@@ -56,47 +60,80 @@ SETUP (once, before S1):
 4. Git: create integration branch dk-p0/main off current HEAD. Use a worktree per step if the
    environment supports it, else plain branches dk-p0/S<N>.
 
+RUNTIME MAPPING (Claude Code; any other runtime maps its equivalents per agent guide §8):
+- Subagents: dispatch workers/reviewers with the Agent tool using the .claude/agents/ profile
+  the §8 crosswalk selects (verify the set is loaded with /agents). Reviews route to the
+  read-only safety_release_reviewer profile where the table says so.
+- Concurrency: launch ALL independent eligible steps as multiple Agent calls in ONE message —
+  they run concurrently in the background and you are notified as each completes. Never poll
+  or sleep while waiting.
+- Isolation: give each step's worker worktree isolation (Agent tool worktree option) so
+  parallel steps never share a working tree — this is the "worktree per step" above.
+- Permissions: the .claude/settings.local.json allowlist from dk-p0-preflight.md §3 keeps the
+  loop from stalling on prompts; deploy/secret/production commands stay un-allowlisted on
+  purpose — a permission prompt there is the gate working.
+- Context: CLAUDE.md loads automatically for you and every subagent. Durable state lives ONLY
+  in dk-p0-progress.md — auto-compaction is safe because SETUP re-reads it; an in-session
+  to-do list is fine for in-flight bookkeeping but is never the source of truth.
+
 THE LOOP — drive the steps as a DAG, not a flat list. A step is ELIGIBLE when all its
 prerequisites are "passed" (graph in the steps doc). Dispatch INDEPENDENT eligible steps
 concurrently — the four plane-chains (Go domain, Python, web, extension) are designed to run
 in parallel — but SERIALIZE: (a) any two steps marked [C] (they all touch contracts/ + gen/),
 (b) steps sharing a dependency edge, (c) steps editing the same files. For each step in flight:
 
-1) DISPATCH WORKER (a FRESH subagent every time):
+1) DISPATCH WORKER (a FRESH subagent every time, running the capability role's adapter):
    - From dk-p0/main, create branch dk-p0/S<N>.
-   - Worker prompt:
+   - Send the FULL assignment packet (agent guide §9): step ID/title/Goal/dependencies and
+     whether it is [C]; the step's fenced prompt + Verify block VERBATIM; branch and base
+     branch; capability role + required reviewer role(s); the PRD/design/research sections
+     the step names; current CARRY-FORWARD constraints from dk-p0-progress.md; explicit
+     exclusions (no live/paid/production work, no adjacent steps, no progress-file edits).
+   - Worker prompt core:
        "Read CLAUDE.md, docs/implementation/dk-p0-monorepo.md, and the files/PRD sections
-        named in the step. Implement ONLY this step:
+        named in the step. Confirm dependencies are `passed` and the branch has no
+        conflicting unrelated edits — if not, STOP and report (agent guide §9).
+        Before editing, write a short plan; then implement ONLY this step:
         <paste the step's fenced prompt from dk-p0-implementation-steps.md verbatim>.
-        Before editing, write a short plan; then act.
         Honor the project rules the step restates; if a rule and a passing check conflict,
         STOP and report — never weaken the rule (steps doc rule 1).
+        Verify third-party library/SDK/tool behavior against current primary docs (Context7)
+        when it materially affects the implementation (agent guide §3).
         Codegen trigger: if you touched contracts/, queries/, or migrations/, run
         `task contracts:generate` / `sqlc generate` and commit gen/ in the same commit.
         Then RUN this step's Verify block yourself and paste the ACTUAL command output:
         <paste the step's Verify block verbatim>.
         Commit on dk-p0/S<N>: stage files by name, Conventional Commits
         (scope core|llm|web|ext|contracts|locale|deploy|repo), don't bypass hooks, never
-        force-push. Report: files changed, concise diff summary, Verify output (pass/fail),
-        anything you could not satisfy."
+        force-push. Report with the agent guide §12 handoff block (STEP/BRANCH/COMMIT/FILES/
+        SUMMARY/REQUIREMENTS/SEAMS/VERIFY/CODEGEN-MIGRATIONS/DOCS VERIFIED/RISKS-CARRY-
+        FORWARD/BLOCKERS) — no process narrative."
    - The worker must actually run the verification. If Verify fails, it fixes until green or
-     reports a concrete blocker.
+     reports a concrete blocker. It never marks its own step passed and never edits the
+     progress file (agent guide §10).
 
-2) REVIEW (a FRESH subagent — the reviewer chosen by the routing table above):
+2) REVIEW (a FRESH subagent — the reviewer chosen by the routing table above; full contract
+   in agent guide §11):
    - "Review the diff of dk-p0/S<N> vs dk-p0/main against your agent charter. Judge:
      correctness vs the step's Goal and the PRD sections it cites; the never-cut invariants
      (money correctness, identity quarantine, quality states, dedup, policy order, approval
      versioning, idempotency, reconciliation, audit, free-text containment, screens-only
      fallback, localization boundary); security at trust boundaries (tokens, LLM credential,
-     extension storage); test adequacy incl. the required NEGATIVE tests; and whether the
-     Verify output pasted is genuine and complete. Return `VERDICT: PASS` or
-     `VERDICT: CHANGES_REQUESTED` + a numbered file:line issue list. Do NOT fix anything."
+     extension storage); complete producer-to-consumer seams (agent guide §6) and provider/
+     runtime leakage into deterministic code; same-commit codegen and reversible-migration
+     evidence; test adequacy incl. the required NEGATIVE tests; and whether the Verify
+     output pasted is genuine and complete — never treat a test name, code comment, or the
+     worker's assertion as execution evidence. Return `VERDICT: PASS` or
+     `VERDICT: CHANGES_REQUESTED` + a numbered findings list, each with severity, the
+     requirement/invariant violated, exact file:line, observed risk, and the smallest safe
+     remediation; separate blockers from optional follow-ups. Do NOT fix anything."
 
 3) FEEDBACK LOOP:
    - PASS and Verify green → merge dk-p0/S<N> into dk-p0/main, record SHA + "passed" +
      any CARRY-FORWARD note, go to (4).
-   - CHANGES_REQUESTED → dispatch a FRESH fix worker (branch diff + the numbered issues +
-     "address these, re-run the Verify block, paste output"), then back to (2).
+   - CHANGES_REQUESTED → dispatch a FRESH fix worker (the numbered findings verbatim + the
+     original step prompt and Verify block + "address these, re-run the Verify block, report
+     per the §12 handoff"), then back to (2) with a FRESH reviewer (agent guide §13).
      Cap: 3 review cycles per step.
    - After 3 failed cycles OR an unresolvable worker blocker → do NOT stall the run:
        a. FILE A GITHUB ISSUE via a subagent running
