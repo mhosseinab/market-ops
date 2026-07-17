@@ -113,7 +113,9 @@ func (s *Service) Refresh(ctx context.Context, accountID uuid.UUID) (Snapshot, e
 // Disconnect severs the connection, purges the sealed tokens, and resets every
 // capability to Unknown so nothing dependent can run afterwards (ACC-001).
 func (s *Service) Disconnect(ctx context.Context, accountID uuid.UUID) (Snapshot, error) {
-	if _, err := s.store.DisconnectConnectorConnection(ctx, accountID); err != nil {
+	// Disconnect is idempotent: a never-connected account has no row to update,
+	// which is not an error — the desired end state (disconnected) already holds.
+	if _, err := s.store.DisconnectConnectorConnection(ctx, accountID); err != nil && !errors.Is(err, pgxNoRows) {
 		return Snapshot{}, fmt.Errorf("connector: disconnect: %w", err)
 	}
 	if err := s.store.ResetConnectorCapability(ctx, accountID); err != nil {

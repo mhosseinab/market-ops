@@ -11,6 +11,7 @@
 package main
 
 import (
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -32,7 +33,13 @@ func main() {
 		cfg.WriteScope = strings.EqualFold(v, "true") || v == "1"
 	}
 
-	addr := os.Getenv("MOCKDK_ADDR")
+	// Listen address: --addr flag wins, else MOCKDK_ADDR, else :8090.
+	addrFlag := flag.String("addr", "", "listen address (overrides MOCKDK_ADDR)")
+	flag.Parse()
+	addr := *addrFlag
+	if addr == "" {
+		addr = os.Getenv("MOCKDK_ADDR")
+	}
 	if addr == "" {
 		addr = ":8090"
 	}
