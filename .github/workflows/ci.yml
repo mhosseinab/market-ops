@@ -104,7 +104,6 @@ jobs:
       GOBIN: ${{ github.workspace }}/.cache/go-tools/bin
       GOLANGCI_LINT_VERSION: v2.12.2
       GOOSE_VERSION: v3.27.2
-      SQLC_VERSION: v1.31.1
       RIVER_VERSION: v0.40.0
     services:
       # Scratch Postgres for the goose up/down assertion and any DB-touching tests.
@@ -140,8 +139,12 @@ jobs:
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
           install-only: true
+      - name: install sqlc
+        uses: sqlc-dev/setup-sqlc@v3
+        with:
+          sqlc-version: '1.31.1'
       # setup-go caches GOMODCACHE/GOCACHE but not installed binaries, so keep a
-      # separate exact-version cache for migration, query, and job-queue CLIs.
+      # separate exact-version cache for migration and job-queue CLIs.
       # No restore-keys: a tool-version change must produce a cold miss.
       - name: configure Go CLI path
         run: |
@@ -152,7 +155,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ env.GOBIN }}
-          key: go-tools-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-goose-${{ env.GOOSE_VERSION }}-sqlc-${{ env.SQLC_VERSION }}-river-${{ env.RIVER_VERSION }}
+          key: go-tools-${{ runner.os }}-${{ runner.arch }}-go-${{ steps.setup-go.outputs.go-version }}-goose-${{ env.GOOSE_VERSION }}-river-${{ env.RIVER_VERSION }}
       - name: install missing Go CLIs
         run: |
           install_go_cli() {
@@ -168,7 +171,6 @@ jobs:
           }
 
           install_go_cli goose github.com/pressly/goose/v3/cmd/goose "$GOOSE_VERSION"
-          install_go_cli sqlc github.com/sqlc-dev/sqlc/cmd/sqlc "$SQLC_VERSION"
           install_go_cli river github.com/riverqueue/river/cmd/river "$RIVER_VERSION"
       - name: golangci-lint
         run: task go:lint
