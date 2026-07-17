@@ -19,6 +19,9 @@ const config: UserConfig & { test: Record<string, unknown> } = {
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     include: ["src/**/*.test.{ts,tsx}"],
+    // Absolute gateway base so the undici fetch under jsdom can parse the URL;
+    // MSW handlers match on path (origin-agnostic `*` prefix).
+    env: { VITE_GATEWAY_BASE_URL: "http://localhost/api" },
   },
 };
 

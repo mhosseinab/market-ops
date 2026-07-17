@@ -16,4 +16,7 @@ export const queryClient = new QueryClient({
 
 export const gateway: GatewayClient = createGatewayClient({
   baseUrl: import.meta.env.VITE_GATEWAY_BASE_URL ?? "/api",
+  // Late-bind `fetch` instead of capturing it at module load, so a runtime swap
+  // of `globalThis.fetch` (e.g. the MSW test server) is honored by the singleton.
+  fetch: (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init),
 });

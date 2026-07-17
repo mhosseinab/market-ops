@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly VITE_SENTRY_SPOTLIGHT?: string;
   /** Gateway base URL for the generated API client. */
   readonly VITE_GATEWAY_BASE_URL?: string;
+  /** Active marketplace account id (P0 has no list-accounts endpoint). */
+  readonly VITE_MARKETPLACE_ACCOUNT_ID?: string;
 }
 
 interface ImportMeta {

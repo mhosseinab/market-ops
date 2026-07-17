@@ -8,6 +8,7 @@ import { router } from "./app/router";
 import "./styles/tokens.css";
 import "./styles/base.css";
 import "./styles/badges.css";
+import "./styles/screens.css";
 
 // Dev-only observability; a no-op in the production bundle (see observability.ts).
 void initObservability();
