@@ -63,8 +63,12 @@ func TestGatewayCanFailsClosed(t *testing.T) {
 // TestGatewayGrantsCoverReadTools asserts every L1 read action the typed read
 // tools map onto is reachable by the machine principal (so a read tool is never
 // silently unauthorized), and that all three Draft-only writes are granted.
+// Surface-only reads (chat.converse) are intentionally excluded.
 func TestGatewayGrantsCoverReadAndDraft(t *testing.T) {
 	for _, a := range ReadActions() {
+		if !isGatewayReadTool(a) {
+			continue // surface-only action, excluded by construction
+		}
 		if !GatewayCan(a) {
 			t.Fatalf("read action %q must be gateway-granted", a)
 		}
@@ -73,5 +77,24 @@ func TestGatewayGrantsCoverReadAndDraft(t *testing.T) {
 		if !GatewayCan(a) {
 			t.Fatalf("Draft action %q must be gateway-granted", a)
 		}
+	}
+}
+
+// TestGatewayExcludesChatConverse asserts the machine principal cannot open a
+// chat turn: chat.converse is a surface-only L1 action, not a data-read tool the
+// LLM_GATEWAY_TOKEN needs. It must be absent from the gateway envelope even
+// though it remains L1 in the Matrix for human roles.
+func TestGatewayExcludesChatConverse(t *testing.T) {
+	if GatewayCan(ActionChatConverse) {
+		t.Fatal("gateway token must NOT reach chat.converse — it is a surface-only action, not a machine data-read")
+	}
+	for _, a := range GatewayGrantedActions() {
+		if a == ActionChatConverse {
+			t.Fatal("chat.converse must not appear in GatewayGrantedActions()")
+		}
+	}
+	// It is still a valid L1 read in the Matrix for human roles.
+	if lvl, ok := LevelOf(ActionChatConverse); !ok || lvl != L1Read {
+		t.Fatalf("chat.converse should remain an L1 read in the Matrix; got level %d ok=%v", lvl, ok)
 	}
 }

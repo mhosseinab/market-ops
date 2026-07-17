@@ -64,17 +64,35 @@ func ReadActions() []Action {
 	return out
 }
 
+// gatewaySurfaceOnlyReads are L1 actions that gate a human-facing SURFACE rather
+// than a typed data read the LLM plane performs with its machine credential.
+// chat.converse authorizes a person opening/continuing a chat turn (CHAT-009); it
+// is not a data-read tool the LLM_GATEWAY_TOKEN principal ever needs, and the
+// machine principal must not be able to open a chat turn on its own behalf. Such
+// actions are excluded from the gateway envelope by construction while remaining
+// L1 in the Matrix for the human roles that legitimately hold them.
+var gatewaySurfaceOnlyReads = map[Action]bool{
+	ActionChatConverse: true,
+}
+
+// isGatewayReadTool reports whether an L1 read action is a data-read tool the
+// gateway principal legitimately maps onto (i.e. not a surface-only action).
+func isGatewayReadTool(a Action) bool { return !gatewaySurfaceOnlyReads[a] }
+
 // gatewayGrants is the exact capability envelope of the LLM_GATEWAY_TOKEN
-// machine principal: every L1 read action plus the Draft-only writes, and
-// NOTHING else. It is computed from the Matrix + DraftActions so it cannot drift
-// from them. Any L2 reversible-config, L3 commercial-guardrail, L4 marketplace
-// mutation, permission, or execute/approve action is absent by construction —
+// machine principal: every L1 read action EXCEPT surface-only actions (like
+// chat.converse), plus the Draft-only writes, and NOTHING else. It is computed
+// from the Matrix + DraftActions so it cannot drift from them. Any L2
+// reversible-config, L3 commercial-guardrail, L4 marketplace mutation,
+// permission, or execute/approve action is absent by construction —
 // gateway_test.go asserts that invariant explicitly and fails closed if a future
 // change tries to widen this set.
 var gatewayGrants = func() map[Action]bool {
 	m := make(map[Action]bool)
 	for _, a := range ReadActions() {
-		m[a] = true
+		if isGatewayReadTool(a) {
+			m[a] = true
+		}
 	}
 	for _, a := range DraftActions {
 		m[a] = true
@@ -84,8 +102,15 @@ var gatewayGrants = func() map[Action]bool {
 
 // GatewayGrantedActions returns the LLM machine principal's granted actions in a
 // stable order (read actions first, then Draft actions), for tests and wiring.
+// Surface-only reads (e.g. chat.converse) are excluded — the machine principal
+// gets a data-read + Draft-only envelope, never the chat surface itself.
 func GatewayGrantedActions() []Action {
-	out := ReadActions()
+	out := make([]Action, 0)
+	for _, a := range ReadActions() {
+		if isGatewayReadTool(a) {
+			out = append(out, a)
+		}
+	}
 	return append(out, DraftActions...)
 }
 

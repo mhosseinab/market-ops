@@ -12,6 +12,11 @@ Scripts make behavior explicit and reproducible:
 * ``say`` — emit plain assistant content (used for token streaming).
 * ``loop_tool`` — ALWAYS request a tool call, so an unbounded run is forced;
   the hard bounds (recursion limit / tool-call limit) must stop it.
+
+A script may also set ``finish_reason`` to simulate the provider's completion
+finish reason. ``finish_reason="length"`` models an output truncated at the
+token ceiling (``max_output_tokens``); the token-ceiling guard must fail closed
+on it (§12.4, no silent truncation).
 """
 
 from __future__ import annotations
@@ -40,6 +45,9 @@ class MockScript:
     )
     # For "loop_tool": the tool to keep calling.
     loop_tool_name: str = "read_observation"
+    # Simulated provider finish reason attached to every generated message.
+    # ``None`` leaves it unset; ``"length"`` models a token-ceiling truncation.
+    finish_reason: str | None = None
 
 
 class MockChatModel(BaseChatModel):
@@ -64,10 +72,12 @@ class MockChatModel(BaseChatModel):
 
     def _ai_message(self) -> AIMessage:
         s = self.script
+        metadata = {"finish_reason": s.finish_reason} if s.finish_reason is not None else {}
         if s.mode == "loop_tool":
             return AIMessage(
                 content="",
                 tool_calls=[{"name": s.loop_tool_name, "args": {}, "id": "mock-loop"}],
+                response_metadata=metadata,
             )
         if s.mode == "answer":
             return AIMessage(
@@ -75,8 +85,9 @@ class MockChatModel(BaseChatModel):
                 tool_calls=[
                     {"name": s.response_tool_name, "args": s.response_args, "id": "mock-answer"}
                 ],
+                response_metadata=metadata,
             )
-        return AIMessage(content=s.content)
+        return AIMessage(content=s.content, response_metadata=metadata)
 
     def _generate(
         self,
@@ -85,7 +96,13 @@ class MockChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        return ChatResult(generations=[ChatGeneration(message=self._ai_message())])
+        generation_info = (
+            {"finish_reason": self.script.finish_reason}
+            if self.script.finish_reason is not None
+            else None
+        )
+        generation = ChatGeneration(message=self._ai_message(), generation_info=generation_info)
+        return ChatResult(generations=[generation])
 
     def _stream(
         self,

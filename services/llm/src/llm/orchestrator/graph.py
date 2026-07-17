@@ -12,6 +12,10 @@ Hard bounds and failure mapping (§12.4) live here:
   ``GraphRecursionError`` maps to the structured failure;
 * a ``ToolCallLimitExceededError`` (global or per-tool) maps to the same
   failure;
+* a ``ToolTimeoutError`` (a single tool exceeded the per-tool timeout) maps to
+  ``TOOL_TIMEOUT``;
+* a ``TokenCeilingError`` (a completion truncated at ``finish_reason=length``)
+  maps to ``TOKEN_CEILING`` — no silent truncation;
 * exactly ONE automatic retry runs at node level for a transient error — never
   stacked with another retry mechanism.
 
@@ -31,7 +35,7 @@ from langgraph.graph import END, START, StateGraph
 
 from llm.config import Settings
 from llm.envelope.models import TurnFailure
-from llm.orchestrator.agent import AgentHandle
+from llm.orchestrator.agent import AgentHandle, TokenCeilingError, ToolTimeoutError
 
 
 class TransientTurnError(Exception):
@@ -113,6 +117,25 @@ def build_turn_graph(agent: AgentHandle, settings: Settings) -> TurnGraph:
                     "failure": _failure(
                         "TOOL_CALL_LIMIT",
                         "the request exceeded the tool-call limit; use the structured screen",
+                    ),
+                }
+            except ToolTimeoutError:
+                # A single tool ran past the per-tool timeout (§12.4 hard bound).
+                return {
+                    "answer": None,
+                    "failure": _failure(
+                        "TOOL_TIMEOUT",
+                        "a data lookup took too long; use the structured screen",
+                    ),
+                }
+            except TokenCeilingError:
+                # The completion was truncated at the token ceiling — fail closed
+                # rather than relay a silently-truncated answer (§12.4).
+                return {
+                    "answer": None,
+                    "failure": _failure(
+                        "TOKEN_CEILING",
+                        "the response exceeded the length limit; use the structured screen",
                     ),
                 }
             except TransientTurnError as exc:  # noqa: PERF203
