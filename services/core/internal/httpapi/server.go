@@ -33,6 +33,24 @@ func WithConnector(c ConnectorService) Option {
 	return func(s *gatewayServer) { s.connector = c }
 }
 
+// WithAuth injects the authentication service backing the /auth/* routes and
+// arms the permission middleware (ACC-002). When present, every non-public route
+// is enforced: an unauthenticated or unauthorized request is denied before it
+// reaches a handler. When absent, no protected route is mounted with authority —
+// the server serves only the public routes safely.
+func WithAuth(a AuthService) Option {
+	return func(s *gatewayServer) {
+		s.auth = a
+		s.cookieSecure = true
+	}
+}
+
+// WithCookieSecure overrides the Secure attribute of the session cookie. Default
+// is true; local plain-HTTP dev sets it false so the browser sends the cookie.
+func WithCookieSecure(secure bool) Option {
+	return func(s *gatewayServer) { s.cookieSecure = CookieSecure(secure) }
+}
+
 // NewServer builds the core HTTP server bound to addr with the generated gateway
 // routes and safe timeouts. It does not start listening; the caller runs
 // ListenAndServe and drives graceful shutdown.
@@ -44,6 +62,14 @@ func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option)
 	}
 	strict := gateway.NewStrictHandler(gs, nil)
 	handler := gateway.HandlerFromMux(strict, mux)
+
+	// Arm the permission middleware whenever auth is wired. It enforces the
+	// shared perm matrix on every non-public route and fails closed. When auth
+	// is not wired, only public routes are reachable, so no protected resource
+	// is ever served without authorization.
+	if gs.auth != nil {
+		handler = newAuthMiddleware(gs.auth).wrap(handler)
+	}
 
 	return &http.Server{
 		Addr:              addr,

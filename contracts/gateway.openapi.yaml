@@ -55,6 +55,14 @@ tags:
     description: Saved Investigation — pinned conversation.
   - name: pilot
     description: Pilot Assortment — versioned beta measurement unit.
+  - name: session
+    description: >-
+      Authentication and session identity. Login, logout, and current-session
+      lookup for the Owner/Operator/Internal roles (PRD §2.2). Sessions are
+      server-side, carried in a secure httpOnly cookie — never a token in
+      client storage (PRD §8, §12.3). Authorization is enforced server-side by
+      the single shared permission matrix (ACC-002); scope is never inferred
+      from token shape.
 
 paths:
   /healthz:
@@ -203,8 +211,112 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /auth/login:
+    post:
+      operationId: login
+      tags:
+        - session
+      summary: Authenticate a user and open a server-side session.
+      description: >-
+        Verifies the email/password credential (argon2id, verified in constant
+        time) and, on success, opens a server-side session and returns the
+        current session identity. The session token is delivered ONLY in a
+        secure httpOnly cookie (PRD §8, §12.3); it never appears in the response
+        body. Public: this is how an unauthenticated user obtains a session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: >-
+            Authenticated; session opened. A Set-Cookie header carries the
+            server-side session token (secure, httpOnly).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfo'
+        '401':
+          description: Invalid credentials (fail closed; no distinction leaks which field was wrong).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /auth/me:
+    get:
+      operationId: getCurrentSession
+      tags:
+        - session
+      summary: Return the identity of the current session.
+      description: >-
+        Returns the user, organization, role, and expiry of the session bound to
+        the request cookie. Requires a valid session; fails closed with 401 when
+        the cookie is absent, unknown, or expired.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current session identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfo'
+        '401':
+          description: No valid session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags:
+        - session
+      summary: Close the current server-side session.
+      description: >-
+        Deletes the server-side session bound to the request cookie and clears
+        the cookie. Idempotent: closing an already-absent session succeeds.
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: Session closed; the session cookie is cleared.
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: mo_session
+      description: >-
+        Server-side session cookie (secure, httpOnly). The cookie carries an
+        opaque session token; the authoritative session record lives in the
+        database. No token ever lives in client-side storage (PRD §8, §12.3),
+        and authorization is enforced server-side by the shared permission
+        matrix — never inferred from the token itself.
     bearerAuth:
       type: http
       scheme: bearer
@@ -359,6 +471,68 @@ components:
           description: All nine §15.2 capabilities, always present.
           items:
             $ref: '#/components/schemas/CapabilityStatus'
+      additionalProperties: false
+
+    UserRole:
+      type: string
+      description: >-
+        Product role (PRD §2.2). Owner governs commercial boundaries and users;
+        Operator executes day-to-day within Owner-defined permissions; Internal
+        diagnoses data/execution and cannot change seller commercial rules.
+      enum:
+        - owner
+        - operator
+        - internal
+
+    LoginRequest:
+      type: object
+      description: Email/password credential presented to open a session.
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          minLength: 1
+          description: Login identifier (the user's email).
+        password:
+          type: string
+          minLength: 1
+          description: >-
+            Plaintext password, presented only over TLS and never stored;
+            verified against the argon2id hash and discarded.
+      additionalProperties: false
+
+    SessionInfo:
+      type: object
+      description: >-
+        Identity of the authenticated session. This is the single shape both
+        chat and screens read the current principal from; role drives the shared
+        permission matrix (ACC-002).
+      required:
+        - userId
+        - organizationId
+        - email
+        - role
+        - expiresAt
+      properties:
+        userId:
+          type: string
+          format: uuid
+          description: The authenticated user (PRD §15.1).
+        organizationId:
+          type: string
+          format: uuid
+          description: The organization the user belongs to.
+        email:
+          type: string
+          description: The user's email.
+        role:
+          $ref: '#/components/schemas/UserRole'
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the session expires (RFC 3339, UTC).
       additionalProperties: false
 
     ErrorEnvelope:

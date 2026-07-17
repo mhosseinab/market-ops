@@ -13,7 +13,16 @@ import (
 type Querier interface {
 	CreateMarketplaceAccount(ctx context.Context, arg CreateMarketplaceAccountParams) (MarketplaceAccount, error)
 	CreateOrganization(ctx context.Context, name string) (Organization, error)
+	// Open a server-side session. token_hash is the SHA-256 of the opaque cookie
+	// token; the raw token never reaches the database.
+	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// Sweep expired sessions.
+	DeleteExpiredSessions(ctx context.Context) error
+	// Close a single session (logout). Idempotent: deleting an absent row is a no-op.
+	DeleteSession(ctx context.Context, tokenHash string) error
+	// Revoke every session for a user (role change / password rotation).
+	DeleteSessionsForUser(ctx context.Context, userID uuid.UUID) error
 	// Sever the connection and purge sealed tokens (ACC-001). Idempotent.
 	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
 	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
@@ -21,7 +30,15 @@ type Querier interface {
 	GetMarketplaceAccountByNativeID(ctx context.Context, nativeAccountID string) (MarketplaceAccount, error)
 	GetMarketplaceAccountByOrganization(ctx context.Context, organizationID uuid.UUID) (MarketplaceAccount, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
+	// Resolve a live session to its principal (user + role + organization). Rows
+	// at/after expiry are excluded, so an expired cookie fails closed.
+	GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
+	// Login identifier lookup. Emails are unique per organization; in P0 the beta
+	// runs one organization, so this resolves the login user. A duplicate email
+	// across organizations would return the earliest-created row deterministically.
+	GetUserByEmail(ctx context.Context, email string) (User, error)
+	GetUserCredential(ctx context.Context, userID uuid.UUID) (UserCredential, error)
 	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
@@ -37,6 +54,9 @@ type Querier interface {
 	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
 	// Establish or update the connection with sealed tokens (connect / refresh).
 	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)
+	// Set or rotate a user's argon2id password hash. Current-state upsert: a
+	// password change replaces the hash in place.
+	UpsertUserCredential(ctx context.Context, arg UpsertUserCredentialParams) error
 }
 
 var _ Querier = (*Queries)(nil)

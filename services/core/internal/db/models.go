@@ -51,6 +51,13 @@ type Organization struct {
 	UpdatedAt time.Time
 }
 
+type Session struct {
+	TokenHash string
+	UserID    uuid.UUID
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
 type User struct {
 	ID             uuid.UUID
 	OrganizationID uuid.UUID
@@ -58,4 +65,11 @@ type User struct {
 	Role           string
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
+}
+
+type UserCredential struct {
+	UserID       uuid.UUID
+	PasswordHash string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }

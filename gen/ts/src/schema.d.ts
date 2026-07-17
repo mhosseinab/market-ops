@@ -104,6 +104,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Authenticate a user and open a server-side session.
+         * @description Verifies the email/password credential (argon2id, verified in constant time) and, on success, opens a server-side session and returns the current session identity. The session token is delivered ONLY in a secure httpOnly cookie (PRD §8, §12.3); it never appears in the response body. Public: this is how an unauthenticated user obtains a session.
+         */
+        post: operations["login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Return the identity of the current session.
+         * @description Returns the user, organization, role, and expiry of the session bound to the request cookie. Requires a valid session; fails closed with 401 when the cookie is absent, unknown, or expired.
+         */
+        get: operations["getCurrentSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Close the current server-side session.
+         * @description Deletes the server-side session bound to the request cookie and clears the cookie. Idempotent: closing an already-absent session succeeds.
+         */
+        post: operations["logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -178,6 +238,39 @@ export interface components {
             connectionState: components["schemas"]["ConnectorConnectionState"];
             /** @description All nine §15.2 capabilities, always present. */
             capabilities: components["schemas"]["CapabilityStatus"][];
+        };
+        /**
+         * @description Product role (PRD §2.2). Owner governs commercial boundaries and users; Operator executes day-to-day within Owner-defined permissions; Internal diagnoses data/execution and cannot change seller commercial rules.
+         * @enum {string}
+         */
+        UserRole: "owner" | "operator" | "internal";
+        /** @description Email/password credential presented to open a session. */
+        LoginRequest: {
+            /** @description Login identifier (the user's email). */
+            email: string;
+            /** @description Plaintext password, presented only over TLS and never stored; verified against the argon2id hash and discarded. */
+            password: string;
+        };
+        /** @description Identity of the authenticated session. This is the single shape both chat and screens read the current principal from; role drives the shared permission matrix (ACC-002). */
+        SessionInfo: {
+            /**
+             * Format: uuid
+             * @description The authenticated user (PRD §15.1).
+             */
+            userId: string;
+            /**
+             * Format: uuid
+             * @description The organization the user belongs to.
+             */
+            organizationId: string;
+            /** @description The user's email. */
+            email: string;
+            role: components["schemas"]["UserRole"];
+            /**
+             * Format: date-time
+             * @description When the session expires (RFC 3339, UTC).
+             */
+            expiresAt: string;
         };
         /** @description Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator. */
         ErrorEnvelope: {
@@ -347,6 +440,113 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ConnectorStatus"];
                 };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    login: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated; session opened. A Set-Cookie header carries the server-side session token (secure, httpOnly). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description Invalid credentials (fail closed; no distinction leaks which field was wrong). */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getCurrentSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current session identity. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionInfo"];
+                };
+            };
+            /** @description No valid session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Session closed; the session cookie is cleared. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Unexpected error. */
             default: {
