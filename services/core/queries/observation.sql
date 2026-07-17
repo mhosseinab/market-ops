@@ -37,8 +37,40 @@ SELECT * FROM observation_targets
 WHERE marketplace_account_id = $1 AND active = true
 ORDER BY native_variant_id;
 
+-- name: DeactivateObservationTargetsForIdentity :many
+-- OBS-001 carry-forward from S13: when a Confirmed identity is REOPENED
+-- (NeedsReview/Rejected/Obsolete) its observation target must stop producing
+-- executable observations — an identity that has left the executable set can no
+-- longer own a live target. This DEACTIVATES (never deletes) the target so the
+-- append-only observation history and its provenance stay intact; the scheduler
+-- and executable-path queries filter on active = true, so a deactivated target is
+-- silently dropped from every fetch and recommendation. Idempotent: a re-delivery
+-- of the reopen event finds the target already inactive and changes nothing.
+-- OBS-007: this disables only the dependent capability; it never relabels the
+-- target's already-stored observations as current.
+UPDATE observation_targets SET
+    active     = false,
+    updated_at = now()
+WHERE identity_id = $1 AND active = true
+RETURNING *;
+
+-- name: CountActiveTargetsForIdentity :one
+-- Test/introspection helper: how many ACTIVE targets an identity still owns.
+SELECT count(*) FROM observation_targets
+WHERE identity_id = $1 AND active = true;
+
 -- name: GetObservationTarget :one
 SELECT * FROM observation_targets WHERE id = $1;
+
+-- name: ListActiveTargetsByTier :many
+-- Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
+-- cadence tier, across all accounts, in a stable order. A target deactivated by
+-- identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
+-- a reopened identity stops being fetched. Ordered by account then native id so
+-- per-account planning/capping is a simple contiguous group.
+SELECT * FROM observation_targets
+WHERE tier = $1 AND active = true
+ORDER BY marketplace_account_id, native_variant_id;
 
 -- name: ClaimDedupKey :many
 -- OBS-008 atomic dedup. A returned row = first sighting (accept the observation);

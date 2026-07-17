@@ -118,6 +118,19 @@ func (q *Queries) CloseObservedOffer(ctx context.Context, arg CloseObservedOffer
 	return i, err
 }
 
+const countActiveTargetsForIdentity = `-- name: CountActiveTargetsForIdentity :one
+SELECT count(*) FROM observation_targets
+WHERE identity_id = $1 AND active = true
+`
+
+// Test/introspection helper: how many ACTIVE targets an identity still owns.
+func (q *Queries) CountActiveTargetsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveTargetsForIdentity, identityID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createObservationTargetsFromConfirmed = `-- name: CreateObservationTargetsFromConfirmed :many
 INSERT INTO observation_targets (
     marketplace_account_id, identity_id, variant_id, native_variant_id,
@@ -150,6 +163,57 @@ func (q *Queries) CreateObservationTargetsFromConfirmed(ctx context.Context, arg
 		arg.CadenceSeconds,
 		arg.FreshnessDeadlineSeconds,
 	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ObservationTarget{}
+	for rows.Next() {
+		var i ObservationTarget
+		if err := rows.Scan(
+			&i.ID,
+			&i.MarketplaceAccountID,
+			&i.IdentityID,
+			&i.VariantID,
+			&i.NativeVariantID,
+			&i.NativeProductID,
+			&i.Tier,
+			&i.CadenceSeconds,
+			&i.FreshnessDeadlineSeconds,
+			&i.Active,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const deactivateObservationTargetsForIdentity = `-- name: DeactivateObservationTargetsForIdentity :many
+UPDATE observation_targets SET
+    active     = false,
+    updated_at = now()
+WHERE identity_id = $1 AND active = true
+RETURNING id, marketplace_account_id, identity_id, variant_id, native_variant_id, native_product_id, tier, cadence_seconds, freshness_deadline_seconds, active, created_at, updated_at
+`
+
+// OBS-001 carry-forward from S13: when a Confirmed identity is REOPENED
+// (NeedsReview/Rejected/Obsolete) its observation target must stop producing
+// executable observations — an identity that has left the executable set can no
+// longer own a live target. This DEACTIVATES (never deletes) the target so the
+// append-only observation history and its provenance stay intact; the scheduler
+// and executable-path queries filter on active = true, so a deactivated target is
+// silently dropped from every fetch and recommendation. Idempotent: a re-delivery
+// of the reopen event finds the target already inactive and changes nothing.
+// OBS-007: this disables only the dependent capability; it never relabels the
+// target's already-stored observations as current.
+func (q *Queries) DeactivateObservationTargetsForIdentity(ctx context.Context, identityID uuid.UUID) ([]ObservationTarget, error) {
+	rows, err := q.db.Query(ctx, deactivateObservationTargetsForIdentity, identityID)
 	if err != nil {
 		return nil, err
 	}
@@ -394,6 +458,50 @@ func (q *Queries) InsertObservationTarget(ctx context.Context, arg InsertObserva
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const listActiveTargetsByTier = `-- name: ListActiveTargetsByTier :many
+SELECT id, marketplace_account_id, identity_id, variant_id, native_variant_id, native_product_id, tier, cadence_seconds, freshness_deadline_seconds, active, created_at, updated_at FROM observation_targets
+WHERE tier = $1 AND active = true
+ORDER BY marketplace_account_id, native_variant_id
+`
+
+// Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
+// cadence tier, across all accounts, in a stable order. A target deactivated by
+// identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
+// a reopened identity stops being fetched. Ordered by account then native id so
+// per-account planning/capping is a simple contiguous group.
+func (q *Queries) ListActiveTargetsByTier(ctx context.Context, tier string) ([]ObservationTarget, error) {
+	rows, err := q.db.Query(ctx, listActiveTargetsByTier, tier)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ObservationTarget{}
+	for rows.Next() {
+		var i ObservationTarget
+		if err := rows.Scan(
+			&i.ID,
+			&i.MarketplaceAccountID,
+			&i.IdentityID,
+			&i.VariantID,
+			&i.NativeVariantID,
+			&i.NativeProductID,
+			&i.Tier,
+			&i.CadenceSeconds,
+			&i.FreshnessDeadlineSeconds,
+			&i.Active,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listInWindowRouteValues = `-- name: ListInWindowRouteValues :many

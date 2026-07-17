@@ -8,6 +8,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type Querier interface {
@@ -29,6 +30,8 @@ type Querier interface {
 	// index uq_mpi_one_active_confirmed_per_variant rejects a second active Confirmed
 	// for the same variant, enforcing CAT-002 at commit time.
 	ConfirmIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
+	// Test/introspection helper: how many ACTIVE targets an identity still owns.
+	CountActiveTargetsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error)
 	CountCatalogSnapshots(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	// Reconciliation: owned offers not observed by the given run are drift (missing
 	// from the latest full fetch). Reported, never silently deleted.
@@ -63,6 +66,17 @@ type Querier interface {
 	// token; the raw token never reaches the database.
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
+	// OBS-001 carry-forward from S13: when a Confirmed identity is REOPENED
+	// (NeedsReview/Rejected/Obsolete) its observation target must stop producing
+	// executable observations — an identity that has left the executable set can no
+	// longer own a live target. This DEACTIVATES (never deletes) the target so the
+	// append-only observation history and its provenance stay intact; the scheduler
+	// and executable-path queries filter on active = true, so a deactivated target is
+	// silently dropped from every fetch and recommendation. Idempotent: a re-delivery
+	// of the reopen event finds the target already inactive and changes nothing.
+	// OBS-007: this disables only the dependent capability; it never relabels the
+	// target's already-stored observations as current.
+	DeactivateObservationTargetsForIdentity(ctx context.Context, identityID uuid.UUID) ([]ObservationTarget, error)
 	// Defer keeps the candidate in NeedsReview (still in the queue) and bumps the
 	// version + updated_at so the defer is ordered in the append-only audit. It never
 	// promotes the mapping to an executable state.
@@ -75,6 +89,21 @@ type Querier interface {
 	DeleteSessionsForUser(ctx context.Context, userID uuid.UUID) error
 	// Sever the connection and purge sealed tokens (ACC-001). Idempotent.
 	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
+	DisengageAccountKillSwitch(ctx context.Context, accountID pgtype.UUID) error
+	DisengageGlobalKillSwitch(ctx context.Context) error
+	DisengageTargetKillSwitch(ctx context.Context, targetID pgtype.UUID) error
+	// Stop Route C for one account. Idempotent per account.
+	EngageAccountKillSwitch(ctx context.Context, arg EngageAccountKillSwitchParams) error
+	// Route C kill-switch queries (S14, OBS-006). route_kill_switches is a
+	// current-state operator control table: engage = INSERT (idempotent per layer),
+	// disengage = DELETE. There is no history table here; the append-only audit of
+	// who stopped what lives in the platform audit trail (later step). Presence of a
+	// row means "stopped".
+	// Stop ALL Route C traffic. Idempotent: a second engage is a no-op (the switch is
+	// already on), so an operator flipping it twice never errors.
+	EngageGlobalKillSwitch(ctx context.Context, arg EngageGlobalKillSwitchParams) error
+	// Stop Route C for one target. Idempotent per target.
+	EngageTargetKillSwitch(ctx context.Context, arg EngageTargetKillSwitchParams) error
 	FailCatalogSyncRun(ctx context.Context, arg FailCatalogSyncRunParams) (CatalogSyncRun, error)
 	// EXECUTABLE-PATH query (CAT-002/OBS-001). Returns the variant's mapping ONLY
 	// when it is Confirmed AND active. A NeedsReview/Rejected/Obsolete mapping yields
@@ -123,11 +152,21 @@ type Querier interface {
 	// unique-violation on re-emit is swallowed by the producer, so a retry never
 	// double-expires downstream recommendations.
 	InsertRecommendationInvalidation(ctx context.Context, arg InsertRecommendationInvalidationParams) (RecommendationInvalidationEvent, error)
+	// Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
+	// cadence tier, across all accounts, in a stable order. A target deactivated by
+	// identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
+	// a reopened identity stops being fetched. Ordered by account then native id so
+	// per-account planning/capping is a simple contiguous group.
+	ListActiveTargetsByTier(ctx context.Context, tier string) ([]ObservationTarget, error)
 	// EXECUTABLE-PATH query (OBS-001): the observation targets an account may create
 	// are EXACTLY its active Confirmed mappings. NeedsReview/Rejected/Obsolete are
 	// excluded by construction — no target exists for an unconfirmed identity.
 	ListConfirmedObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketProductIdentity, error)
 	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
+	// Load every engaged switch so the observer can evaluate the layered stop in
+	// process (global OR account OR target). Ordered global-first so the most
+	// sweeping stop is visible at the head.
+	ListEngagedKillSwitches(ctx context.Context) ([]ListEngagedKillSwitchesRow, error)
 	ListIdentityDecisions(ctx context.Context, identityID uuid.UUID) ([]MarketProductIdentityDecision, error)
 	// OBS-003/§16 cross-route analysis from APPEND-ONLY evidence. For one offer,
 	// returns the LATEST observation per route that is STILL IN WINDOW at :now
