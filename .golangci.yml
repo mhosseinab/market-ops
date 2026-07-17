@@ -14,6 +14,7 @@ linters:
   default: standard
   enable:
     - forbidigo
+    - depguard
   settings:
     forbidigo:
       # No floating point on any money path (PRD §9.1). Kept repo-wide and
@@ -22,6 +23,28 @@ linters:
       forbid:
         - pattern: '^float(32|64)$'
           msg: "no floating point on money-adjacent paths (PRD §9.1); use Money/basis points"
+    depguard:
+      # Import-boundary rules (dk-p0-monorepo.md §5). The referenced packages
+      # (gen/go, internal/money) land in later steps; these rules are inert until
+      # then, then enforce the boundary automatically. Do not weaken.
+      rules:
+        # Only internal/httpapi may import the generated gen/go gateway (S4+).
+        gen-go-boundary:
+          list-mode: lax
+          files:
+            - '!**/services/core/internal/httpapi/**'
+            - '!**/services/core/cmd/**'
+          deny:
+            - pkg: github.com/mhosseinab/market-ops/gen/go
+              desc: only internal/httpapi may import gen/go (dk-p0-monorepo.md §5)
+        # internal/money imports no internal packages (PRD §9.1; S5+).
+        money-isolation:
+          list-mode: lax
+          files:
+            - '**/services/core/internal/money/**'
+          deny:
+            - pkg: github.com/mhosseinab/market-ops/services/core/internal
+              desc: internal/money imports no internal packages (money isolation, PRD §9.1)
   exclusions:
     generated: lax
     paths:
