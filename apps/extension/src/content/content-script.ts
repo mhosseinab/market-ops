@@ -1,3 +1,4 @@
+import type { Capability } from "../lib/capability";
 import { productApiUrl } from "../lib/constants";
 import { validateAgainstDom } from "../lib/dom-validate";
 import type { ExtMessage, ExtResponse } from "../lib/messages";
@@ -79,15 +80,21 @@ async function captureCurrentProduct(): Promise<void> {
 
 // refreshOverlay mounts/updates the overlay for the currently-captured product
 // (EXT-005/EXT-010). Never renders a fabricated value: it shows the honest
-// pending/unavailable state whenever the read seam isn't available.
+// pending/unavailable state whenever the read seam isn't available. The
+// action buttons are gated on the REAL current capability (read fresh via
+// getState, never assumed) — Unknown/disabled/revoked renders neither.
 async function refreshOverlay(): Promise<void> {
   const product = currentProduct;
   if (!product) return;
   const root = mountOverlay();
-  renderOverlay(root, { kind: "pending" }, overlayActions(product));
+  const stateResp = await send({ kind: "getState" });
+  const capability: Capability =
+    stateResp.ok && "state" in stateResp ? stateResp.state.capability : "unknown";
+  const context = { capability, nativeProductId: product.nativeProductId };
+  renderOverlay(root, { kind: "pending" }, overlayActions(product), context);
   const resp = await send({ kind: "getOverlayView", product });
   const state: OverlayState = resp.ok && "overlay" in resp ? resp.overlay : { kind: "unavailable" };
-  renderOverlay(root, state, overlayActions(product));
+  renderOverlay(root, state, overlayActions(product), context);
 }
 
 function overlayActions(product: ParsedProduct) {

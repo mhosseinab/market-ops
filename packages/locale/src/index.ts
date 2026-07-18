@@ -27,6 +27,7 @@ export {
   localeGlyphs,
   toOutputDigits,
 } from "./format/numbers";
+export { FRESHNESS_AGING_MAX_MINUTES, FRESHNESS_FRESH_MAX_MINUTES } from "./freshness";
 export {
   type CreateI18nOptions,
   createI18n,

@@ -1,3 +1,4 @@
+import type { HistorySeries } from "./history";
 import type { OverlayView } from "./overlay-data";
 import type { OwnedTarget } from "./owned-targets";
 import type { PopupState } from "./storage";
@@ -39,7 +40,10 @@ export type ExtResponse =
   | { ok: true; watchlist: WatchlistOutcome }
   | {
       ok: true;
-      overlay: { kind: "pending" } | { kind: "unavailable" } | { kind: "ready"; view: OverlayView };
+      overlay:
+        | { kind: "pending" }
+        | { kind: "unavailable" }
+        | { kind: "ready"; view: OverlayView; history: HistorySeries | null };
     }
   | { ok: true }
   | { ok: false; error: string };

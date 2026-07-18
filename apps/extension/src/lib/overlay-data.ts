@@ -1,4 +1,5 @@
 import type { components } from "@market-ops/gen-ts";
+import { FRESHNESS_AGING_MAX_MINUTES, FRESHNESS_FRESH_MAX_MINUTES } from "@market-ops/locale";
 
 export type ObservedOffer = components["schemas"]["ObservedOffer"];
 export type ObservationTarget = components["schemas"]["ObservationTarget"];
@@ -12,9 +13,11 @@ export type ObservationTarget = components["schemas"]["ObservationTarget"];
 // counts, freshness buckets) — it NEVER derives a Money, a margin, or any
 // commercial value; price stays raw evidence (RawAmount), never promoted.
 //
-// `freshnessBucketOf` mirrors Market.tsx's thresholds VERBATIM (60/360 minutes)
-// so the overlay's freshness bucket is byte-identical to what a human sees on
-// the Market screen for the same offer (overlay-parity contract test).
+// `freshnessBucketOf` reads the SAME shared thresholds
+// (packages/locale/src/freshness.ts) as Market.tsx's FreshnessPill so the
+// overlay's freshness bucket is byte-identical to what a human sees on the
+// Market screen for the same offer (overlay-parity contract test) — a SINGLE
+// source of truth, not a duplicated magic number that could silently drift.
 export type FreshnessBucket = "fresh" | "aging" | "stale";
 
 export interface OverlayView {
@@ -29,14 +32,12 @@ export interface OverlayView {
 
 const QUALIFYING_AVAILABILITY = new Set(["in_stock", "limited"]);
 
-// freshnessBucketOf — VERBATIM copy of Market.tsx's ageMinutes thresholds
-// (<=60 fresh, <=360 aging, else stale). Duplicated here (not imported) because
-// the extension package cannot depend on apps/web; the parity test pins both
-// implementations to the same output for the same input.
+// freshnessBucketOf uses the SHARED FRESHNESS_*_MAX_MINUTES constants —
+// exactly what apps/web's FreshnessPill compares `ageMinutes` against.
 export function freshnessBucketOf(capturedAtIso: string, nowMs: number): FreshnessBucket {
   const ageMinutes = (nowMs - Date.parse(capturedAtIso)) / 60_000;
-  if (ageMinutes <= 60) return "fresh";
-  if (ageMinutes <= 360) return "aging";
+  if (ageMinutes <= FRESHNESS_FRESH_MAX_MINUTES) return "fresh";
+  if (ageMinutes <= FRESHNESS_AGING_MAX_MINUTES) return "aging";
   return "stale";
 }
 

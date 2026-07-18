@@ -1,9 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { HistorySeries } from "../lib/history";
 import type { OverlayView } from "../lib/overlay-data";
-import { mountOverlay, type OverlayState, renderOverlay, unmountOverlay } from "./overlay";
+import {
+  mountOverlay,
+  type OverlayContext,
+  type OverlayState,
+  renderOverlay,
+  unmountOverlay,
+} from "./overlay";
 
 function baselinePage(): void {
   document.body.innerHTML = '<h1>Digikala product page</h1><div id="unrelated">keep-me</div>';
+}
+
+const NO_ACTIONS = { onRefresh: () => {}, onAddToWatchlist: () => {} };
+
+function ctx(capability: OverlayContext["capability"] = "ready"): OverlayContext {
+  return { capability, nativeProductId: 42 };
 }
 
 describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/click/form input", () => {
@@ -24,7 +37,7 @@ describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/c
     const unrelated = document.getElementById("unrelated");
     const originalHtml = unrelated?.outerHTML;
     const root = mountOverlay();
-    renderOverlay(root, { kind: "pending" }, { onRefresh: () => {}, onAddToWatchlist: () => {} });
+    renderOverlay(root, { kind: "pending" }, NO_ACTIONS, ctx());
     expect(document.getElementById("unrelated")?.outerHTML).toBe(originalHtml);
     expect(document.title).toBe(""); // never touches document.title/head either
   });
@@ -32,22 +45,14 @@ describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/c
   it("never triggers navigation — no history.pushState/location assignment is ever called by rendering", () => {
     const pushSpy = vi.spyOn(history, "pushState");
     const root = mountOverlay();
-    renderOverlay(
-      root,
-      { kind: "unavailable" },
-      { onRefresh: () => {}, onAddToWatchlist: () => {} },
-    );
+    renderOverlay(root, { kind: "unavailable" }, NO_ACTIONS, ctx());
     expect(pushSpy).not.toHaveBeenCalled();
     pushSpy.mockRestore();
   });
 
   it("renders an HONEST pending/unavailable state — never a fabricated value", () => {
     const root = mountOverlay();
-    renderOverlay(
-      root,
-      { kind: "unavailable" },
-      { onRefresh: () => {}, onAddToWatchlist: () => {} },
-    );
+    renderOverlay(root, { kind: "unavailable" }, NO_ACTIONS, ctx());
     const stateEl = root.querySelector('[data-role="overlay-state"]');
     expect(stateEl?.textContent).toBe("داده‌های همپوشان هنوز در دسترس نیست.");
   });
@@ -61,9 +66,9 @@ describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/c
       freshness: "fresh",
       quality: "verified",
     };
-    const state: OverlayState = { kind: "ready", view };
+    const state: OverlayState = { kind: "ready", view, history: null };
     const root = mountOverlay();
-    renderOverlay(root, state, { onRefresh: () => {}, onAddToWatchlist: () => {} });
+    renderOverlay(root, state, NO_ACTIONS, ctx());
     expect(root.querySelector('[data-role="offers"]')?.textContent).toContain("3");
     expect(root.querySelector('[data-role="sellers"]')?.textContent).toContain("2");
     expect(root.querySelector('[data-role="lowest"]')?.textContent).toContain("120000 IRR-rial");
@@ -71,15 +76,120 @@ describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/c
     expect(root.querySelector('[data-role="quality"]')?.textContent).toBe("تاییدشده");
   });
 
+  it("LOC-005: the raw lowest-qualifying price token is LTR-isolated (bidi-safe on the RTL page)", () => {
+    const view: OverlayView = {
+      targetId: "t1",
+      offerCount: 1,
+      sellerCount: 1,
+      lowestQualifying: { text: "120000 IRR-rial", value: "120000", unit: "IRR-rial" },
+      freshness: "fresh",
+      quality: "verified",
+    };
+    const root = mountOverlay();
+    renderOverlay(root, { kind: "ready", view, history: null }, NO_ACTIONS, ctx());
+    const token = root.querySelector('[data-role="lowest-value"]');
+    expect(token).not.toBeNull();
+    expect(token?.classList.contains("market-ops-ltr")).toBe(true);
+    expect(token?.textContent).toBe("120000 IRR-rial");
+  });
+
+  it("action buttons render ONLY when capability === ready (Unknown never enables dependent UI)", () => {
+    const root = mountOverlay();
+    for (const capability of ["unknown", "disabled", "revoked"] as const) {
+      renderOverlay(root, { kind: "pending" }, NO_ACTIONS, ctx(capability));
+      expect(root.querySelector('[data-role="on-demand"]')).toBeNull();
+      expect(root.querySelector('[data-role="add-watchlist"]')).toBeNull();
+    }
+    renderOverlay(root, { kind: "pending" }, NO_ACTIONS, ctx("ready"));
+    expect(root.querySelector('[data-role="on-demand"]')).not.toBeNull();
+    expect(root.querySelector('[data-role="add-watchlist"]')).not.toBeNull();
+  });
+
   it("action buttons ONLY fire on a real user click — never auto-invoked by rendering", () => {
     const onRefresh = vi.fn();
     const onAddToWatchlist = vi.fn();
     const root = mountOverlay();
-    renderOverlay(root, { kind: "pending" }, { onRefresh, onAddToWatchlist });
+    renderOverlay(root, { kind: "pending" }, { onRefresh, onAddToWatchlist }, ctx("ready"));
     expect(onRefresh).not.toHaveBeenCalled();
     expect(onAddToWatchlist).not.toHaveBeenCalled();
     root.querySelector<HTMLButtonElement>('[data-role="on-demand"]')?.click();
     expect(onRefresh).toHaveBeenCalledTimes(1);
     expect(onAddToWatchlist).not.toHaveBeenCalled();
+  });
+
+  it("EXT-008: renders a real deep-link chip to the product's context (correct href, opens a new tab)", () => {
+    const root = mountOverlay();
+    renderOverlay(root, { kind: "pending" }, NO_ACTIONS, ctx("ready"));
+    const link = root.querySelector<HTMLAnchorElement>('[data-role="deep-link-product"]');
+    expect(link).not.toBeNull();
+    expect(link?.getAttribute("href")).toMatch(/\/product\?variantId=42$/);
+    expect(link?.target).toBe("_blank");
+  });
+
+  it("EXT-006: a gap-preserving history renders EVERY segment with an EXPLICIT gap marker between them — no fabricated point", () => {
+    const view: OverlayView = {
+      targetId: "t1",
+      offerCount: 1,
+      sellerCount: 1,
+      lowestQualifying: null,
+      freshness: null,
+      quality: null,
+    };
+    const history: HistorySeries = {
+      gapCount: 1,
+      segments: [
+        {
+          points: [
+            {
+              capturedAt: "2026-07-18T09:00:00Z",
+              priceValue: "100000",
+              priceUnit: "IRR-rial",
+              quality: "verified",
+            },
+          ],
+        },
+        {
+          points: [
+            {
+              capturedAt: "2026-07-18T14:00:00Z",
+              priceValue: "105000",
+              priceUnit: "IRR-rial",
+              quality: "verified",
+            },
+          ],
+        },
+      ],
+    };
+    const root = mountOverlay();
+    renderOverlay(root, { kind: "ready", view, history }, NO_ACTIONS, ctx());
+
+    const segments = root.querySelectorAll('[data-role="history-segment"]');
+    const gaps = root.querySelectorAll('[data-role="history-gap"]');
+    expect(segments).toHaveLength(2);
+    expect(gaps).toHaveLength(1);
+    // Only the two REAL points are present — nothing fabricated in the gap.
+    const points = Array.from(root.querySelectorAll('[data-role="history-point"]')).map(
+      (p) => p.textContent,
+    );
+    expect(points).toEqual(["100000 IRR-rial", "105000 IRR-rial"]);
+    // The gap marker sits BETWEEN the two segments in document order.
+    const heading = root.querySelector('[data-role="history"]');
+    const order = Array.from(heading?.children ?? []).map((c) => (c as HTMLElement).dataset.role);
+    expect(order).toEqual(["history-title", "history-segment", "history-gap", "history-segment"]);
+  });
+
+  it("EXT-006: an unavailable history (fail-closed seam) renders an honest empty state, never a fabricated point", () => {
+    const view: OverlayView = {
+      targetId: "t1",
+      offerCount: 0,
+      sellerCount: 0,
+      lowestQualifying: null,
+      freshness: null,
+      quality: null,
+    };
+    const root = mountOverlay();
+    renderOverlay(root, { kind: "ready", view, history: null }, NO_ACTIONS, ctx());
+    expect(root.querySelector('[data-role="history-empty"]')?.textContent).toBe("در دسترس نیست");
+    expect(root.querySelectorAll('[data-role="history-point"]')).toHaveLength(0);
   });
 });

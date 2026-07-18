@@ -1,5 +1,7 @@
 import { type Capability, degradationReason } from "../lib/capability";
 import { GatewayClient } from "../lib/gateway";
+import { buildHistorySeries } from "../lib/history";
+import { createHistoryReadGateway } from "../lib/history-read";
 import type { ExtMessage, ExtResponse } from "../lib/messages";
 import { gauge, incr, log } from "../lib/observability";
 import { deriveOverlayView } from "../lib/overlay-data";
@@ -35,6 +37,7 @@ const queue = new UploadQueue(store);
 const gateway = new GatewayClient(GATEWAY_BASE_URL);
 const watchlistGateway = createWatchlistGateway();
 const overlayReadGateway = createOverlayReadGateway();
+const historyReadGateway = createHistoryReadGateway();
 // Confirmed owned targets: server-authoritative, starts EMPTY (fail closed —
 // EXT-004). Populated by the S31 authenticated targets sync.
 const ownedTargets = new OwnedTargetIndex();
@@ -86,11 +89,16 @@ async function handle(msg: ExtMessage, sender: chrome.runtime.MessageSender): Pr
   }
 }
 
-// Diagnostic-only, capability-gated page-context injection (docs/09). Targets
-// ONLY the sender's OWN tab — never an enumerated/other tab (the extension
-// holds no "tabs" permission and never asks for one). A missing tab id (e.g. a
-// non-tab sender) is a no-op, never a thrown error across the message seam.
+// Diagnostic-only, capability-gated page-context injection (docs/09). Gated on
+// capability === "ready" — Unknown (never paired) / disabled / revoked NEVER
+// triggers MAIN-world code injection into the page (Unknown never enables
+// dependent logic, PRD §4.6). Targets ONLY the sender's OWN tab — never an
+// enumerated/other tab (the extension holds no "tabs" permission and never
+// asks for one). A missing tab id (e.g. a non-tab sender) is a no-op, never a
+// thrown error across the message seam.
 async function handleInjectNavShim(sender: chrome.runtime.MessageSender): Promise<ExtResponse> {
+  const capability = await getCapability();
+  if (capability !== "ready") return { ok: true };
   const tabId = sender.tab?.id;
   if (tabId === undefined) return { ok: true };
   try {
@@ -133,6 +141,11 @@ async function handleCapture(
 // capture — the only difference is the sub-route attribution (OBS-005) — so it
 // inherits the ≤10s bound: enqueue and flush happen synchronously in this
 // same message handler, never waiting for the 1-minute alarm hint.
+// DEFERRED (named, not silently dropped): a REAL network-inclusive ≤10s
+// timing proof against the live gateway belongs in S32's
+// `task test:integration` (compose-based). service-worker.test.ts carries a
+// bounded LOCAL proxy (stubbed network) proving this code path itself adds no
+// artificial delay.
 async function handleOnDemandCapture(product: ParsedProduct): Promise<ExtResponse> {
   const startedAt = Date.now();
   const result = await handleCapture(product, "on_demand");
@@ -140,12 +153,17 @@ async function handleOnDemandCapture(product: ParsedProduct): Promise<ExtRespons
   return result;
 }
 
-// EXT-007: add a Confirmed owned target to the priority watchlist. Resolved
-// through the SAME Confirmed-owned-target gate as capture — EXT-004: a
-// NeedsReview/unmapped product NEVER reaches the watchlist. The server
-// enforces the cap and audits the change (this handler NEVER self-certifies
-// success — see watchlist.ts for the current fail-closed seam pending S37).
+// EXT-007: add a Confirmed owned target to the priority watchlist. Gated on
+// capability === "ready" FIRST (EXT-009 kill switch: a disabled/revoked/never-
+// paired extension must never reach the server, even for a Confirmed-owned
+// product) — then resolved through the SAME Confirmed-owned-target gate as
+// capture (EXT-004: a NeedsReview/unmapped product NEVER reaches the
+// watchlist). The server enforces the cap and audits the change (this handler
+// NEVER self-certifies success — see watchlist.ts for the current fail-closed
+// seam pending S37).
 async function handleAddToWatchlist(product: ParsedProduct): Promise<ExtResponse> {
+  const capability = await getCapability();
+  if (capability !== "ready") return { ok: true, watchlist: { ok: false, reason: "denied" } };
   const target = ownedTargets.resolve(product);
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
   if (!cred || !target) return { ok: true, watchlist: { ok: false, reason: "denied" } };
@@ -157,17 +175,30 @@ async function handleAddToWatchlist(product: ParsedProduct): Promise<ExtResponse
   return { ok: true, watchlist: outcome };
 }
 
-// EXT-005: overlay data for the product being viewed — resolved through the
-// SAME Confirmed-owned-target gate (EXT-004), rendered, never recomputed. See
+// EXT-005: overlay data for the product being viewed. Gated on capability ===
+// "ready" FIRST (EXT-009 kill switch — a disabled/revoked/never-paired
+// extension never reaches the server), then resolved through the SAME
+// Confirmed-owned-target gate (EXT-004). Rendered, never recomputed. See
 // overlay-read.ts for the current fail-closed seam (captureAuth is
 // capture-only; a genuine, named contract-scope gap).
 async function handleGetOverlayView(product: ParsedProduct): Promise<ExtResponse> {
+  const capability = await getCapability();
+  if (capability !== "ready") return { ok: true, overlay: { kind: "unavailable" } };
   const target = ownedTargets.resolve(product);
   if (!target) return { ok: true, overlay: { kind: "unavailable" } };
   const result = await overlayReadGateway.fetchOverlayData(target.targetId);
   if (!result.ok) return { ok: true, overlay: { kind: "unavailable" } };
   const view = deriveOverlayView(result.target, result.offers, Date.now());
-  return { ok: true, overlay: { kind: "ready", view } };
+
+  // EXT-006: price history — gap-preserving, from the SAME fail-closed-seam
+  // discipline as overlay-read.ts. `history` is null (never fabricated) when
+  // the read seam isn't available yet.
+  const historyResult = await historyReadGateway.fetchHistory(target.targetId);
+  const history = historyResult.ok
+    ? buildHistorySeries(historyResult.observations, historyResult.gapThresholdSeconds)
+    : null;
+
+  return { ok: true, overlay: { kind: "ready", view, history } };
 }
 
 // EXT-012: opt-in bounded scheduled refresh. `chrome.alarms` is only a
@@ -217,6 +248,12 @@ async function handleSetEnabled(enabled: boolean): Promise<ExtResponse> {
 async function handleRevoke(): Promise<ExtResponse> {
   await store.remove(KEY_CREDENTIAL);
   await setCapability("revoked");
+  // A revoked credential must not leave a stale Confirmed-owned-target index
+  // behind: capability alone already fail-closes handleAddToWatchlist/
+  // handleGetOverlayView, but clearing the index too means there is no
+  // window where a re-pair (without a fresh setOwnedTargets sync) could ever
+  // resolve a target from PRE-revocation state.
+  ownedTargets.replaceAll([]);
   log("info", "credential_cleared");
   return { ok: true, state: await popupState() };
 }
