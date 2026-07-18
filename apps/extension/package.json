@@ -1,0 +1,21 @@
+{
+  "name": "@market-ops/extension",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --noEmit -p tsconfig.json && node scripts/build.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "assert:prod-clean": "node scripts/assert-prod-clean.mjs"
+  },
+  "dependencies": {
+    "@market-ops/gen-ts": "workspace:*",
+    "@market-ops/locale": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.0.287",
+    "jsdom": "29.1.1",
+    "vite": "8.1.5"
+  }
+}

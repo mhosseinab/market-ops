@@ -1,0 +1,74 @@
+{"id": "int-fa-001", "message": "قیمت فعلی این محصول چند است؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-002", "message": "حاشیه سود این کالا الان چقدر است؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-003", "message": "رقیب ارزان‌تر کیست؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-004", "message": "چند تا از محصولاتم بها پایین‌تر از کف دارند؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-005", "message": "آخرین قیمت مشاهده‌شده برای این کالا کِی بود؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-006", "message": "موجودی رقبا برای این کالا چطور است؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-007", "message": "وضعیت تازگی داده این محصول چیست؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-008", "message": "چرا این کالا مسدود است؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-025", "message": "آیا این کالا verified است؟", "lang": "fa", "expected_intent": "Question", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-026", "message": "اگر قیمت را ۵٪ کم کنم حاشیه چه می‌شود؟", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-027", "message": "شبیه‌سازی کن قیمت را به ۱٬۲۰۰٬۰۰۰ ریال برسانم", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-028", "message": "اگر به کف قیمت برسم سود چقدر می‌ماند؟", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-029", "message": "فرض کن رقیب ۱۰٪ ارزان‌تر شد، توصیه چه می‌شود؟", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-030", "message": "بدون اعمال، تأثیر کاهش بها را نشانم بده", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-041", "message": "اگر قیمت را دو برابر کنم چه؟", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-042", "message": "سناریوی افزایش ۷ درصدی را بساز", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-045", "message": "شبیه‌سازی سود برای ۳ سناریو", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-047", "message": "اگر به قیمت رقیب برسم چند می‌فروشم؟", "lang": "fa", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-051", "message": "یک پیش‌نویس تغییر قیمت برای این کالا بساز", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-052", "message": "پیشنهاد قیمت جدید را آماده کن", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-053", "message": "برای این محصول کارت اقدام بساز", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-054", "message": "قیمت را برای بازبینی آماده کن، هنوز اعمال نکن", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-065", "message": "برای این توصیه یک اقدام پیش‌نویس کن", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-066", "message": "قیمت پیشنهادی موتور را در یک پیش‌نویس بگذار", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-069", "message": "پیش‌نویس اقدام برای ۵ کالای زیر کف", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-073", "message": "پیش‌نویس بها برای کالای کفش ورزشی", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-075", "message": "برای بازبینی یک کارت قیمت بساز", "lang": "fa", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-076", "message": "این پیش‌نویس اقدام را نشانم بده", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-077", "message": "جزئیات کارت قیمت را باز کن", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-078", "message": "توضیح توصیه را با شواهد ببینم", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-079", "message": "گاردریل‌ها و سطح تأیید این اقدام چیست؟", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-080", "message": "کارت اقدام آماده‌بازبینی را مرور کن", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-091", "message": "بازبینی کن پیش‌نویس آماده را", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-094", "message": "مفروضات و کف قیمت این کارت را ببینم", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-097", "message": "شمارش‌های این مجموعه انبوه را مرور کن", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-099", "message": "توضیح تازگی و کیفیت این اقدام", "lang": "fa", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-101", "message": "بله، این قیمت را تأیید کن", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-102", "message": "تأیید نهایی، اعمالش کن", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-103", "message": "موافقم، برو جلو", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-fa-104", "message": "همین الان قیمت را اعمال کن", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-105", "message": "قبوله، تأییدش کن", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-fa-116", "message": "بزن بریم، تأییدش کن", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-fa-119", "message": "تأیید می‌کنم، اجرا کن", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-121", "message": "همه را یکجا تأیید کن", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-123", "message": "بله بله انجامش بده", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-fa-125", "message": "تأییدش کن دیگه", "lang": "fa", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": true}
+{"id": "int-fa-126", "message": "نتیجه اجرا را تأیید نهایی کن", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-127", "message": "این اجرا موفق بود، ثبتش کن", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-128", "message": "نتیجه بازار را قطعی کن", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-129", "message": "تطبیق را تأیید کن که تمام شد", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-139", "message": "نتیجهٔ نهایی اجرا را بپذیر", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-141", "message": "تأیید کن که در بازار اعمال شد", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-143", "message": "نتیجه را قطعی و مختومه کن", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-145", "message": "این خروجی اجرا درست است، تأییدش کن", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-150", "message": "تأیید نهایی خروجی بازار", "lang": "fa", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-151", "message": "زمان ارسال گزارش روزانه را به ۸ صبح تغییر بده", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-152", "message": "این کالا را به فهرست پایش اضافه کن", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-153", "message": "سطح پایش را به روزانه تغییر بده", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-154", "message": "وضعیت اتصال حساب من چیست؟", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-155", "message": "آمادگی هزینه حساب را نشانم بده", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-166", "message": "استراتژی فعلی من چیست؟", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-168", "message": "یک مقدار بهای‌تمام‌شده برای این کالا ثبت کن", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-170", "message": "این کالا را از پایش حذف کن", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-173", "message": "آیا هزینه‌ها کامل است؟", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-175", "message": "تنظیمات گزارش را نشانم بده", "lang": "fa", "expected_intent": "Administration", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-176", "message": "برو به صفحه محصولات", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-177", "message": "صفحه بازار را باز کن", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-178", "message": "مرا به تنظیمات ببر", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-179", "message": "لیست اقدام‌ها را باز کن", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-180", "message": "صفحه امروز را نشانم بده", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-191", "message": "صفحه عملیات را باز کن", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-193", "message": "مرا به داشبورد امروز ببر", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-195", "message": "این محصول را در صفحه‌اش باز کن", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}
+{"id": "int-fa-199", "message": "لینک صفحه اقدام‌ها را بده", "lang": "fa", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": true}

@@ -1,0 +1,26 @@
+version: '3'
+
+# Python tasks. uv only; a single root .venv is shared by all Python members.
+# mypy is ALWAYS invoked from the repo root (whole packages, never staged files).
+
+tasks:
+  test:
+    desc: Run the Python (LLM plane) test suite.
+    cmds:
+      - uv run pytest services/llm -q
+
+  lint:
+    desc: Ruff check + strict mypy for the LLM plane, from the repo root.
+    cmds:
+      - uv run ruff check services/llm
+      - uv run mypy services/llm
+
+  fmt:
+    desc: Format Python sources with ruff.
+    cmds:
+      - uv run ruff format services/llm
+
+  build:
+    desc: Build the LLM plane wheel.
+    cmds:
+      - uv build --package llm

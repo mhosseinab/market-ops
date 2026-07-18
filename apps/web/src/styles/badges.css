@@ -1,0 +1,67 @@
+/* Badge/pill primitives. Color carries MEANING only and never stands alone —
+ * every badge also renders a text label (design/README.md). Semantic tone maps
+ * to a token; components pass a tone, never a hex. Logical CSS only. */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: var(--radius-pill);
+  padding: 2px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.badge__dot {
+  inline-size: 7px;
+  block-size: 7px;
+  border-radius: 50%;
+  background: var(--tone, var(--ink-3));
+}
+
+.badge__square {
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 2px;
+  background: var(--tone, var(--ink-3));
+}
+
+.badge--pill {
+  color: var(--tone, var(--ink-2));
+  background: var(--tone-bg, var(--panel-2));
+}
+
+/* Semantic tone helpers — the ONLY place a component-facing tone maps to tokens. */
+.tone-pos {
+  --tone: var(--pos);
+  --tone-bg: var(--pos-bg);
+}
+.tone-risk {
+  --tone: var(--risk);
+  --tone-bg: var(--risk-bg);
+}
+.tone-warn {
+  --tone: var(--warn);
+  --tone-bg: var(--warn-bg);
+}
+.tone-info {
+  --tone: var(--info);
+  --tone-bg: var(--info-bg);
+}
+.tone-accent {
+  --tone: var(--accent);
+  --tone-bg: var(--accent-bg);
+}
+.tone-conflict {
+  --tone: var(--conflict);
+  --tone-bg: var(--conflict-bg);
+}
+.tone-muted {
+  --tone: var(--ink-3);
+  --tone-bg: var(--panel-2);
+}
+.tone-ink2 {
+  --tone: var(--ink-2);
+  --tone-bg: var(--panel-2);
+}

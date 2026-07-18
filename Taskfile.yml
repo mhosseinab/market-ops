@@ -1,0 +1,257 @@
+version: '3'
+
+# Root Task orchestration — the single entry point for the polyglot monorepo.
+# Language-specific tasks live in Taskfile.{go,py,ts,contracts}.yml.
+# Canonical command reference: docs/implementation/dk-p0-monorepo.md §3.
+
+includes:
+  go: ./Taskfile.go.yml
+  py: ./Taskfile.py.yml
+  ts: ./Taskfile.ts.yml
+  contracts: ./Taskfile.contracts.yml
+
+tasks:
+  doctor:
+    desc: Verify the required toolchain binaries are installed.
+    silent: true
+    cmds:
+      - |
+        missing=0
+        for tool in node pnpm uv go golangci-lint semgrep oapi-codegen goose sqlc river docker jq curl openssl; do
+          if ! command -v "$tool" >/dev/null 2>&1; then
+            echo "MISSING: $tool"
+            missing=1
+          fi
+        done
+        if [ "$missing" -ne 0 ]; then
+          echo "task doctor: required tools are missing (see MISSING lines above)."
+          exit 1
+        fi
+        echo "All tools present"
+
+  setup:
+    desc: Bootstrap a fresh clone (pnpm + uv + go.work + codegen).
+    cmds:
+      - pnpm install --frozen-lockfile
+      - uv sync --group dev
+      - task: go:init
+      - task: go:sync
+      - task: contracts:generate
+
+  dev:
+    desc: Bring up the local dev stack (PostgreSQL 18, otel/grafana/loki/tempo, mailpit, spotlight).
+    silent: true
+    vars:
+      COMPOSE: docker compose -f deploy/compose.dev.yml
+    cmds:
+      - "{{.COMPOSE}} up -d"
+      # Wait for the PostgreSQL healthcheck before returning (migrations/watchers
+      # wire in with the S5 DB foundation).
+      - |
+        echo "Waiting for PostgreSQL 18 to become healthy..."
+        for i in $(seq 1 60); do
+          status=$({{.COMPOSE}} ps postgres --format '{{`{{.Health}}`}}' 2>/dev/null || true)
+          if [ "$status" = "healthy" ]; then
+            echo "PostgreSQL is healthy. Dev stack is up:"
+            echo "  Grafana   http://localhost:3000   (anonymous admin)"
+            echo "  Mailpit   http://localhost:8025"
+            echo "  Spotlight http://localhost:8969"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "PostgreSQL did not become healthy in time." >&2
+        {{.COMPOSE}} logs postgres >&2
+        exit 1
+
+  up:
+    desc: >-
+      Bring up local infrastructure, apply idempotent migrations and fixtures,
+      generate stable dev-only credentials under tmp/, then run the LLM plane,
+      Go core, and Vite SPA with a same-origin /api proxy. No .env file or manual
+      exports required; an existing .env is treated as optional overrides.
+      Foreground; Ctrl-C stops application processes and leaves infrastructure up.
+    silent: true
+    cmds:
+      - bash tools/dev/up.sh
+
+  build:all:
+    desc: Build every plane (contracts first, then each language).
+    cmds:
+      - task: contracts:generate
+      - task: go:build
+      - task: py:build
+      - task: ts:build
+
+  test:all:
+    desc: Run every language test suite in parallel.
+    deps:
+      - go:test
+      - py:test
+      - ts:test
+    cmds:
+      - bash tools/dev/up_test.sh
+
+  lint:all:
+    desc: Run every language linter in parallel.
+    deps:
+      - go:lint
+      - py:lint
+      - ts:lint
+      - lint:money
+
+  lint:money:
+    desc: >-
+      Money static guard (PRD §9.1 / §4.6): semgrep second layer banning raw
+      integer arithmetic and float on the money paths internal/{money,margin,
+      policy,approval}. The forbidigo layer in .golangci.yml (run by go:lint)
+      covers floats; this covers arithmetic operators forbidigo cannot match.
+    silent: true
+    cmds:
+      # Fail closed: a money guard that silently skips when its linter is absent
+      # would be a never-cut-invariant weakening (PRD §4.6). Install semgrep
+      # (`uv tool install semgrep`) rather than bypassing this.
+      - |
+        if ! command -v semgrep >/dev/null 2>&1; then
+          echo "lint:money: semgrep is required but not installed." >&2
+          echo "  Install: uv tool install semgrep   (or pipx install semgrep)" >&2
+          echo "  The money raw-arithmetic/float guard (PRD §9.1) fails closed when absent." >&2
+          exit 1
+        fi
+      # Scan the whole core module; the rule's path filters (tools/semgrep/money.yml)
+      # restrict findings to the four money-domain packages, so packages that do
+      # not exist yet are simply not matched.
+      - semgrep --config tools/semgrep/money.yml services/core --error --quiet --disable-version-check
+
+  obs:dashboards:
+    desc: Regenerate the §18 Grafana dashboard JSON from its single source (deploy/grafana/gen_dashboards.py).
+    cmds:
+      - python3 deploy/grafana/gen_dashboards.py
+
+  obs:validate:
+    desc: >-
+      Validate the §18 dashboards + §20.1 alert rules offline: every PromQL parses,
+      every referenced series is one the instrumentation actually emits, and every
+      runbook names an existing Operations queue + alert. Runs without the compose
+      stack; the live non-empty-panel check is tools/obs/check_panels.sh (needs dev).
+    silent: true
+    cmds:
+      # Fail if the committed dashboards drift from their generator source.
+      - |
+        tmp="$(mktemp -d)"
+        python3 - "$tmp" <<'PY'
+        import runpy, sys, pathlib, shutil
+        out = pathlib.Path(sys.argv[1])
+        src = pathlib.Path("deploy/grafana/dashboards")
+        mod = runpy.run_path("deploy/grafana/gen_dashboards.py", run_name="__gen__")
+        import json
+        for dash in mod["build"]():
+            (out / f"{dash['uid']}.json").write_text(json.dumps(dash, indent=2, ensure_ascii=False) + "\n")
+        drift = []
+        for f in out.glob("*.json"):
+            committed = src / f.name
+            if not committed.exists() or committed.read_text() != f.read_text():
+                drift.append(f.name)
+        if drift:
+            print("dashboard JSON drift (run task obs:dashboards):", ", ".join(sorted(drift)))
+            sys.exit(1)
+        PY
+      - python3 deploy/grafana/validate_dashboards.py
+
+  db:reset:
+    desc: Drop + recreate the dev DB, then goose up + river migrate-up + seed fixtures.
+    silent: true
+    vars:
+      MIGRATIONS: services/core/migrations
+      FIXTURES: services/core/fixtures/dev_seed.sql
+    cmds:
+      # Docker-free: operate entirely through $DATABASE_URL. Derive a maintenance
+      # connection by swapping the target DB in the URL path to the always-present
+      # `postgres` database, parse the app DB name from the URL, then DROP/CREATE
+      # from there. FORCE terminates open sessions (PostgreSQL 13+). Works against
+      # any reachable server — native or the compose Postgres. Then apply the
+      # goose schema, River's own migration set, and minimal fixture rows.
+      - |
+        if [ -z "${DATABASE_URL:-}" ]; then
+          echo "DATABASE_URL is not set; export it before running db:reset." >&2
+          echo "  e.g. export DATABASE_URL='postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable'" >&2
+          exit 1
+        fi
+        # Strip the scheme, then take the path segment (after host[:port]) up to
+        # any '?' query string. That segment is the target database name.
+        no_scheme="${DATABASE_URL#*://}"
+        path_and_query="${no_scheme#*/}"
+        appdb="${path_and_query%%\?*}"
+        if [ -z "$appdb" ] || [ "$appdb" = "$no_scheme" ]; then
+          echo "Could not parse a database name from DATABASE_URL." >&2
+          exit 1
+        fi
+        # Maintenance URL: same server/credentials/query, database = `postgres`.
+        query=""
+        case "$DATABASE_URL" in
+          *\?*) query="?${DATABASE_URL#*\?}" ;;
+        esac
+        prefix="${DATABASE_URL%%\?*}"                 # drop any query string
+        server="${prefix%/*}"                          # drop the trailing /<appdb>
+        maint_url="${server}/postgres${query}"
+        echo "Resetting database '${appdb}' via maintenance DB 'postgres'..."
+        psql "$maint_url" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"${appdb}\" WITH (FORCE);"
+        psql "$maint_url" -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"${appdb}\";"
+        echo "Applying goose schema migrations..."
+        goose -dir "{{.MIGRATIONS}}" postgres "$DATABASE_URL" up
+        echo "Applying River migration set..."
+        river migrate-up --database-url "$DATABASE_URL"
+        echo "Seeding minimal fixture rows..."
+        psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "{{.FIXTURES}}"
+        echo "Dev database '${appdb}' recreated: schema + River + fixtures applied."
+
+  migrate:verify:
+    desc: Assert every migration is reversible (goose up → reset → up) against $DATABASE_URL.
+    silent: true
+    vars:
+      MIGRATIONS: services/core/migrations
+    cmds:
+      # Mirrors the CI go job's goose up/down assertion. Locally this runs against
+      # $DATABASE_URL; in CI it runs against the fresh postgres:18 service container.
+      # `reset` exercises every migration's `down`, then `up` re-applies — proving
+      # each migration is reversible (every migration ships a working `down`).
+      - |
+        if [ -z "${DATABASE_URL:-}" ]; then
+          echo "DATABASE_URL is not set; export it before running migrate:verify." >&2
+          echo "  e.g. export DATABASE_URL='postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable'" >&2
+          exit 1
+        fi
+        echo "goose up (apply all)..."
+        goose -dir "{{.MIGRATIONS}}" postgres "$DATABASE_URL" up
+        echo "goose reset (down all — exercises every down)..."
+        goose -dir "{{.MIGRATIONS}}" postgres "$DATABASE_URL" reset
+        echo "goose up (re-apply all)..."
+        goose -dir "{{.MIGRATIONS}}" postgres "$DATABASE_URL" up
+        echo "Migration up/down/up reversibility verified."
+
+  ci:local:
+    desc: Everything CI runs, in order — the pre-merge gate.
+    cmds:
+      - task: contracts:drift
+      - task: lint:all
+      - task: test:all
+      - task: migrate:verify
+      - task: ts:build
+      # Pseudo-locale + copy-lint gate (LOC-011), wired in S25. Runs copy-lint plus
+      # the pseudo-localization vitest suite (mirrors the ts CI job).
+      - task: ts:pseudoloc
+      # §18 dashboard drift + §20.1 alert-rule/runbook validation (mirrors the CI
+      # deploy-obs job). Stdlib-only checks; deep PromQL parse is best-effort.
+      - task: obs:validate
+
+  test:integration:
+    desc: >-
+      S32 cross-plane integration suite (compose-based: core + llm + web +
+      mockdk + postgres, deploy/compose.test.yml): kill-switch journey
+      (CHAT-009), adversarial containment replay (CHAT-041/045), §16 edge-case
+      fixtures, permission parity (CHAT-064), and the system duplicate-write
+      proof (EXE-002). Requires Docker; NOT part of `task ci:local` — it runs
+      as a CI job on merges to dk-p0/main, not per-PR (dk-p0-monorepo.md §7).
+      Prints a per-scenario PASS/FAIL report; exit 0 only if all five pass.
+    cmds:
+      - bash tools/integration/run_all.sh

@@ -1,0 +1,18 @@
+{
+  "status": 200,
+  "data": {
+    "product": {
+      "id": 900300,
+      "title_fa": "کالای دارای رانش",
+      "status": "marketable",
+      "variants": [
+        {
+          "id": 555001,
+          "status": "marketable",
+          "seller": { "id": 71001, "code": "H4SHM" },
+          "price": null
+        }
+      ]
+    }
+  }
+}

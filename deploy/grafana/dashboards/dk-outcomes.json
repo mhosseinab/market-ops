@@ -1,0 +1,117 @@
+{
+  "uid": "dk-outcomes",
+  "title": "DK · Outcomes & confidence",
+  "description": "Outcome windows and confidence after reconciled execution.",
+  "tags": [
+    "dk-p0",
+    "outcomes"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 52,
+      "type": "timeseries",
+      "title": "Reconciled terminal results (by state)",
+      "description": "OUT-001 reconciled terminal external results by state (S18).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (external_state) (rate(execution_terminal_results[1h]))",
+          "legendFormat": "{{external_state}}",
+          "refId": "Z",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 54,
+      "type": "timeseries",
+      "title": "Outcome events",
+      "description": "§18 outcome/confidence events on the execution family.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (name) (rate(analytics_events{family=\"execution\", name=~\".*outcome.*|.*confidence.*\"}[6h]))",
+          "legendFormat": "{{name}}",
+          "refId": "B",
+          "range": true
+        }
+      ]
+    }
+  ]
+}

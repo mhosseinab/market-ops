@@ -1,0 +1,71 @@
+version: '3'
+
+# Contracts tasks. `contracts/gateway.openapi.yaml` is the single hand-edited
+# source of truth (plan §4.3); everything under `gen/` is generated from it and
+# committed. `generate` runs every generator; `drift` regenerates and fails if
+# the committed tree no longer matches. Both run in CI and pre-push.
+#
+# Generator versions are PINNED for reproducible regeneration (monorepo §4):
+#   - oapi-codegen           -> `go run ...@OAPI_CODEGEN_VERSION`
+#   - openapi-typescript / openapi-fetch -> pinned in gen/ts/package.json
+#   - openapi-python-client  -> `uvx ...@OPENAPI_PY_VERSION`
+
+vars:
+  OAPI_CODEGEN_VERSION: v2.8.0
+  OAPI_CODEGEN: github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@{{.OAPI_CODEGEN_VERSION}}
+  OPENAPI_PY_VERSION: 0.29.0
+  GATEWAY_SPEC: '{{.ROOT_DIR}}/contracts/gateway.openapi.yaml'
+  DK_FROZEN_SPEC: '{{.ROOT_DIR}}/docs/DK Marketplace - Open API Service.yml'
+
+tasks:
+  generate:
+    desc: Generate all OpenAPI clients/servers into gen/ from the contract sources.
+    cmds:
+      - task: gen:go
+      - task: gen:ts
+      - task: gen:python
+      - task: gen:dkgo
+
+  gen:go:
+    desc: Generate the Go gateway server stubs (oapi-codegen strict-server + types) into gen/go.
+    dir: '{{.ROOT_DIR}}/gen/go'
+    env:
+      GOWORK: off
+    cmds:
+      - go run {{.OAPI_CODEGEN}} --config config.yaml "{{.GATEWAY_SPEC}}"
+
+  gen:ts:
+    desc: Generate the TypeScript schema types (openapi-typescript) into gen/ts.
+    cmds:
+      # Version pinned in gen/ts/package.json; the thin openapi-fetch wrapper
+      # (src/client.ts) is hand-authored and stable, not generated.
+      - pnpm --filter @market-ops/gen-ts exec openapi-typescript "{{.GATEWAY_SPEC}}" -o "{{.ROOT_DIR}}/gen/ts/src/schema.d.ts"
+
+  gen:python:
+    desc: Generate the Python gateway client (openapi-python-client) into gen/python.
+    cmds:
+      - uvx openapi-python-client@{{.OPENAPI_PY_VERSION}} generate --path "{{.GATEWAY_SPEC}}" --meta uv --config "{{.ROOT_DIR}}/gen/python-client.config.yaml" --output-path "{{.ROOT_DIR}}/gen/python" --overwrite
+      # openapi-python-client runs ruff post-generation, leaving a cache dir that
+      # must never be committed.
+      - rm -rf "{{.ROOT_DIR}}/gen/python/.ruff_cache"
+
+  gen:dkgo:
+    desc: Generate the DK Seller Go client (oapi-codegen) into gen/dkgo from the normalized frozen spec.
+    env:
+      GOWORK: off
+    cmds:
+      # The frozen DK doc carries schema-keyword violations kin-openapi rejects.
+      # `dknormalize` deterministically rewrites it into a spec-valid TEMP file
+      # WITHOUT editing the frozen source; oapi-codegen consumes that temp file.
+      - |
+        set -euo pipefail
+        tmp="$(mktemp -t dk-normalized.XXXXXX.yml)"
+        trap 'rm -f "$tmp"' EXIT
+        ( cd "{{.ROOT_DIR}}/contracts/tools/dknormalize" && GOWORK=off go run . "{{.DK_FROZEN_SPEC}}" "$tmp" )
+        ( cd "{{.ROOT_DIR}}/gen/dkgo" && GOWORK=off go run {{.OAPI_CODEGEN}} --config config.yaml "$tmp" )
+
+  drift:
+    desc: Regenerate gen/ and fail if it drifts from its contract source.
+    cmds:
+      - task: generate
+      - git diff --exit-code -- contracts gen

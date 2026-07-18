@@ -1,0 +1,42 @@
+# lefthook — one hook tool for all three languages (dk-p0-monorepo.md §6).
+# Installed via the root package.json "prepare": "lefthook install".
+glob_matcher: doublestar
+
+pre-commit:
+  parallel: true
+  commands:
+    biome:
+      glob: "*.{ts,tsx}"
+      # Generated clients under gen/ are excluded from ALL linters (monorepo §4).
+      # biome lints explicitly-passed paths even when its config ignores gen/ts,
+      # so exclude gen/ at the hook to avoid fighting the generator's formatting.
+      exclude: "gen/"
+      run: pnpm biome check --no-errors-on-unmatched {staged_files}
+    ruff-check:
+      glob: "*.py"
+      # Generated clients under gen/ are excluded from ALL linters (monorepo §4);
+      # gen/python carries its own generator-owned ruff config, so it must be
+      # excluded here rather than relying on root-config discovery.
+      exclude: "gen/"
+      stage_fixed: true
+      run: uv run ruff check --fix {staged_files}
+    ruff-format:
+      glob: "*.py"
+      exclude: "gen/"
+      stage_fixed: true
+      run: uv run ruff format {staged_files}
+    gofmt:
+      glob: "*.go"
+      run: gofmt -l {staged_files}
+
+pre-push:
+  parallel: false
+  commands:
+    go-lint:
+      run: cd services/core && GOWORK=off golangci-lint run ./...
+    go-tidy:
+      run: cd services/core && GOWORK=off go mod tidy && git diff --exit-code go.mod go.sum
+    mypy:
+      run: uv run mypy services/llm
+    contracts-drift:
+      run: task contracts:drift

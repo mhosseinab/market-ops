@@ -1,0 +1,39 @@
+# Keep Docker build contexts small. The Python image builds from the repo root
+# (dk-p0-monorepo.md §8), so the node/go trees must be excluded.
+.git
+.github
+
+# Node / TypeScript
+node_modules
+**/node_modules
+.pnpm-store
+dist
+**/dist
+.turbo
+*.tsbuildinfo
+
+# Python
+.venv
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Go
+go.work
+go.work.sum
+services/core/bin
+
+# Task runner / local data
+.task
+deploy/data
+deploy/volumes
+
+# Secrets & local env (never in an image)
+.env
+.env.*
+!.env.example
+*.pem
+*.key

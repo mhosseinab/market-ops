@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Market Ops — DK capture",
+  "version": "0.1.0",
+  "description": "Observation/context capture for your own Digikala listings. Overlay-only; no automation.",
+  "minimum_chrome_version": "116",
+  "permissions": ["activeTab", "storage", "alarms", "scripting"],
+  "host_permissions": ["https://www.digikala.com/*", "https://api.digikala.com/*"],
+  "background": {
+    "service_worker": "service-worker.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.digikala.com/product/*"],
+      "js": ["content-script.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Market Ops",
+    "default_popup": "popup.html"
+  }
+}

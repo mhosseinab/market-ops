@@ -1,0 +1,211 @@
+{
+  "uid": "dk-chat",
+  "title": "DK · Chat adoption, grounding, latency, cost & containment",
+  "description": "Chat health: latency vs §17.2, grounding/context, cost vs §17.3, and free-text containment. No anti-metrics.",
+  "tags": [
+    "dk-p0",
+    "chat"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Chat completion P95 (§17.2 read-only < 10s)",
+      "description": "Chat turn latency. §17.2: first token < 3s, read-only completion < 10s. NOTE: message count / conversation length are §18 ANTI-metrics and are never charted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le, http_route) (rate(http_server_request_duration_bucket{http_route=~\"/chat\"}[5m])))",
+          "legendFormat": "p95_completion",
+          "refId": "N",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Conversation events (context/grounding/tool/deep-link)",
+      "description": "§18 conversation family: intent, context, tool, grounding, deep-link. Optimizes for shortest safe decision path.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (name) (rate(analytics_events{family=\"conversation\"}[15m]))",
+          "legendFormat": "{{name}}",
+          "refId": "P",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 44,
+      "type": "timeseries",
+      "title": "Chat variable cost (§17.3 conversation)",
+      "description": "§17.3 per-conversation variable cost (minor units). Budget pressure triggers the degradation ladder.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(analytics_cost_minor_units{cost_kind=\"conversation\"}[1h]))",
+          "legendFormat": "conversation_cost",
+          "refId": "R",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 46,
+      "type": "timeseries",
+      "title": "Free-text containment (guidance-only routing)",
+      "description": "Free-text approve/execute attempts routed to guidance-only (§8 containment). Distinguishes a contained attempt from a silent bypass.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (name) (rate(analytics_events{family=\"conversation\", name=~\".*contain.*|.*guidance.*|.*blocked.*\"}[1h]))",
+          "legendFormat": "{{name}}",
+          "refId": "T",
+          "range": true
+        }
+      ]
+    }
+  ]
+}

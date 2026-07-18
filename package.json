@@ -1,0 +1,19 @@
+{
+  "name": "market-ops",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.13.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "prepare": "lefthook install"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.4",
+    "lefthook": "2.1.10",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
+}

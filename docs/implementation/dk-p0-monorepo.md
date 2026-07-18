@@ -92,13 +92,15 @@ includes:
   ts:        { taskfile: ./Taskfile.ts.yml }
   contracts: { taskfile: ./Taskfile.contracts.yml }
 tasks:
-  doctor:      # verify node/pnpm/uv/go/golangci-lint/oapi-codegen/goose/sqlc/docker/jq installed
+  doctor:      # verify node/pnpm/uv/go/golangci-lint/oapi-codegen/goose/sqlc/river/docker/jq installed
   setup:       # pnpm install --frozen-lockfile → uv sync --group dev → task go:init → go work sync → task contracts:generate
   dev:         # docker compose -f deploy/compose.dev.yml up -d → migrations up → run core+llm+web watchers
   build:all:   # cmds (sequential): contracts:generate → go:build → py:build → ts:build
   test:all:    # deps (parallel): [go:test, py:test, ts:test]
   lint:all:    # deps (parallel): [go:lint, py:lint, ts:lint]
   db:reset:    # drop + recreate dev DB, goose up, river migrate-up, seed fixtures
+  obs:dashboards: # regenerate the §18 Grafana dashboard JSON from deploy/grafana/gen_dashboards.py
+  obs:validate:   # §18 dashboard drift + §20.1 alert-rule/runbook validation (stdlib; deep PromQL parse best-effort)
   ci:local:    # everything CI runs, in order — the pre-merge gate
 ```
 
@@ -117,6 +119,7 @@ Canonical command reference (the repo's real verify commands once S1/S6 land):
 | Contracts | `task contracts:generate` then `task contracts:drift` (= `git diff --exit-code contracts gen`) | regen is idempotent; drift check exit 0 |
 | Migrations | `task db:reset` | goose up + down + up clean on scratch DB |
 | Pseudo-locale | `task ts:pseudoloc` (vitest suite + copy-lint) | exit 0 (gate from S25) |
+| Observability | `task obs:validate` (dashboard drift + PromQL/series + §20.1 alert/runbook checks) | exit 0 (gate from S33) |
 | Whole gate | `task ci:local` | exit 0 |
 
 `deps:` runs in parallel, `cmds:` sequentially — contract generation always precedes builds via `cmds:`. Every Task `sources:` list includes the relevant lockfile (`uv.lock`, `pnpm-lock.yaml`, `go.sum`) so lockfile-only changes bust the cache.
@@ -154,22 +157,24 @@ contracts: ['contracts/**', 'docs/DK Marketplace - Open API Service.yml']
 go:        ['services/core/**', 'gen/go/**', 'gen/dkgo/**', 'contracts/**']
 py:        ['services/llm/**', 'gen/python/**', 'contracts/**']
 ts:        ['apps/**', 'packages/**', 'gen/ts/**', 'contracts/**']
+deploy:    ['deploy/**', 'runbooks/**', 'tools/obs/**']
 ```
 
-Jobs (each `if:` its filter): **contracts** — `task contracts:generate` + `git diff --exit-code` (the drift check); **go** — setup-go with `go-version-file: services/core/go.mod`, `GOWORK=off` explicit on every step, golangci-lint, `go test ./... -race`, scratch-Postgres service container for DB tests (goose up/down assertions run here); **py** — `astral-sh/setup-uv`, `uv sync --frozen --group dev`, ruff, mypy from root, pytest; **ts** — pnpm `--frozen-lockfile`, biome, typecheck, vitest, `task ts:pseudoloc` (pseudo-locale + copy-lint gate, LOC-011), extension + web builds. A contracts change triggers all four. `task ci:local` mirrors this exactly for the pre-merge loop.
+Jobs (each `if:` its filter): **contracts** — `task contracts:generate` + `git diff --exit-code` (the drift check); **go** — setup-go with `go-version-file: services/core/go.mod`, `GOWORK=off` explicit on every step, golangci-lint, `go test ./... -race`, scratch-Postgres service container for DB tests (goose up/down assertions run here); **py** — `astral-sh/setup-uv`, `uv sync --frozen --group dev`, ruff, mypy from root, pytest; **ts** — pnpm `--frozen-lockfile`, biome, typecheck, vitest, `task ts:pseudoloc` (pseudo-locale + copy-lint gate, LOC-011), extension + web builds; **deploy-obs** (from S33) — `task obs:validate` (§18 dashboard drift + PromQL/series-name + §20.1 alert-rule/runbook checks; stdlib-only so the gate holds without the optional promql-parser). A contracts change triggers the four language jobs. `task ci:local` mirrors this exactly for the pre-merge loop.
 
 ## 8. Environments, deployment, secrets
 
 - One `.env` at repo root for dev (gitignored; `.env.example` committed): Go via env parsing, Python via `pydantic-settings`, web via Vite env. **No secrets in source** — seller tokens, DB credentials, model keys are env/secret-store only; the LLM plane gets `LLM_GATEWAY_TOKEN` (read/Draft-only) and **no** DB URL. Dev-observability toggles live here too: `SENTRY_SPOTLIGHT` (Spotlight sidecar; unset ⇒ all Sentry wiring disabled in every plane) and `LANGSMITH_TRACING`/`LANGSMITH_API_KEY` (LLM-call tracing; opt-in, never set in CI — traces send prompts to LangSmith's cloud).
-- `deploy/compose.dev.yml`: postgres:18, otel-collector, grafana/loki/tempo, mailpit (email testing), Spotlight sidecar (`ghcr.io/getsentry/spotlight`, dev-observability UI on :8969 — dev-only, never in prod compose), a mock-DK server (from S9) — everything a laptop needs.
+- `deploy/compose.dev.yml`: postgres:18, otel-collector (traces→tempo, logs→loki, metrics→a prometheus exporter :8889), prometheus (:9090, scrapes the collector, loads the §20.1 alert rules from `deploy/prometheus/rules`), grafana/loki/tempo (Grafana datasources: Prometheus/Loki/Tempo; §18 dashboards auto-provisioned from `deploy/grafana/dashboards`), mailpit (email testing), Spotlight sidecar (`ghcr.io/getsentry/spotlight`, dev-observability UI on :8969 — dev-only, never in prod compose), a mock-DK server (from S9) — everything a laptop needs. The §18 dashboards + §20.1 alert rules + runbooks (`runbooks/`) land in S33.
 - `deploy/compose.prod.yml`: core (distroless static Go image), llm (uv `--no-editable --frozen --package llm` multi-stage image, build context = repo root, `.dockerignore` excludes node/go trees), caddy (ingress + static web `dist/`), postgres 18 + WAL backup to the isolated destination, otel stack. Single VPS per PRD §19.3.
+- `deploy/compose.test.yml` (S32, `task test:integration`): the minimal REAL stack the cross-plane suite needs — a one-shot `migrate` service applies the goose app-schema migrations + River's own schema + the dev seed (`task db:reset`, since `cmd/core` only runs River's OWN internal schema, never the goose app schema) before postgres-dependent services start; mockdk, core, and llm run via `go run`/`uv run uvicorn` against the mounted repo (no prod image yet; that is S34's distroless/uv build); the built `apps/web/dist` is served statically; and a Caddy ingress (`deploy/caddy/Caddyfile.integration`) unifies web+gateway under one origin exactly like `compose.prod.yml`'s topology — required so browser-driven tests see real cross-plane responses instead of a same-origin-only false green. No otel/Grafana/Mailpit/Spotlight (that is `compose.dev.yml`'s concern).
 - Extension ships via `pnpm --filter extension build` → zip artifact in CI.
 
 ## 9. Conventions
 
 - **Branching (orchestrated execution):** integration branch `dk-p0/main`; one branch `dk-p0/S<N>` per step; trunk merge via normal PR at the end. Never force-push shared branches; never bypass hooks.
 - **Commits:** Conventional Commits (`feat(core): …`, `fix(web): …`, scopes = `core|llm|web|ext|contracts|locale|deploy|repo`); stage files by name; generated `gen/` changes commit together with their source change.
-- **Tests live with their plane**; cross-plane integration tests in `services/core/internal/integration` (spins compose services) run via `task test:integration` (not part of `test:all`; CI job on merge to `dk-p0/main`).
+- **Tests live with their plane**; the S32 cross-plane integration suite (kill-switch journey, adversarial containment replay, §16 edge-case fixtures, permission parity, system duplicate-write) runs via `task test:integration` (not part of `test:all`; CI job on merge to `dk-p0/main`, `deploy/compose.test.yml`). Its Go system tests live in `services/core/internal/httpapi` (as `system_*_test.go`, package `httpapi`) rather than a separate `internal/integration` package: the `gen-go-boundary` depguard rule (§5) confines `gen/go` request/response types to `internal/httpapi`, and a system test driving real HTTP traffic constructs those types. Its cross-process orchestration (compose lifecycle, the kill-switch journey, the Python adversarial replay) lives in `tools/integration/`.
 - **Adding a workspace member** (checklist): TS → `pnpm-workspace.yaml` + CI `ts` filter; Python → root `pyproject.toml` `members` + CI `py` filter; Go → `task go:init` use-list + `go.work sync` + CI matrix.
 - **Renovate** (post-P0) for pnpm/uv/go dep updates; `pnpm audit`, `uv pip audit`, `govulncheck ./...` in a weekly CI job.
 

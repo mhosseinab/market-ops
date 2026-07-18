@@ -1,0 +1,70 @@
+/* Design tokens (design/README.md §"Design Tokens"). Set as CSS custom
+ * properties on the app root; the whole set swaps for dark mode. Color is used
+ * ONLY for meaning — every state also carries a text label. No component reads a
+ * raw hex; components reference these variables. */
+
+:root,
+[data-theme="light"] {
+  --bg: #eef0f2;
+  --panel: #ffffff;
+  --panel-2: #eceef1;
+  --panel-3: #f7f8f9;
+  --line: #e2e5e8;
+  --line-2: #cdd2d7;
+  --ink: #141a1f;
+  --ink-2: #515a63;
+  --ink-3: #89929b;
+  --accent: #2f6feb;
+  --accent-bg: #e9f0fd;
+  --pos: #1f7a4d;
+  --pos-bg: #e7f3ec;
+  --risk: #c8352b;
+  --risk-bg: #fbecea;
+  --warn: #946200;
+  --warn-bg: #f8f0db;
+  --warn-line: #ecdcae;
+  --info: #2f6feb;
+  --info-bg: #e9f0fd;
+  --conflict: #7b3fbd;
+  --conflict-bg: #f1eafb;
+}
+
+[data-theme="dark"] {
+  --bg: #0d1013;
+  --panel: #171b1f;
+  --panel-2: #212832;
+  --panel-3: #12161a;
+  --line: #28303a;
+  --line-2: #3a4551;
+  --ink: #eef2f5;
+  --ink-2: #a7b1bb;
+  --ink-3: #6d7883;
+  --accent: #5b8dff;
+  --accent-bg: #15203a;
+  --pos: #48bd82;
+  --pos-bg: #122820;
+  --risk: #f0645a;
+  --risk-bg: #2c1a19;
+  --warn: #d9a441;
+  --warn-bg: #2a2312;
+  --warn-line: #3d3418;
+  --info: #5b8dff;
+  --info-bg: #15203a;
+  --conflict: #b389e8;
+  --conflict-bg: #221a30;
+}
+
+:root {
+  /* Base font size: comfortable vs dense (density toggle swaps --fs). */
+  --fs: 13px;
+  --radius-pill: 6px;
+  --radius-control: 8px;
+  --radius-card: 11px;
+  --nav-w: 236px;
+  --dock-w: 392px;
+  --topbar-h: 52px;
+}
+
+[data-density="dense"] {
+  --fs: 12.5px;
+}

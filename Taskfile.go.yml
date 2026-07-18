@@ -1,0 +1,65 @@
+version: '3'
+
+# Go tasks. go.work is local-only (gitignored); CI sets GOWORK=off explicitly.
+# A fresh clone has no go.work — `go:init` creates it and every task depends on it.
+
+tasks:
+  init:
+    desc: Create the local go.work (gitignored) if it is absent.
+    # Under GOWORK=off (every CI go step — monorepo §7) each module builds in
+    # module mode via its committed `replace` directives; go.work must not exist
+    # and `go work` commands cannot run, so init is a no-op. The status line
+    # short-circuits when the workspace is disabled OR already present.
+    status:
+      - '[ "$GOWORK" = off ] || test -f go.work'
+    cmds:
+      # Pin the workspace go line to the module's required version so a fresh
+      # clone on an older toolchain (< the module's `go` directive) still resolves
+      # via GOTOOLCHAIN=auto instead of failing "go.work lists go <older>".
+      # Members: the core module plus the generated Go modules it consumes
+      # (gen/go server stubs, gen/dkgo DK Seller client) — monorepo §2.
+      - go work init ./services/core ./gen/go ./gen/dkgo
+      - go work edit -go=1.25.12
+
+  sync:
+    desc: Sync the go workspace.
+    deps: [init]
+    cmds:
+      - go work sync
+
+  build:
+    desc: Build the Go core binary into services/core/bin/core.
+    deps: [init]
+    dir: services/core
+    sources:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+    generates:
+      - bin/core
+    cmds:
+      - go build -o bin/core ./cmd/core
+
+  test:
+    desc: Run Go tests with the race detector.
+    deps: [init]
+    dir: services/core
+    cmds:
+      - go test ./... -race
+
+  lint:
+    desc: Run golangci-lint per module with GOWORK=off.
+    dir: services/core
+    env:
+      GOWORK: off
+    cmds:
+      - golangci-lint run ./...
+
+  tidy:
+    desc: Tidy the module and fail if go.mod/go.sum changed.
+    dir: services/core
+    env:
+      GOWORK: off
+    cmds:
+      - go mod tidy
+      - git diff --exit-code go.mod go.sum

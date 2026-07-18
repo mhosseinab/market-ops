@@ -1,0 +1,5270 @@
+openapi: 3.1.0
+info:
+  title: Market-Ops Gateway API
+  description: >-
+    Internal gateway API for the DK Marketplace Intelligence platform. This
+    document is the single source of truth for the gateway contract (plan
+    §4.3): the Go server (`gen/go`), the TypeScript client (`gen/ts`), and the
+    Python client (`gen/python`) are all generated from it and committed. It is
+    the ONLY hand-edited contract artifact; evolution is additive within P0.
+    Schemas are named after the PRD §15.1 canonical records; one tag per domain.
+  version: 0.0.0
+  contact:
+    name: api_data_contracts
+
+servers:
+  - url: http://localhost:8080
+    description: Local dev (core service)
+
+# Bearer (JWT) auth applies to the whole surface by default. Operational probes
+# such as /healthz opt out with an explicit empty `security: []`.
+security:
+  - bearerAuth: []
+
+# One tag per PRD §15.1 canonical domain. These are placeholders in v0 — the
+# operations that populate them land in later [C] steps. Keeping the tag set
+# here fixes the naming vocabulary every plane generates against.
+tags:
+  - name: system
+    description: Liveness and build identity (unauthenticated operational probes).
+  - name: organization
+    description: Organization / Marketplace Account — reconciled account and capability state.
+  - name: product
+    description: Product / Variant / Listing / Owned Offer — canonical owned state with native IDs.
+  - name: identity
+    description: Market Product Identity — versioned Confirmed/Needs Review/Rejected/Obsolete mapping.
+  - name: observation
+    description: Observation / Observed Offer — append-only evidence and its derived current view.
+  - name: economics
+    description: Cost Profile / Margin Snapshot — versioned economics.
+  - name: event
+    description: Market Event — lifecycle records.
+  - name: recommendation
+    description: Recommendation — versioned, expiring policy result.
+  - name: approval
+    description: Approval Card — versioned, expiring rendering of exact action parameters.
+  - name: selection
+    description: Selection Set — named, versioned bulk scope.
+  - name: action
+    description: Action — append-only attempt and state history.
+  - name: outcome
+    description: Outcome Window — append-only measured result and confidence.
+  - name: conversation
+    description: Conversation / Context / Message — retained interaction records.
+  - name: investigation
+    description: Saved Investigation — pinned conversation.
+  - name: pilot
+    description: Pilot Assortment — versioned beta measurement unit.
+  - name: session
+    description: >-
+      Authentication and session identity. Login, logout, and current-session
+      lookup for the Owner/Operator/Internal roles (PRD §2.2). Sessions are
+      server-side, carried in a secure httpOnly cookie — never a token in
+      client storage (PRD §8, §12.3). Authorization is enforced server-side by
+      the single shared permission matrix (ACC-002); scope is never inferred
+      from token shape.
+
+paths:
+  /healthz:
+    get:
+      operationId: getHealthz
+      tags:
+        - system
+      summary: Liveness probe with build identity.
+      description: >-
+        Returns service liveness plus the running binary's build identity.
+        Unauthenticated so orchestrators and load balancers can probe it.
+      security: []
+      responses:
+        '200':
+          description: The service is live.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Health'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /connector/connect:
+    post:
+      operationId: connectConnector
+      tags:
+        - organization
+      summary: Connect the DK account for a marketplace account.
+      description: >-
+        Exchanges a DK authorization code for tokens (stored encrypted at rest),
+        seeds every §15.2 capability at Unknown, and runs the capability probes.
+        Returns the reconciled connection + capability status (ACC-001).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectorConnectRequest'
+      responses:
+        '200':
+          description: Connection established; capability status returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /connector/refresh:
+    post:
+      operationId: refreshConnector
+      tags:
+        - organization
+      summary: Refresh the DK access token and re-run capability probes.
+      description: >-
+        Rotates the access token via the stored refresh token (re-encrypted at
+        rest) and re-probes every capability so status and last-verified time
+        stay current (ACC-001, ACC-003).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectorAccountRef'
+      responses:
+        '200':
+          description: Token refreshed; capability status returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /connector/status:
+    get:
+      operationId: getConnectorStatus
+      tags:
+        - organization
+      summary: Inspect connection and per-capability status.
+      description: >-
+        Returns the current connection state plus every §15.2 capability with
+        its status and last-verified time. Capabilities default to Unknown and
+        never enable dependent UI while Unknown (ACC-001).
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose connector status is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Current connection and capability status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /connector/disconnect:
+    post:
+      operationId: disconnectConnector
+      tags:
+        - organization
+      summary: Disconnect the DK account and purge stored tokens.
+      description: >-
+        Marks the connection disconnected, purges the encrypted tokens, and
+        resets every capability to Unknown so no dependent logic can run on a
+        severed connection (ACC-001).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectorAccountRef'
+      responses:
+        '200':
+          description: Connection disconnected; capabilities reset to Unknown.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /auth/login:
+    post:
+      operationId: login
+      tags:
+        - session
+      summary: Authenticate a user and open a server-side session.
+      description: >-
+        Verifies the email/password credential (argon2id, verified in constant
+        time) and, on success, opens a server-side session and returns the
+        current session identity. The session token is delivered ONLY in a
+        secure httpOnly cookie (PRD §8, §12.3); it never appears in the response
+        body. Public: this is how an unauthenticated user obtains a session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: >-
+            Authenticated; session opened. A Set-Cookie header carries the
+            server-side session token (secure, httpOnly).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfo'
+        '401':
+          description: Invalid credentials (fail closed; no distinction leaks which field was wrong).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /auth/me:
+    get:
+      operationId: getCurrentSession
+      tags:
+        - session
+      summary: Return the identity of the current session.
+      description: >-
+        Returns the user, organization, role, and expiry of the session bound to
+        the request cookie. Requires a valid session; fails closed with 401 when
+        the cookie is absent, unknown, or expired.
+      security:
+        - cookieAuth: []
+      responses:
+        '200':
+          description: Current session identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SessionInfo'
+        '401':
+          description: No valid session.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags:
+        - session
+      summary: Close the current server-side session.
+      description: >-
+        Deletes the server-side session bound to the request cookie and clears
+        the cookie. Idempotent: closing an already-absent session succeeds.
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: Session closed; the session cookie is cleared.
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /chat:
+    post:
+      operationId: chat
+      tags:
+        - conversation
+      summary: Converse with the LLM plane over a Server-Sent Events stream.
+      description: >-
+        Opens (or continues) a conversation turn and streams the LLM plane's
+        response as Server-Sent Events (PRD §19.3: SSE, no WebSocket). The
+        gateway authenticates the browser session (cookie), authorizes the read
+        action through the single shared permission matrix, and proxies the turn
+        to the internal Python LLM service; it never lets free text approve,
+        execute, or confirm anything (PRD §8, §12.3 — the LLM plane holds a
+        read/Draft-only credential and no model tool advances an action past
+        Draft). When the global or per-account kill switch is on, or the LLM
+        plane is unreachable, chat returns a structured unavailable state and
+        NOTHING else degrades — every structured screen stays fully functional
+        (CHAT-009).
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatTurnRequest'
+      responses:
+        '200':
+          description: >-
+            An event stream of turn events (text/event-stream). Each SSE `data:`
+            frame is a JSON ChatStreamEvent. The stream is grounded, read/Draft
+            only, and carries no approval control.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: >-
+                  Raw SSE frames. Each frame's `data:` payload is a JSON-encoded
+                  ChatStreamEvent (documented for consumers; the transport is a
+                  byte stream, not a JSON body).
+        '503':
+          description: >-
+            Chat is unavailable: the kill switch is on (global or per-account) or
+            the LLM plane is unreachable. Screens are unaffected (CHAT-009).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatUnavailable'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /identity/needs-review:
+    get:
+      operationId: listNeedsReview
+      tags:
+        - identity
+      summary: List the Needs Review identity-mapping queue for an account.
+      description: >-
+        Returns the account's pending Market Product Identity candidates
+        (journey 4 step 1): each row carries SKU (supplier code), variant and
+        product title, and the native-id evidence a reviewer needs. Only
+        NeedsReview candidates appear here — Confirmed/Rejected/Obsolete mappings
+        are never in the queue. Confirming a candidate is the ONLY thing that
+        makes a variant an observation target (CAT-002, OBS-001).
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose review queue is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The pending Needs Review candidates for the account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NeedsReviewQueue'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /identity/confirm:
+    post:
+      operationId: confirmIdentity
+      tags:
+        - identity
+      summary: Confirm a Needs Review candidate as the variant's active mapping.
+      description: >-
+        Transitions a NeedsReview candidate to Confirmed (journey 4 step 2). At
+        most one active Confirmed mapping may exist per variant (CAT-002,
+        enforced by a partial unique index); a second confirm for the same
+        variant is rejected. Only after confirmation does the variant become an
+        observation target (OBS-001). The decision is recorded in an append-only
+        audit (who/when/evidence).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityDecisionRequest'
+      responses:
+        '200':
+          description: Candidate confirmed; the updated mapping is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketProductIdentity'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /identity/reject:
+    post:
+      operationId: rejectIdentity
+      tags:
+        - identity
+      summary: Reject a Needs Review candidate.
+      description: >-
+        Transitions a NeedsReview candidate to Rejected (journey 4 step 2). A
+        rejected mapping never feeds an executable path and frees the variant for
+        a fresh candidate later. The decision is recorded in an append-only audit.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityDecisionRequest'
+      responses:
+        '200':
+          description: Candidate rejected; the updated mapping is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketProductIdentity'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /identity/defer:
+    post:
+      operationId: deferIdentity
+      tags:
+        - identity
+      summary: Defer a Needs Review candidate, keeping it in the queue.
+      description: >-
+        Leaves a NeedsReview candidate in the queue (journey 4 step 2) and
+        records the deferral in the append-only audit. It never promotes the
+        mapping to an executable state.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IdentityDecisionRequest'
+      responses:
+        '200':
+          description: Candidate deferred; the unchanged mapping is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketProductIdentity'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /observation/targets:
+    get:
+      operationId: listObservationTargets
+      tags:
+        - observation
+      summary: List the account's observation targets.
+      description: >-
+        Returns the account's active observation targets (PRD §7.3 OBS-001). A
+        target exists ONLY for an active Confirmed Market Product Identity — an
+        unconfirmed/NeedsReview/Rejected/Obsolete identity is never observable.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose targets are requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's active observation targets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservationTargetList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /observation/observed-offers:
+    get:
+      operationId: listObservedOffers
+      tags:
+        - observation
+      summary: List the account's derived current Observed Offers.
+      description: >-
+        Returns the derived CURRENT view of the observed market (PRD §7.3,
+        §10.3): one Observed Offer per (target, offer identity), carrying its
+        quality state, the raw price evidence (money quarantine — never a Money),
+        the freshness deadline, and the corroborating route provenance. An expired
+        offer is Stale and renders age-only; a disappeared offer is closed with an
+        end time and is never a zero price (§16).
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose observed offers are requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's current Observed Offers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservedOfferList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /observation/observations:
+    get:
+      operationId: listObservations
+      tags:
+        - observation
+      summary: List append-only observation evidence for a target.
+      description: >-
+        Returns the append-only observation evidence for one target, newest
+        first (PRD §7.3 OBS-002/OBS-004). Historical values never silently become
+        current: each row carries its captured time, quality, and freshness
+        deadline so an expired value renders with age and cannot satisfy a
+        current-data gate.
+      parameters:
+        - name: targetId
+          in: query
+          required: true
+          description: The observation target whose evidence is requested.
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: Maximum rows to return (default 100, capped at 500).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+      responses:
+        '200':
+          description: The append-only observation evidence for the target.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservationList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /observation/capture:
+    post:
+      operationId: uploadCapture
+      tags:
+        - observation
+      summary: Upload an extension (Route B) observation capture.
+      description: >-
+        The server-side ingestion contract the Chrome extension calls into (PRD
+        §10.1 Route B — corroboration / opportunistic refresh only). The request
+        schema is ALLOW-LISTED (additionalProperties false): the extension may
+        submit only Route B captures with the permitted fields, and may NOT
+        self-certify schema/identity validity, conflict, or forge Route C
+        freshness — those are server-side determinations. Price is raw evidence
+        only (money quarantine); a capture never carries a Money. An equivalent
+        replay is deduplicated (OBS-008): it creates no duplicate current offer and
+        retains route provenance. Authenticated by the extension's scoped capture
+        credential (captureAuth) obtained through pairing (EXT-001); a human
+        session cookie is also accepted for first-party tooling. The capture
+        credential is NEVER a seller-API token.
+      security:
+        - captureAuth: []
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptureUpload'
+      responses:
+        '202':
+          description: Capture accepted (or deduplicated) and reflected in the current view.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptureAccepted'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /ext/pairing/code:
+    post:
+      operationId: createPairingCode
+      tags:
+        - extension
+      summary: Mint a short-lived extension pairing code (EXT-001).
+      description: >-
+        A logged-in human mints a short-lived, single-use pairing code for the
+        browser extension (PRD §14 EXT-001). The code is displayed to the user and
+        typed into the extension, which exchanges it via /ext/pairing/claim for a
+        capture/overlay credential. The extension NEVER receives a seller-API
+        token: the pairing flow only ever yields a scoped capture credential. The
+        code is bound to the caller's marketplace account and expires quickly.
+      security:
+        - cookieAuth: []
+      responses:
+        '201':
+          description: A fresh, short-lived, single-use pairing code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairingCode'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /ext/pairing/claim:
+    post:
+      operationId: claimPairingCode
+      tags:
+        - extension
+      summary: Exchange a pairing code for a capture credential (EXT-001).
+      description: >-
+        The extension exchanges a short-lived pairing code for a scoped
+        capture/overlay credential (PRD §14 EXT-001). This route carries NO human
+        session — the extension is not logged in — so it is authenticated only by
+        the single-use code itself. The response holds ONLY a capture credential
+        bound to a marketplace account; it never carries a seller-API token,
+        cookie, or session. An expired, unknown, revoked, or already-claimed code
+        fails closed with 401.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairingClaimRequest'
+      responses:
+        '200':
+          description: The scoped capture credential minted for the code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairingCredential'
+        '401':
+          description: Unknown, expired, revoked, or already-claimed pairing code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /ext/pairing/revoke:
+    post:
+      operationId: revokePairing
+      tags:
+        - extension
+      summary: Revoke a paired extension's capture credential (EXT-001).
+      description: >-
+        A logged-in human revokes the capture credential(s) for their marketplace
+        account (PRD §14 EXT-001/EXT-009 kill switch). After revocation the
+        extension's next capture upload fails closed with 401 and the popup shows a
+        visibly disabled state — never a silent no-op. Idempotent: revoking an
+        already-revoked or absent credential succeeds.
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: Capture credential(s) revoked; further uploads are refused.
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/import/preview:
+    post:
+      operationId: previewCostImport
+      tags:
+        - cost
+      summary: Build a CSV cost-import preview (no commit).
+      description: >-
+        Parses a UTF-8 cost CSV (Persian/Latin digits normalized, LOC-007),
+        resolves SKUs, and returns a per-row disposition preview (CST-001). NO
+        cost value is committed here — the returned batch is in 'preview' and must
+        be confirmed via /cost/import/commit. Every non-accept row carries a
+        stated reason; duplicate (SKU, component) rows are a 'duplicate' conflict
+        that blocks commit until resolved (§16).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostImportPreviewRequest'
+      responses:
+        '200':
+          description: The preview batch with per-row dispositions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostImportPreview'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/import:
+    get:
+      operationId: getCostImportPreview
+      tags:
+        - cost
+      summary: Re-fetch a stored cost-import preview batch.
+      description: >-
+        Returns a previously created preview batch and its disposition rows
+        (CST-001), e.g. to restore the preview after a reload before confirmation.
+      parameters:
+        - name: batchId
+          in: query
+          required: true
+          description: The preview batch to fetch.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The preview batch with per-row dispositions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostImportPreview'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/import/commit:
+    post:
+      operationId: commitCostImport
+      tags:
+        - cost
+      summary: Commit a confirmed cost-import preview.
+      description: >-
+        Commits the ACCEPTED rows of a preview batch into append-only,
+        component-versioned cost profiles (CST-001/CST-002) and recomputes margin
+        readiness for every affected SKU. A batch that is not in 'preview', or
+        that still has duplicate conflicts, is refused (§16 no-commit-until-
+        resolved).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostImportCommitRequest'
+      responses:
+        '200':
+          description: The committed batch and the affected SKUs.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostImportCommitResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/value:
+    post:
+      operationId: enterSingleCost
+      tags:
+        - cost
+      summary: Record a single cost-component value.
+      description: >-
+        Records ONE component value for a SKU as a new append-only cost-profile
+        version and recomputes readiness (CST-002/CST-003). Used by the guided
+        cost-blocker flow. The value is parsed to an exact integer money amount
+        (no float, §9.1); the raw entered text/unit is preserved as evidence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SingleCostEntryRequest'
+      responses:
+        '200':
+          description: The newly recorded cost-profile version.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostProfileVersion'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/profiles:
+    get:
+      operationId: listCostProfiles
+      tags:
+        - cost
+      summary: List the in-force cost-profile versions for a SKU at a time.
+      description: >-
+        Returns the EXACT in-force version of each cost component for a variant at
+        `asOf` (CST-002 point-in-time lookup). Omitting `asOf` returns the current
+        in-force versions. This reproduces the cost profile that produced a
+        historical number, never the current one.
+      parameters:
+        - name: variantId
+          in: query
+          required: true
+          description: The variant (SKU) whose cost profile is requested.
+          schema:
+            type: string
+            format: uuid
+        - name: asOf
+          in: query
+          required: false
+          description: Point-in-time instant (RFC 3339). Defaults to now.
+          schema:
+            type: string
+            format: date-time
+      responses:
+        '200':
+          description: The in-force cost-profile versions per component.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostProfileList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /cost/readiness:
+    get:
+      operationId: getMarginReadiness
+      tags:
+        - cost
+      summary: Read a SKU's margin readiness.
+      description: >-
+        Returns the derived margin readiness for a variant (CST-003): one of
+        Complete, Partial, Stale, Missing, with the components that block or limit
+        it. Only Complete drives an executable recommendation (enforced
+        downstream); Partial may show analysis but no approval control.
+      parameters:
+        - name: variantId
+          in: query
+          required: true
+          description: The variant (SKU) whose readiness is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The SKU's margin readiness.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarginReadiness'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /policy/simulate:
+    post:
+      operationId: simulatePolicy
+      tags:
+        - economics
+      summary: Simulate the contribution + six-stage policy engines (non-executable).
+      description: >-
+        Runs the deterministic contribution model (§9.2) and the fixed six-stage
+        policy order (§9.3: boundary → hard floor → movement cap → cooldown →
+        strategy → objective) over fully-specified what-if inputs, and returns the
+        proposed price with its contribution OR the typed blockers in policy order.
+        This is a SIMULATION: the result is always labelled non-executable and
+        carries NO approval control (`approvable` is always false). Free text /
+        simulations never approve (§8, §12.3, never-cut). A loose movement cap or
+        cooldown (PRC-004) is rejected with a structured error. Authoritative
+        numbers come only from these engines — never from the model plane (§12.3).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PolicySimulationRequest'
+      responses:
+        '200':
+          description: The simulated contribution and policy result (non-executable).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicySimulationResult'
+        default:
+          description: Unexpected error (including a rejected loose cap/cooldown, PRC-004).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /events:
+    get:
+      operationId: listEvents
+      tags:
+        - event
+      summary: List the account's open market events.
+      description: >-
+        Returns the account's open|updated market events (PRD §7.4 EVT-001), the
+        §15.1 lifecycle records. Each event cites its observation evidence with the
+        observed quality state as-is (never upgraded) and carries its versioned
+        materiality threshold provenance (EVT-002). Exposure is either a known
+        Money amount or explicitly unknown — a missing sales/cost context is never
+        a fabricated number (EVT-005). Ordering here is the stable base order; the
+        deterministic exposure×confidence×urgency rank is on /today.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose open events are requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's open market events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketEventList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /event:
+    get:
+      operationId: getEvent
+      tags:
+        - event
+      summary: Get a single market event by id.
+      description: >-
+        Returns one market event with its full lifecycle, ranking factors,
+        exposure (known Money or explicitly unknown, EVT-005), and cited evidence
+        (PRD §7.4). The threshold version that fired it is included for
+        reproducibility (EVT-002).
+      parameters:
+        - name: eventId
+          in: query
+          required: true
+          description: The market event id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The requested market event.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MarketEvent'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /today:
+    get:
+      operationId: getTodayFeed
+      tags:
+        - event
+      summary: Get the ranked Today feed for the account.
+      description: >-
+        Returns the account's open events ranked for the Today screen (PRD §7.4
+        EVT-004): ordering is exposure × confidence × urgency with a DETERMINISTIC
+        final rank and a stable tie-break. All THREE ranking factors are exposed on
+        every item. Known-exposure events rank ahead of unknown-exposure ones; an
+        unknown exposure is never coerced into a number (EVT-005).
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose Today feed is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The ranked Today feed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TodayFeed'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /events/relevance:
+    post:
+      operationId: recordEventRelevance
+      tags:
+        - event
+      summary: Record relevance feedback on a market event.
+      description: >-
+        Appends a relevance-feedback record for a market event (PRD §7.4 EVT-005
+        "relevance feedback is stored"). Feedback is APPEND-ONLY history — a mute is
+        a feedback record, never a deletion of the event. This is a reversible
+        seller-data write (L2, Owner/Operator); it never approves or executes
+        anything.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventRelevanceRequest'
+      responses:
+        '202':
+          description: Relevance feedback recorded.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventRelevanceRecorded'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /approvals/card:
+    get:
+      operationId: getApprovalCard
+      tags:
+        - approval
+      summary: Get an approval card and its append-only §8.4 state history.
+      description: >-
+        Returns one versioned approval card (PRD §7.5 APR-001) with its current
+        §8.4 state and the APPEND-ONLY lifecycle history (AUD-001). The structured
+        control's bound versions (action id, parameter/context/policy/cost versions,
+        evidence versions, expiry) are surfaced so the surface can present the
+        control and re-verify it on confirmation. This is a read; it never advances
+        state.
+      parameters:
+        - name: cardId
+          in: query
+          required: true
+          description: The approval card id.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The approval card, its state, and its append-only history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalCardView'
+        default:
+          description: Unexpected error (including a missing card).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /approvals/confirm:
+    post:
+      operationId: confirmApproval
+      tags:
+        - approval
+      summary: Activate the structured control on an individual approval card (APR-001).
+      description: >-
+        The ONLY individual approval path (§8, never-cut free-text containment):
+        activates the structured, version-bound control on a card in
+        AwaitingConfirmation. The request MUST carry the exact bound versions
+        (action id, parameter/context/policy/cost versions, evidence versions);
+        the server re-verifies EVERY one against the live card. ANY changed
+        dimension routes to Invalidated and an elapsed expiry to Expired — only a
+        fully-matching, live control reaches Approved (§8.4). Free text can never
+        satisfy this contract. Execution itself (the Revalidating → Executing
+        boundary) lands in S18 and is stubbed closed here: an Approved card reports
+        `executionPending` true and performs no write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApprovalConfirmRequest'
+      responses:
+        '200':
+          description: The confirmation outcome (approved, invalidated, or expired).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalConfirmResult'
+        default:
+          description: Unexpected error (including a card with no control, PRC-002).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /approvals/bulk/confirm:
+    post:
+      operationId: confirmBulkApproval
+      tags:
+        - approval
+      summary: Confirm a bulk approval bound to one selection-set version (CHAT-052).
+      description: >-
+        Confirms a bulk approval against a SINGLE, exact selection-set version
+        (PRD §7.5, CHAT-051/052). The request binds the selection-set lineage and
+        the exact version it previewed; the server rejects the confirmation when
+        that version is no longer current (any set or evidence change mints a new
+        version). A valid bulk confirmation reports `executionPending` true —
+        per-item execution lands in S18. This never approves from free text and
+        never re-queries the set (no drift).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkApprovalConfirmRequest'
+      responses:
+        '200':
+          description: The bulk confirmation outcome (bound or invalidated).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkApprovalConfirmResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /actions/execute:
+    post:
+      operationId: executeAction
+      tags:
+        - execution
+      summary: Revalidate and execute an approved action (EXE-001/002/005).
+      description: >-
+        The L4 execution path (PRD §7.5). It re-resolves the current binding
+        SERVER-SIDE and runs the EXE-001 nine-gate revalidation matrix (identity,
+        current price, costs, money unit, boundary, evidence/JIT, guardrails,
+        permission, expiry); an injected change in ANY gate prevents the write and
+        invalidates the card. When gates pass AND writes are enabled (a Supported
+        price_write capability AND the S35 region write-verification flag), it
+        performs EXACTLY ONE idempotent write keyed by the card's stable idempotency
+        key (EXE-002) and reports the external state (EXE-003). When writes are OFF
+        (default), NOTHING is written: the action is tracked recommend-only
+        (EXE-005). It is idempotent: a repeat call replays the recorded result with
+        zero additional external writes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteActionRequest'
+      responses:
+        '200':
+          description: The execution outcome (write, blocked, or recommend-only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecuteActionResult'
+        default:
+          description: Unexpected error (including a card that is not approved).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /actions/retry:
+    post:
+      operationId: retryAction
+      tags:
+        - execution
+      summary: Retry an eligible failed action (EXE-003, CHAT-074).
+      description: >-
+        Gates a retry. It REJECTS an action whose execution is still Pending
+        Reconciliation — an unknown result must reconcile first, never be retried
+        (EXE-003 / CHAT-074). A definitively Failed action is retry-eligible (§16
+        "retry only eligible reconciled failures"); the actual re-write proceeds
+        only through a fresh approved action (rollback/retry is never an automatic
+        inverse or duplicate write, EXE-004).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryActionRequest'
+      responses:
+        '200':
+          description: The retry eligibility outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryActionResult'
+        default:
+          description: Unexpected error (including an unreconciled or terminal action).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /actions/execution:
+    get:
+      operationId: getActionExecution
+      tags:
+        - execution
+      summary: Get an action's execution record (CHAT-073).
+      description: >-
+        Returns the single execution record for an action (EXE-002): its mode,
+        external state (EXE-003), external ref, and reconciliation instant. This is
+        a read; it never writes or advances state.
+      parameters:
+        - name: actionId
+          in: query
+          required: true
+          description: The action id (the card's bound action).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The execution record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionExecutionView'
+        default:
+          description: Unexpected error (including no execution record).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /outcomes:
+    get:
+      operationId: getOutcome
+      tags:
+        - execution
+      summary: Get an action's seven-day outcome window and result (OUT-001).
+      description: >-
+        Returns the OUT-001 seven-day outcome window for a reconciled action and,
+        once the window has closed, its §15.3 result and confidence (or Not
+        Measurable when the required evidence is absent). This is a read.
+      parameters:
+        - name: actionId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The outcome window and (when closed) its result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutcomeView'
+        default:
+          description: Unexpected error (including no outcome window).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /chat/cards/recommendation-draft:
+    post:
+      operationId: createRecommendationDraft
+      tags:
+        - recommendation
+      summary: Create an individual-approval Draft from a recommendation (CHAT-041).
+      description: >-
+        The Draft-only write the LLM/machine plane originates for a PrepareAction
+        turn (PRD §8.2, §12.1, CHAT-041). It authorizes against the read/Draft-only
+        gateway credential (perm.GatewayCan(draft.recommendation)) — a human session
+        or any principal without the Draft capability is refused. It mints the
+        initial §8.4 Draft approval card from the persisted, approvable
+        recommendation and returns its bound versions + expiry so the gateway can
+        render the card. The write is TERMINAL AT DRAFT: it never advances the
+        state machine and never mints an approval control (confirmation happens
+        through the same structured control endpoint as screens — chat never owns a
+        confirm path). Fails closed (404) on an unknown/foreign/non-executable
+        recommendation — never a fabricated Draft.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecommendationDraftRequest'
+      responses:
+        '200':
+          description: The created Draft's identifiers, bound versions, and expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationDraftResult'
+        default:
+          description: Unexpected error (including an unknown/non-executable recommendation).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /chat/cards/selection-set-draft:
+    post:
+      operationId: createSelectionSetDraft
+      tags:
+        - recommendation
+      summary: Create a named, versioned bulk selection-set Draft (CHAT-050/051).
+      description: >-
+        The Draft-only write for a bulk hand-off (PRD §12.1, CHAT-050/051). It
+        authorizes against perm.GatewayCan(draft.selection_set). It compiles the
+        conversational query into deterministic criteria and appends a NEW
+        selection-set version, returning its bound versions + expiry. There is NO
+        chat bulk approval — the confirmation binds ONE version through the screens'
+        structured control. TERMINAL AT DRAFT.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelectionSetDraftRequest'
+      responses:
+        '200':
+          description: The created selection-set Draft's identifiers, bound version, and expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelectionSetDraftResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /chat/cards/level2-proposal:
+    post:
+      operationId: createLevel2Proposal
+      tags:
+        - recommendation
+      summary: Create a Level-2 reversible-config before/after proposal (CHAT-061/062).
+      description: >-
+        The Draft-only write for a Level-2 (reversible configuration) proposal
+        (PRD §8.3, CHAT-061/062). It authorizes against
+        perm.GatewayCan(draft.level2_proposal). It writes the
+        before/after/scope/consequence proposal AND an append-only audit row in ONE
+        transaction (fail-closed on audit error) so the governance change is
+        transcript-independently reproducible (AUD-001). NO Level-3 write path
+        exists. TERMINAL AT DRAFT — confirmation is the screens' structured control.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Level2ProposalRequest'
+      responses:
+        '200':
+          description: The proposal's identifiers, bound versions, scope/consequence keys, and expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Level2ProposalResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /briefing:
+    get:
+      operationId: getBriefing
+      tags:
+        - event
+      summary: Get the stored daily briefing for a business day (CHAT-010).
+      description: >-
+        Returns the stored once-per-business-day briefing for an account (PRD
+        §6.8, CHAT-010). The briefing is generated from the SAME Today ranking the
+        feed uses, so its event ids and ORDER EQUAL the Today feed — a divergence
+        is a traceability breach. This is a read; it never generates a briefing.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: businessDay
+          in: query
+          required: true
+          description: The business day (UTC calendar date) of the briefing.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: The stored daily briefing with its ranked events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyBriefing'
+        default:
+          description: Unexpected error (including no briefing for that day).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags:
+        - notification
+      summary: List the in-app notifications for an account (NOT-001).
+      description: >-
+        Returns the account's in-app notification feed, newest first (PRD §7.5
+        NOT-001). Each item carries the SHARED product event id — the same id the
+        daily email digest references, so a notification is one event on two
+        surfaces, never two. Items reference locale catalog KEYS with named slots
+        (LOC-002); the surface renders copy, the core stores none. This is a read.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose notification feed is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The in-app notification feed with the unread count.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationFeed'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /notifications/ack:
+    post:
+      operationId: ackNotification
+      tags:
+        - notification
+      summary: Acknowledge (mark read) one in-app notification.
+      description: >-
+        Marks one in-app notification read (PRD §7.5). read_at is a BOUNDED
+        read-state projection advanced by a FROM-guarded update — the notification
+        row itself is append-only, never overwritten. Acknowledgement is
+        idempotent: acking an already-read or foreign notification is a no-op
+        (changed=false), never an error and never a duplicate write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationAckRequest'
+      responses:
+        '200':
+          description: Acknowledgement result (idempotent).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationAckResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /recommendations/detail:
+    get:
+      operationId: getRecommendationDetail
+      tags:
+        - recommendation
+      summary: Get one recommendation's full PRC-001 record + contribution breakdown (S37).
+      description: >-
+        Returns the complete PRC-001 record for a single, persisted recommendation
+        version: objective, current/proposed price, the contribution breakdown
+        (§9.2 deductions — present-or-unavailable-with-reason, never fabricated),
+        the allowed range, evidence quality, readiness, assumptions, and blockers
+        (PRC-002, in policy order). This is the consolidated read PD-3 items 1/3
+        (dk-p0-product-decisions.md) — the same PRC-001-complete payload the
+        approval card is minted from. It is a read; it never advances state or
+        mints a control.
+      parameters:
+        - name: recommendationId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The recommendation's full detail record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationDetail'
+        default:
+          description: Unexpected error (including an unknown recommendation).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /approvals/card/edit-price:
+    post:
+      operationId: editApprovalCardPrice
+      tags:
+        - approval
+      summary: Edit an approval card's proposed price before confirmation (CHAT-044, PD-3 item 2).
+      description: >-
+        Mints a NEW card version with a NEW parameter version and a fresh
+        control-eligible Draft state (approval.Card.EditPrice) — the price is
+        NEVER mutated in place, and the prior control (if any) is thereby
+        invalidated (its parameter version no longer matches). This is
+        write-adjacent but reversible: L2 price.edit, Owner + Operator only. The
+        read/Draft-only LLM machine credential can never reach this endpoint
+        (§12.3) — it is deliberately neither an L1 read nor a Draft-only action.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditApprovalCardPriceRequest'
+      responses:
+        '200':
+          description: The newly minted Draft card carrying the edited price.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalCardView'
+        default:
+          description: Unexpected error (including an unknown card).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /selection-sets/preview:
+    post:
+      operationId: previewSelectionSet
+      tags:
+        - selection
+      summary: Build a bulk selection-set preview with a SERVER-MINTED version (PD-3 item 4).
+      description: >-
+        The screens-native bulk preview (as distinct from the chat
+        draft.selection_set compile path). The request carries NO version field —
+        the SERVER is the sole authority that mints the selection-set version
+        (recommendation.CreateSelectionSet's append-only "next version per
+        lineage" numbering); a client can never present or influence it. This is
+        the hard S35/S37 safety precondition for bulk execution: any later bulk
+        confirmation binds to EXACTLY this server-minted version, and any set
+        change mints a new one, invalidating a stale bound confirmation
+        (CHAT-051/052). Omitting `lineageId` starts a NEW lineage; supplying an
+        existing one mints the next version within it (a refreshed preview). Each
+        member's disposition is resolved SERVER-SIDE from its current, persisted
+        recommendation — never taken from the client. L2 selection.bulk_preview,
+        Owner + Operator only; the machine gateway credential can never reach it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelectionSetPreviewRequest'
+      responses:
+        '200':
+          description: The server-minted selection-set preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelectionSetPreviewResult'
+        default:
+          description: Unexpected error (including an unknown member recommendation).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /actions:
+    get:
+      operationId: listActions
+      tags:
+        - action
+      summary: List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
+      description: >-
+        Returns the account's approval cards (one row per action, current
+        version), newest first, optionally filtered by §8.4 state — the grouped
+        multi-row queue the Actions screen needs beyond the single deep-linked
+        card read (GET /approvals/card). This is a read; it never advances state.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: state
+          in: query
+          required: false
+          description: Optional §8.4 state filter.
+          schema:
+            $ref: '#/components/schemas/ApprovalState'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+      responses:
+        '200':
+          description: The account's action queue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /outcomes/list:
+    get:
+      operationId: listOutcomes
+      tags:
+        - outcome
+      summary: List an account's outcome windows and results (OUT-001, PD-3 item 5).
+      description: >-
+        Returns the account's OUT-001 outcome windows, newest first, with their
+        §15.3 result and confidence once closed (absent while the window is
+        still open — never a fabricated Not Measurable before it is actually
+        computed). This is a read.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+      responses:
+        '200':
+          description: The account's outcome windows.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutcomeList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /guardrails:
+    get:
+      operationId: getGuardrails
+      tags:
+        - economics
+      summary: Read an account's L3 commercial guardrails (PD-3 item 6).
+      description: >-
+        Returns the account's persisted L3 commercial guardrails (contribution
+        floor, movement cap, cooldown, strategy enablement). Reading is L1, every
+        role. Absent (never configured) is a structured 404, never a fabricated
+        default.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's current guardrail settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardrailConfigView'
+        default:
+          description: Unexpected error (including no guardrails configured yet).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: setGuardrails
+      tags:
+        - economics
+      summary: Write an account's L3 commercial guardrails, Owner only (PD-3 item 6).
+      description: >-
+        Sets the account's L3 commercial guardrails. Owner ONLY
+        (guardrail.write) — Operator and Internal are denied, and the
+        read/Draft-only LLM machine credential can never reach this endpoint
+        (§12.3, "guardrail-write is never an LLM-plane tool"). Every write
+        appends an append-only AUD-001 audit record ATOMICALLY with the mutation,
+        on the SAME transaction: the write never commits without its audit row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuardrailWriteRequest'
+      responses:
+        '200':
+          description: The updated guardrail settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardrailConfigView'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /users:
+    get:
+      operationId: listUsers
+      tags:
+        - session
+      summary: List the organization's user roster (PD-3 item 7).
+      description: >-
+        Returns every user in the caller's organization (id, email, role,
+        created_at) — the roster the Settings screen needs beyond the current
+        session principal (GET /auth/me). Reading is L1, every role; adding or
+        changing a user's role stays the existing L3 guardrail.manage_users
+        write path (unaffected by this read).
+      responses:
+        '200':
+          description: The organization's user roster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /ops/queues:
+    get:
+      operationId: getOperationsQueues
+      tags:
+        - organization
+      summary: Aggregated Operations screen queues (PD-3 item 8).
+      description: >-
+        Returns the Operations screen's aggregated queues: pending-reconciliation
+        actions (EXE-003, an unresolved external write awaiting resolution —
+        never retried, never inferred). The parser/schema-drift queue (§10.4
+        Route C parser-drift events) is NOT YET backed by a persisted store; it
+        reports `available: false` with an explicit reason rather than a
+        fabricated empty success — closing it is a named follow-up on the Route C
+        observer plane (go_connector_observer), not improvised here. Off-ladder
+        operational read: Owner + Internal only, never Operator, never the
+        machine gateway principal.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's aggregated operations queues.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsQueues'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /market/conflicts:
+    get:
+      operationId: listMarketConflicts
+      tags:
+        - observation
+      summary: List cross-route conflicted Observed Offers (Market conflict banner, PD-3 item 8).
+      description: >-
+        Returns the account's Observed Offers currently in the `conflicted`
+        quality state (§16 "routes disagree → Conflicted; block") — the values
+        the Market screen's conflict banner surfaces. The underlying price of
+        record is left intact (never zeroed, never silently overwritten); only
+        the quality state blocks recommend/execute (§10.3 matrix). This is a
+        read, same L1 read.observations posture as the other observation reads.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's currently conflicted Observed Offers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservedOfferList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /watchlist:
+    get:
+      operationId: listWatchlist
+      tags:
+        - product
+      summary: List an account's priority watchlist (EXT-007).
+      description: >-
+        Returns the account's priority watchlist entries, newest first. This is
+        a read; adding an entry is the separate POST below.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's watchlist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistView'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: addWatchlistEntry
+      tags:
+        - product
+      summary: Add a Confirmed owned product to the priority watchlist (EXT-007).
+      description: >-
+        Adds one Confirmed owned product (CAT-002 Confirmed Market Product
+        Identity) to the account's priority watchlist. The SERVER enforces the
+        watchlist cap (PRD EXT-007 "Server enforces cap") — a request that would
+        exceed it is rejected, never silently truncated. Every accepted add
+        appends an append-only AUD-001 audit record ATOMICALLY with the insert,
+        on the SAME transaction (EXT-007 "change is audited"). L2
+        config.watchlist, Owner + Operator only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchlistAddRequest'
+      responses:
+        '200':
+          description: The watchlist entry (idempotent on a duplicate variant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistEntry'
+        default:
+          description: Unexpected error (including cap exceeded or an unconfirmed variant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: mo_session
+      description: >-
+        Server-side session cookie (secure, httpOnly). The cookie carries an
+        opaque session token; the authoritative session record lives in the
+        database. No token ever lives in client-side storage (PRD §8, §12.3),
+        and authorization is enforced server-side by the shared permission
+        matrix — never inferred from the token itself.
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Gateway bearer token. The LLM plane carries a read/Draft-only token
+        (PRD §8); scope enforcement is server-side, never inferred from shape.
+    captureAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Extension capture/overlay credential (PRD §14 EXT-001), obtained by
+        exchanging a short-lived pairing code. It is a SCOPED capture credential
+        bound to one marketplace account — never a seller-API token — and
+        authorizes ONLY /observation/capture. Revocation (or expiry) fails the
+        next upload closed with 401. The authoritative credential record lives in
+        the database; only its hash is stored, never the raw value.
+
+  schemas:
+    Health:
+      type: object
+      description: Liveness plus build identity, returned by GET /healthz.
+      required:
+        - status
+        - build
+      properties:
+        status:
+          type: string
+          description: Liveness marker; "ok" when the service is live.
+          enum:
+            - ok
+        build:
+          $ref: '#/components/schemas/BuildInfo'
+      additionalProperties: false
+
+    BuildInfo:
+      type: object
+      description: Identity of the running binary.
+      required:
+        - version
+        - commit
+        - buildTime
+      properties:
+        version:
+          type: string
+          description: Semantic version or dev marker of the running binary.
+        commit:
+          type: string
+          description: VCS commit the binary was built from.
+        buildTime:
+          type: string
+          description: Build timestamp (RFC 3339, UTC).
+      additionalProperties: false
+
+    ConnectorAccountRef:
+      type: object
+      description: References the marketplace account a connector operation targets.
+      required:
+        - marketplaceAccountId
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: Marketplace account (PRD §15.1) the operation applies to.
+      additionalProperties: false
+
+    ConnectorConnectRequest:
+      type: object
+      description: >-
+        Connect request. The authorization code is the value DK redirects back
+        after the seller approves access (Seller Academy token guide, §0.1). It
+        is exchanged server-side for tokens and never persisted in plaintext.
+      required:
+        - marketplaceAccountId
+        - authorizationCode
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: Marketplace account (PRD §15.1) to connect.
+        authorizationCode:
+          type: string
+          minLength: 1
+          description: One-time DK authorization code exchanged for tokens.
+      additionalProperties: false
+
+    ConnectorConnectionState:
+      type: string
+      description: Whether the DK connection is currently established.
+      enum:
+        - connected
+        - disconnected
+
+    ConnectorCapability:
+      type: string
+      description: >-
+        The nine connector capabilities enumerated in PRD §15.2. Each is
+        reported independently; the marketplace name never gates behavior.
+      enum:
+        - catalog_read
+        - owned_offer_read
+        - stock_read
+        - buybox_read
+        - boundary_read
+        - commission_read
+        - sales_context_read
+        - price_write
+        - change_feed
+
+    ConnectorCapabilityState:
+      type: string
+      description: >-
+        Capability status (PRD §15.2). Starts Unknown; becomes Supported only
+        after a probe confirms behavior. Unknown never enables dependent UI.
+      enum:
+        - unknown
+        - supported
+        - unsupported
+        - degraded
+
+    CapabilityStatus:
+      type: object
+      description: One capability's current status and last-verified time (ACC-001).
+      required:
+        - capability
+        - status
+      properties:
+        capability:
+          $ref: '#/components/schemas/ConnectorCapability'
+        status:
+          $ref: '#/components/schemas/ConnectorCapabilityState'
+        lastVerified:
+          type: string
+          format: date-time
+          description: >-
+            When a probe last set this status (RFC 3339, UTC). Absent until the
+            first probe runs; a historical value never reads as current.
+        detail:
+          type: string
+          description: >-
+            Recovery-oriented reason for a non-Supported status (ACC-003).
+            Free text only; carries no authority (PRD §8).
+      additionalProperties: false
+
+    ConnectorStatus:
+      type: object
+      description: >-
+        Reconciled connection state plus every §15.2 capability. This is the
+        single surface chat and screens read connector health from (ACC-001).
+      required:
+        - marketplaceAccountId
+        - connectionState
+        - capabilities
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        connectionState:
+          $ref: '#/components/schemas/ConnectorConnectionState'
+        capabilities:
+          type: array
+          description: All nine §15.2 capabilities, always present.
+          items:
+            $ref: '#/components/schemas/CapabilityStatus'
+      additionalProperties: false
+
+    UserRole:
+      type: string
+      description: >-
+        Product role (PRD §2.2). Owner governs commercial boundaries and users;
+        Operator executes day-to-day within Owner-defined permissions; Internal
+        diagnoses data/execution and cannot change seller commercial rules.
+      enum:
+        - owner
+        - operator
+        - internal
+
+    LoginRequest:
+      type: object
+      description: Email/password credential presented to open a session.
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          minLength: 1
+          description: Login identifier (the user's email).
+        password:
+          type: string
+          minLength: 1
+          description: >-
+            Plaintext password, presented only over TLS and never stored;
+            verified against the argon2id hash and discarded.
+      additionalProperties: false
+
+    SessionInfo:
+      type: object
+      description: >-
+        Identity of the authenticated session. This is the single shape both
+        chat and screens read the current principal from; role drives the shared
+        permission matrix (ACC-002).
+      required:
+        - userId
+        - organizationId
+        - email
+        - role
+        - expiresAt
+      properties:
+        userId:
+          type: string
+          format: uuid
+          description: The authenticated user (PRD §15.1).
+        organizationId:
+          type: string
+          format: uuid
+          description: The organization the user belongs to.
+        email:
+          type: string
+          description: The user's email.
+        role:
+          $ref: '#/components/schemas/UserRole'
+        expiresAt:
+          type: string
+          format: date-time
+          description: When the session expires (RFC 3339, UTC).
+      additionalProperties: false
+
+    ChatTurnRequest:
+      type: object
+      description: >-
+        One conversation turn from the browser. The message is free text and
+        carries NO authority (PRD §8 free-text containment): it can never
+        approve, execute, or confirm — those live only in structured controls
+        outside the model plane. A turn optionally continues an existing
+        conversation and/or binds a marketplace-account context; context
+        resolution itself is deterministic in the LLM plane (§8.1), never guessed
+        from this field.
+      required:
+        - message
+      properties:
+        conversationId:
+          type: string
+          format: uuid
+          description: >-
+            Existing conversation to continue. Absent on the first turn; the
+            gateway opens a new conversation and returns its id in the stream.
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: >-
+            Optional account context for the turn. Exactly one context is active
+            per conversation; ambiguity is resolved by a structured picker, never
+            inferred (CHAT-007).
+        message:
+          type: string
+          minLength: 1
+          maxLength: 8000
+          description: The user's free-text message. Bounded; carries no authority.
+      additionalProperties: false
+
+    ChatUnavailableReason:
+      type: string
+      description: >-
+        Why chat is unavailable. All three degrade chat ONLY — every structured
+        screen stays fully functional (CHAT-009). Never inferred; set by the
+        gateway from the kill-switch config or LLM-plane reachability.
+      enum:
+        - kill_switch_global
+        - kill_switch_account
+        - provider_unavailable
+
+    ChatUnavailable:
+      type: object
+      description: >-
+        Structured disabled state for /chat. The web client renders the
+        suggested-prompts + structured-screens fallback (§12.1) from this; it is
+        NOT an error the way a 5xx failure is — screens remain fully usable.
+      required:
+        - code
+        - message
+        - reason
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable code (screaming_snake_case).
+        message:
+          type: string
+          description: Human-readable summary. Localized at the edge, never in core.
+        reason:
+          $ref: '#/components/schemas/ChatUnavailableReason'
+      additionalProperties: false
+
+    ChatStreamEvent:
+      type: object
+      description: >-
+        The JSON payload carried in each SSE `data:` frame from /chat. Documented
+        so every consumer (web, tests) decodes the same shape; the wire transport
+        is text/event-stream, not a JSON response body. `kind` discriminates the
+        frame; `token` carries incremental assistant text; `conversationId` is
+        emitted once when a new conversation is opened; `envelope` carries the
+        final typed response envelope on the `final` frame; `failure` carries the
+        §12.4 structured failure state. No frame ever carries an approval control.
+      required:
+        - kind
+      properties:
+        kind:
+          type: string
+          description: Frame discriminator.
+          enum:
+            - conversation
+            - token
+            - final
+            - failure
+        conversationId:
+          type: string
+          format: uuid
+          description: Emitted once on the `conversation` frame for a new conversation.
+        token:
+          type: string
+          description: Incremental assistant text on a `token` frame.
+        envelope:
+          type: object
+          description: >-
+            The final typed response envelope on a `final` frame. Its internal
+            shape (category-separated content, evidence, freshness) is owned and
+            validated inside the LLM plane (§12.2). UNCHANGED in S37: narrowing
+            this field to the new ChatEnvelope schema (below) is a breaking
+            change for the S29 web consumer's current view-model
+            (`{sections, evidence}`) and needs FE coordination outside this
+            step's delegation boundary — see the S37 PD-3 addendum note on
+            ChatEnvelope. The gateway relays this verbatim.
+          additionalProperties: true
+        failure:
+          $ref: '#/components/schemas/ChatFailure'
+      additionalProperties: false
+
+    ChatFailure:
+      type: object
+      description: >-
+        The §12.4 structured failure state: after one automatic retry, a concise
+        message plus a deep link to the structured screen. Free text only; no
+        authority. Emitted as the `failure` frame, or when a hard bound (turn
+        recursion limit, tool-call limit, timeout, token ceiling) is exceeded.
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Stable machine-readable failure code (screaming_snake_case).
+        message:
+          type: string
+          description: Human-readable summary. Localized at the edge.
+        deepLink:
+          type: string
+          description: Path to the structured screen that completes the task deterministically.
+      additionalProperties: false
+
+    MarketProductIdentityState:
+      type: string
+      description: >-
+        Versioned Market Product Identity state (PRD §7.2 CAT-002). Only
+        `confirmed` may drive an executable path; `needs_review`, `rejected`, and
+        `obsolete` never can (identity quarantine).
+      enum:
+        - confirmed
+        - needs_review
+        - rejected
+        - obsolete
+
+    MarketProductIdentity:
+      type: object
+      description: >-
+        A variant's mapping to a public DK product record, with its versioned
+        state. Separate canonical entity from the owned Variant/Listing (CAT-001).
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - nativeVariantId
+        - nativeProductId
+        - state
+        - active
+        - candidateSource
+        - version
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Stable mapping id.
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+          description: The owned variant this mapping resolves.
+        nativeVariantId:
+          type: integer
+          format: int64
+          description: DK native variant id (LTR technical identifier).
+        nativeProductId:
+          type: integer
+          format: int64
+          description: The public DK product record the variant is mapped to.
+        state:
+          $ref: '#/components/schemas/MarketProductIdentityState'
+        active:
+          type: boolean
+          description: Whether this is the variant's live mapping.
+        candidateSource:
+          type: string
+          description: How the candidate was created (P0 is exact_native_id only).
+        version:
+          type: integer
+          description: Monotonic per-mapping version, bumped on every state transition.
+      additionalProperties: false
+
+    NeedsReviewItem:
+      type: object
+      description: >-
+        One Needs Review queue row (journey 4 step 1): the pending candidate plus
+        the SKU / variant title / product title / native-id evidence a reviewer
+        needs to confirm, reject, or defer.
+      required:
+        - identityId
+        - variantId
+        - nativeVariantId
+        - nativeProductId
+        - supplierCode
+        - variantTitle
+        - productTitle
+        - candidateSource
+        - version
+      properties:
+        identityId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        nativeVariantId:
+          type: integer
+          format: int64
+        nativeProductId:
+          type: integer
+          format: int64
+        supplierCode:
+          type: string
+          description: Seller SKU / supplier code (LTR technical identifier).
+        variantTitle:
+          type: string
+        productTitle:
+          type: string
+        candidateSource:
+          type: string
+        version:
+          type: integer
+      additionalProperties: false
+
+    NeedsReviewQueue:
+      type: object
+      description: The account's pending Needs Review identity-mapping candidates.
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          description: Pending candidates; empty when the queue is clear.
+          items:
+            $ref: '#/components/schemas/NeedsReviewItem'
+      additionalProperties: false
+
+    IdentityDecisionRequest:
+      type: object
+      description: >-
+        A confirm / reject / defer decision on a Needs Review candidate. The
+        optional note is free text captured as audit evidence; it carries NO
+        authority (PRD §8): the structured operation itself is the decision.
+      required:
+        - identityId
+      properties:
+        identityId:
+          type: string
+          format: uuid
+          description: The Market Product Identity to act on.
+        note:
+          type: string
+          maxLength: 2000
+          description: Optional reviewer note stored as append-only audit evidence.
+      additionalProperties: false
+
+    QualityState:
+      type: string
+      description: >-
+        The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed;
+        each state has a fixed display/recommend/execute consequence. An expired
+        value is `stale` and can never satisfy a current-data gate (OBS-004).
+      enum:
+        - verified
+        - supported
+        - unverified
+        - conflicted
+        - stale
+        - unavailable
+
+    ObservationRoute:
+      type: string
+      description: >-
+        Capture route provenance (PRD §10.1). route_a official connector, route_b
+        extension (corroboration only), route_c server observation.
+      enum:
+        - route_a
+        - route_b
+        - route_c
+
+    AvailabilityStatus:
+      type: string
+      description: >-
+        Normalized availability (docs/11, §16). `unavailable` is the DISTINCT
+        temporary-out state; `disappeared` is the permanent close (offer gone,
+        closed with an end time, never a zero price).
+      enum:
+        - in_stock
+        - out_of_stock
+        - limited
+        - unavailable
+        - disappeared
+
+    RawAmount:
+      type: object
+      description: >-
+        Raw marketplace price evidence (PRD §9.1 money quarantine). Preserved
+        verbatim and NEVER promoted to Money: no currency, no exponent, no
+        conversion. The source unit is validation-gated (Gate 0a) and unknown; an
+        absent unit token stays quarantined, never inferred.
+      required:
+        - text
+        - value
+        - unit
+      properties:
+        text:
+          type: string
+          description: The amount exactly as captured, before any normalization.
+        value:
+          type: string
+          description: The parsed numeric token as raw source text (never a number type).
+        unit:
+          type: string
+          description: The source unit token as captured; not interpreted as ISO-4217.
+      additionalProperties: false
+
+    ObservationTarget:
+      type: object
+      description: >-
+        An observation target (PRD §7.3 OBS-001): the executable observation unit
+        for one variant, existing ONLY for an active Confirmed identity.
+      required:
+        - id
+        - marketplaceAccountId
+        - identityId
+        - variantId
+        - nativeVariantId
+        - nativeProductId
+        - tier
+        - cadenceSeconds
+        - freshnessDeadlineSeconds
+        - active
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        identityId:
+          type: string
+          format: uuid
+          description: The active Confirmed Market Product Identity being observed.
+        variantId:
+          type: string
+          format: uuid
+        nativeVariantId:
+          type: integer
+          format: int64
+        nativeProductId:
+          type: integer
+          format: int64
+        tier:
+          type: string
+          description: Cadence/freshness tier (priority 60 min, standard 6 h, background 24 h).
+          enum:
+            - priority
+            - standard
+            - background
+        cadenceSeconds:
+          type: integer
+          description: Observation cadence for the tier, in seconds.
+        freshnessDeadlineSeconds:
+          type: integer
+          description: Freshness window for the tier, in seconds.
+        active:
+          type: boolean
+      additionalProperties: false
+
+    ObservationTargetList:
+      type: object
+      description: The account's active observation targets.
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObservationTarget'
+      additionalProperties: false
+
+    ObservedOffer:
+      type: object
+      description: >-
+        A derived CURRENT Observed Offer (PRD §7.3, §10.3): the latest accepted
+        observation's fields, quality, freshness deadline, and corroborating route
+        provenance. Price is raw evidence only. When `endedAt` is set the offer has
+        disappeared and is closed (§16) — the last raw price is retained, never
+        zeroed.
+      required:
+        - id
+        - targetId
+        - marketplaceAccountId
+        - offerIdentity
+        - nativeVariantId
+        - price
+        - listPrice
+        - availabilityStatus
+        - quality
+        - capturedAt
+        - freshnessDeadline
+        - routes
+      properties:
+        id:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        offerIdentity:
+          type: string
+          description: Canonical per-offer key (native variant id + seller); LTR-isolated.
+        nativeVariantId:
+          type: integer
+          format: int64
+        nativeSellerId:
+          type: string
+        price:
+          $ref: '#/components/schemas/RawAmount'
+        listPrice:
+          $ref: '#/components/schemas/RawAmount'
+        availabilityStatus:
+          $ref: '#/components/schemas/AvailabilityStatus'
+        stockSignal:
+          type: integer
+          format: int64
+          nullable: true
+          description: Optional observed stock signal; null when DK omits it.
+        quality:
+          $ref: '#/components/schemas/QualityState'
+        capturedAt:
+          type: string
+          format: date-time
+          description: Capture time of the current observation (UTC).
+        freshnessDeadline:
+          type: string
+          format: date-time
+          description: When this value expires; past it the offer is Stale (OBS-004).
+        routes:
+          type: array
+          description: The routes corroborating the current value (provenance, OBS-008).
+          items:
+            $ref: '#/components/schemas/ObservationRoute'
+        endedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: Offer-disappearance close time (§16); null while live.
+      additionalProperties: false
+
+    ObservedOfferList:
+      type: object
+      description: The account's current Observed Offers.
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ObservedOffer'
+      additionalProperties: false
+
+    Observation:
+      type: object
+      description: >-
+        One append-only observation evidence row (PRD §7.3 OBS-002). Carries the
+        full evidence envelope; historical rows never silently become current.
+      required:
+        - id
+        - targetId
+        - marketplaceAccountId
+        - offerIdentity
+        - route
+        - parserVersion
+        - sourceType
+        - evidenceRef
+        - price
+        - availabilityStatus
+        - quality
+        - capturedAt
+        - freshnessDeadline
+      properties:
+        id:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        nativeVariantId:
+          type: integer
+          format: int64
+        nativeSellerId:
+          type: string
+        offerIdentity:
+          type: string
+        route:
+          $ref: '#/components/schemas/ObservationRoute'
+        subRoute:
+          type: string
+        parserVersion:
+          type: string
+        connectorVersion:
+          type: string
+        sourceUrl:
+          type: string
+        sourceType:
+          type: string
+        evidenceRef:
+          type: string
+        price:
+          $ref: '#/components/schemas/RawAmount'
+        listPrice:
+          $ref: '#/components/schemas/RawAmount'
+        availabilityStatus:
+          $ref: '#/components/schemas/AvailabilityStatus'
+        stockSignal:
+          type: integer
+          format: int64
+          nullable: true
+        quality:
+          $ref: '#/components/schemas/QualityState'
+        capturedAt:
+          type: string
+          format: date-time
+        freshnessDeadline:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ObservationList:
+      type: object
+      description: Append-only observation evidence for a target, newest first.
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Observation'
+      additionalProperties: false
+
+    CaptureUpload:
+      type: object
+      description: >-
+        ALLOW-LISTED extension (Route B) capture upload (PRD §10.1). Only these
+        fields are accepted (additionalProperties false). The extension cannot
+        assert schema/identity validity or conflict, cannot forge Route C, and
+        cannot declare a permanent disappearance — those are server-side. Price is
+        raw evidence only (money quarantine).
+      required:
+        - marketplaceAccountId
+        - targetId
+        - nativeVariantId
+        - subRoute
+        - sourceType
+        - parserVersion
+        - evidenceRef
+        - availabilityStatus
+        - capturedAt
+        - confidence
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+          description: The confirmed-identity observation target this capture is for.
+        nativeVariantId:
+          type: integer
+          format: int64
+        nativeSellerId:
+          type: string
+        subRoute:
+          type: string
+          description: Route B sub-route (PRD §7.3 OBS-005).
+          enum:
+            - passive
+            - on_demand
+            - watchlist
+        sourceType:
+          type: string
+          description: How the extension captured the value.
+          enum:
+            - public-web-endpoint
+            - embedded-json
+            - dom
+            - user-triggered-request
+        sourceUrl:
+          type: string
+        parserVersion:
+          type: string
+          minLength: 1
+        connectorVersion:
+          type: string
+        evidenceRef:
+          type: string
+          minLength: 1
+        rawFixtureRef:
+          type: string
+        price:
+          $ref: '#/components/schemas/RawAmount'
+        listPrice:
+          $ref: '#/components/schemas/RawAmount'
+        availabilityStatus:
+          type: string
+          description: Extension-observable availability; disappearance close is server-side.
+          enum:
+            - in_stock
+            - out_of_stock
+            - limited
+            - unavailable
+        stockSignal:
+          type: integer
+          format: int64
+          nullable: true
+        capturedAt:
+          type: string
+          format: date-time
+        confidence:
+          type: string
+          description: Capture parser/unit confidence (docs/08).
+          enum:
+            - verified
+            - partially_verified
+            - unverified
+      additionalProperties: false
+
+    CaptureAccepted:
+      type: object
+      description: >-
+        Result of a capture upload. `deduped` marks an equivalent replay that
+        created no duplicate current offer while retaining provenance (OBS-008).
+      required:
+        - deduped
+        - quality
+      properties:
+        deduped:
+          type: boolean
+        observationId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The append-only evidence row id; null when deduped.
+        quality:
+          $ref: '#/components/schemas/QualityState'
+      additionalProperties: false
+
+    PairingCode:
+      type: object
+      description: >-
+        A short-lived, single-use extension pairing code (EXT-001), minted by a
+        logged-in human and displayed for entry into the extension. It is bound to
+        one marketplace account and expires quickly.
+      required:
+        - code
+        - marketplaceAccountId
+        - expiresAt
+      properties:
+        code:
+          type: string
+          minLength: 1
+          description: The one-time pairing code to enter in the extension.
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: The marketplace account the resulting credential is scoped to.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absolute expiry; a code at/after this instant fails closed.
+      additionalProperties: false
+
+    PairingClaimRequest:
+      type: object
+      description: The pairing code the extension exchanges for a capture credential.
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          minLength: 1
+      additionalProperties: false
+
+    PairingCredential:
+      type: object
+      description: >-
+        A scoped capture/overlay credential (EXT-001) issued for a claimed pairing
+        code. It authorizes ONLY /observation/capture and is bound to one
+        marketplace account. It is NEVER a seller-API token; the extension stores
+        only this value.
+      required:
+        - credential
+        - credentialId
+        - marketplaceAccountId
+        - expiresAt
+      properties:
+        credential:
+          type: string
+          minLength: 1
+          description: The raw capture credential; presented as a Bearer on uploads.
+        credentialId:
+          type: string
+          format: uuid
+          description: Stable id of the credential record (for revocation/audit).
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: The marketplace account this credential is scoped to.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absolute expiry; an upload at/after this instant fails closed.
+      additionalProperties: false
+
+    CostComponent:
+      type: string
+      description: >-
+        A cost component of the §9.2 contribution model. The set is closed. COGS
+        and commission are always required; fulfillment/shipping/promotion are
+        required when applicable to the listing; packaging/ads/returns are optional
+        in P0 (an account policy may still require them).
+      enum:
+        - cogs
+        - commission
+        - fulfillment
+        - shipping
+        - packaging
+        - promotion
+        - ads
+        - returns
+
+    CostImportDisposition:
+      type: string
+      description: >-
+        The outcome of a preview row (CST-001, §16). `accept` will commit;
+        `reject` cannot commit and carries a reason; `duplicate` is a (SKU,
+        component) conflict within the file that blocks commit until resolved.
+      enum:
+        - accept
+        - reject
+        - duplicate
+
+    MarginReadinessState:
+      type: string
+      description: >-
+        The four closed margin-readiness states (CST-003). Only `complete` may
+        drive an executable recommendation; `partial` may show analysis but no
+        approval control; `stale` and `missing` block.
+      enum:
+        - complete
+        - partial
+        - stale
+        - missing
+
+    MoneyAmount:
+      type: object
+      description: >-
+        An exact monetary amount as the (mantissa, currency, exponent) triple
+        (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO
+        float: mantissa is an exact integer. A cost amount is representable because
+        the account's entry currency is known; it stays excluded from executable
+        paths until S16+S35.
+      required:
+        - mantissa
+        - currency
+        - exponent
+      properties:
+        mantissa:
+          type: integer
+          format: int64
+          description: Exact integer mantissa.
+        currency:
+          type: string
+          description: ISO-4217 currency code.
+        exponent:
+          type: integer
+          description: Base-10 exponent applied to the mantissa.
+      additionalProperties: false
+
+    ColumnComponentMapping:
+      type: object
+      description: Maps one CSV header column to the cost component it supplies.
+      required:
+        - header
+        - component
+      properties:
+        header:
+          type: string
+          description: The CSV header text of the column.
+        component:
+          $ref: '#/components/schemas/CostComponent'
+      additionalProperties: false
+
+    DetectedMapping:
+      type: object
+      description: >-
+        How the import interpreted the CSV columns, echoed for the seller to
+        confirm the mapping (CST-001 mapping preview).
+      required:
+        - skuColumn
+        - componentColumns
+      properties:
+        skuColumn:
+          type: string
+          description: The header text detected/used as the SKU column.
+        componentColumns:
+          type: array
+          items:
+            $ref: '#/components/schemas/ColumnComponentMapping'
+      additionalProperties: false
+
+    CostImportPreviewRequest:
+      type: object
+      description: >-
+        Request to build a CSV cost-import preview. `csv` is the UTF-8 file
+        content. An explicit column mapping is optional; when omitted the columns
+        are auto-detected from the header row.
+      required:
+        - marketplaceAccountId
+        - csv
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: The account the costs belong to.
+        filename:
+          type: string
+          description: Original file name, for the audit/preview display.
+        csv:
+          type: string
+          description: The UTF-8 CSV content.
+        skuColumn:
+          type: string
+          description: Explicit SKU column header (optional; auto-detected when omitted).
+        componentColumns:
+          type: array
+          description: Explicit component column mapping (optional; auto-detected when omitted).
+          items:
+            $ref: '#/components/schemas/ColumnComponentMapping'
+      additionalProperties: false
+
+    CostImportCounts:
+      type: object
+      description: Disposition tally backing the preview cards and the commit guard.
+      required:
+        - accept
+        - reject
+        - duplicate
+      properties:
+        accept:
+          type: integer
+        reject:
+          type: integer
+        duplicate:
+          type: integer
+      additionalProperties: false
+
+    CostImportRow:
+      type: object
+      description: >-
+        One preview row: raw evidence, resolution, the parsed amount (when
+        acceptable), and the disposition + reason (CST-001).
+      required:
+        - rowNumber
+        - sku
+        - component
+        - rawValue
+        - normalizedValue
+        - disposition
+        - reason
+      properties:
+        rowNumber:
+          type: integer
+          description: 1-based data-row number in the file.
+        sku:
+          type: string
+          description: The raw SKU token from the file (LTR-isolated identifier).
+        component:
+          $ref: '#/components/schemas/CostComponent'
+        rawValue:
+          type: string
+          description: The value cell exactly as entered.
+        normalizedValue:
+          type: string
+          description: The digit-normalized numeric token (LOC-007).
+        variantId:
+          type: string
+          format: uuid
+          nullable: true
+          description: The resolved variant; null when the SKU did not resolve.
+        amount:
+          allOf:
+            - $ref: '#/components/schemas/MoneyAmount'
+          nullable: true
+          description: The parsed amount; null when the row is not an accept.
+        disposition:
+          $ref: '#/components/schemas/CostImportDisposition'
+        reason:
+          type: string
+          description: Stable machine reason for a non-accept row; empty for accept.
+      additionalProperties: false
+
+    CostImportPreview:
+      type: object
+      description: A preview batch (status 'preview') with its per-row dispositions.
+      required:
+        - batchId
+        - marketplaceAccountId
+        - status
+        - counts
+        - rows
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        filename:
+          type: string
+        status:
+          type: string
+          enum:
+            - preview
+            - committed
+            - cancelled
+        counts:
+          $ref: '#/components/schemas/CostImportCounts'
+        detected:
+          $ref: '#/components/schemas/DetectedMapping'
+        rows:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostImportRow'
+      additionalProperties: false
+
+    CostImportCommitRequest:
+      type: object
+      description: Confirm and commit a preview batch (CST-001).
+      required:
+        - batchId
+      properties:
+        batchId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    CostImportCommitResult:
+      type: object
+      description: Result of committing a preview batch.
+      required:
+        - batchId
+        - status
+        - committedRows
+        - affectedVariantIds
+      properties:
+        batchId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum:
+            - committed
+        committedRows:
+          type: integer
+          description: Number of accepted rows committed as cost-profile versions.
+        affectedVariantIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+      additionalProperties: false
+
+    SingleCostEntryRequest:
+      type: object
+      description: >-
+        Record one cost-component value for a SKU (CST-002). effectiveFrom
+        defaults to now; staleAfter is an optional review-by instant.
+      required:
+        - marketplaceAccountId
+        - variantId
+        - component
+        - rawValue
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        component:
+          $ref: '#/components/schemas/CostComponent'
+        rawValue:
+          type: string
+          description: The value as entered (Persian/Latin digits normalized, LOC-007).
+        rawUnit:
+          type: string
+          description: The unit as entered, preserved verbatim as evidence.
+        effectiveFrom:
+          type: string
+          format: date-time
+          description: When this version takes effect (RFC 3339). Defaults to now.
+        staleAfter:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional review-by instant; past ⇒ the value is stale for readiness.
+      additionalProperties: false
+
+    CostProfileVersion:
+      type: object
+      description: >-
+        One append-only, effective-dated cost-profile version for a component
+        (CST-002). The exact version in force at a time reproduces a historical
+        number.
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - component
+        - version
+        - amount
+        - effectiveFrom
+        - source
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        component:
+          $ref: '#/components/schemas/CostComponent'
+        version:
+          type: integer
+          description: Monotonic version per (variant, component).
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        rawText:
+          type: string
+        rawValue:
+          type: string
+        rawUnit:
+          type: string
+        effectiveFrom:
+          type: string
+          format: date-time
+        staleAfter:
+          type: string
+          format: date-time
+          nullable: true
+        source:
+          type: string
+          enum:
+            - csv_import
+            - single_value
+            - connector
+      additionalProperties: false
+
+    CostProfileList:
+      type: object
+      description: The in-force cost-profile version per component at a point in time.
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostProfileVersion'
+      additionalProperties: false
+
+    MarginReadiness:
+      type: object
+      description: >-
+        Derived margin readiness for a SKU (CST-003). Only `complete` drives an
+        executable recommendation.
+      required:
+        - variantId
+        - marketplaceAccountId
+        - state
+        - missingComponents
+        - staleComponents
+        - computedAt
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        state:
+          $ref: '#/components/schemas/MarginReadinessState'
+        missingComponents:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostComponent'
+        staleComponents:
+          type: array
+          items:
+            $ref: '#/components/schemas/CostComponent'
+        computedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ContributionComponentKind:
+      type: string
+      description: >-
+        Whether a contribution component is an absolute money amount or a
+        fixed-point basis-point rate applied to the rate base (§9.2). Both stay in
+        exact money arithmetic — there is no float (§9.1).
+      enum:
+        - absolute
+        - rate
+
+    ContributionComponentInput:
+      type: object
+      description: >-
+        One §9.2 deduction with its cost-profile provenance. Exactly one of
+        `amount` (kind `absolute`) or `rateBasisPoints` (kind `rate`) is
+        meaningful. `version` is the cost-profile component version (CST-002) that
+        produced the value, carried so a historical contribution reproduces the
+        exact inputs.
+      required:
+        - component
+        - kind
+      properties:
+        component:
+          $ref: '#/components/schemas/CostComponent'
+        kind:
+          $ref: '#/components/schemas/ContributionComponentKind'
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        rateBasisPoints:
+          type: integer
+          format: int64
+          description: Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`.
+        version:
+          type: integer
+          format: int64
+          description: Cost-profile component version id (CST-002); 0 for synthetic input.
+      additionalProperties: false
+
+    ContributionDeduction:
+      type: object
+      description: One resolved subtraction in the contribution breakdown (PRC-001 inputs).
+      required:
+        - component
+        - amount
+        - kind
+        - version
+      properties:
+        component:
+          $ref: '#/components/schemas/CostComponent'
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        kind:
+          $ref: '#/components/schemas/ContributionComponentKind'
+        version:
+          type: integer
+          format: int64
+      additionalProperties: false
+
+    Contribution:
+      type: object
+      description: >-
+        The deterministic §9.2 contribution: the exact amount, its breakdown, the
+        readiness that governs executability (only Complete is executable), and the
+        versioned rounding-rule identifier that produced it (reproducible per
+        CST-002).
+      required:
+        - amount
+        - netProceeds
+        - deductions
+        - readiness
+        - executable
+        - roundingRule
+      properties:
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        netProceeds:
+          $ref: '#/components/schemas/MoneyAmount'
+        deductions:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContributionDeduction'
+        readiness:
+          $ref: '#/components/schemas/MarginReadinessState'
+        executable:
+          type: boolean
+          description: True only when readiness is Complete (§9.2 / CST-003).
+        roundingRule:
+          type: string
+          description: Versioned rounding-rule identifier applied to any rate.
+      additionalProperties: false
+
+    PolicyStrategy:
+      type: string
+      description: The selected pricing strategy (stage 5, §9.3). Closed set for P0.
+      enum:
+        - hold
+        - match
+        - undercut
+
+    PolicyObjective:
+      type: string
+      description: The optimization objective (stage 6, §9.3).
+      enum:
+        - maximize_contribution
+        - track_strategy
+
+    PolicyStage:
+      type: string
+      description: >-
+        One of the six ordered policy stages (§9.3). The order is fixed;
+        `stageOrder` on a blocker carries the numeric precedence.
+      enum:
+        - boundary
+        - hard_floor
+        - movement_cap
+        - cooldown
+        - strategy
+        - objective
+
+    PolicyBlockerCode:
+      type: string
+      description: >-
+        Stable, machine-readable reason a policy stage blocked. Free text lives
+        only in a blocker's message and carries no authority (§8).
+      enum:
+        - boundary_unknown
+        - boundary_invalid
+        - contribution_below_floor
+        - contribution_crosses_zero
+        - movement_cap_infeasible
+        - cooldown_active
+        - strategy_disabled
+        - objective_infeasible
+
+    PolicyBoundary:
+      type: object
+      description: >-
+        The marketplace price boundary (stage 1, §9.2). `known` false is an UNKNOWN
+        boundary and blocks (§16). Min/Max are required when known.
+      required:
+        - known
+      properties:
+        known:
+          type: boolean
+        min:
+          $ref: '#/components/schemas/MoneyAmount'
+        max:
+          $ref: '#/components/schemas/MoneyAmount'
+      additionalProperties: false
+
+    PolicyConfig:
+      type: object
+      description: >-
+        The policy configuration for a simulation. `movementCapBasisPoints` and
+        `cooldownSeconds` are optional; omitting them uses the §9.3 defaults (5%,
+        60m). A looser value (a larger cap or shorter cooldown) is rejected
+        (PRC-004).
+      required:
+        - boundary
+        - contributionFloor
+        - strategy
+        - strategyEnabled
+        - objective
+      properties:
+        boundary:
+          $ref: '#/components/schemas/PolicyBoundary'
+        contributionFloor:
+          $ref: '#/components/schemas/MoneyAmount'
+        movementCapBasisPoints:
+          type: integer
+          format: int64
+          description: Maximum price movement in basis points (≤ 500; default 500).
+        cooldownSeconds:
+          type: integer
+          format: int64
+          description: Minimum interval between actions in seconds (≥ 3600; default 3600).
+        strategy:
+          $ref: '#/components/schemas/PolicyStrategy'
+        strategyEnabled:
+          type: boolean
+        reference:
+          $ref: '#/components/schemas/MoneyAmount'
+        undercutBasisPoints:
+          type: integer
+          format: int64
+          description: Undercut depth in basis points for the `undercut` strategy.
+        objective:
+          $ref: '#/components/schemas/PolicyObjective'
+      additionalProperties: false
+
+    PolicyBlocker:
+      type: object
+      description: One typed reason a policy stage prevented a proposal (in policy order).
+      required:
+        - stage
+        - stageOrder
+        - code
+        - message
+      properties:
+        stage:
+          $ref: '#/components/schemas/PolicyStage'
+        stageOrder:
+          type: integer
+          description: Numeric precedence (0 = boundary … 5 = objective).
+        code:
+          $ref: '#/components/schemas/PolicyBlockerCode'
+        message:
+          type: string
+          description: Human-readable, non-authoritative detail (localized at the edge).
+      additionalProperties: false
+
+    PolicyProposal:
+      type: object
+      description: >-
+        An accepted policy result: a proposed price and its contribution. Present
+        only when every hard stage passed and the contribution is strictly
+        positive. It is NOT an approval control.
+      required:
+        - price
+        - contribution
+      properties:
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        contribution:
+          $ref: '#/components/schemas/MoneyAmount'
+      additionalProperties: false
+
+    PolicySimulationRequest:
+      type: object
+      description: >-
+        A fully-specified what-if for the contribution + policy engines. All money
+        must share one currency and exponent (§9.1). Contribution is evaluated as a
+        function of price: at any candidate price the net seller proceeds and the
+        commission rate base are that price (the P0 owned-offer model), so the
+        policy stages see a contribution that varies with price. `nowRfc3339` and
+        `lastActionAt` drive the cooldown stage; omit `lastActionAt` when there is
+        no prior action.
+      required:
+        - currentPrice
+        - components
+        - readiness
+        - config
+      properties:
+        variantId:
+          type: string
+          format: uuid
+          description: Optional SKU the what-if is about (provenance only).
+        currentPrice:
+          $ref: '#/components/schemas/MoneyAmount'
+        components:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContributionComponentInput'
+        readiness:
+          $ref: '#/components/schemas/MarginReadinessState'
+        config:
+          $ref: '#/components/schemas/PolicyConfig'
+        nowRfc3339:
+          type: string
+          format: date-time
+          description: Evaluation instant (defaults to server now).
+        lastActionAt:
+          type: string
+          format: date-time
+          description: Instant of the last price action, for the cooldown stage.
+      additionalProperties: false
+
+    PolicySimulationResult:
+      type: object
+      description: >-
+        The simulated contribution and policy result. `simulation` is always true
+        and `approvable` is always false: a simulation NEVER carries an approval
+        control (§8, §12.3, never-cut). `proposal` is present only when the policy
+        stages accepted a price; otherwise `blockers` lists the typed reasons in
+        policy order.
+      required:
+        - simulation
+        - approvable
+        - contribution
+        - blockers
+      properties:
+        simulation:
+          type: boolean
+          description: Always true — this result is non-executable.
+        approvable:
+          type: boolean
+          description: Always false — a simulation carries no approval control.
+        contribution:
+          $ref: '#/components/schemas/Contribution'
+        proposal:
+          $ref: '#/components/schemas/PolicyProposal'
+        blockers:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyBlocker'
+      additionalProperties: false
+
+    EventType:
+      type: string
+      description: >-
+        One of the five P0 market-event types (PRD §7.4 EVT-001). The set is
+        closed.
+      enum:
+        - winning_state
+        - competitor_price
+        - seller_count
+        - suppression_boundary
+        - contribution_floor
+
+    EventSeverity:
+      type: string
+      description: The closed, ordered severity set for a market event.
+      enum:
+        - info
+        - warning
+        - critical
+
+    EventLifecycleState:
+      type: string
+      description: >-
+        The §15.1 market-event lifecycle state. A duplicate signal updates the open
+        record (EVT-003); resolved/expired free the dedup key.
+      enum:
+        - open
+        - updated
+        - resolved
+        - expired
+
+    EventExposure:
+      type: object
+      description: >-
+        An event's business impact (PRD §7.4 EVT-004/EVT-005). It is EITHER a known
+        Money amount (derived from margin/sales context) OR explicitly unknown.
+        When `known` is false there is NO `amount` at all — a missing sales/cost
+        context is never a fabricated number (EVT-005).
+      required:
+        - known
+      properties:
+        known:
+          type: boolean
+          description: Whether a numeric exposure exists. False ⇒ impact unknown.
+        amount:
+          $ref: '#/components/schemas/MoneyAmount'
+      additionalProperties: false
+
+    EventRankFactors:
+      type: object
+      description: >-
+        The three EVT-004 ranking factors for one event, exposed so the UI can show
+        why an event ranks where it does. Confidence and urgency are basis points
+        (0..10000); exposure is the EventExposure (unknown stays unknown).
+      required:
+        - exposure
+        - confidenceBp
+        - urgencyBp
+      properties:
+        exposure:
+          $ref: '#/components/schemas/EventExposure'
+        confidenceBp:
+          type: integer
+          description: Confidence factor in basis points (0..10000), from evidence quality.
+        urgencyBp:
+          type: integer
+          description: Urgency factor in basis points (0..10000), from severity.
+      additionalProperties: false
+
+    MarketEvent:
+      type: object
+      description: >-
+        A market event lifecycle record (PRD §7.4, §15.1). It cites its observation
+        evidence with the observed quality state as-is (never upgraded) and carries
+        its versioned materiality-threshold provenance (EVT-002). Exposure obeys
+        EVT-005.
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - type
+        - severity
+        - state
+        - factors
+        - evidenceQuality
+        - firstDetectedAt
+        - lastEvidenceAt
+        - expiresAt
+        - evidenceUpdateCount
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        targetId:
+          type: string
+          format: uuid
+          description: The observation target, when the event has one.
+        type:
+          $ref: '#/components/schemas/EventType'
+        severity:
+          $ref: '#/components/schemas/EventSeverity'
+        state:
+          $ref: '#/components/schemas/EventLifecycleState'
+        factors:
+          $ref: '#/components/schemas/EventRankFactors'
+        thresholdVersion:
+          type: integer
+          description: The materiality threshold version that fired the event (EVT-002).
+        evidenceObservationId:
+          type: string
+          format: uuid
+          description: The cited observation, when the event has one.
+        evidenceQuality:
+          $ref: '#/components/schemas/QualityState'
+        evidenceRef:
+          type: string
+          description: Opaque reference to the cited evidence.
+        firstDetectedAt:
+          type: string
+          format: date-time
+        lastEvidenceAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+        resolvedAt:
+          type: string
+          format: date-time
+        evidenceUpdateCount:
+          type: integer
+          description: How many times a duplicate signal updated this open record (EVT-003).
+      additionalProperties: false
+
+    MarketEventList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MarketEvent'
+      additionalProperties: false
+
+    RankedEvent:
+      type: object
+      description: >-
+        One event placed in the deterministic Today order (EVT-004). Rank is
+        1-based; factors exposes all three ranking inputs.
+      required:
+        - event
+        - rank
+        - factors
+      properties:
+        event:
+          $ref: '#/components/schemas/MarketEvent'
+        rank:
+          type: integer
+          description: 1-based deterministic rank in the Today feed.
+        factors:
+          $ref: '#/components/schemas/EventRankFactors'
+      additionalProperties: false
+
+    TodayFeed:
+      type: object
+      description: The ranked Today feed (PRD §7.4 EVT-004).
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RankedEvent'
+      additionalProperties: false
+
+    EventRelevanceKind:
+      type: string
+      description: The closed relevance-feedback set (EVT-005).
+      enum:
+        - relevant
+        - not_relevant
+        - muted
+
+    EventRelevanceRequest:
+      type: object
+      description: >-
+        Record relevance feedback on a market event (EVT-005, append-only). Never
+        approves or executes anything.
+      required:
+        - eventId
+        - relevance
+      properties:
+        eventId:
+          type: string
+          format: uuid
+        relevance:
+          $ref: '#/components/schemas/EventRelevanceKind'
+        note:
+          type: string
+          description: Optional free-text note. Carries no authority (§8 free-text containment).
+      additionalProperties: false
+
+    EventRelevanceRecorded:
+      type: object
+      required:
+        - id
+        - eventId
+        - relevance
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        relevance:
+          $ref: '#/components/schemas/EventRelevanceKind'
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ErrorEnvelope:
+      type: object
+      description: >-
+        Canonical error shape for every gateway endpoint. Free text lives in
+        `message`/`detail` only and never carries authority (PRD §8 free-text
+        containment); `code` is the stable machine-readable discriminator.
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+          description: Stable, machine-readable error code (screaming_snake_case).
+        message:
+          type: string
+          description: Human-readable summary. Localized at the edge, never in core.
+        detail:
+          type: string
+          description: Optional additional context for diagnostics.
+        requestId:
+          type: string
+          description: Correlation id for tracing this request across planes.
+      additionalProperties: false
+
+    ApprovalState:
+      type: string
+      description: >-
+        One node of the §8.4 approval state machine. The set is closed; it is the
+        authoritative lifecycle vocabulary for a card and its history.
+      enum:
+        - draft
+        - ready_for_review
+        - blocked
+        - awaiting_confirmation
+        - approved
+        - expired
+        - invalidated
+        - revalidating
+        - executing
+        - accepted
+        - rejected
+        - pending_reconciliation
+        - failed
+
+    ApprovalInvalidationReason:
+      type: string
+      description: >-
+        The exact bound dimension that invalidated an approval control (APR-001,
+        §16). Empty means the control is still valid.
+      enum:
+        - ""
+        - action_mismatch
+        - parameter_version_changed
+        - context_version_changed
+        - policy_version_changed
+        - cost_version_changed
+        - evidence_version_changed
+        - expired
+
+    EvidenceVersion:
+      type: object
+      description: One cited observation bound to the exact evidence version used (APR-001).
+      required:
+        - observationId
+        - version
+      properties:
+        observationId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+      additionalProperties: false
+
+    ApprovalBinding:
+      type: object
+      description: >-
+        The APR-001 version binding of an approval control: the exact action id,
+        parameter/context/policy/cost versions, evidence versions, and expiry. ANY
+        change to a bound dimension, or a reached expiry, invalidates the control.
+      required:
+        - actionId
+        - parameterVersion
+        - contextVersion
+        - policyVersion
+        - costProfileVersion
+        - evidenceVersions
+        - expiresAt
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        parameterVersion:
+          type: integer
+          format: int64
+        contextVersion:
+          type: integer
+          format: int64
+        policyVersion:
+          type: integer
+          format: int64
+        costProfileVersion:
+          type: integer
+          format: int64
+        evidenceVersions:
+          type: array
+          items:
+            $ref: '#/components/schemas/EvidenceVersion'
+        expiresAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ApprovalStateHistoryEntry:
+      type: object
+      description: One append-only §8.4 state-history row (AUD-001).
+      required:
+        - toState
+        - reason
+        - occurredAt
+      properties:
+        fromState:
+          $ref: '#/components/schemas/ApprovalState'
+        toState:
+          $ref: '#/components/schemas/ApprovalState'
+        reason:
+          type: string
+          description: Invalidation dimension or transition note (never authority).
+        occurredAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ApprovalCardView:
+      type: object
+      description: >-
+        A versioned approval card (APR-001) with its current §8.4 state, its bound
+        control versions, its authoritative Money price, and its append-only
+        history. A card carries a control ONLY in `awaiting_confirmation`.
+      required:
+        - id
+        - recommendationId
+        - version
+        - state
+        - binding
+        - price
+        - hasControl
+        - history
+      properties:
+        id:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+        state:
+          $ref: '#/components/schemas/ApprovalState'
+        binding:
+          $ref: '#/components/schemas/ApprovalBinding'
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        idempotencyKey:
+          type: string
+          description: Stable execution hand-off key (EXE-002 seam); execution is S18.
+        hasControl:
+          type: boolean
+          description: True only when the card is in awaiting_confirmation (a live control).
+        history:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApprovalStateHistoryEntry'
+      additionalProperties: false
+
+    ApprovalConfirmRequest:
+      type: object
+      description: >-
+        The structured individual-approval control activation (§8, APR-001). It
+        MUST carry the exact bound versions; the server re-verifies every one
+        against the live card. This is the only individual approval path — free
+        text cannot satisfy it.
+      required:
+        - cardId
+        - binding
+      properties:
+        cardId:
+          type: string
+          format: uuid
+        binding:
+          $ref: '#/components/schemas/ApprovalBinding'
+      additionalProperties: false
+
+    ApprovalConfirmResult:
+      type: object
+      description: >-
+        The outcome of activating a structured control (§8.4). `state` is one of
+        approved, invalidated, or expired. When invalidated, `reason` names the
+        changed dimension (APR-001). `executionPending` is true when the card
+        reached Approved: per PRD the Revalidating → Executing boundary lands in
+        S18, so no write occurs here.
+      required:
+        - cardId
+        - state
+        - reason
+        - executionPending
+      properties:
+        cardId:
+          type: string
+          format: uuid
+        state:
+          $ref: '#/components/schemas/ApprovalState'
+        reason:
+          $ref: '#/components/schemas/ApprovalInvalidationReason'
+        executionPending:
+          type: boolean
+          description: True when Approved; execution/reconciliation is S18.
+      additionalProperties: false
+
+    BulkApprovalConfirmRequest:
+      type: object
+      description: >-
+        A bulk approval confirmation bound to ONE exact selection-set version
+        (CHAT-052). The server rejects it when the bound version is no longer
+        current (any set/evidence change mints a new version).
+      required:
+        - selectionSetLineage
+        - boundVersion
+      properties:
+        selectionSetLineage:
+          type: string
+          format: uuid
+          description: The selection-set lineage the preview was built from.
+        boundVersion:
+          type: integer
+          format: int64
+          description: The exact selection-set version the preview bound to.
+      additionalProperties: false
+
+    BulkApprovalConfirmResult:
+      type: object
+      description: >-
+        The outcome of a bulk confirmation. `valid` is false when the bound
+        selection-set version is stale (invalidated by a set/evidence change).
+        `executionPending` is true for a valid bulk confirmation — per-item
+        execution lands in S18.
+      required:
+        - selectionSetLineage
+        - boundVersion
+        - valid
+        - executionPending
+      properties:
+        selectionSetLineage:
+          type: string
+          format: uuid
+        boundVersion:
+          type: integer
+          format: int64
+        currentVersion:
+          type: integer
+          format: int64
+          description: The current selection-set version (differs from bound when stale).
+        valid:
+          type: boolean
+        executionPending:
+          type: boolean
+      additionalProperties: false
+
+    ExecutionMode:
+      type: string
+      description: >-
+        The execution mode of a completed Execute call. `write` attempted a real
+        external write (write enabled); `recommend_only` tracked the approved
+        action for external matching because writes are OFF (EXE-005).
+      enum:
+        - write
+        - recommend_only
+
+    ExecutionExternalState:
+      type: string
+      description: >-
+        The EXE-003 external result of a write. `pending_reconciliation` is the
+        fail-closed state for an UNKNOWN result — never inferred as success/failure.
+      enum:
+        - accepted
+        - rejected
+        - pending_reconciliation
+        - failed
+
+    ExecutionGate:
+      type: string
+      description: >-
+        One of the nine EXE-001 revalidation gates. Present on a blocked result to
+        name the gate that prevented the write.
+      enum:
+        - ""
+        - identity
+        - current_price
+        - costs
+        - money_unit
+        - boundary
+        - evidence_jit
+        - guardrails
+        - permission
+        - expiry
+
+    RecommendOnlyState:
+      type: string
+      description: The EXE-005 recommend-only tracking state.
+      enum:
+        - ""
+        - awaiting_external_execution
+        - externally_executed
+        - lapsed
+
+    ExecuteActionRequest:
+      type: object
+      description: Request to revalidate and execute an approved card (§7.5).
+      required:
+        - cardId
+      properties:
+        cardId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    ExecuteActionResult:
+      type: object
+      description: >-
+        The outcome of an Execute call. `blocked` is true when an EXE-001 gate
+        prevented the write (`failedGate` names it). For a write, `externalState`
+        is the EXE-003 result and `didWrite` reports whether THIS call performed the
+        single external write. For recommend-only, `recommendOnlyState` is set.
+      required:
+        - actionId
+        - cardId
+        - mode
+        - blocked
+        - didWrite
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        cardId:
+          type: string
+          format: uuid
+        mode:
+          $ref: '#/components/schemas/ExecutionMode'
+        blocked:
+          type: boolean
+        failedGate:
+          $ref: '#/components/schemas/ExecutionGate'
+        externalState:
+          $ref: '#/components/schemas/ExecutionExternalState'
+        recommendOnlyState:
+          $ref: '#/components/schemas/RecommendOnlyState'
+        didWrite:
+          type: boolean
+          description: True only when THIS call performed the single external write (EXE-002).
+      additionalProperties: false
+
+    RetryActionRequest:
+      type: object
+      description: Request to retry an eligible failed action (EXE-003 / CHAT-074).
+      required:
+        - actionId
+      properties:
+        actionId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    RetryActionResult:
+      type: object
+      description: >-
+        The retry eligibility outcome. `eligible` is true only for a definitively
+        Failed action; a Pending Reconciliation action is refused with an error.
+      required:
+        - actionId
+        - eligible
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        eligible:
+          type: boolean
+        state:
+          $ref: '#/components/schemas/ExecutionExternalState'
+      additionalProperties: false
+
+    ActionExecutionView:
+      type: object
+      description: The single EXE-002 execution record for an action (CHAT-073 read).
+      required:
+        - actionId
+        - cardId
+        - mode
+        - externalState
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        cardId:
+          type: string
+          format: uuid
+        mode:
+          $ref: '#/components/schemas/ExecutionMode'
+        externalState:
+          $ref: '#/components/schemas/ExecutionExternalState'
+        externalRef:
+          type: string
+          description: The marketplace's handle for the write (e.g. batch id), when present.
+        reconciledAt:
+          type: string
+          format: date-time
+          description: When the external result was reconciled to a terminal state.
+      additionalProperties: false
+
+    OutcomeResultView:
+      type: object
+      description: The §15.3 result + confidence of a closed outcome window.
+      required:
+        - result
+        - confidence
+      properties:
+        result:
+          type: string
+          enum:
+            - positive
+            - negative
+            - neutral
+            - inconclusive
+            - not_measurable
+        confidence:
+          type: string
+          enum:
+            - high
+            - medium
+            - low
+        computedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    OutcomeView:
+      type: object
+      description: >-
+        An action's OUT-001 seven-day outcome window and, once closed, its §15.3
+        result. `result` is absent while the window is still open.
+      required:
+        - actionId
+        - openedAt
+        - closesAt
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        openedAt:
+          type: string
+          format: date-time
+        closesAt:
+          type: string
+          format: date-time
+        result:
+          $ref: '#/components/schemas/OutcomeResultView'
+      additionalProperties: false
+
+    RecommendationDraftRequest:
+      type: object
+      description: >-
+        A PrepareAction hand-off (CHAT-041): create the individual-approval Draft
+        for one persisted, approvable recommendation. All identifiers are snake_case
+        to match the LLM plane's Draft-only transport contract.
+      required:
+        - marketplace_account_id
+        - entity_id
+        - recommendation_id
+      properties:
+        marketplace_account_id:
+          type: string
+          format: uuid
+        entity_id:
+          type: string
+          format: uuid
+          description: The variant (entity) the recommendation targets.
+        recommendation_id:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    RecommendationDraftResult:
+      type: object
+      description: >-
+        The created Draft's identifiers, APR-001 bound versions, and expiry. Version
+        values are opaque strings (the transport treats them as identifiers, never
+        numbers). The card is in §8.4 Draft — no approval control is minted.
+      required:
+        - draft_id
+        - action_id
+        - context_version
+        - recommendation_version
+        - parameter_version
+        - expires_at
+      properties:
+        draft_id:
+          type: string
+          format: uuid
+        action_id:
+          type: string
+          format: uuid
+        context_version:
+          type: string
+        recommendation_version:
+          type: string
+        parameter_version:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    SelectionSetDraftRequest:
+      type: object
+      description: >-
+        A bulk hand-off (CHAT-050/051): compile the conversational query into a
+        named, versioned selection set. There is NO chat bulk approval.
+      required:
+        - marketplace_account_id
+        - query
+      properties:
+        marketplace_account_id:
+          type: string
+          format: uuid
+        query:
+          type: string
+          description: The deterministic selection query (compiled to criteria).
+      additionalProperties: false
+
+    SelectionSetDraftResult:
+      type: object
+      description: >-
+        The created selection-set Draft's identifiers, bound version, and expiry.
+        Version values are opaque strings. TERMINAL AT DRAFT.
+      required:
+        - draft_id
+        - action_id
+        - context_version
+        - parameter_version
+        - expires_at
+      properties:
+        draft_id:
+          type: string
+          format: uuid
+        action_id:
+          type: string
+          format: uuid
+        context_version:
+          type: string
+        parameter_version:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    Level2ProposalRequest:
+      type: object
+      description: >-
+        A Level-2 reversible-config proposal (CHAT-061/062): before/after catalog
+        keys plus the setting being changed. Keys are locale-neutral catalog keys
+        (LOC-001) — no copy in the core.
+      required:
+        - marketplace_account_id
+        - setting_key
+        - before_key
+        - after_key
+      properties:
+        marketplace_account_id:
+          type: string
+          format: uuid
+        setting_key:
+          type: string
+        before_key:
+          type: string
+        after_key:
+          type: string
+      additionalProperties: false
+
+    Level2ProposalResult:
+      type: object
+      description: >-
+        The proposal's identifiers, bound versions, scope/consequence catalog keys,
+        and expiry. The proposal + its append-only audit row are written in one
+        transaction (AUD-001). Version values are opaque strings. TERMINAL AT DRAFT.
+      required:
+        - draft_id
+        - action_id
+        - context_version
+        - parameter_version
+        - expires_at
+        - scope_key
+        - consequence_key
+      properties:
+        draft_id:
+          type: string
+          format: uuid
+        action_id:
+          type: string
+          format: uuid
+        context_version:
+          type: string
+        parameter_version:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        scope_key:
+          type: string
+          description: The catalog key naming what the change affects.
+        consequence_key:
+          type: string
+          description: The catalog key naming the reversible consequence.
+      additionalProperties: false
+
+    DailyBriefing:
+      type: object
+      description: >-
+        The stored once-per-business-day briefing (CHAT-010). Its events carry the
+        SAME ids and ORDER as the Today feed for the account/day (generated from the
+        one ranking, never a re-computation).
+      required:
+        - marketplaceAccountId
+        - businessDay
+        - generatedAt
+        - events
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        businessDay:
+          type: string
+          format: date
+        generatedAt:
+          type: string
+          format: date-time
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/BriefingEvent'
+      additionalProperties: false
+
+    BriefingEvent:
+      type: object
+      description: >-
+        One ranked event in a daily briefing. `rank` is 1-based and matches the
+        Today feed position; `eventId` matches the Today feed event id.
+      required:
+        - rank
+        - eventId
+        - eventType
+        - severity
+      properties:
+        rank:
+          type: integer
+          format: int32
+        eventId:
+          type: string
+          format: uuid
+        eventType:
+          type: string
+        severity:
+          type: string
+      additionalProperties: false
+
+    NotificationFeed:
+      type: object
+      description: >-
+        The in-app notification feed for an account (NOT-001), newest first, with
+        the current unread count for the badge.
+      required:
+        - marketplaceAccountId
+        - unreadCount
+        - notifications
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        unreadCount:
+          type: integer
+          format: int64
+        notifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+      additionalProperties: false
+
+    Notification:
+      type: object
+      description: >-
+        One in-app notification. `eventId` is the SHARED product event id — the
+        same id the daily email digest references (NOT-001). `titleKey`/`bodyKey`
+        are locale catalog KEYS with named slots in `bodyParams` (LOC-002); the
+        surface renders copy, the core stores none. `readAt` is absent when unread.
+      required:
+        - id
+        - eventId
+        - category
+        - severity
+        - bypassDigest
+        - titleKey
+        - bodyKey
+        - bodyParams
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        category:
+          type: string
+          enum: [market_event, execution_failure, safety_failure]
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        bypassDigest:
+          type: boolean
+          description: >-
+            True for execution/safety failures — delivered immediately, bypassing
+            the batched daily digest, and never shed.
+        titleKey:
+          type: string
+        bodyKey:
+          type: string
+        bodyParams:
+          type: object
+          additionalProperties:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        readAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    NotificationAckRequest:
+      type: object
+      description: Acknowledge (mark read) one notification for an account.
+      required:
+        - marketplaceAccountId
+        - notificationId
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        notificationId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    NotificationAckResult:
+      type: object
+      description: >-
+        The idempotent acknowledgement result. `changed` is false when the
+        notification was already read or not owned by the account (a no-op).
+      required:
+        - notificationId
+        - changed
+      properties:
+        notificationId:
+          type: string
+          format: uuid
+        changed:
+          type: boolean
+      additionalProperties: false
+
+    # --- S37 consolidated PD-3 gateway endpoints -----------------------------
+    # (dk-p0-product-decisions.md PD-3 + addendum). Additive only: every schema
+    # below is new; no existing schema's required/removed shape changed except
+    # ChatStreamEvent.envelope, which was narrowed from an open `object` to this
+    # typed ChatEnvelope (a refinement of a field that previously accepted
+    # anything, not a removal).
+
+    RecommendationDetail:
+      type: object
+      description: >-
+        The full PRC-001 record for one persisted recommendation version,
+        including the §9.2 contribution breakdown (PD-3 items 1/3). Every
+        optional field is present-or-unavailable-with-reason — never a
+        fabricated value.
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - lineageId
+        - version
+        - objective
+        - currentPrice
+        - readiness
+        - evidenceQuality
+        - approvable
+        - simulation
+        - assumptions
+        - blockers
+        - contributionDeductions
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        lineageId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+        eventId:
+          type: string
+          format: uuid
+          description: The driving market event, when this recommendation is event-driven.
+        objective:
+          $ref: '#/components/schemas/PolicyObjective'
+        currentPrice:
+          $ref: '#/components/schemas/MoneyAmount'
+        proposedPrice:
+          $ref: '#/components/schemas/MoneyAmount'
+        currentContribution:
+          $ref: '#/components/schemas/MoneyAmount'
+        proposedContribution:
+          $ref: '#/components/schemas/MoneyAmount'
+        contributionDeductions:
+          type: array
+          description: >-
+            The §9.2 contribution breakdown (PRC-001 inputs) for the proposed
+            contribution — the SAME deductions persisted on the recommendation
+            row, decoded verbatim (never recomputed/fabricated at read time).
+          items:
+            $ref: '#/components/schemas/ContributionDeduction'
+        allowedRange:
+          $ref: '#/components/schemas/PolicyBoundary'
+        readiness:
+          $ref: '#/components/schemas/MarginReadinessState'
+        evidenceQuality:
+          $ref: '#/components/schemas/QualityState'
+        evidenceObservationId:
+          type: string
+          format: uuid
+        evidenceAsOf:
+          type: string
+          format: date-time
+        assumptions:
+          type: array
+          items:
+            type: string
+        blockers:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecommendationBlocker'
+        approvable:
+          type: boolean
+        simulation:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    RecommendationBlocker:
+      type: object
+      description: >-
+        One typed PRC-002 reason no approval control exists (in policy order).
+        The code is stable and machine-readable; the message carries no
+        authority (§8).
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+      additionalProperties: false
+
+    EditApprovalCardPriceRequest:
+      type: object
+      description: The CHAT-044 price edit request.
+      required:
+        - cardId
+        - newPrice
+      properties:
+        cardId:
+          type: string
+          format: uuid
+        newPrice:
+          $ref: '#/components/schemas/MoneyAmount'
+      additionalProperties: false
+
+    SelectionSetDisposition:
+      type: string
+      description: A selection-set member's bulk disposition (CHAT-050).
+      enum:
+        - executable
+        - warning
+        - blocked
+
+    SelectionSetPreviewMemberInput:
+      type: object
+      description: >-
+        One candidate member for a bulk selection-set preview. The server
+        resolves the disposition from the NAMED recommendation's own persisted
+        state (approvable / blockers) — never from a client assertion.
+      required:
+        - variantId
+        - recommendationId
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    SelectionSetPreviewRequest:
+      type: object
+      description: >-
+        The screens-native bulk preview request (PD-3 item 4). Carries NO
+        version field by construction — the server is the sole authority that
+        mints the selection-set version.
+      required:
+        - marketplaceAccountId
+        - name
+        - members
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        lineageId:
+          type: string
+          format: uuid
+          description: >-
+            Existing selection-set lineage to mint the NEXT version within (a
+            refreshed preview). Omit to start a brand-new lineage.
+        name:
+          type: string
+          minLength: 1
+        criteria:
+          type: object
+          description: Deterministic query criteria the set was compiled from.
+          additionalProperties:
+            type: string
+        members:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SelectionSetPreviewMemberInput'
+      additionalProperties: false
+
+    SelectionSetMemberView:
+      type: object
+      required:
+        - variantId
+        - recommendationId
+        - disposition
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+        disposition:
+          $ref: '#/components/schemas/SelectionSetDisposition'
+      additionalProperties: false
+
+    SelectionSetPreviewResult:
+      type: object
+      description: >-
+        The server-minted selection-set preview (PD-3 item 4). `version` is
+        assigned ENTIRELY server-side (append-only "next version per lineage");
+        a subsequent bulk confirmation (POST /approvals/bulk/confirm) binds to
+        EXACTLY this lineage + version.
+      required:
+        - id
+        - lineageId
+        - version
+        - name
+        - memberCount
+        - members
+      properties:
+        id:
+          type: string
+          format: uuid
+        lineageId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+        name:
+          type: string
+        memberCount:
+          type: integer
+          format: int32
+        aggregateImpact:
+          $ref: '#/components/schemas/EventExposure'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/SelectionSetMemberView'
+      additionalProperties: false
+
+    ActionSummary:
+      type: object
+      description: One row of the actions queue (PD-3 item 5) — an approval card, unexpanded.
+      required:
+        - id
+        - recommendationId
+        - version
+        - state
+        - price
+        - expiresAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+        state:
+          $ref: '#/components/schemas/ApprovalState'
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        idempotencyKey:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ActionList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionSummary'
+      additionalProperties: false
+
+    OutcomeSummary:
+      type: object
+      description: One row of the outcomes queue (OUT-001, PD-3 item 5).
+      required:
+        - actionId
+        - openedAt
+        - closesAt
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        cardId:
+          type: string
+          format: uuid
+        openedAt:
+          type: string
+          format: date-time
+        closesAt:
+          type: string
+          format: date-time
+        result:
+          type: string
+          description: The §15.3 result, present only once the window has closed.
+          enum:
+            - positive
+            - negative
+            - neutral
+            - inconclusive
+            - not_measurable
+        confidence:
+          type: string
+          enum:
+            - high
+            - medium
+            - low
+      additionalProperties: false
+
+    OutcomeList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutcomeSummary'
+      additionalProperties: false
+
+    GuardrailSettings:
+      type: object
+      description: The L3 commercial guardrails (PD-3 item 6).
+      required:
+        - contributionFloor
+        - movementCapBasisPoints
+        - cooldownSeconds
+        - strategy
+        - strategyEnabled
+      properties:
+        contributionFloor:
+          $ref: '#/components/schemas/MoneyAmount'
+        movementCapBasisPoints:
+          type: integer
+          format: int64
+          description: Maximum price movement in basis points (§9.3 default 500).
+        cooldownSeconds:
+          type: integer
+          format: int64
+          description: Minimum interval between actions in seconds (§9.3 default 3600).
+        strategy:
+          $ref: '#/components/schemas/PolicyStrategy'
+        strategyEnabled:
+          type: boolean
+      additionalProperties: false
+
+    GuardrailConfigView:
+      type: object
+      required:
+        - marketplaceAccountId
+        - settings
+        - updatedAt
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        settings:
+          $ref: '#/components/schemas/GuardrailSettings'
+        updatedAt:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+          description: The Owner actor id who last wrote these guardrails (AUD-001).
+      additionalProperties: false
+
+    GuardrailWriteRequest:
+      type: object
+      required:
+        - marketplaceAccountId
+        - settings
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        settings:
+          $ref: '#/components/schemas/GuardrailSettings'
+      additionalProperties: false
+
+    UserSummary:
+      type: object
+      required:
+        - id
+        - email
+        - role
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        role:
+          $ref: '#/components/schemas/UserRole'
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    UserList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserSummary'
+      additionalProperties: false
+
+    PendingReconciliationAction:
+      type: object
+      description: One EXE-003 action awaiting reconciliation (an unknown external result).
+      required:
+        - actionId
+        - cardId
+        - idempotencyKey
+        - createdAt
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        cardId:
+          type: string
+          format: uuid
+        idempotencyKey:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ParserDriftQueue:
+      type: object
+      description: >-
+        The Route C parser/schema-drift queue. NOT YET backed by a persisted
+        store (§10.4) — `available` is false with an explicit reason rather than
+        a fabricated empty success, per the screens-only-fallback /
+        unavailable-with-reason posture (PRC-001 optionality). Closing this is a
+        named follow-up on the Route C observer plane.
+      required:
+        - available
+        - items
+      properties:
+        available:
+          type: boolean
+        reason:
+          type: string
+        items:
+          type: array
+          items: {}
+      additionalProperties: false
+
+    OperationsQueues:
+      type: object
+      required:
+        - marketplaceAccountId
+        - pendingReconciliation
+        - parserDrift
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        pendingReconciliation:
+          type: array
+          items:
+            $ref: '#/components/schemas/PendingReconciliationAction'
+        parserDrift:
+          $ref: '#/components/schemas/ParserDriftQueue'
+      additionalProperties: false
+
+    WatchlistEntry:
+      type: object
+      description: One EXT-007 priority-watchlist entry.
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    WatchlistView:
+      type: object
+      required:
+        - marketplaceAccountId
+        - cap
+        - items
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        cap:
+          type: integer
+          format: int32
+          description: The server-enforced maximum watchlist size (EXT-007).
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WatchlistEntry'
+      additionalProperties: false
+
+    WatchlistAddRequest:
+      type: object
+      required:
+        - marketplaceAccountId
+        - variantId
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+          description: MUST be a Confirmed owned product (CAT-002); otherwise rejected.
+      additionalProperties: false
+
+    ChatStatementKind:
+      type: string
+      description: >-
+        The seven typed statement kinds an LLM-plane response envelope carries
+        (S29/S37 addendum). Free text alone never carries authority — a
+        statement is category-separated content, not an approval control.
+      enum:
+        - answer
+        - clarification
+        - table
+        - card_reference
+        - evidence_citation
+        - action_summary
+        - degraded_notice
+
+    ChatEvidenceRef:
+      type: object
+      description: One cited evidence reference inside a chat envelope statement.
+      required:
+        - observationId
+      properties:
+        observationId:
+          type: string
+          format: uuid
+        quality:
+          $ref: '#/components/schemas/QualityState'
+      additionalProperties: false
+
+    ChatStatement:
+      type: object
+      description: One typed statement inside the final chat envelope.
+      required:
+        - kind
+        - text
+      properties:
+        kind:
+          $ref: '#/components/schemas/ChatStatementKind'
+        text:
+          type: string
+          description: The rendered text for this statement. Free text; carries no authority.
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatEvidenceRef'
+        cardId:
+          type: string
+          format: uuid
+          description: Present only for a card_reference statement (never a control).
+        tableRows:
+          type: array
+          description: Present only for a table statement. Rows of string cells.
+          items:
+            type: array
+            items:
+              type: string
+      additionalProperties: false
+
+    ChatEnvelope:
+      type: object
+      description: >-
+        The PROPOSED typed final response envelope (S29/S37 addendum,
+        CHAT-030/050/060 chat-vs-screen parity) — an additive schema artifact,
+        NOT YET WIRED to ChatStreamEvent.envelope (see that field's
+        description): adopting it is a breaking change for the current S29 web
+        view-model and needs `web_frontend` coordination in a follow-up step.
+        Category-separated statements + evidence + freshness; JSON-safe
+        business fields only — no LangGraph/LangChain framework type ever
+        appears here (plan §4.8). NEVER carries an approval control (§8,
+        §12.3): a structured control lives only outside the model plane, on the
+        same endpoints screens use. `additionalProperties: true` so an
+        incremental FE migration can read both the legacy and typed fields
+        during the transition.
+      properties:
+        statements:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatStatement'
+        generatedAt:
+          type: string
+          format: date-time
+      additionalProperties: true

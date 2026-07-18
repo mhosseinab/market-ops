@@ -1,0 +1,107 @@
+# deploy/prometheus/rules/dk-p0-alerts.yml — §20.1 failure-domain alerts (S33).
+#
+# Five alerts, one per §20.1 failure domain that has an operational trip wire:
+# connector sync, Route C/extension circuit, action reconciliation, briefing
+# reliability, and model-spend budget. Each alert references ONLY series the S18/
+# S19/S33 instrumentation actually emits (see the comment on each rule), so a
+# firing alert is a real signal, never a phantom. Each `runbook` annotation names
+# the runbook under runbooks/ and the Operations queue (OPS-002) that owns it.
+#
+# Metric names are the OTLP names with `.`→`_` (the collector's prometheus
+# exporter runs add_metric_suffixes:false). Histograms expand to _bucket/_sum/
+# _count per the Prometheus data model.
+#
+# DEV-ONLY thresholds; the S34 production topology tunes them per account. This
+# file's job is to prove the rules parse/load and bind to real series.
+
+groups:
+  - name: dk-p0-failure-domains
+    rules:
+      # ── Connector sync (docs/14: three consecutive non-200 canary responses) ──
+      # Backing series: http_server_request_duration_count on the connector sync
+      # routes with a 5xx class (RED errors, S33 gateway seam). A sustained error
+      # streak on /connector/refresh|connect is the platform-visible sync failure.
+      - alert: ConnectorSyncFailureStreak
+        expr: |
+          sum(increase(http_server_request_duration_count{http_route=~"/connector/(refresh|connect)", http_status_class="5xx"}[15m])) >= 3
+        for: 15m
+        labels:
+          severity: page
+          failure_domain: connector
+        annotations:
+          summary: "Connector sync failing (>=3 errors in 15m)"
+          runbook: "runbooks/connector.md"
+          ops_queue: "operations.queue.failedSync"
+          description: "Connect/refresh is returning 5xx. Owning queue: Operations → Failed sync. Follow runbooks/connector.md."
+
+      # ── Route C / extension circuit open (breaker trip → screens-only fallback) ──
+      # Backing series: analytics_events with the observation/extension circuit-stop
+      # family+name (§18 requires 'observation route budget' and 'extension circuit
+      # stop' events). A breaker trip is an incident, never a silent recovery, so
+      # ANY circuit-stop event in the window pages.
+      - alert: RouteCircuitOpen
+        expr: |
+          sum(increase(analytics_events{family=~"observation|extension", name=~".*circuit.*|.*stop.*"}[10m])) > 0
+        for: 0m
+        labels:
+          severity: page
+          failure_domain: parser
+        annotations:
+          summary: "Route C / extension circuit opened (screens-only fallback engaged)"
+          runbook: "runbooks/parser.md"
+          ops_queue: "operations.queue.parserDrift"
+          description: "A Route B/C or extension breaker tripped. Owning queue: Operations → Parser/schema drift. Follow runbooks/parser.md."
+
+      # ── Action reconciliation backlog (EXE-003 parked-pending grows unresolved) ──
+      # Backing series: execution_pending_reconciliation (parks) vs
+      # execution_terminal_results (reconciled), both S18 real counters. A positive
+      # gap sustained for 30m means unknown write results are not being resolved.
+      - alert: ReconciliationBacklog
+        expr: |
+          sum(increase(execution_pending_reconciliation[30m])) - sum(increase(execution_terminal_results[30m])) > 0
+        for: 30m
+        labels:
+          severity: page
+          failure_domain: reconciliation
+        annotations:
+          summary: "Action reconciliation backlog growing (parked > reconciled over 30m)"
+          runbook: "runbooks/action-reconciliation.md"
+          ops_queue: "operations.queue.pendingRecon"
+          description: "Writes parked pending reconciliation are outpacing terminal results. Owning queue: Operations → Pending reconciliation. Follow runbooks/action-reconciliation.md."
+
+      # ── Briefing reliability (§20.2: 95% during soak; briefing generation fails) ──
+      # Backing series: analytics_events{family="briefing"} success ('generated')
+      # plus RED 5xx on GET /briefing. No successful generation in 25h (one business
+      # day + slack) OR a briefing 5xx streak trips it.
+      - alert: BriefingGenerationFailure
+        expr: |
+          (sum(increase(analytics_events{family="briefing", name="generated"}[25h])) == 0)
+          or
+          (sum(increase(http_server_request_duration_count{http_route="/briefing", http_status_class="5xx"}[15m])) >= 3)
+        for: 15m
+        labels:
+          severity: warning
+          failure_domain: llm
+        annotations:
+          summary: "Daily briefing generation failing or absent"
+          runbook: "runbooks/llm-outage.md"
+          ops_queue: "operations.queue.staleTargets"
+          description: "No successful briefing generation in 25h, or /briefing is erroring. Chat/briefing degrade behind the kill switch; screens stay capable. Follow runbooks/llm-outage.md."
+
+      # ── Model-spend budget exhaustion (§17.3 daily budget; degradation ladder) ──
+      # Backing series: analytics_cost_minor_units (S19 §17.3 cost counters). When the
+      # day's model-attributable spend crosses the dev budget the degradation ladder
+      # (shorten → reuse briefing → minimal cards → disable optional chat) must be
+      # engaged; this alert makes budget pressure observable, never silent.
+      - alert: ModelSpendBudgetExhausted
+        expr: |
+          sum(increase(analytics_cost_minor_units{cost_kind=~"conversation|briefing|simulation|approval_flow"}[24h])) > 500000
+        for: 5m
+        labels:
+          severity: warning
+          failure_domain: llm
+        annotations:
+          summary: "Daily model-spend budget exhausted (§17.3 ladder should be engaged)"
+          runbook: "runbooks/llm-outage.md"
+          ops_queue: "operations.queue.staleTargets"
+          description: "Model-attributable variable cost crossed the daily budget. Confirm the §17.3 degradation ladder engaged in order. Follow runbooks/llm-outage.md."

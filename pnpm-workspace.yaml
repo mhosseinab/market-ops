@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+  - gen/ts
+
+pmOnFail: error
+
+allowBuilds:
+  "@biomejs/biome": true
+  esbuild: true
+  lefthook: true
+  msw: false

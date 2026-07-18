@@ -1,0 +1,117 @@
+{
+  "uid": "dk-unit-economics",
+  "title": "DK · Unit economics",
+  "description": "Unit economics from §17.3 granular cost counters.",
+  "tags": [
+    "dk-p0",
+    "economics"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 48,
+      "type": "timeseries",
+      "title": "Variable cost by kind (§17.3)",
+      "description": "Every §17.3 variable-cost counter: account, managed SKU, target, fresh observation, briefing, conversation, simulation, approval flow, execution attempt.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (cost_kind) (increase(analytics_cost_minor_units[1h]))",
+          "legendFormat": "{{cost_kind}}",
+          "refId": "V",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 50,
+      "type": "timeseries",
+      "title": "Cost per account (24h)",
+      "description": "Daily variable cost per account — the daily model-spend budget input.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (marketplace_account_id) (increase(analytics_cost_minor_units[24h]))",
+          "legendFormat": "{{marketplace_account_id}}",
+          "refId": "X",
+          "range": true
+        }
+      ]
+    }
+  ]
+}

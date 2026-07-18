@@ -25,6 +25,10 @@ go.work.sum
 
 # Compiled binaries (services/core builds into bin/).
 services/core/bin/
+# Stray module binary from a bare `go build ./...` in services/core.
+/services/core/core
+# Compiled output of the DK-doc normalizer tool (built ad hoc; never committed).
+contracts/tools/dknormalize/dknormalize
 *.exe
 *.exe~
 *.dll
@@ -167,3 +171,11 @@ tmp/
 .stylelintcache
 .bundle/
 vendor/
+
+# Agent worktrees (ephemeral, orchestrator-managed)
+.claude/worktrees/
+
+# Playwright (S26)
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/dist/

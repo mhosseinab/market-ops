@@ -1,0 +1,268 @@
+// Package notify is the delivery layer for in-app notifications and the daily
+// email digest (PRD §7.5 NOT-001, §6.8). Its guarantees:
+//
+//   - Shared event ids. An in-app notification and its digest line reference the
+//     SAME product event id (NOT-001) — one event on two surfaces, never two.
+//   - Dedup is a delivery-layer guarantee (NOT-001, never-cut). Deliver is
+//     idempotent on (account, dedup_key): a duplicate delivery inserts nothing and
+//     returns the EXISTING row with Delivered=false, so duplicate delivery can
+//     never create a duplicate product event.
+//   - Safety/execution failures BYPASS the digest delay and are never shed. A
+//     failure notification is delivered immediately (in-app) with bypass_digest
+//     set, and is EXCLUDED from the batched digest — it was already delivered.
+//   - Append-only. The notifications row is immutable except read_at, a bounded
+//     read-state projection advanced by a FROM-guarded update (never a blind
+//     overwrite). The store issues no other UPDATE and no DELETE.
+//   - Locale is data (LOC-001). Notifications store catalog KEYS + named params,
+//     never rendered copy; the digest renders from a locale pack selected by the
+//     account's locale STRING. No locale branch lives in this logic.
+package notify
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
+)
+
+// Category is the notification kind. It DECIDES digest bypass: execution and
+// safety failures bypass the batched digest delay (delivered immediately, never
+// shed); a market event batches into the daily digest.
+type Category string
+
+const (
+	CategoryMarketEvent      Category = "market_event"
+	CategoryExecutionFailure Category = "execution_failure"
+	CategorySafetyFailure    Category = "safety_failure"
+)
+
+// Valid reports whether c is a known category.
+func (c Category) Valid() bool {
+	switch c {
+	case CategoryMarketEvent, CategoryExecutionFailure, CategorySafetyFailure:
+		return true
+	default:
+		return false
+	}
+}
+
+// BypassesDigest reports whether this category bypasses the batched digest delay
+// (§ SRE load-shedding order: execution/safety failures are delivered immediately
+// and never shed). This is the single source of the bypass rule.
+func (c Category) BypassesDigest() bool {
+	return c == CategoryExecutionFailure || c == CategorySafetyFailure
+}
+
+// ErrInvalidNotification is returned when a delivery request is structurally
+// invalid (unknown category/severity, missing key or dedup key). Fail closed.
+var ErrInvalidNotification = errors.New("notify: invalid notification")
+
+var validSeverity = map[string]bool{"info": true, "warning": true, "critical": true}
+
+// Notification is one stored in-app notification. ReadAt is nil when unread.
+type Notification struct {
+	ID           uuid.UUID
+	Account      uuid.UUID
+	EventID      uuid.UUID
+	DedupKey     string
+	Category     Category
+	Severity     string
+	BypassDigest bool
+	TitleKey     string
+	BodyKey      string
+	BodyParams   map[string]string
+	CreatedAt    time.Time
+	ReadAt       *time.Time
+}
+
+// DeliverParams is one delivery request. EventID is the SHARED product event id;
+// DedupKey is the NOT-001 idempotency key. BypassDigest is DERIVED from Category —
+// callers cannot smuggle a market event past the digest or force a failure into it.
+type DeliverParams struct {
+	Account    uuid.UUID
+	EventID    uuid.UUID
+	DedupKey   string
+	Category   Category
+	Severity   string
+	TitleKey   string
+	BodyKey    string
+	BodyParams map[string]string
+}
+
+// DeliverResult reports a delivery outcome. Delivered is false when the request
+// collided with an existing (account, dedup_key): the EXISTING notification is
+// returned unchanged and NO new product event was created (NOT-001).
+type DeliverResult struct {
+	Notification Notification
+	Delivered    bool
+}
+
+// Store is the append-only in-app notification store.
+type Store struct {
+	pool *pgxpool.Pool
+	now  func() time.Time
+}
+
+// NewStore builds a notification store over the pool.
+func NewStore(pool *pgxpool.Pool) *Store {
+	return &Store{pool: pool, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// WithClock overrides the clock (tests only).
+func (s *Store) WithClock(now func() time.Time) *Store {
+	s.now = now
+	return s
+}
+
+// Deliver delivers one notification idempotently (NOT-001). bypass_digest is
+// derived from the category, so an execution/safety failure ALWAYS bypasses the
+// digest and a market event NEVER does. On a dedup collision it returns the
+// existing row with Delivered=false — duplicate delivery creates no product event.
+func (s *Store) Deliver(ctx context.Context, p DeliverParams) (DeliverResult, error) {
+	if !p.Category.Valid() || !validSeverity[p.Severity] ||
+		p.DedupKey == "" || p.TitleKey == "" || p.EventID == uuid.Nil {
+		return DeliverResult{}, ErrInvalidNotification
+	}
+	params, err := marshalParams(p.BodyParams)
+	if err != nil {
+		return DeliverResult{}, err
+	}
+	q := db.New(s.pool)
+	row, err := q.DeliverNotification(ctx, db.DeliverNotificationParams{
+		MarketplaceAccountID: p.Account,
+		EventID:              p.EventID,
+		DedupKey:             p.DedupKey,
+		Category:             string(p.Category),
+		Severity:             p.Severity,
+		BypassDigest:         p.Category.BypassesDigest(),
+		TitleKey:             p.TitleKey,
+		BodyKey:              p.BodyKey,
+		BodyParams:           params,
+	})
+	if err == nil {
+		n, err := toNotification(row)
+		if err != nil {
+			return DeliverResult{}, err
+		}
+		return DeliverResult{Notification: n, Delivered: true}, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return DeliverResult{}, err
+	}
+	// Dedup collision: return the existing row unchanged (idempotent, no new event).
+	existing, err := q.GetNotificationByDedup(ctx, db.GetNotificationByDedupParams{
+		MarketplaceAccountID: p.Account,
+		DedupKey:             p.DedupKey,
+	})
+	if err != nil {
+		return DeliverResult{}, err
+	}
+	n, err := toNotification(existing)
+	if err != nil {
+		return DeliverResult{}, err
+	}
+	return DeliverResult{Notification: n, Delivered: false}, nil
+}
+
+// List returns the account's in-app notification feed, newest first.
+func (s *Store) List(ctx context.Context, account uuid.UUID) ([]Notification, error) {
+	rows, err := db.New(s.pool).ListNotifications(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Notification, 0, len(rows))
+	for _, r := range rows {
+		n, err := toNotification(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+// UnreadCount returns the number of unread notifications for the account (badge).
+func (s *Store) UnreadCount(ctx context.Context, account uuid.UUID) (int64, error) {
+	return db.New(s.pool).CountUnreadNotifications(ctx, account)
+}
+
+// MarkRead marks one notification read via the FROM-guarded projection. It is
+// idempotent: an already-read or foreign notification matches nothing and returns
+// changed=false with no error (never a blind overwrite of the append-only row).
+func (s *Store) MarkRead(ctx context.Context, account, id uuid.UUID) (Notification, bool, error) {
+	row, err := db.New(s.pool).MarkNotificationRead(ctx, db.MarkNotificationReadParams{
+		ID:                   id,
+		MarketplaceAccountID: account,
+		ReadAt:               pgtype.Timestamptz{Time: s.now(), Valid: true},
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Notification{}, false, nil
+	}
+	if err != nil {
+		return Notification{}, false, err
+	}
+	n, err := toNotification(row)
+	if err != nil {
+		return Notification{}, false, err
+	}
+	return n, true, nil
+}
+
+// toNotification lifts a db row into the domain type, decoding the params JSON.
+func toNotification(r db.Notification) (Notification, error) {
+	params, err := unmarshalParams(r.BodyParams)
+	if err != nil {
+		return Notification{}, err
+	}
+	n := Notification{
+		ID:           r.ID,
+		Account:      r.MarketplaceAccountID,
+		EventID:      r.EventID,
+		DedupKey:     r.DedupKey,
+		Category:     Category(r.Category),
+		Severity:     r.Severity,
+		BypassDigest: r.BypassDigest,
+		TitleKey:     r.TitleKey,
+		BodyKey:      r.BodyKey,
+		BodyParams:   params,
+		CreatedAt:    r.CreatedAt,
+	}
+	if r.ReadAt.Valid {
+		t := r.ReadAt.Time
+		n.ReadAt = &t
+	}
+	return n, nil
+}
+
+func marshalParams(p map[string]string) ([]byte, error) {
+	if len(p) == 0 {
+		return []byte("{}"), nil
+	}
+	b, err := json.Marshal(p)
+	if err != nil {
+		return nil, fmt.Errorf("notify: marshal params: %w", err)
+	}
+	return b, nil
+}
+
+func unmarshalParams(b []byte) (map[string]string, error) {
+	if len(b) == 0 {
+		return map[string]string{}, nil
+	}
+	var out map[string]string
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, fmt.Errorf("notify: unmarshal params: %w", err)
+	}
+	if out == nil {
+		out = map[string]string{}
+	}
+	return out, nil
+}

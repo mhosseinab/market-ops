@@ -1,0 +1,70 @@
+{"id": "int-en-009", "message": "what's the current price on this listing?", "lang": "en", "expected_intent": "Question", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-010", "message": "how many of my products are below floor right now?", "lang": "en", "expected_intent": "Question", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-011", "message": "who is the cheapest seller on this SKU?", "lang": "en", "expected_intent": "Question", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-012", "message": "what is my contribution margin here?", "lang": "en", "expected_intent": "Question", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-013", "message": "when was the last observation captured for this item?", "lang": "en", "expected_intent": "Question", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-014", "message": "show freshness state for this product", "lang": "en", "expected_intent": "Question", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-015", "message": "why is this listing conflicted?", "lang": "en", "expected_intent": "Question", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-031", "message": "simulate dropping the price by 3 percent", "lang": "en", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-032", "message": "what if I match the cheapest competitor?", "lang": "en", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-033", "message": "model the margin if COGS rises 10%", "lang": "en", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-034", "message": "run a what-if to floor price, don't apply", "lang": "en", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-035", "message": "preview the impact of a 15% cut", "lang": "en", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-043", "message": "what happens to buy box if I go 5% lower", "lang": "en", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-044", "message": "model this without executing anything", "lang": "en", "expected_intent": "Simulation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-056", "message": "draft a price change for this listing", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-057", "message": "prepare a recommendation card for this product", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-058", "message": "set up a draft to match the floor", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-059", "message": "stage a price update for review", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-060", "message": "create a draft action for SKU-4410", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-067", "message": "draft the recommended price, review-only", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-068", "message": "build a draft to lower price to floor", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-070", "message": "prepare a bulk draft for the selected set", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-074", "message": "stage the engine's suggested change", "lang": "en", "expected_intent": "PrepareAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-081", "message": "review the prepared price card", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-082", "message": "open the recommendation explanation with evidence", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-083", "message": "show me the guardrails on this draft", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-084", "message": "walk me through this action's assumptions", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-085", "message": "let me inspect the draft before anything", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-092", "message": "show the 14 fields of this approval card", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-093", "message": "what does this card say before I decide?", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-095", "message": "open draft action ACT-7781 for review", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-098", "message": "let me look at the blocked reasons on this card", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-100", "message": "review the prepared bulk set counts", "lang": "en", "expected_intent": "ReviewAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-106", "message": "yes approve it", "lang": "en", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": false}
+{"id": "int-en-107", "message": "approve this price change now", "lang": "en", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-108", "message": "go ahead and apply it", "lang": "en", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": false}
+{"id": "int-en-109", "message": "confirm the approval, do it", "lang": "en", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-110", "message": "looks good, push it live", "lang": "en", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": false}
+{"id": "int-en-117", "message": "i approve, execute the change", "lang": "en", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-118", "message": "do it now, approved", "lang": "en", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": false}
+{"id": "int-en-120", "message": "green light it", "lang": "en", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": false}
+{"id": "int-en-122", "message": "approve all of them", "lang": "en", "expected_intent": "ApproveAction", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-124", "message": "just approve already", "lang": "en", "expected_intent": "ApproveAction", "shorthand": true, "pending_native_review": false}
+{"id": "int-en-130", "message": "confirm the execution result", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-131", "message": "mark this run as accepted", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-132", "message": "finalize the reconciliation outcome", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-133", "message": "acknowledge the marketplace result", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-138", "message": "confirm the outcome as final", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-140", "message": "close out this execution as done", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-142", "message": "confirm result: accepted by marketplace", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-144", "message": "mark reconciled and confirm", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-149", "message": "acknowledge the accepted result", "lang": "en", "expected_intent": "ConfirmResult", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-156", "message": "change my daily briefing time to 9am", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-157", "message": "add this product to my watchlist", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-158", "message": "set monitoring tier to hourly", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-159", "message": "what's my connection status?", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-160", "message": "show cost readiness for the account", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-167", "message": "set a single COGS value for this item", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-169", "message": "remove this SKU from monitoring", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-171", "message": "update my notification preferences", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-174", "message": "configure monitoring to daily digest", "lang": "en", "expected_intent": "Administration", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-181", "message": "go to the products screen", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-182", "message": "open the market page", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-183", "message": "take me to settings", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-184", "message": "navigate to the actions list", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-185", "message": "show the Today dashboard", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-192", "message": "jump to the onboarding screen", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-194", "message": "open the recommendation for SKU-2201", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-196", "message": "go back to the market monitoring page", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}
+{"id": "int-en-200", "message": "open events page", "lang": "en", "expected_intent": "Navigation", "shorthand": false, "pending_native_review": false}

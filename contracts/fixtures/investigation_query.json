@@ -1,0 +1,41 @@
+{
+  "_comment": "Cross-boundary golden for the investigation filter query contract (CHAT-033). These are the canonical query bytes the SCREENS emit and the chat plane MUST match. The Python chat serializer (llm.flows.investigation.compile_query) is asserted against this fixture by services/llm/tests/test_flows_investigation.py; the web/gateway screen-query builder must consume the SAME fixture (cross-plane follow-up for web_frontend) so chat and screens cannot drift apart. Each case maps a normalized FilterSpec to its exact query string.",
+  "cases": [
+    {
+      "name": "blocked_conflicted_below_floor_by_exposure",
+      "spec": {
+        "account_id": "acc-1",
+        "states": ["state.blocked", "state.conflicted"],
+        "below_floor": true,
+        "sort_key": "exposure"
+      },
+      "query": "account=acc-1&below_floor=true&page_size=20&sort=exposure:desc&state=state.blocked,state.conflicted"
+    },
+    {
+      "name": "stale_freshness_by_last_observed_asc",
+      "spec": {
+        "account_id": "acc-1",
+        "freshness": ["freshness.stale", "freshness.aging"],
+        "sort_key": "last_observed",
+        "sort_dir": "asc"
+      },
+      "query": "account=acc-1&freshness=freshness.aging,freshness.stale&page_size=20&sort=last_observed:asc"
+    },
+    {
+      "name": "has_recommendation_tier_daily",
+      "spec": {
+        "account_id": "acc-1",
+        "has_recommendation": true,
+        "monitoring_tier": "daily"
+      },
+      "query": "account=acc-1&has_recommendation=true&monitoring_tier=daily&page_size=20"
+    },
+    {
+      "name": "minimal_account_only",
+      "spec": {
+        "account_id": "acc-1"
+      },
+      "query": "account=acc-1&page_size=20"
+    }
+  ]
+}

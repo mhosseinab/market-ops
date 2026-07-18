@@ -1,0 +1,160 @@
+{
+  "uid": "dk-identity-money",
+  "title": "DK · Identity & money-unit quality",
+  "description": "Identity mapping + money-unit gating; quarantine-over-inference is visible, not silent.",
+  "tags": [
+    "dk-p0",
+    "identity",
+    "money"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Mapping decisions (by name)",
+      "description": "Identity mapping decisions (§18 mapping family).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (name) (rate(analytics_events{family=\"mapping\"}[1h]))",
+          "legendFormat": "{{name}}",
+          "refId": "M",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "timeseries",
+      "title": "Write enablement denied (capability/region gate)",
+      "description": "Capability/region gate denials — money/identity quarantine keeps writes OFF until verified (S18).",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(rate(execution_enablement_denied[1h]))",
+          "legendFormat": "enablement_denied",
+          "refId": "O",
+          "range": true
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Audit-write failures (must be 0)",
+      "description": "Never-cut: an audit loss is an incident. Any non-zero value is a fail-closed rollback that needs investigation.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 6,
+        "x": 0,
+        "y": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum(increase(execution_audit_write_failures[24h]))",
+          "legendFormat": "audit_failures",
+          "refId": "Q",
+          "range": true
+        }
+      ]
+    }
+  ]
+}

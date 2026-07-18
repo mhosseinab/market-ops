@@ -1,0 +1,38 @@
+# deploy/prometheus/prometheus.yml — dev metrics store (S33, PRD §19.3).
+#
+# Scrapes the OpenTelemetry collector's Prometheus exporter (deploy/otel-
+# collector/config.yaml, :8889), which re-exports every OTLP metric the Go core
+# and LLM plane emit. Grafana queries this Prometheus as its metrics datasource
+# so the §18 dashboards render real series. Alert rules (§20.1 failure domains)
+# load from rules/*.yml.
+#
+# DEV-ONLY, same posture as the rest of compose.dev.yml. Production alerting
+# wiring lands with the S34 production topology; this file proves the rules load
+# and the series names match the instrumentation.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # The collector re-exports all OTLP metrics here (add_metric_suffixes:false, so
+  # names are the OTLP names with `.`→`_`). honor_labels keeps the service_name /
+  # route / status labels the instrumentation set.
+  - job_name: otel-collector
+    honor_labels: true
+    static_configs:
+      - targets: ["otel-collector:8889"]
+
+  # The collector's own internal telemetry (queue depth, dropped spans) so
+  # backpressure at the collection layer is itself observable (docs/14).
+  - job_name: otel-collector-internal
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  # Prometheus scrapes itself so rule-evaluation health is visible.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

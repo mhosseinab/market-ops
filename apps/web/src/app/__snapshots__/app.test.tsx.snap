@@ -1,0 +1,166 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`app shell boots RTL, fa-IR > matches the RTL shell snapshot 1`] = `
+<div
+  class="app-shell"
+>
+  <nav
+    aria-label="فضای کاری"
+    class="side-nav"
+  >
+    <strong>
+      <span
+        class="ltr"
+      >
+        DK
+      </span>
+    </strong>
+    <div>
+      <div
+        class="side-nav__group-label"
+      >
+        فضای کاری
+      </div>
+      <a
+        aria-current="page"
+        class="nav-item"
+        data-active="true"
+        data-status="active"
+        href="/today"
+      >
+        امروز
+      </a>
+      <a
+        class="nav-item"
+        href="/products"
+      >
+        محصولات
+      </a>
+      <a
+        class="nav-item"
+        href="/market"
+      >
+        بازار
+      </a>
+      <a
+        class="nav-item"
+        href="/actions"
+      >
+        اقدام‌ها
+      </a>
+      <a
+        class="nav-item"
+        href="/settings"
+      >
+        تنظیمات
+      </a>
+      <a
+        class="nav-item"
+        href="/operations"
+      >
+        عملیات
+      </a>
+    </div>
+    <div>
+      <div
+        class="side-nav__group-label"
+      >
+        مرجع و راه‌اندازی
+      </div>
+      <a
+        class="nav-item"
+        href="/onboarding"
+      >
+        اتصال و راه‌اندازی
+      </a>
+      <a
+        class="nav-item"
+        href="/ds"
+      >
+        سیستم طراحی
+      </a>
+    </div>
+  </nav>
+  <div
+    class="main-col"
+  >
+    <header
+      class="top-bar"
+    >
+      <div
+        class="top-bar__titles"
+      >
+        <span
+          class="top-bar__title"
+        >
+          امروز
+        </span>
+        <span
+          class="top-bar__sub"
+        >
+          آنچه اکنون نیازمند توجه است
+        </span>
+      </div>
+      <span
+        class="connection-pill tone-pos"
+      >
+        <span
+          aria-hidden="true"
+          class="badge__dot"
+        />
+        اتصال سالم
+      </span>
+      <button
+        class="top-bar__control"
+        type="button"
+      >
+        English
+      </button>
+      <button
+        aria-label="فشردگی نمایش"
+        class="top-bar__control"
+        type="button"
+      >
+        ▤
+      </button>
+      <button
+        aria-label="روشن یا تیره"
+        class="top-bar__control"
+        type="button"
+      >
+        ☾
+      </button>
+      <button
+        aria-label="دستیار گفتگو"
+        class="top-bar__control"
+        type="button"
+      >
+        ◧
+        <span
+          aria-hidden="true"
+          class="briefing-dot"
+        />
+      </button>
+    </header>
+    <main
+      class="route-scroll"
+    >
+      <div
+        class="screen"
+      >
+        <div
+          class="screen-empty"
+          data-testid="today-no-action"
+        >
+          <p>
+            هیچ اقدامی لازم نیست
+          </p>
+          <p>
+            همه‌چیز پایدار است؛ در صورت تغییر بازار این‌جا مطلع می‌شوید.
+          </p>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+`;

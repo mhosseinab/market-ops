@@ -1,0 +1,30 @@
+{"id": "currency-fa-001", "suite": "currency", "lang": "fa", "raw": "۱۲۰۰ ت", "unit_token": "ت", "expected": "quarantine", "reason": "toman/rial abbreviation is ambiguous", "pending_native_review": true}
+{"id": "currency-en-002", "suite": "currency", "lang": "en", "raw": "1200 t", "unit_token": "t", "expected": "quarantine", "reason": "bare 't' unit is undefined", "pending_native_review": false}
+{"id": "currency-fa-003", "suite": "currency", "lang": "fa", "raw": "۱۵۰۰۰۰ تومان", "unit_token": "تومان", "expected": "quarantine", "reason": "toman is not the stored rial unit", "pending_native_review": true}
+{"id": "currency-en-004", "suite": "currency", "lang": "en", "raw": "150k", "unit_token": "k", "expected": "quarantine", "reason": "magnitude suffix without a currency", "pending_native_review": false}
+{"id": "currency-fa-005", "suite": "currency", "lang": "fa", "raw": "۲٫۵ م", "unit_token": "م", "expected": "quarantine", "reason": "million abbreviation, no currency", "pending_native_review": true}
+{"id": "currency-en-006", "suite": "currency", "lang": "en", "raw": "2.5m", "unit_token": "m", "expected": "quarantine", "reason": "million magnitude, no currency", "pending_native_review": false}
+{"id": "currency-fa-007", "suite": "currency", "lang": "fa", "raw": "۹۹٬۰۰۰", "unit_token": "", "expected": "quarantine", "reason": "grouped number with no unit at all", "pending_native_review": true}
+{"id": "currency-en-008", "suite": "currency", "lang": "en", "raw": "99,000", "unit_token": "", "expected": "quarantine", "reason": "grouped number with no unit at all", "pending_native_review": false}
+{"id": "currency-fa-009", "suite": "currency", "lang": "fa", "raw": "۱۲۰۰ تومن", "unit_token": "تومن", "expected": "quarantine", "reason": "colloquial toman spelling", "pending_native_review": true}
+{"id": "currency-mixed-010", "suite": "currency", "lang": "mixed", "raw": "1200 toman", "unit_token": "toman", "expected": "quarantine", "reason": "toman literal, stored unit is rial", "pending_native_review": true}
+{"id": "currency-fa-011", "suite": "currency", "lang": "fa", "raw": "١٢٠٠ ريال", "unit_token": "ريال", "expected": "quarantine", "reason": "arabic-indic digits + rial spelling variant", "pending_native_review": true}
+{"id": "currency-fa-012", "suite": "currency", "lang": "fa", "raw": "۱۲۰۰ ﷼", "unit_token": "﷼", "expected": "quarantine", "reason": "rial glyph vs ISO code ambiguity", "pending_native_review": true}
+{"id": "currency-en-013", "suite": "currency", "lang": "en", "raw": "1.2 lakh", "unit_token": "lakh", "expected": "quarantine", "reason": "regional grouping unit", "pending_native_review": false}
+{"id": "currency-fa-014", "suite": "currency", "lang": "fa", "raw": "۱۲۰۰ واحد", "unit_token": "واحد", "expected": "quarantine", "reason": "'unit' placeholder, no currency", "pending_native_review": true}
+{"id": "currency-en-015", "suite": "currency", "lang": "en", "raw": "1200 units", "unit_token": "units", "expected": "quarantine", "reason": "'units' placeholder, no currency", "pending_native_review": false}
+{"id": "currency-mixed-016", "suite": "currency", "lang": "mixed", "raw": "۱۲۰۰k تومان", "unit_token": "k تومان", "expected": "quarantine", "reason": "magnitude suffix plus toman", "pending_native_review": true}
+{"id": "currency-mixed-017", "suite": "currency", "lang": "mixed", "raw": "price: ۱۲۰۰", "unit_token": "", "expected": "quarantine", "reason": "number with no unit context", "pending_native_review": true}
+{"id": "currency-fa-018", "suite": "currency", "lang": "fa", "raw": "۱۲۰۰ ت.", "unit_token": "ت.", "expected": "quarantine", "reason": "abbreviated toman with period", "pending_native_review": true}
+{"id": "currency-en-019", "suite": "currency", "lang": "en", "raw": "Rls 1200", "unit_token": "Rls", "expected": "quarantine", "reason": "non-ISO rial abbreviation", "pending_native_review": false}
+{"id": "currency-mixed-020", "suite": "currency", "lang": "mixed", "raw": "۱۲۰۰ IRT", "unit_token": "IRT", "expected": "quarantine", "reason": "non-standard toman code", "pending_native_review": true}
+{"id": "currency-mixed-021", "suite": "currency", "lang": "mixed", "raw": "۱۲۰۰ IRR?", "unit_token": "IRR?", "expected": "quarantine", "reason": "unit present but flagged uncertain", "pending_native_review": true}
+{"id": "currency-en-022", "suite": "currency", "lang": "en", "raw": "about 1200", "unit_token": "about", "expected": "quarantine", "reason": "approximate qualifier, no unit", "pending_native_review": false}
+{"id": "currency-fa-023", "suite": "currency", "lang": "fa", "raw": "۱۲۰۰ حدوداً", "unit_token": "حدوداً", "expected": "quarantine", "reason": "approximate qualifier, no unit", "pending_native_review": true}
+{"id": "currency-fa-024", "suite": "currency", "lang": "fa", "raw": "۱٫۲ میلیون", "unit_token": "میلیون", "expected": "quarantine", "reason": "million word, no currency", "pending_native_review": true}
+{"id": "currency-en-025", "suite": "currency", "lang": "en", "raw": "1.2 million", "unit_token": "million", "expected": "quarantine", "reason": "million word, no currency", "pending_native_review": false}
+{"id": "currency-fa-026", "suite": "currency", "lang": "fa", "raw": "۱۲۰۰ تی", "unit_token": "تی", "expected": "quarantine", "reason": "phonetic toman abbreviation", "pending_native_review": true}
+{"id": "currency-mixed-027", "suite": "currency", "lang": "mixed", "raw": "۱۲۰۰ ت/ر", "unit_token": "ت/ر", "expected": "quarantine", "reason": "toman-or-rial slash notation", "pending_native_review": true}
+{"id": "currency-mixed-028", "suite": "currency", "lang": "mixed", "raw": "USD? ۱۲۰۰", "unit_token": "USD?", "expected": "quarantine", "reason": "foreign currency flagged uncertain", "pending_native_review": true}
+{"id": "currency-fa-029", "suite": "currency", "lang": "fa", "raw": "۱۲۰۰ عدد", "unit_token": "عدد", "expected": "quarantine", "reason": "'count' word mistaken for currency", "pending_native_review": true}
+{"id": "currency-en-030", "suite": "currency", "lang": "en", "raw": "twelve hundred", "unit_token": "", "expected": "quarantine", "reason": "spelled-out number, no unit", "pending_native_review": false}

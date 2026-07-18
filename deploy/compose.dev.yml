@@ -1,0 +1,159 @@
+# deploy/compose.dev.yml — local dev stack (dk-p0-monorepo.md §8, PRD §19.3).
+#
+# Everything a laptop needs: PostgreSQL 18, the OpenTelemetry collector, the
+# Grafana/Loki/Tempo observability trio, Mailpit for email testing, and the
+# Spotlight dev-observability sidecar. Brought up by `task dev`.
+#
+# DEV-ONLY. The production topology (single VPS, Caddy ingress, WAL backup) is a
+# separate file (deploy/compose.prod.yml) and lands in S34 — the Spotlight
+# sidecar and Mailpit MUST NEVER appear there.
+#
+# mock-DK server arrives in S9; migrations/watchers wire into `task dev` in later
+# steps (River + goose land with the S5 DB foundation).
+
+name: market-ops-dev
+
+services:
+  # ─── PostgreSQL 18 — deterministic-core system of record ────────────────
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: market_ops
+      POSTGRES_PASSWORD: market_ops
+      POSTGRES_DB: market_ops
+    ports:
+      - "5432:5432"
+    volumes:
+      # PostgreSQL 18+ stores PGDATA under a major-version directory
+      # (/var/lib/postgresql/18/docker). Mount the parent so pg_upgrade can
+      # operate across version directories without crossing mount boundaries.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      # `task dev` and `task db:reset` gate on this becoming healthy.
+      test: ["CMD-SHELL", "pg_isready -U market_ops -d market_ops -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─── OpenTelemetry collector — single OTLP ingest for every plane ───────
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./otel-collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP/gRPC
+      - "4318:4318"   # OTLP/HTTP
+    depends_on:
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+    restart: unless-stopped
+
+  # ─── Prometheus — metrics store; scrapes the collector's prom exporter ──
+  # Grafana's metrics datasource. Loads the §20.1 alert rules from
+  # deploy/prometheus/rules. DEV-ONLY (production alerting lands with S34).
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=48h"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
+  # ─── Tempo — trace storage (OTLP in, queried by Grafana) ────────────────
+  tempo:
+    image: grafana/tempo:2.7.0
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./tempo/config.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP (Grafana datasource)
+    restart: unless-stopped
+
+  # ─── Loki — log storage (OTLP in, queried by Grafana) ───────────────────
+  loki:
+    image: grafana/loki:3.3.0
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./loki/config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    restart: unless-stopped
+
+  # ─── Grafana — dashboards; datasources provisioned from deploy/grafana ──
+  grafana:
+    image: grafana/grafana:11.5.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      loki:
+        condition: service_started
+      tempo:
+        condition: service_started
+      prometheus:
+        condition: service_started
+    restart: unless-stopped
+
+  # ─── Mailpit — captures outbound dev email (SMTP :1025, UI :8025) ───────
+  mailpit:
+    image: axllent/mailpit:v1.21
+    ports:
+      - "1025:1025"   # SMTP sink
+      - "8025:8025"   # web UI
+    restart: unless-stopped
+
+  # ─── mock DK Seller API — offline stand-in for connector dev/tests ──────
+  # Serves the auth + §15.2 probe endpoints (internal/mockdk) so the connector
+  # is developed against the mock, never live DK (CLAUDE.md). Runs via `go run`
+  # off the mounted repo; no custom image needed. Fault modes via MOCKDK_MODE.
+  mockdk:
+    image: golang:1.25
+    working_dir: /src/services/core
+    command: ["go", "run", "./cmd/mockdk"]
+    environment:
+      GOWORK: "off"
+      GOFLAGS: "-mod=mod"
+      MOCKDK_ADDR: ":8090"
+    volumes:
+      - ../:/src
+    ports:
+      - "8090:8090"
+    restart: unless-stopped
+
+  # ─── Spotlight — dev-observability sidecar UI (:8969). DEV-ONLY. ────────
+  # Sinks the Sentry/OTLP dev stream referenced by SENTRY_SPOTLIGHT. It never
+  # appears in deploy/compose.prod.yml.
+  spotlight:
+    image: ghcr.io/getsentry/spotlight:latest
+    ports:
+      - "8969:8969"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  tempo-data:
+  loki-data:
+  grafana-data:
+  prometheus-data:
