@@ -11,7 +11,11 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # dk-p0/main is the orchestrated run's integration branch; main is trunk
+    # once the long-lived dk-p0/main → main PR lands (dk-p0-agent-guidelines.md
+    # branch conventions). Both are "push CI" (merges/direct updates), as
+    # opposed to pull_request CI below (feature PRs targeting dk-p0/main).
+    branches: [main, dk-p0/main]
   pull_request:
 
 # Cancel superseded runs on the same ref to save runner minutes.
@@ -291,3 +295,47 @@ jobs:
       - run: task ts:build
       # Pseudo-locale + copy-lint merge gate (LOC-011), live from S25.
       - run: task ts:pseudoloc
+
+  integration:
+    name: integration (S32 cross-plane suite)
+    # Compose-based: core + llm + web + mockdk + postgres (deploy/compose.test.yml).
+    # Runs ONLY on push (merges/direct updates to dk-p0/main or main) — never on
+    # a feature PR — per dk-p0-monorepo.md §7 and the S32 step's Verify block.
+    # Independent of `detect`: it exercises the WHOLE cross-plane stack
+    # regardless of which single plane changed, so it does not gate on a path
+    # filter the way the per-language jobs do.
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: install Task
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: services/core/go.mod
+          cache-dependency-path: services/core/go.sum
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.13.1
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: pnpm
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: uv sync --frozen --group dev
+      # Chromium is required for the kill-switch journey's Playwright run.
+      - run: pnpm --filter web exec playwright install --with-deps chromium
+      # SEEDE2E_PASSWORD is test-only infrastructure (services/core/cmd/seede2e) —
+      # never a production credential; generated fresh per run.
+      - name: generate a test-run owner password
+        run: echo "SEEDE2E_PASSWORD=int-$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+      - name: task test:integration
+        env:
+          GOWORK: "off"
+        run: task test:integration

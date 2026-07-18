@@ -230,3 +230,15 @@ tasks:
       # §18 dashboard drift + §20.1 alert-rule/runbook validation (mirrors the CI
       # deploy-obs job). Stdlib-only checks; deep PromQL parse is best-effort.
       - task: obs:validate
+
+  test:integration:
+    desc: >-
+      S32 cross-plane integration suite (compose-based: core + llm + web +
+      mockdk + postgres, deploy/compose.test.yml): kill-switch journey
+      (CHAT-009), adversarial containment replay (CHAT-041/045), §16 edge-case
+      fixtures, permission parity (CHAT-064), and the system duplicate-write
+      proof (EXE-002). Requires Docker; NOT part of `task ci:local` — it runs
+      as a CI job on merges to dk-p0/main, not per-PR (dk-p0-monorepo.md §7).
+      Prints a per-scenario PASS/FAIL report; exit 0 only if all five pass.
+    cmds:
+      - bash tools/integration/run_all.sh
