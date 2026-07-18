@@ -8,8 +8,10 @@ Marketplace Intelligence): take one open GitHub issue from
 `mhosseinab/market-ops` (tracked on Project #4) all the way from eligible to
 a merged PR against `main` in a single run — packet, TDD implementation,
 independent review cycles, PR, auto-merge, issue bookkeeping. This command
-authorizes multi-agent delegation, worktree isolation, branching, pushing a
-fix branch, opening a PR against `main`, and — once every required review
+authorizes two-tier multi-agent delegation (fresh per-issue CONDUCTOR
+subagents that themselves fan out implementer/reviewer/fix subagents — see
+ORCHESTRATION TOPOLOGY), worktree isolation, branching, pushing a fix
+branch, opening a PR against `main`, and — once every required review
 verdict is PASS on the exact pushed SHA and the PR's CI checks are green —
 squash-merging that PR. But NEVER: merging past a failing or still-pending
 check, merging a SHA no fresh reviewer PASSed, bypassing branch protection
@@ -89,17 +91,20 @@ empty, AUTO-PICK from open issues in `mhosseinab/market-ops` not labeled
       silently substitute a different issue.
   PICK ORDER: `severity:high` > `severity:medium` > `severity:low` >
   unscored, tie-break ascending issue number. SHOW the pick + one-line why.
-MULTIPLE ISSUES: run loops in parallel only when their Evidence-section file
-paths don't overlap and at most one touches `contracts/`+`gen/` (mirrors the
-old `[C]`-step exclusivity, sourced from issue bodies instead of a phase
-flag). Serialize the rest. MERGES always serialize regardless of loop
+MULTIPLE ISSUES: spawn conductors in PARALLEL — every eligible,
+non-conflicting issue at once, in one message, in the background; never
+drip-feed one loop at a time. Non-conflicting = Evidence-section file paths
+don't overlap and at most one touches `contracts/`+`gen/` (mirrors the old
+`[C]`-step exclusivity, sourced from issue bodies instead of a phase flag).
+Serialize the rest behind them. MERGES always serialize regardless of loop
 parallelism: one PR merges at a time, and after each merge refresh local
 `main` (step 8) before the next PR is created or merged — a sibling branch
 that falls behind or conflicts goes through step 8's UNMERGEABLE path
 (rebase + re-review), never merged stale.
 
 ═══ PHASE 0 — PRE-FLIGHT (LEAD, once) ═══
-1. `gh label list --repo mhosseinab/market-ops` (confirms the label taxonomy
+1. In parallel — none of these depend on another:
+   `gh label list --repo mhosseinab/market-ops` (confirms the label taxonomy
    exists) and `gh project item-list 4 --owner mhosseinab` (board sanity —
    items should be tracked; this command never writes to the board's
    Status/Priority/Size fields, only to issue labels/comments).
@@ -116,13 +121,51 @@ that falls behind or conflicts goes through step 8's UNMERGEABLE path
    entire run and report it — this needs a human to bring `main` current
    (e.g. merging the latest integration work into it) before any issue in
    the backlog can be fixed against it. Don't partially proceed.
-3. Select per ISSUE SELECTION. Draft the loop plan (implementer role,
-   reviewer role(s), Verify commands, PR target), self-check it against the
-   sources, call `advisor` on it, revise, then show selection + plan and
-   proceed.
+3. Select per ISSUE SELECTION. Draft the loop plan — the conductor fan-out
+   (which issues run concurrently per MULTIPLE ISSUES) plus, per issue:
+   implementer role, reviewer role(s), Verify commands, PR target —
+   self-check it against the sources, call `advisor` on it, revise, then
+   show selection + plan and spawn the conductors.
 
-═══ THE LOOP (per issue #N — one fresh worktree, one branch
-fix/<N>-<slug>, max 3 fix cycles) ═══
+═══ ORCHESTRATION TOPOLOGY (two tiers — keep the LEAD's context clean,
+fan out for wall-clock speed) ═══
+• LEAD (this session) does ONLY: Phase 0, selection + the fan-out plan,
+  spawning one fresh ISSUE CONDUCTOR per selected issue, the serial merge
+  lock (step 8), teardown (step 9), and the final report. Per-issue working
+  state never enters its context.
+• ISSUE CONDUCTOR — one FRESH `general-purpose` subagent PER ISSUE, never
+  reused across issues. It runs steps 1–7 in its own context: spawns the
+  implementer (isolation:"worktree"), fresh reviewer(s) every cycle, and
+  fix workers; owns the FINDINGS LEDGER and arbitration (a genuine PRD gap
+  still escalates — never arbitrated); follows the same working method as
+  every subagent (plan → advisor → revise → act). Its packet: the issue
+  (number/title/labels/body verbatim), the working-method block, THE LOOP
+  steps 1–7, and the binding-sources list. It ends by returning ONLY a
+  compact ISSUE REPORT — outcome (READY-TO-MERGE + PR URL + reviewed
+  handoff SHA / ESCALATED / OPEN-PR + reason), cycles used, findings
+  fixed/no-op/overruled/open, verdicts, Verify summary (actual exit
+  codes), worktree path — no narrative, no diffs, no handoff bodies.
+  If the harness rejects the conductor's own Agent calls (nested
+  delegation unavailable), it reports that immediately and the LEAD runs
+  steps 1–7 flat for that issue instead — the conductor never implements
+  or reviews inside its own context (independence is structural).
+• FAN OUT everything independent; serialize only what correctness demands:
+  — spawn ALL eligible non-conflicting conductors at once (one message,
+    background) per MULTIPLE ISSUES — never drip-feed;
+  — area + safety reviewers of the same cycle spawn CONCURRENTLY in one
+    message (independent by design; their findings union into the ledger);
+  — Phase 0's gh/git checks run in parallel.
+  Serial by necessity: merges (one at a time, step 8), fix workers within
+  one issue (same worktree — one per cycle, upheld findings batched into
+  it), and any second issue touching `contracts/`+`gen/`.
+• Post-PR loops (CI failure, unmergeable) route back to the SAME conductor
+  via SendMessage — its context still holds the issue; a fresh agent would
+  re-learn it from scratch. Only reviewers are always fresh, never the
+  conductor.
+
+═══ THE LOOP (per issue #N — steps 1–7 run INSIDE that issue's fresh
+CONDUCTOR: one fresh worktree, one branch fix/<N>-<slug>, max 3 fix
+cycles; steps 8–9 belong to the LEAD) ═══
 
  1. RECORD — post one comment on the issue: "Automated fix attempt <n> —
     branch `fix/<N>-<slug>`" (increment `<n>` by counting prior attempt
@@ -172,7 +215,9 @@ fix/<N>-<slug>, max 3 fix cycles) ═══
     narrative, never "passing" for a skipped or truncated command.
 
  3. REVIEW — spawn a FRESH reviewer subagent EVERY cycle (never reuse one — a
-    reviewer re-checking its own findings rubber-stamps):
+    reviewer re-checking its own findings rubber-stamps); when the safety
+    review is also due, spawn BOTH reviewers concurrently in one message —
+    they are independent, and their findings union into the ledger:
     • AREA review: `area_code_reviewer`, packet naming the matching charter
       file under .claude/agents/ (the §8 crosswalk row for the issue's area,
       or the file-path fallback above; a cross-area diff routes to the
@@ -197,13 +242,13 @@ fix/<N>-<slug>, max 3 fix cycles) ═══
     blockers separated from optional follow-ups. PASS requires reproduced
     passing evidence.
 
- 4. FINDINGS LEDGER + ARBITRATION — the LEAD owns a per-issue ledger:
+ 4. FINDINGS LEDGER + ARBITRATION — the CONDUCTOR owns its issue's ledger:
       {id, finding, cycleRaised, severity, disposition:
         open | fixed(sha) | no-op(already satisfied) | overruled(reason)}.
     Before dispatching fixes: the fix worker VERIFIES each finding against
     current code first — already satisfied → no-op (don't churn); wrong /
-    conflicts with a decided fork or the PRD → reasoned pushback to the LEAD,
-    who arbitrates: uphold (fix) or overrule (record reason; the next fresh
+    conflicts with a decided fork or the PRD → reasoned pushback to the
+    CONDUCTOR, who arbitrates: uphold (fix) or overrule (record reason; the next fresh
     reviewer sees the overruling and may not re-raise without NEW evidence).
     A genuine PRD gap or product choice is NEVER arbitrated here — stop the
     loop for this issue and escalate to the product owner: apply the
@@ -247,12 +292,16 @@ fix/<N>-<slug>, max 3 fix cycles) ═══
     • `gh pr create --repo mhosseinab/market-ops --base main
       --head fix/<N>-<slug> --title "fix: <issue title> (#<N>)" --body
       <handoff summary + Verify evidence + review verdicts + "Closes #<N>">`.
-    • Comment the PR link back onto the issue, then proceed to step 8 —
+    • Comment the PR link back onto the issue, then END the conductor's
+      turn: return the ISSUE REPORT with outcome READY-TO-MERGE (PR URL +
+      reviewed handoff SHA + worktree path). Step 8 belongs to the LEAD —
       the review verdicts ARE the merge decision; CI is the last tripwire,
       not a second human gate.
 
- 8. AUTO-MERGE (gate = every required verdict PASS on the exact PR head
-    SHA + green CI; anything less leaves the PR open, never merged.
+ 8. AUTO-MERGE — LEAD only, serially: the MERGE LOCK. Process READY-TO-
+    MERGE reports one at a time in completion order (gate = every required
+    verdict PASS on the exact PR head SHA + green CI; anything less leaves
+    the PR open, never merged.
     `main` carries no branch protection, so `gh pr merge` would happily
     merge past red or pending checks — the waiting below IS the gate;
     never skip it, never use `--auto` as a substitute):
@@ -271,16 +320,19 @@ fix/<N>-<slug>, max 3 fix cycles) ═══
       history Conventional-Commits-clean). "Closes #<N>" auto-closes the
       issue; comment the merge SHA on it.
     • CI FAILS → a blocking finding CI caught after local Verify passed.
-      Fix cycles remaining → feed the failing check output into step 5
-      (fix worker in the SAME worktree → fresh review per step 3 → push
-      the new reviewed SHA, updating the PR in place → back to this
-      step). Cap exhausted or ratchet tripped → step 6 ESCALATION, PR
-      left open with the failing check output in the comment.
+      Fix cycles remaining → SendMessage the issue's conductor with the
+      failing check output; it runs step 5 (fix worker in the SAME
+      worktree → fresh review per step 3 → push the new reviewed SHA,
+      updating the PR in place) and reports the new SHA → back to this
+      step. Cap exhausted or ratchet tripped → the conductor runs step 6
+      ESCALATION, PR left open with the failing check output in the
+      comment.
     • UNMERGEABLE (behind/conflicting with a just-merged sibling) → same
-      route as CI failure: fix worker rebases onto current `main` in the
-      same worktree, full Verify re-run, fresh review, push the new
-      reviewed SHA. A conflict-free rebase with green Verify does not
-      consume a fix cycle; a conflicted one does.
+      route as CI failure: SendMessage the conductor; its fix worker
+      rebases onto current `main` in the same worktree, full Verify
+      re-run, fresh review, push the new reviewed SHA. A conflict-free
+      rebase with green Verify does not consume a fix cycle; a
+      conflicted one does.
     • Merge refused by branch protection or merge queue (if ever
       enabled) → NEVER bypass (`--admin` is forbidden); OPEN-PR: comment
       why, report it as awaiting the human.
@@ -295,8 +347,9 @@ fix/<N>-<slug>, max 3 fix cycles) ═══
       local clone with the merge GitHub already recorded, so later
       issues in this run base-verify against post-merge `main`.
 
- 9. TEAR DOWN — once the issue reaches its terminal state for this run
-    (MERGED, or OPEN-PR per step 8):
+ 9. TEAR DOWN (LEAD, using the worktree path from the ISSUE REPORT) —
+    once the issue reaches its terminal state for this run (MERGED, or
+    OPEN-PR per step 8):
       git worktree remove <path> --force  ·  git worktree prune
     Escalated issues keep their worktree, flagged. If removal fails twice,
     report the leftover path rather than leaving it silently.
@@ -328,14 +381,19 @@ fix/<N>-<slug>, max 3 fix cycles) ═══
   frontmatter), ledger entries are claims to verify.
 • The 3-cycle cap is a budget, not a target — escalating at cycle 1 on a
   genuine disagreement beats grinding to cycle 3.
-• The LEAD reads no diffs/logs itself — subagents report, the LEAD records,
-  arbitrates, opens the PR, and keeps its context clean.
+• Context hygiene is structural, two tiers deep: one FRESH conductor per
+  issue, never reused across issues; all per-issue state (ledger, handoff
+  blocks, review transcripts, diffs, logs) lives inside that conductor and
+  dies with it. The LEAD reads no diffs/logs/handoffs — it sees only
+  compact ISSUE REPORTs, holds the merge lock, and spends its own context
+  solely on selection, scheduling, merging, and the final report.
 • NO LEFTOVER WORKTREES: before the final report, `git worktree list` must
   account for every entry — escalated (flagged) or removed, never an orphan.
 
 ═══ REPORT ═══
 Start by showing: selected issue(s) + why, and the loop plan — then proceed.
-End with, per issue: #N · title · branch · outcome — MERGED (PR URL + merge
+End with, per issue (assembled from its conductor's ISSUE REPORT, never
+from raw logs): #N · title · branch · outcome — MERGED (PR URL + merge
 SHA) / OPEN-PR (URL + reason: CI timeout, branch protection, SHA drift) /
 ESCALATED (`blocked-step` applied, comment posted) · cycles used (0–3) ·
 findings fixed / no-op / overruled / open · verdicts (area / safety if run) ·
