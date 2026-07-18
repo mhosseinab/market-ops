@@ -58,6 +58,9 @@ type gatewayServer struct {
 	draft DraftService
 	// briefing backs GET /briefing (CHAT-010). Nil ⇒ the route fails closed.
 	briefing BriefingService
+	// notify backs the /notifications routes (NOT-001). Nil ⇒ those routes fail
+	// closed with a structured error when it is absent.
+	notify NotifyService
 	// gatewayToken is the read/Draft-only machine credential (LLM_GATEWAY_TOKEN).
 	// It is what the middleware matches to authorize the machine principal on the
 	// Draft-only routes and its read envelope (perm.GatewayCan). Empty ⇒ no machine

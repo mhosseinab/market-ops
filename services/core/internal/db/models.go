@@ -45,6 +45,22 @@ type ActionExecution struct {
 	UpdatedAt       time.Time
 }
 
+type AnalyticsEvent struct {
+	ID                      uuid.UUID
+	OrganizationID          uuid.UUID
+	MarketplaceAccountID    uuid.UUID
+	EntityID                uuid.UUID
+	Locale                  string
+	Region                  string
+	CurrencyContractVersion string
+	SourceSurface           string
+	OccurredAt              time.Time
+	Family                  string
+	Name                    string
+	Attributes              []byte
+	CreatedAt               time.Time
+}
+
 type ApprovalCard struct {
 	ID                   uuid.UUID
 	RecommendationID     uuid.UUID
@@ -362,6 +378,36 @@ type MaterialityThreshold struct {
 	EffectiveFrom        time.Time
 	CreatedBy            pgtype.UUID
 	CreatedAt            time.Time
+}
+
+type Notification struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	EventID              uuid.UUID
+	DedupKey             string
+	Category             string
+	Severity             string
+	BypassDigest         bool
+	TitleKey             string
+	BodyKey              string
+	BodyParams           []byte
+	CreatedAt            time.Time
+	ReadAt               pgtype.Timestamptz
+}
+
+type NotificationDigest struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	BusinessDay          pgtype.Date
+	GeneratedAt          time.Time
+	ItemCount            int32
+}
+
+type NotificationDigestItem struct {
+	ID             uuid.UUID
+	DigestID       uuid.UUID
+	NotificationID uuid.UUID
+	EventID        uuid.UUID
 }
 
 type Observation struct {

@@ -784,6 +784,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the in-app notifications for an account (NOT-001).
+         * @description Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001). Each item carries the SHARED product event id — the same id the daily email digest references, so a notification is one event on two surfaces, never two. Items reference locale catalog KEYS with named slots (LOC-002); the surface renders copy, the core stores none. This is a read.
+         */
+        get: operations["listNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/notifications/ack": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Acknowledge (mark read) one in-app notification.
+         * @description Marks one in-app notification read (PRD §7.5). read_at is a BOUNDED read-state projection advanced by a FROM-guarded update — the notification row itself is append-only, never overwritten. Acknowledgement is idempotent: acking an already-read or foreign notification is a no-op (changed=false), never an error and never a duplicate write.
+         */
+        post: operations["ackNotification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1897,6 +1937,49 @@ export interface components {
             eventId: string;
             eventType: string;
             severity: string;
+        };
+        /** @description The in-app notification feed for an account (NOT-001), newest first, with the current unread count for the badge. */
+        NotificationFeed: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: int64 */
+            unreadCount: number;
+            notifications: components["schemas"]["Notification"][];
+        };
+        /** @description One in-app notification. `eventId` is the SHARED product event id — the same id the daily email digest references (NOT-001). `titleKey`/`bodyKey` are locale catalog KEYS with named slots in `bodyParams` (LOC-002); the surface renders copy, the core stores none. `readAt` is absent when unread. */
+        Notification: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            eventId: string;
+            /** @enum {string} */
+            category: "market_event" | "execution_failure" | "safety_failure";
+            /** @enum {string} */
+            severity: "info" | "warning" | "critical";
+            /** @description True for execution/safety failures — delivered immediately, bypassing the batched daily digest, and never shed. */
+            bypassDigest: boolean;
+            titleKey: string;
+            bodyKey: string;
+            bodyParams: {
+                [key: string]: string;
+            };
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            readAt?: string;
+        };
+        /** @description Acknowledge (mark read) one notification for an account. */
+        NotificationAckRequest: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: uuid */
+            notificationId: string;
+        };
+        /** @description The idempotent acknowledgement result. `changed` is false when the notification was already read or not owned by the account (a no-op). */
+        NotificationAckResult: {
+            /** Format: uuid */
+            notificationId: string;
+            changed: boolean;
         };
     };
     responses: never;
@@ -3186,6 +3269,71 @@ export interface operations {
                 };
             };
             /** @description Unexpected error (including no briefing for that day). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listNotifications: {
+        parameters: {
+            query: {
+                /** @description Marketplace account whose notification feed is requested. */
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The in-app notification feed with the unread count. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationFeed"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    ackNotification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NotificationAckRequest"];
+            };
+        };
+        responses: {
+            /** @description Acknowledgement result (idempotent). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotificationAckResult"];
+                };
+            };
+            /** @description Unexpected error. */
             default: {
                 headers: {
                     [name: string]: unknown;

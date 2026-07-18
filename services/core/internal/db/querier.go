@@ -68,6 +68,7 @@ type Querier interface {
 	CostProfileAt(ctx context.Context, arg CostProfileAtParams) ([]CostProfile, error)
 	// Test/introspection helper: how many ACTIVE targets an identity still owns.
 	CountActiveTargetsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error)
+	CountAnalyticsEventsByFamily(ctx context.Context, arg CountAnalyticsEventsByFamilyParams) (int64, error)
 	CountCatalogSnapshots(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	// Reconciliation: owned offers not observed by the given run are drift (missing
 	// from the latest full fetch). Reported, never silently deleted.
@@ -80,6 +81,7 @@ type Querier interface {
 	CountProducts(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountRecommendationInvalidationsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error)
 	CountSelectionSetMembers(ctx context.Context, selectionSetID uuid.UUID) (int64, error)
+	CountUnreadNotifications(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountVariants(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
 	CreateCostImportBatch(ctx context.Context, arg CreateCostImportBatchParams) (CostImportBatch, error)
@@ -128,6 +130,14 @@ type Querier interface {
 	DeleteSession(ctx context.Context, tokenHash string) error
 	// Revoke every session for a user (role change / password rotation).
 	DeleteSessionsForUser(ctx context.Context, userID uuid.UUID) error
+	// Notification queries (PRD §7.5 NOT-001). notifications, notification_digests,
+	// and notification_digest_items are APPEND-ONLY (INSERT/SELECT); the sole mutable
+	// column is notifications.read_at, advanced by ONE FROM-guarded UPDATE below.
+	// Delivers one in-app notification (NOT-001). ON CONFLICT DO NOTHING on the
+	// (marketplace_account_id, dedup_key) key: a duplicate delivery inserts nothing
+	// and returns NO row, so duplicate delivery can NEVER create a duplicate product
+	// event. The caller treats pgx.ErrNoRows as "already delivered" (idempotent).
+	DeliverNotification(ctx context.Context, arg DeliverNotificationParams) (Notification, error)
 	// Sever the connection and purge sealed tokens (ACC-001). Idempotent.
 	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
 	DisengageAccountKillSwitch(ctx context.Context, accountID pgtype.UUID) error
@@ -181,6 +191,11 @@ type Querier interface {
 	// The greatest-version row for a lineage (the current recommendation).
 	GetCurrentRecommendation(ctx context.Context, lineageID uuid.UUID) (Recommendation, error)
 	GetCurrentSelectionSet(ctx context.Context, lineageID uuid.UUID) (SelectionSet, error)
+	GetDigestByAccountDay(ctx context.Context, arg GetDigestByAccountDayParams) (NotificationDigest, error)
+	// The digest recipient for an account: the organization's owner user email,
+	// falling back to the earliest user when no owner role exists. Returns no row when
+	// the organization has no users (the digest is then unsendable — fail closed).
+	GetDigestRecipientEmail(ctx context.Context, id uuid.UUID) (string, error)
 	GetEvent(ctx context.Context, id uuid.UUID) (MarketEvent, error)
 	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
@@ -195,6 +210,9 @@ type Querier interface {
 	// for (account, category, event_type). This is the version a detector fires
 	// against and stores on the event, so the trigger is reproducible.
 	GetMaterialityThresholdAsOf(ctx context.Context, arg GetMaterialityThresholdAsOfParams) (MaterialityThreshold, error)
+	// Reads the existing notification for a dedup key (used to return the SAME row on
+	// an idempotent re-delivery so both surfaces reference the SAME event id).
+	GetNotificationByDedup(ctx context.Context, arg GetNotificationByDedupParams) (Notification, error)
 	GetObservationTarget(ctx context.Context, id uuid.UUID) (ObservationTarget, error)
 	GetObservedOffer(ctx context.Context, arg GetObservedOfferParams) (ObservedOffer, error)
 	GetOpenEventByDedupKey(ctx context.Context, dedupKey string) (MarketEvent, error)
@@ -218,6 +236,11 @@ type Querier interface {
 	// when the caller only has the variant id (e.g. the readiness read endpoint).
 	GetVariantAccountID(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
 	GetWriteVerification(ctx context.Context, marketplaceAccountID uuid.UUID) (AccountWriteVerification, error)
+	// Analytics event queries (PRD §18). analytics_events is APPEND-ONLY: INSERT and
+	// SELECT only — there is deliberately NO UPDATE/DELETE query. Every insert carries
+	// the FULL §18 envelope; the columns are NOT NULL, so a missing field cannot be
+	// persisted (envelope completeness is structural).
+	InsertAnalyticsEvent(ctx context.Context, arg InsertAnalyticsEventParams) (AnalyticsEvent, error)
 	// Approval card queries (PRD §7.5 APR-001, §8.4 state machine). Write discipline:
 	//   * approval_cards is APPEND-ONLY within a lineage (a price edit is a new
 	//     version). The `state` column is a CURRENT-state projection advanced by a
@@ -243,6 +266,13 @@ type Querier interface {
 	// this (variant, component); the UNIQUE (variant, component, version) constraint
 	// makes a concurrent double-insert fail closed rather than silently collide.
 	InsertCostProfileVersion(ctx context.Context, arg InsertCostProfileVersionParams) (CostProfile, error)
+	// Opens the once-per-business-day digest header. ON CONFLICT DO NOTHING makes the
+	// River digest job idempotent per business day: a retry inserts nothing and
+	// returns no row (no duplicate digest, no duplicate send).
+	InsertDigest(ctx context.Context, arg InsertDigestParams) (NotificationDigest, error)
+	// Appends one notification (with its SHARED event id) to a digest's membership
+	// snapshot. APPEND-ONLY.
+	InsertDigestItem(ctx context.Context, arg InsertDigestItemParams) (NotificationDigestItem, error)
 	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
 	// INSERT; there is deliberately no UPDATE/DELETE query.
 	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)
@@ -305,6 +335,8 @@ type Querier interface {
 	// a reopened identity stops being fetched. Ordered by account then native id so
 	// per-account planning/capping is a simple contiguous group.
 	ListActiveTargetsByTier(ctx context.Context, tier string) ([]ObservationTarget, error)
+	// Events of one family for an account, newest first (dashboard/read path).
+	ListAnalyticsEventsByFamily(ctx context.Context, arg ListAnalyticsEventsByFamilyParams) ([]AnalyticsEvent, error)
 	// The append-only lifecycle history for a card, in occurrence order (AUD-001).
 	ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) ([]ApprovalCardState, error)
 	// The complete append-only audit trail for an action, in occurrence order. This
@@ -331,6 +363,8 @@ type Querier interface {
 	// Full version history for one (variant, component), newest first — the versioned
 	// cost-profile list the product-detail screen renders.
 	ListCostProfileVersions(ctx context.Context, arg ListCostProfileVersionsParams) ([]CostProfile, error)
+	// The membership of one digest, in insertion order (the shared event ids).
+	ListDigestItems(ctx context.Context, digestID uuid.UUID) ([]NotificationDigestItem, error)
 	// Load every engaged switch so the observer can evaluate the layered stop in
 	// process (global OR account OR target). Ordered global-first so the most
 	// sweeping stop is visible at the head.
@@ -357,6 +391,8 @@ type Querier interface {
 	// variant/product so the row carries SKU (supplier_code), variant + product title,
 	// and the native-id evidence a reviewer needs to confirm/reject/defer.
 	ListNeedsReviewQueue(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListNeedsReviewQueueRow, error)
+	// The in-app notification feed for an account, newest first.
+	ListNotifications(ctx context.Context, marketplaceAccountID uuid.UUID) ([]Notification, error)
 	ListObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservationTarget, error)
 	// Append-only evidence, newest first (bounded by the caller).
 	ListObservationsByTarget(ctx context.Context, arg ListObservationsByTargetParams) ([]Observation, error)
@@ -367,6 +403,11 @@ type Querier interface {
 	// exposed. Newest evidence first gives a stable base order.
 	ListOpenEvents(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketEvent, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
+	// The notifications eligible for the batched daily digest for one account and
+	// business day: NOT bypass_digest (execution/safety failures bypass the digest and
+	// were delivered immediately) and created within the business-day window. Oldest
+	// first so the digest reads in occurrence order. Shared event ids flow through.
+	ListPendingDigestNotifications(ctx context.Context, arg ListPendingDigestNotificationsParams) ([]Notification, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)
@@ -388,6 +429,11 @@ type Querier interface {
 	// current-data gate — that decision is in the domain). Closed offers are left as
 	// Unavailable. Evidence rows are untouched (append-only).
 	MarkExpiredObservedOffersStale(ctx context.Context, arg MarkExpiredObservedOffersStaleParams) (int64, error)
+	// FROM-guarded read-state projection: only an UNREAD row owned by the account is
+	// marked read; an already-read or foreign row matches nothing and returns no row
+	// (the service treats that as an idempotent no-op — never a blind overwrite). This
+	// is the ONLY UPDATE on the append-only notification store.
+	MarkNotificationRead(ctx context.Context, arg MarkNotificationReadParams) (Notification, error)
 	// §16 "Routes disagree → Conflicted; block". A newer disagreeing value must NOT
 	// silently overwrite the current offer: the price/availability of record are LEFT
 	// INTACT and only the quality is set to 'conflicted' (which blocks recommend and

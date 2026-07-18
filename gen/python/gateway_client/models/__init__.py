@@ -83,6 +83,13 @@ from .market_product_identity_state import MarketProductIdentityState
 from .money_amount import MoneyAmount
 from .needs_review_item import NeedsReviewItem
 from .needs_review_queue import NeedsReviewQueue
+from .notification import Notification
+from .notification_ack_request import NotificationAckRequest
+from .notification_ack_result import NotificationAckResult
+from .notification_body_params import NotificationBodyParams
+from .notification_category import NotificationCategory
+from .notification_feed import NotificationFeed
+from .notification_severity import NotificationSeverity
 from .observation import Observation
 from .observation_list import ObservationList
 from .observation_route import ObservationRoute
@@ -204,6 +211,13 @@ __all__ = (
     "MoneyAmount",
     "NeedsReviewItem",
     "NeedsReviewQueue",
+    "Notification",
+    "NotificationAckRequest",
+    "NotificationAckResult",
+    "NotificationBodyParams",
+    "NotificationCategory",
+    "NotificationFeed",
+    "NotificationSeverity",
     "Observation",
     "ObservationList",
     "ObservationRoute",

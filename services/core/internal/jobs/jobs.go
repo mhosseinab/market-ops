@@ -44,6 +44,10 @@ type ExecutionRunners struct {
 	// day per account, generated from the Today ranking). A nil runner registers a
 	// no-op worker (fail closed).
 	BriefingGenerate RunOnceFunc
+	// DigestGenerate is the NOT-001 daily email-digest fan-out (once per business
+	// day per account, batching the day's non-bypass notifications). A nil runner
+	// registers a no-op worker (fail closed).
+	DigestGenerate RunOnceFunc
 }
 
 // NewWorkers builds the worker registry for the core binary. Every worker the
@@ -62,6 +66,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewBriefingWorker(runners.BriefingGenerate, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register briefing worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewDigestWorker(runners.DigestGenerate, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register digest worker: %w", err)
 	}
 	return workers, nil
 }
@@ -88,6 +95,16 @@ func periodicJobs() []*river.PeriodicJob {
 		river.NewPeriodicJob(
 			river.PeriodicInterval(time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return BriefingGenerateArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// Daily email digest (NOT-001). Runs hourly with RunOnStart; sending is
+		// idempotent per business day (unique account+business_day), so the first
+		// run each UTC day sends the digest and later runs are no-ops — "once per
+		// business day per account" without depending on a precise wake time.
+		// Execution/safety failures bypass this job (delivered immediately).
+		river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return DigestGenerateArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
 	}

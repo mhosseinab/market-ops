@@ -504,19 +504,19 @@ func (e EventRelevanceKind) Valid() bool {
 
 // Defines values for EventSeverity.
 const (
-	Critical EventSeverity = "critical"
-	Info     EventSeverity = "info"
-	Warning  EventSeverity = "warning"
+	EventSeverityCritical EventSeverity = "critical"
+	EventSeverityInfo     EventSeverity = "info"
+	EventSeverityWarning  EventSeverity = "warning"
 )
 
 // Valid indicates whether the value is a known member of the EventSeverity enum.
 func (e EventSeverity) Valid() bool {
 	switch e {
-	case Critical:
+	case EventSeverityCritical:
 		return true
-	case Info:
+	case EventSeverityInfo:
 		return true
-	case Warning:
+	case EventSeverityWarning:
 		return true
 	default:
 		return false
@@ -691,6 +691,48 @@ func (e MarketProductIdentityState) Valid() bool {
 	case MarketProductIdentityStateObsolete:
 		return true
 	case MarketProductIdentityStateRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotificationCategory.
+const (
+	NotificationCategoryExecutionFailure NotificationCategory = "execution_failure"
+	NotificationCategoryMarketEvent      NotificationCategory = "market_event"
+	NotificationCategorySafetyFailure    NotificationCategory = "safety_failure"
+)
+
+// Valid indicates whether the value is a known member of the NotificationCategory enum.
+func (e NotificationCategory) Valid() bool {
+	switch e {
+	case NotificationCategoryExecutionFailure:
+		return true
+	case NotificationCategoryMarketEvent:
+		return true
+	case NotificationCategorySafetyFailure:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for NotificationSeverity.
+const (
+	NotificationSeverityCritical NotificationSeverity = "critical"
+	NotificationSeverityInfo     NotificationSeverity = "info"
+	NotificationSeverityWarning  NotificationSeverity = "warning"
+)
+
+// Valid indicates whether the value is a known member of the NotificationSeverity enum.
+func (e NotificationSeverity) Valid() bool {
+	switch e {
+	case NotificationSeverityCritical:
+		return true
+	case NotificationSeverityInfo:
+		return true
+	case NotificationSeverityWarning:
 		return true
 	default:
 		return false
@@ -1726,6 +1768,47 @@ type NeedsReviewQueue struct {
 	Items []NeedsReviewItem `json:"items"`
 }
 
+// Notification One in-app notification. `eventId` is the SHARED product event id — the same id the daily email digest references (NOT-001). `titleKey`/`bodyKey` are locale catalog KEYS with named slots in `bodyParams` (LOC-002); the surface renders copy, the core stores none. `readAt` is absent when unread.
+type Notification struct {
+	BodyKey    string            `json:"bodyKey"`
+	BodyParams map[string]string `json:"bodyParams"`
+
+	// BypassDigest True for execution/safety failures — delivered immediately, bypassing the batched daily digest, and never shed.
+	BypassDigest bool                 `json:"bypassDigest"`
+	Category     NotificationCategory `json:"category"`
+	CreatedAt    time.Time            `json:"createdAt"`
+	EventId      openapi_types.UUID   `json:"eventId"`
+	Id           openapi_types.UUID   `json:"id"`
+	ReadAt       *time.Time           `json:"readAt,omitempty"`
+	Severity     NotificationSeverity `json:"severity"`
+	TitleKey     string               `json:"titleKey"`
+}
+
+// NotificationCategory defines model for Notification.Category.
+type NotificationCategory string
+
+// NotificationSeverity defines model for Notification.Severity.
+type NotificationSeverity string
+
+// NotificationAckRequest Acknowledge (mark read) one notification for an account.
+type NotificationAckRequest struct {
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	NotificationId       openapi_types.UUID `json:"notificationId"`
+}
+
+// NotificationAckResult The idempotent acknowledgement result. `changed` is false when the notification was already read or not owned by the account (a no-op).
+type NotificationAckResult struct {
+	Changed        bool               `json:"changed"`
+	NotificationId openapi_types.UUID `json:"notificationId"`
+}
+
+// NotificationFeed The in-app notification feed for an account (NOT-001), newest first, with the current unread count for the badge.
+type NotificationFeed struct {
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	Notifications        []Notification     `json:"notifications"`
+	UnreadCount          int64              `json:"unreadCount"`
+}
+
 // Observation One append-only observation evidence row (PRD §7.3 OBS-002). Carries the full evidence envelope; historical rows never silently become current.
 type Observation struct {
 	// AvailabilityStatus Normalized availability (docs/11, §16). `unavailable` is the DISTINCT temporary-out state; `disappeared` is the permanent close (offer gone, closed with an end time, never a zero price).
@@ -2167,6 +2250,12 @@ type ListNeedsReviewParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
+// ListNotificationsParams defines parameters for ListNotifications.
+type ListNotificationsParams struct {
+	// MarketplaceAccountId Marketplace account whose notification feed is requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
 // ListObservationsParams defines parameters for ListObservations.
 type ListObservationsParams struct {
 	// TargetId The observation target whose evidence is requested.
@@ -2255,6 +2344,9 @@ type DeferIdentityJSONRequestBody = IdentityDecisionRequest
 
 // RejectIdentityJSONRequestBody defines body for RejectIdentity for application/json ContentType.
 type RejectIdentityJSONRequestBody = IdentityDecisionRequest
+
+// AckNotificationJSONRequestBody defines body for AckNotification for application/json ContentType.
+type AckNotificationJSONRequestBody = NotificationAckRequest
 
 // UploadCaptureJSONRequestBody defines body for UploadCapture for application/json ContentType.
 type UploadCaptureJSONRequestBody = CaptureUpload
@@ -2360,6 +2452,12 @@ type ServerInterface interface {
 	// RejectIdentity Reject a Needs Review candidate.
 	// (POST /identity/reject)
 	RejectIdentity(w http.ResponseWriter, r *http.Request)
+	// ListNotifications List the in-app notifications for an account (NOT-001).
+	// (GET /notifications)
+	ListNotifications(w http.ResponseWriter, r *http.Request, params ListNotificationsParams)
+	// AckNotification Acknowledge (mark read) one in-app notification.
+	// (POST /notifications/ack)
+	AckNotification(w http.ResponseWriter, r *http.Request)
 	// UploadCapture Upload an extension (Route B) observation capture.
 	// (POST /observation/capture)
 	UploadCapture(w http.ResponseWriter, r *http.Request)
@@ -3056,6 +3154,53 @@ func (siw *ServerInterfaceWrapper) RejectIdentity(w http.ResponseWriter, r *http
 	handler.ServeHTTP(w, r)
 }
 
+// ListNotifications operation middleware
+func (siw *ServerInterfaceWrapper) ListNotifications(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListNotificationsParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListNotifications(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AckNotification operation middleware
+func (siw *ServerInterfaceWrapper) AckNotification(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AckNotification(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // UploadCapture operation middleware
 func (siw *ServerInterfaceWrapper) UploadCapture(w http.ResponseWriter, r *http.Request) {
 
@@ -3421,6 +3566,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/chat/cards/selection-set-draft", wrapper.CreateSelectionSetDraft)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/chat/cards/level2-proposal", wrapper.CreateLevel2Proposal)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/briefing", wrapper.GetBriefing)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notifications", wrapper.ListNotifications)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notifications/ack", wrapper.AckNotification)
 
 	return m
 }
@@ -4735,6 +4882,84 @@ func (response RejectIdentitydefaultJSONResponse) VisitRejectIdentityResponse(w 
 	return err
 }
 
+type ListNotificationsRequestObject struct {
+	Params ListNotificationsParams
+}
+
+type ListNotificationsResponseObject interface {
+	VisitListNotificationsResponse(w http.ResponseWriter) error
+}
+
+type ListNotifications200JSONResponse NotificationFeed
+
+func (response ListNotifications200JSONResponse) VisitListNotificationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListNotificationsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListNotificationsdefaultJSONResponse) VisitListNotificationsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AckNotificationRequestObject struct {
+	Body *AckNotificationJSONRequestBody
+}
+
+type AckNotificationResponseObject interface {
+	VisitAckNotificationResponse(w http.ResponseWriter) error
+}
+
+type AckNotification200JSONResponse NotificationAckResult
+
+func (response AckNotification200JSONResponse) VisitAckNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AckNotificationdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response AckNotificationdefaultJSONResponse) VisitAckNotificationResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type UploadCaptureRequestObject struct {
 	Body *UploadCaptureJSONRequestBody
 }
@@ -5106,6 +5331,12 @@ type StrictServerInterface interface {
 	// RejectIdentity Reject a Needs Review candidate.
 	// (POST /identity/reject)
 	RejectIdentity(ctx context.Context, request RejectIdentityRequestObject) (RejectIdentityResponseObject, error)
+	// ListNotifications List the in-app notifications for an account (NOT-001).
+	// (GET /notifications)
+	ListNotifications(ctx context.Context, request ListNotificationsRequestObject) (ListNotificationsResponseObject, error)
+	// AckNotification Acknowledge (mark read) one in-app notification.
+	// (POST /notifications/ack)
+	AckNotification(ctx context.Context, request AckNotificationRequestObject) (AckNotificationResponseObject, error)
 	// UploadCapture Upload an extension (Route B) observation capture.
 	// (POST /observation/capture)
 	UploadCapture(ctx context.Context, request UploadCaptureRequestObject) (UploadCaptureResponseObject, error)
@@ -6082,6 +6313,63 @@ func (sh *strictHandler) RejectIdentity(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RejectIdentityResponseObject); ok {
 		if err := validResponse.VisitRejectIdentityResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListNotifications operation middleware
+func (sh *strictHandler) ListNotifications(w http.ResponseWriter, r *http.Request, params ListNotificationsParams) {
+	var request ListNotificationsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListNotifications(ctx, request.(ListNotificationsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListNotifications")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListNotificationsResponseObject); ok {
+		if err := validResponse.VisitListNotificationsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AckNotification operation middleware
+func (sh *strictHandler) AckNotification(w http.ResponseWriter, r *http.Request) {
+	var request AckNotificationRequestObject
+
+	var body AckNotificationJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AckNotification(ctx, request.(AckNotificationRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AckNotification")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AckNotificationResponseObject); ok {
+		if err := validResponse.VisitAckNotificationResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

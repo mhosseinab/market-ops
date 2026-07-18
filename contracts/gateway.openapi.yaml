@@ -1394,6 +1394,72 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags:
+        - notification
+      summary: List the in-app notifications for an account (NOT-001).
+      description: >-
+        Returns the account's in-app notification feed, newest first (PRD §7.5
+        NOT-001). Each item carries the SHARED product event id — the same id the
+        daily email digest references, so a notification is one event on two
+        surfaces, never two. Items reference locale catalog KEYS with named slots
+        (LOC-002); the surface renders copy, the core stores none. This is a read.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          description: Marketplace account whose notification feed is requested.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The in-app notification feed with the unread count.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationFeed'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /notifications/ack:
+    post:
+      operationId: ackNotification
+      tags:
+        - notification
+      summary: Acknowledge (mark read) one in-app notification.
+      description: >-
+        Marks one in-app notification read (PRD §7.5). read_at is a BOUNDED
+        read-state projection advanced by a FROM-guarded update — the notification
+        row itself is append-only, never overwritten. Acknowledgement is
+        idempotent: acking an already-read or foreign notification is a no-op
+        (changed=false), never an error and never a duplicate write.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificationAckRequest'
+      responses:
+        '200':
+          description: Acknowledgement result (idempotent).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationAckResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -3877,4 +3943,108 @@ components:
           type: string
         severity:
           type: string
+      additionalProperties: false
+
+    NotificationFeed:
+      type: object
+      description: >-
+        The in-app notification feed for an account (NOT-001), newest first, with
+        the current unread count for the badge.
+      required:
+        - marketplaceAccountId
+        - unreadCount
+        - notifications
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        unreadCount:
+          type: integer
+          format: int64
+        notifications:
+          type: array
+          items:
+            $ref: '#/components/schemas/Notification'
+      additionalProperties: false
+
+    Notification:
+      type: object
+      description: >-
+        One in-app notification. `eventId` is the SHARED product event id — the
+        same id the daily email digest references (NOT-001). `titleKey`/`bodyKey`
+        are locale catalog KEYS with named slots in `bodyParams` (LOC-002); the
+        surface renders copy, the core stores none. `readAt` is absent when unread.
+      required:
+        - id
+        - eventId
+        - category
+        - severity
+        - bypassDigest
+        - titleKey
+        - bodyKey
+        - bodyParams
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        eventId:
+          type: string
+          format: uuid
+        category:
+          type: string
+          enum: [market_event, execution_failure, safety_failure]
+        severity:
+          type: string
+          enum: [info, warning, critical]
+        bypassDigest:
+          type: boolean
+          description: >-
+            True for execution/safety failures — delivered immediately, bypassing
+            the batched daily digest, and never shed.
+        titleKey:
+          type: string
+        bodyKey:
+          type: string
+        bodyParams:
+          type: object
+          additionalProperties:
+            type: string
+        createdAt:
+          type: string
+          format: date-time
+        readAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    NotificationAckRequest:
+      type: object
+      description: Acknowledge (mark read) one notification for an account.
+      required:
+        - marketplaceAccountId
+        - notificationId
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        notificationId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    NotificationAckResult:
+      type: object
+      description: >-
+        The idempotent acknowledgement result. `changed` is false when the
+        notification was already read or not owned by the account (a no-op).
+      required:
+        - notificationId
+        - changed
+      properties:
+        notificationId:
+          type: string
+          format: uuid
+        changed:
+          type: boolean
       additionalProperties: false
