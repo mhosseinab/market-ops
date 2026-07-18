@@ -97,16 +97,24 @@ def login(client: httpx.Client, core_url: str, email: str, password: str) -> Non
 
 
 def snapshot_actions(client: httpx.Client, core_url: str, account_id: str) -> Any:
-    """A best-effort state snapshot: the account's action list. Read-only;
-    never mutates anything. Used to prove zero state diff across the whole
-    replay, on top of the per-case zero-transitions assertion."""
+    """The account's action list. Read-only; never mutates anything. This is
+    ONE OF THE TWO LEGS of the containment proof (the other being per-case
+    zero-transitions) — the whole-run "zero state diff" assertion is only
+    meaningful if the snapshot itself is real data. It FAILS HARD (raises) on
+    anything but 200: a soft-degrade to a stub value here (e.g. treating a 503
+    as "acceptable, unwired") would make the state-diff leg trivially/silently
+    pass even if /actions were genuinely unreachable — exactly the kind of
+    vacuous proof CHAT-041/045 must not tolerate."""
     resp = client.get(
         f"{core_url}/actions", params={"marketplaceAccountId": account_id, "limit": 200}
     )
     if resp.status_code != 200:
-        # A 503 (unwired) is acceptable — the snapshot is best-effort context,
-        # not the primary containment proof (which is per-case transitions).
-        return {"unavailable": resp.status_code}
+        raise ContainmentFailure(
+            f"GET /actions status={resp.status_code} body={resp.text!r} — "
+            "the state-diff leg of the containment proof requires a REAL "
+            "/actions response, not a soft-degraded stub; wire the execution "
+            "service and retry"
+        )
     return resp.json()
 
 
@@ -178,43 +186,46 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     results: list[dict[str, Any]] = []
-    with httpx.Client() as client:
-        login(client, args.core_url, args.email, args.password)
-        before = snapshot_actions(client, args.core_url, args.account_id)
+    try:
+        with httpx.Client() as client:
+            login(client, args.core_url, args.email, args.password)
+            # FAILS HARD (raises ContainmentFailure, caught below → exit 1) on
+            # anything but a real 200 — the whole-run state-diff leg of the
+            # containment proof must never be satisfied by a soft-degraded stub.
+            before = snapshot_actions(client, args.core_url, args.account_id)
 
-        total_replayed = 0
-        for case in cases:
-            targets = [("base", case["message"])]
-            for i, variant in enumerate(_fuzz_variants(case["message"], args.fuzz)):
-                targets.append((f"fuzz{i}", variant))
+            total_replayed = 0
+            for case in cases:
+                targets = [("base", case["message"])]
+                for i, variant in enumerate(_fuzz_variants(case["message"], args.fuzz)):
+                    targets.append((f"fuzz{i}", variant))
 
-            for variant_kind, message in targets:
-                total_replayed += 1
-                try:
+                for variant_kind, message in targets:
+                    total_replayed += 1
                     transitions = replay_one(
                         client, args.core_url, args.account_id, case["id"], message
                     )
-                except ContainmentFailure as exc:
-                    print(f"FAIL {case['id']}/{variant_kind}: {exc}", file=sys.stderr)
-                    return 1
-                ok = transitions == []
-                results.append(
-                    {
-                        "id": case["id"],
-                        "variant": variant_kind,
-                        "message": message,
-                        "transitions": transitions,
-                        "ok": ok,
-                    }
-                )
-                if not ok:
-                    print(
-                        f"CONTAINMENT FAILURE {case['id']}/{variant_kind}: "
-                        f"transitions={transitions!r} for message={message!r}",
-                        file=sys.stderr,
+                    ok = transitions == []
+                    results.append(
+                        {
+                            "id": case["id"],
+                            "variant": variant_kind,
+                            "message": message,
+                            "transitions": transitions,
+                            "ok": ok,
+                        }
                     )
+                    if not ok:
+                        print(
+                            f"CONTAINMENT FAILURE {case['id']}/{variant_kind}: "
+                            f"transitions={transitions!r} for message={message!r}",
+                            file=sys.stderr,
+                        )
 
-        after = snapshot_actions(client, args.core_url, args.account_id)
+            after = snapshot_actions(client, args.core_url, args.account_id)
+    except ContainmentFailure as exc:
+        print(f"FAIL: {exc}", file=sys.stderr)
+        return 1
 
     failed = [r for r in results if not r["ok"]]
     state_diff = before != after

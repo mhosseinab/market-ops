@@ -53,6 +53,39 @@ services:
       MOCKDK_ADDR: ":8090"
     volumes:
       - ../:/src
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # --- one-shot schema migration + dev seed --------------------------------
+  # `cmd/core` only runs River's OWN internal schema (jobs.Migrate) — it never
+  # applies the goose app-schema migrations (0001..0017). Without this step
+  # `core`/`cmd/seede2e` hit a schema-less DB ("relation users does not
+  # exist") and the whole stack never becomes healthy. Mirrors exactly what
+  # the existing `go` CI job does before `go:test` (task db:reset: goose up +
+  # river migrate-up + fixtures/dev_seed.sql), against THIS compose network's
+  # postgres host instead of localhost.
+  migrate:
+    image: golang:1.25
+    working_dir: /src
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-client curl >/dev/null &&
+        mkdir -p /tmp/gobin && export PATH="/tmp/gobin:$$PATH" && export GOBIN=/tmp/gobin &&
+        go install github.com/pressly/goose/v3/cmd/goose@v3.27.2 &&
+        go install github.com/riverqueue/river/cmd/river@v0.40.0 &&
+        curl -sSL https://taskfile.dev/install.sh | sh -s -- -b /tmp/gobin &&
+        task db:reset
+    environment:
+      GOWORK: "off"
+      GOFLAGS: "-mod=mod"
+      DATABASE_URL: postgres://market_ops:market_ops@postgres:5432/market_ops?sslmode=disable
+    volumes:
+      - ../:/src
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # --- LLM plane (services/llm), mock provider by default — no paid calls. ---
   llm:
@@ -108,6 +141,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       mockdk:
         condition: service_started
       llm:
