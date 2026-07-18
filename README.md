@@ -236,18 +236,73 @@ Useful local endpoints:
 | Spotlight | `http://localhost:8969` |
 | Mock DK Seller API | `http://localhost:8090` |
 
+### Run everything (web SPA + core + LLM plane)
+
+```sh
+task up
+```
+
+This is the one-command local startup path. It starts infrastructure, applies non-destructive migrations and fixtures, creates stable dev-only secrets under `tmp/`, builds the Go core, and starts the mock-provider LLM plane, core, and Vite SPA. Vite proxies same-origin `/api` requests to the core and bootstraps the seeded owner’s development session after the first 401. No `.env`, manual exports, `task dev`, `task db:reset`, or browser-console login is required.
+
+Open `http://localhost:5173` after the ready message. Ctrl-C stops the three application processes and leaves the reusable infrastructure running. Logs are in `tmp/up-{llm,core,web}.log`; the generated local owner password is in `tmp/dev-owner-password` with mode `0600`.
+
 ### Build and verify
 
 ```sh
-task build:all
-task test:all
-task lint:all
-task ci:local
+task build:all    # contracts first, then Go + Python + TypeScript
+task test:all     # all three language suites in parallel
+task lint:all     # linters + money static guard in parallel
+task ci:local     # full pre-merge gate (the above + drift + migrate:verify + pseudoloc + obs:validate)
+task test:integration   # cross-plane stack vs offline DK mock (needs Docker)
 ```
 
 `task ci:local` is the pre-merge gate: contract drift, linters, all language tests, migration reversibility, TypeScript builds, pseudo-localization, and observability validation. `task test:integration` runs the real cross-plane stack against the offline DK mock and requires Docker.
 
-Run `task --list` for focused Go, Python, TypeScript, contract, database, and observability commands.
+### Command reference
+
+`task --list` is authoritative. The grouped reference below covers every task in this repo.
+
+| Group | Command | What it does |
+|---|---|---|
+| **Stack** | `task up` | Initialize and run the full local stack without manual environment setup |
+| | `task dev` | Bring up Postgres 18 + mockdk + otel/grafana/loki/tempo/mailpit/spotlight |
+| | `task test:integration` | Run the S32 cross-plane suite (compose stack; needs Docker) |
+| **Bootstrap** | `task doctor` | Verify every required toolchain binary is installed |
+| | `task setup` | Fresh-clone bootstrap: pnpm + uv + go.work + generated contracts |
+| **Build / test / lint** | `task build:all` | Generate contracts, then build every language plane |
+| | `task test:all` | Run all Go, Python, and TypeScript suites in parallel |
+| | `task lint:all` | Run all linters + money static guard in parallel |
+| | `task ci:local` | Full pre-merge CI gate, in CI order |
+| **Go core** | `task go:init` | Create the local, gitignored `go.work` if absent |
+| | `task go:sync` | Sync the Go workspace modules |
+| | `task go:build` | Build the core binary to `services/core/bin/core` |
+| | `task go:test` | Run Go tests with the race detector |
+| | `task go:lint` | golangci-lint per module with `GOWORK=off` |
+| | `task go:tidy` | `go mod tidy`; fail if `go.mod`/`go.sum` change |
+| **Python LLM plane** | `task py:build` | Build the LLM-plane wheel |
+| | `task py:test` | Run the pytest suite |
+| | `task py:lint` | Ruff + strict mypy |
+| | `task py:fmt` | Format with Ruff |
+| **TypeScript surfaces** | `task ts:dev` | Start the Vite dev server for `apps/web` (`:5173`) |
+| | `task ts:build` | Build the web app + extension |
+| | `task ts:test` | Run Vitest across all pnpm workspace packages |
+| | `task ts:lint` | Type-check every workspace package + Biome |
+| | `task ts:fmt` | Format with Biome |
+| | `task ts:copylint` | Reject inline user-facing copy / Persian text in UI components |
+| | `task ts:pseudoloc` | Copy-lint + pseudo-localization gate (LOC-011) |
+| **Contracts / codegen** | `task contracts:generate` | Regenerate every committed client + server artifact |
+| | `task contracts:drift` | Regenerate and fail if `contracts/` or `gen/` change |
+| | `task contracts:gen:go` | Generate Go gateway server types + strict-server stubs |
+| | `task contracts:gen:dkgo` | Generate the DK Seller Go client |
+| | `task contracts:gen:python` | Generate the Python gateway client |
+| | `task contracts:gen:ts` | Generate TypeScript schema types |
+| **Database** | `task db:reset` | Drop + recreate dev DB, goose up, River migrate, seed fixtures |
+| | `task migrate:verify` | Prove migration reversibility (goose up → reset → up) |
+| **Money / observability** | `task lint:money` | semgrep guard: ban raw arithmetic + float on money paths |
+| | `task obs:dashboards` | Regenerate §18 Grafana dashboard JSON from its source |
+| | `task obs:validate` | Validate dashboards + alert rules + runbook refs offline |
+
+For running individual services without `task up`, see the per-plane tasks above (`task ts:dev`, `task go:build`, `task py:build`) — the LLM plane runs directly via `uv run uvicorn llm.asgi:app` from `services/llm`. The MV3 extension has no dev server; it builds to a load-unpacked bundle (`task ts:build`).
 
 ## Safety model
 
@@ -271,6 +326,7 @@ The binding invariants and contribution rules are in [`CLAUDE.md`](CLAUDE.md).
 | [`design/IA_AND_COMPONENTS.md`](design/IA_AND_COMPONENTS.md) | Routes, deep links, chat contexts, and shared component contracts |
 | [`docs/DK Marketplace - Open API Service.yml`](docs/DK%20Marketplace%20-%20Open%20API%20Service.yml) | Frozen authenticated DK Seller API source |
 | [`docs/DK-public-research-result/`](docs/DK-public-research-result/) | Public API, Route C, selector, normalization, extension, and compliance evidence |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | Local deployment, configuration, artifacts, extension installation, production readiness, rollout, and rollback |
 | [`runbooks/`](runbooks/README.md) | Connector, observation, parser, reconciliation, and LLM outage recovery |
 
 Project-wide contribution rules, code-generation triggers, test discipline, and production-operation gates are defined in [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md).

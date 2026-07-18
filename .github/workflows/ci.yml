@@ -37,6 +37,7 @@ jobs:
       py: ${{ steps.filter.outputs.py }}
       ts: ${{ steps.filter.outputs.ts }}
       deploy: ${{ steps.filter.outputs.deploy }}
+      workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,24 +49,65 @@ jobs:
             contracts:
               - 'contracts/**'
               - 'docs/DK Marketplace - Open API Service.yml'
+              - 'Taskfile.yml'
+              - 'Taskfile.contracts.yml'
+              - '.github/workflows/**'
             go:
               - 'services/core/**'
               - 'gen/go/**'
               - 'gen/dkgo/**'
               - 'contracts/**'
+              - 'Taskfile.yml'
+              - 'Taskfile.go.yml'
+              - 'tools/dev/**'
+              - '.golangci.yml'
+              - 'tools/semgrep/**'
+              - '.github/workflows/**'
             py:
               - 'services/llm/**'
               - 'gen/python/**'
               - 'contracts/**'
+              - 'Taskfile.yml'
+              - 'Taskfile.py.yml'
+              - 'tools/dev/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.github/workflows/**'
             ts:
               - 'apps/**'
               - 'packages/**'
               - 'gen/ts/**'
               - 'contracts/**'
+              - 'Taskfile.yml'
+              - 'Taskfile.ts.yml'
+              - 'tools/dev/**'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'biome.json'
+              - '.github/workflows/**'
             deploy:
               - 'deploy/**'
               - 'runbooks/**'
               - 'tools/obs/**'
+              - 'Taskfile.yml'
+              - '.github/workflows/**'
+            workflow:
+              - '.github/workflows/**'
+
+  workflow-lint:
+    name: workflow syntax and expressions
+    needs: detect
+    if: ${{ needs.detect.outputs.workflow == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: services/core/go.mod
+          cache: false
+      - name: actionlint
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
   contracts:
     name: contracts drift
@@ -289,6 +331,8 @@ jobs:
           node-version: '22'
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: verify clean-environment task up defaults
+        run: bash tools/dev/up_test.sh
       # biome + per-member typecheck, then vitest, then the web + extension builds.
       - run: task ts:lint
       - run: task ts:test

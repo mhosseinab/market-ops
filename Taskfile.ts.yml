@@ -20,12 +20,25 @@ tasks:
       - pnpm biome check --write .
 
   build:
-    desc: Build the web app and extension.
+    desc: Build the web app and extension and reject dev-only production bundle content.
     cmds:
       # --if-present so the task is a no-op green on scaffold members that have no
       # build script yet (web/extension build scripts land in their own steps) and
       # picks up each real build automatically as it arrives.
       - pnpm -r --if-present build
+      - pnpm --filter @market-ops/web assert:prod-clean
+      - pnpm --filter @market-ops/extension assert:prod-clean
+
+  dev:
+    desc: >-
+      Start the Vite dev server for the web SPA (apps/web). Serves on
+      http://localhost:5173. The SPA reads VITE_GATEWAY_BASE_URL (default `/api`)
+      and talks to the Go core gateway over cookie-auth — no direct LLM-plane
+      access. Vite proxies `/api` to the local core on :8080 and strips the
+      prefix, matching the Caddy topology. The MV3 extension has no dev server;
+      it builds to a load-unpacked bundle.
+    cmds:
+      - pnpm --filter @market-ops/web dev
 
   copylint:
     desc: >-

@@ -17,7 +17,7 @@ tasks:
     cmds:
       - |
         missing=0
-        for tool in node pnpm uv go golangci-lint semgrep oapi-codegen goose sqlc river docker jq; do
+        for tool in node pnpm uv go golangci-lint semgrep oapi-codegen goose sqlc river docker jq curl openssl; do
           if ! command -v "$tool" >/dev/null 2>&1; then
             echo "MISSING: $tool"
             missing=1
@@ -64,6 +64,17 @@ tasks:
         {{.COMPOSE}} logs postgres >&2
         exit 1
 
+  up:
+    desc: >-
+      Bring up local infrastructure, apply idempotent migrations and fixtures,
+      generate stable dev-only credentials under tmp/, then run the LLM plane,
+      Go core, and Vite SPA with a same-origin /api proxy. No .env file or manual
+      exports required; an existing .env is treated as optional overrides.
+      Foreground; Ctrl-C stops application processes and leaves infrastructure up.
+    silent: true
+    cmds:
+      - bash tools/dev/up.sh
+
   build:all:
     desc: Build every plane (contracts first, then each language).
     cmds:
@@ -78,6 +89,8 @@ tasks:
       - go:test
       - py:test
       - ts:test
+    cmds:
+      - bash tools/dev/up_test.sh
 
   lint:all:
     desc: Run every language linter in parallel.

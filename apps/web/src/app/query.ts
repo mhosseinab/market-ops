@@ -19,9 +19,35 @@ export const queryClient = new QueryClient({
 // cookie-authenticated gateway — the browser never learns the LLM plane exists.
 export const GATEWAY_BASE_URL: string = import.meta.env.VITE_GATEWAY_BASE_URL ?? "/api";
 
+let devSessionBootstrap: Promise<boolean> | null = null;
+
+async function ensureDevSession(): Promise<boolean> {
+  if (devSessionBootstrap === null) {
+    devSessionBootstrap = globalThis
+      .fetch(`${GATEWAY_BASE_URL}/dev/session`, {
+        method: "POST",
+        credentials: "same-origin",
+      })
+      .then((response) => response.ok)
+      .catch(() => false)
+      .finally(() => {
+        devSessionBootstrap = null;
+      });
+  }
+  return devSessionBootstrap;
+}
+
+async function fetchGateway(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const retryInput = input instanceof Request ? input.clone() : input;
+  const response = await globalThis.fetch(input, init);
+  if (!import.meta.env.DEV || response.status !== 401) return response;
+  if (!(await ensureDevSession())) return response;
+  return globalThis.fetch(retryInput, init);
+}
+
 export const gateway: GatewayClient = createGatewayClient({
   baseUrl: GATEWAY_BASE_URL,
   // Late-bind `fetch` instead of capturing it at module load, so a runtime swap
   // of `globalThis.fetch` (e.g. the MSW test server) is honored by the singleton.
-  fetch: (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init),
+  fetch: fetchGateway,
 });
