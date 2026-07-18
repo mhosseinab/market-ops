@@ -397,6 +397,57 @@ func (q *Queries) ListAwaitingRecommendOnlyForVariant(ctx context.Context, varia
 	return items, nil
 }
 
+const listPendingReconciliationByAccount = `-- name: ListPendingReconciliationByAccount :many
+SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ac.marketplace_account_id = $1 AND ae.external_state = 'pending_reconciliation'
+ORDER BY ae.created_at
+LIMIT $2
+`
+
+type ListPendingReconciliationByAccountParams struct {
+	MarketplaceAccountID uuid.UUID
+	Limit                int32
+}
+
+// The account's action_executions still in pending_reconciliation (PD-3 item 8,
+// S37 Operations queue) — an unknown external write result that must resolve
+// before any retry (EXE-003, never inferred). Scoped via the bound
+// approval_cards row (action_executions carries no account column of its own).
+func (q *Queries) ListPendingReconciliationByAccount(ctx context.Context, arg ListPendingReconciliationByAccountParams) ([]ActionExecution, error) {
+	rows, err := q.db.Query(ctx, listPendingReconciliationByAccount, arg.MarketplaceAccountID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActionExecution{}
+	for rows.Next() {
+		var i ActionExecution
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.ActionID,
+			&i.IdempotencyKey,
+			&i.Mode,
+			&i.ExternalState,
+			&i.ExternalRef,
+			&i.RequestPayload,
+			&i.ResponsePayload,
+			&i.ReconciledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const reconcileActionExecution = `-- name: ReconcileActionExecution :one
 UPDATE action_executions
 SET external_state = $2,

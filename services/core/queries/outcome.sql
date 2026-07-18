@@ -31,3 +31,23 @@ RETURNING *;
 
 -- name: GetOutcomeResult :one
 SELECT * FROM outcome_results WHERE window_id = $1;
+
+-- name: ListOutcomeWindowsByAccount :many
+-- The account's outcome windows (PD-3 item 5, S37), newest first, with the
+-- §15.3 result/confidence when the window has closed (absent otherwise — never
+-- a fabricated Not Measurable before the window actually closes). Scoped via
+-- the window's bound approval_cards row (outcome_windows carries no account
+-- column of its own).
+SELECT
+    w.action_id      AS action_id,
+    w.card_id        AS card_id,
+    w.opened_at      AS opened_at,
+    w.closes_at      AS closes_at,
+    r.result         AS result,
+    r.confidence     AS confidence
+FROM outcome_windows w
+JOIN approval_cards ac ON ac.id = w.card_id
+LEFT JOIN outcome_results r ON r.window_id = w.id
+WHERE ac.marketplace_account_id = $1
+ORDER BY w.opened_at DESC
+LIMIT $2;

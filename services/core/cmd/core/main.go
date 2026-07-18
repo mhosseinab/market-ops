@@ -26,6 +26,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
 	"github.com/mhosseinab/market-ops/services/core/internal/execution"
+	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
 	"github.com/mhosseinab/market-ops/services/core/internal/httpapi"
 	"github.com/mhosseinab/market-ops/services/core/internal/jobs"
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
@@ -35,6 +36,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
 	"github.com/mhosseinab/market-ops/services/core/internal/pairing"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
+	"github.com/mhosseinab/market-ops/services/core/internal/watchlist"
 )
 
 // Build identity, injected at build time via -ldflags; defaults keep the binary
@@ -167,6 +169,13 @@ func run() error {
 		serverOpts = append(serverOpts, httpapi.WithDraft(recSvc))
 		serverOpts = append(serverOpts, httpapi.WithGatewayToken(cfg.LLMGatewayToken))
 		logger.Info("approval + Draft-only service wired")
+
+		// Wire the S37 consolidated PD-3 guardrail + EXT-007 watchlist services.
+		// Guardrail writes are Owner-only (L3) with an atomic AUD-001 audit
+		// append; watchlist adds are server-cap-enforced and audited the same way.
+		serverOpts = append(serverOpts, httpapi.WithGuardrail(guardrail.NewService(pool)))
+		serverOpts = append(serverOpts, httpapi.WithWatchlist(watchlist.NewService(pool)))
+		logger.Info("guardrail + watchlist services wired")
 
 		// Wire the daily briefing (CHAT-010): stored once-per-business-day, served
 		// from the SAME Today ranking so its event ids/order equal the feed.

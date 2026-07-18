@@ -111,6 +111,68 @@ func (q *Queries) ListClosableOutcomeWindows(ctx context.Context, closesAt time.
 	return items, nil
 }
 
+const listOutcomeWindowsByAccount = `-- name: ListOutcomeWindowsByAccount :many
+SELECT
+    w.action_id      AS action_id,
+    w.card_id        AS card_id,
+    w.opened_at      AS opened_at,
+    w.closes_at      AS closes_at,
+    r.result         AS result,
+    r.confidence     AS confidence
+FROM outcome_windows w
+JOIN approval_cards ac ON ac.id = w.card_id
+LEFT JOIN outcome_results r ON r.window_id = w.id
+WHERE ac.marketplace_account_id = $1
+ORDER BY w.opened_at DESC
+LIMIT $2
+`
+
+type ListOutcomeWindowsByAccountParams struct {
+	MarketplaceAccountID uuid.UUID
+	Limit                int32
+}
+
+type ListOutcomeWindowsByAccountRow struct {
+	ActionID   uuid.UUID
+	CardID     pgtype.UUID
+	OpenedAt   time.Time
+	ClosesAt   time.Time
+	Result     pgtype.Text
+	Confidence pgtype.Text
+}
+
+// The account's outcome windows (PD-3 item 5, S37), newest first, with the
+// §15.3 result/confidence when the window has closed (absent otherwise — never
+// a fabricated Not Measurable before the window actually closes). Scoped via
+// the window's bound approval_cards row (outcome_windows carries no account
+// column of its own).
+func (q *Queries) ListOutcomeWindowsByAccount(ctx context.Context, arg ListOutcomeWindowsByAccountParams) ([]ListOutcomeWindowsByAccountRow, error) {
+	rows, err := q.db.Query(ctx, listOutcomeWindowsByAccount, arg.MarketplaceAccountID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOutcomeWindowsByAccountRow{}
+	for rows.Next() {
+		var i ListOutcomeWindowsByAccountRow
+		if err := rows.Scan(
+			&i.ActionID,
+			&i.CardID,
+			&i.OpenedAt,
+			&i.ClosesAt,
+			&i.Result,
+			&i.Confidence,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const openOutcomeWindow = `-- name: OpenOutcomeWindow :one
 
 INSERT INTO outcome_windows (action_id, card_id, opened_at, closes_at)

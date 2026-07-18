@@ -116,6 +116,18 @@ JOIN LATERAL (
 ) cur ON true
 WHERE base.id = $1;
 
+-- name: ListPendingReconciliationByAccount :many
+-- The account's action_executions still in pending_reconciliation (PD-3 item 8,
+-- S37 Operations queue) — an unknown external write result that must resolve
+-- before any retry (EXE-003, never inferred). Scoped via the bound
+-- approval_cards row (action_executions carries no account column of its own).
+SELECT ae.*
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ac.marketplace_account_id = $1 AND ae.external_state = 'pending_reconciliation'
+ORDER BY ae.created_at
+LIMIT $2;
+
 -- name: GetWriteVerification :one
 SELECT * FROM account_write_verification WHERE marketplace_account_id = $1;
 

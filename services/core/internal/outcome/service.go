@@ -112,6 +112,18 @@ func (s *Service) ListClosable(ctx context.Context) ([]db.OutcomeWindow, error) 
 	return db.New(s.pool).ListClosableOutcomeWindows(ctx, s.now())
 }
 
+// ListByAccount returns the account's outcome windows, newest first, with the
+// §15.3 result/confidence when computed (PD-3 item 5, S37 read).
+func (s *Service) ListByAccount(ctx context.Context, account uuid.UUID, limit int32) ([]db.ListOutcomeWindowsByAccountRow, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	return db.New(s.pool).ListOutcomeWindowsByAccount(ctx, db.ListOutcomeWindowsByAccountParams{
+		MarketplaceAccountID: account,
+		Limit:                limit,
+	})
+}
+
 func optionalUUID(id uuid.UUID) pgtype.UUID {
 	if id == uuid.Nil {
 		return pgtype.UUID{}

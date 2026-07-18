@@ -1560,6 +1560,420 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /recommendations/detail:
+    get:
+      operationId: getRecommendationDetail
+      tags:
+        - recommendation
+      summary: Get one recommendation's full PRC-001 record + contribution breakdown (S37).
+      description: >-
+        Returns the complete PRC-001 record for a single, persisted recommendation
+        version: objective, current/proposed price, the contribution breakdown
+        (§9.2 deductions — present-or-unavailable-with-reason, never fabricated),
+        the allowed range, evidence quality, readiness, assumptions, and blockers
+        (PRC-002, in policy order). This is the consolidated read PD-3 items 1/3
+        (dk-p0-product-decisions.md) — the same PRC-001-complete payload the
+        approval card is minted from. It is a read; it never advances state or
+        mints a control.
+      parameters:
+        - name: recommendationId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The recommendation's full detail record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationDetail'
+        default:
+          description: Unexpected error (including an unknown recommendation).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /approvals/card/edit-price:
+    post:
+      operationId: editApprovalCardPrice
+      tags:
+        - approval
+      summary: Edit an approval card's proposed price before confirmation (CHAT-044, PD-3 item 2).
+      description: >-
+        Mints a NEW card version with a NEW parameter version and a fresh
+        control-eligible Draft state (approval.Card.EditPrice) — the price is
+        NEVER mutated in place, and the prior control (if any) is thereby
+        invalidated (its parameter version no longer matches). This is
+        write-adjacent but reversible: L2 price.edit, Owner + Operator only. The
+        read/Draft-only LLM machine credential can never reach this endpoint
+        (§12.3) — it is deliberately neither an L1 read nor a Draft-only action.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EditApprovalCardPriceRequest'
+      responses:
+        '200':
+          description: The newly minted Draft card carrying the edited price.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApprovalCardView'
+        default:
+          description: Unexpected error (including an unknown card).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /selection-sets/preview:
+    post:
+      operationId: previewSelectionSet
+      tags:
+        - selection
+      summary: Build a bulk selection-set preview with a SERVER-MINTED version (PD-3 item 4).
+      description: >-
+        The screens-native bulk preview (as distinct from the chat
+        draft.selection_set compile path). The request carries NO version field —
+        the SERVER is the sole authority that mints the selection-set version
+        (recommendation.CreateSelectionSet's append-only "next version per
+        lineage" numbering); a client can never present or influence it. This is
+        the hard S35/S37 safety precondition for bulk execution: any later bulk
+        confirmation binds to EXACTLY this server-minted version, and any set
+        change mints a new one, invalidating a stale bound confirmation
+        (CHAT-051/052). Omitting `lineageId` starts a NEW lineage; supplying an
+        existing one mints the next version within it (a refreshed preview). Each
+        member's disposition is resolved SERVER-SIDE from its current, persisted
+        recommendation — never taken from the client. L2 selection.bulk_preview,
+        Owner + Operator only; the machine gateway credential can never reach it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelectionSetPreviewRequest'
+      responses:
+        '200':
+          description: The server-minted selection-set preview.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelectionSetPreviewResult'
+        default:
+          description: Unexpected error (including an unknown member recommendation).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /actions:
+    get:
+      operationId: listActions
+      tags:
+        - action
+      summary: List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
+      description: >-
+        Returns the account's approval cards (one row per action, current
+        version), newest first, optionally filtered by §8.4 state — the grouped
+        multi-row queue the Actions screen needs beyond the single deep-linked
+        card read (GET /approvals/card). This is a read; it never advances state.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: state
+          in: query
+          required: false
+          description: Optional §8.4 state filter.
+          schema:
+            $ref: '#/components/schemas/ApprovalState'
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+      responses:
+        '200':
+          description: The account's action queue.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /outcomes/list:
+    get:
+      operationId: listOutcomes
+      tags:
+        - outcome
+      summary: List an account's outcome windows and results (OUT-001, PD-3 item 5).
+      description: >-
+        Returns the account's OUT-001 outcome windows, newest first, with their
+        §15.3 result and confidence once closed (absent while the window is
+        still open — never a fabricated Not Measurable before it is actually
+        computed). This is a read.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+      responses:
+        '200':
+          description: The account's outcome windows.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutcomeList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /guardrails:
+    get:
+      operationId: getGuardrails
+      tags:
+        - economics
+      summary: Read an account's L3 commercial guardrails (PD-3 item 6).
+      description: >-
+        Returns the account's persisted L3 commercial guardrails (contribution
+        floor, movement cap, cooldown, strategy enablement). Reading is L1, every
+        role. Absent (never configured) is a structured 404, never a fabricated
+        default.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's current guardrail settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardrailConfigView'
+        default:
+          description: Unexpected error (including no guardrails configured yet).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: setGuardrails
+      tags:
+        - economics
+      summary: Write an account's L3 commercial guardrails, Owner only (PD-3 item 6).
+      description: >-
+        Sets the account's L3 commercial guardrails. Owner ONLY
+        (guardrail.write) — Operator and Internal are denied, and the
+        read/Draft-only LLM machine credential can never reach this endpoint
+        (§12.3, "guardrail-write is never an LLM-plane tool"). Every write
+        appends an append-only AUD-001 audit record ATOMICALLY with the mutation,
+        on the SAME transaction: the write never commits without its audit row.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GuardrailWriteRequest'
+      responses:
+        '200':
+          description: The updated guardrail settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GuardrailConfigView'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /users:
+    get:
+      operationId: listUsers
+      tags:
+        - session
+      summary: List the organization's user roster (PD-3 item 7).
+      description: >-
+        Returns every user in the caller's organization (id, email, role,
+        created_at) — the roster the Settings screen needs beyond the current
+        session principal (GET /auth/me). Reading is L1, every role; adding or
+        changing a user's role stays the existing L3 guardrail.manage_users
+        write path (unaffected by this read).
+      responses:
+        '200':
+          description: The organization's user roster.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /ops/queues:
+    get:
+      operationId: getOperationsQueues
+      tags:
+        - organization
+      summary: Aggregated Operations screen queues (PD-3 item 8).
+      description: >-
+        Returns the Operations screen's aggregated queues: pending-reconciliation
+        actions (EXE-003, an unresolved external write awaiting resolution —
+        never retried, never inferred). The parser/schema-drift queue (§10.4
+        Route C parser-drift events) is NOT YET backed by a persisted store; it
+        reports `available: false` with an explicit reason rather than a
+        fabricated empty success — closing it is a named follow-up on the Route C
+        observer plane (go_connector_observer), not improvised here. Off-ladder
+        operational read: Owner + Internal only, never Operator, never the
+        machine gateway principal.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's aggregated operations queues.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationsQueues'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /market/conflicts:
+    get:
+      operationId: listMarketConflicts
+      tags:
+        - observation
+      summary: List cross-route conflicted Observed Offers (Market conflict banner, PD-3 item 8).
+      description: >-
+        Returns the account's Observed Offers currently in the `conflicted`
+        quality state (§16 "routes disagree → Conflicted; block") — the values
+        the Market screen's conflict banner surfaces. The underlying price of
+        record is left intact (never zeroed, never silently overwritten); only
+        the quality state blocks recommend/execute (§10.3 matrix). This is a
+        read, same L1 read.observations posture as the other observation reads.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's currently conflicted Observed Offers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservedOfferList'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /watchlist:
+    get:
+      operationId: listWatchlist
+      tags:
+        - product
+      summary: List an account's priority watchlist (EXT-007).
+      description: >-
+        Returns the account's priority watchlist entries, newest first. This is
+        a read; adding an entry is the separate POST below.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The account's watchlist.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistView'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+    post:
+      operationId: addWatchlistEntry
+      tags:
+        - product
+      summary: Add a Confirmed owned product to the priority watchlist (EXT-007).
+      description: >-
+        Adds one Confirmed owned product (CAT-002 Confirmed Market Product
+        Identity) to the account's priority watchlist. The SERVER enforces the
+        watchlist cap (PRD EXT-007 "Server enforces cap") — a request that would
+        exceed it is rejected, never silently truncated. Every accepted add
+        appends an append-only AUD-001 audit record ATOMICALLY with the insert,
+        on the SAME transaction (EXT-007 "change is audited"). L2
+        config.watchlist, Owner + Operator only.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WatchlistAddRequest'
+      responses:
+        '200':
+          description: The watchlist entry (idempotent on a duplicate variant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WatchlistEntry'
+        default:
+          description: Unexpected error (including cap exceeded or an unconfirmed variant).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -1898,8 +2312,12 @@ components:
           description: >-
             The final typed response envelope on a `final` frame. Its internal
             shape (category-separated content, evidence, freshness) is owned and
-            validated inside the LLM plane (§12.2) and lands with the response
-            contract step; the gateway relays it verbatim.
+            validated inside the LLM plane (§12.2). UNCHANGED in S37: narrowing
+            this field to the new ChatEnvelope schema (below) is a breaking
+            change for the S29 web consumer's current view-model
+            (`{sections, evidence}`) and needs FE coordination outside this
+            step's delegation boundary — see the S37 PD-3 addendum note on
+            ChatEnvelope. The gateway relays this verbatim.
           additionalProperties: true
         failure:
           $ref: '#/components/schemas/ChatFailure'
@@ -4225,3 +4643,628 @@ components:
         changed:
           type: boolean
       additionalProperties: false
+
+    # --- S37 consolidated PD-3 gateway endpoints -----------------------------
+    # (dk-p0-product-decisions.md PD-3 + addendum). Additive only: every schema
+    # below is new; no existing schema's required/removed shape changed except
+    # ChatStreamEvent.envelope, which was narrowed from an open `object` to this
+    # typed ChatEnvelope (a refinement of a field that previously accepted
+    # anything, not a removal).
+
+    RecommendationDetail:
+      type: object
+      description: >-
+        The full PRC-001 record for one persisted recommendation version,
+        including the §9.2 contribution breakdown (PD-3 items 1/3). Every
+        optional field is present-or-unavailable-with-reason — never a
+        fabricated value.
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - lineageId
+        - version
+        - objective
+        - currentPrice
+        - readiness
+        - evidenceQuality
+        - approvable
+        - simulation
+        - assumptions
+        - blockers
+        - contributionDeductions
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        lineageId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+        eventId:
+          type: string
+          format: uuid
+          description: The driving market event, when this recommendation is event-driven.
+        objective:
+          $ref: '#/components/schemas/PolicyObjective'
+        currentPrice:
+          $ref: '#/components/schemas/MoneyAmount'
+        proposedPrice:
+          $ref: '#/components/schemas/MoneyAmount'
+        currentContribution:
+          $ref: '#/components/schemas/MoneyAmount'
+        proposedContribution:
+          $ref: '#/components/schemas/MoneyAmount'
+        contributionDeductions:
+          type: array
+          description: >-
+            The §9.2 contribution breakdown (PRC-001 inputs) for the proposed
+            contribution — the SAME deductions persisted on the recommendation
+            row, decoded verbatim (never recomputed/fabricated at read time).
+          items:
+            $ref: '#/components/schemas/ContributionDeduction'
+        allowedRange:
+          $ref: '#/components/schemas/PolicyBoundary'
+        readiness:
+          $ref: '#/components/schemas/MarginReadinessState'
+        evidenceQuality:
+          $ref: '#/components/schemas/QualityState'
+        evidenceObservationId:
+          type: string
+          format: uuid
+        evidenceAsOf:
+          type: string
+          format: date-time
+        assumptions:
+          type: array
+          items:
+            type: string
+        blockers:
+          type: array
+          items:
+            $ref: '#/components/schemas/RecommendationBlocker'
+        approvable:
+          type: boolean
+        simulation:
+          type: boolean
+        expiresAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    RecommendationBlocker:
+      type: object
+      description: >-
+        One typed PRC-002 reason no approval control exists (in policy order).
+        The code is stable and machine-readable; the message carries no
+        authority (§8).
+      required:
+        - code
+        - message
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+      additionalProperties: false
+
+    EditApprovalCardPriceRequest:
+      type: object
+      description: The CHAT-044 price edit request.
+      required:
+        - cardId
+        - newPrice
+      properties:
+        cardId:
+          type: string
+          format: uuid
+        newPrice:
+          $ref: '#/components/schemas/MoneyAmount'
+      additionalProperties: false
+
+    SelectionSetDisposition:
+      type: string
+      description: A selection-set member's bulk disposition (CHAT-050).
+      enum:
+        - executable
+        - warning
+        - blocked
+
+    SelectionSetPreviewMemberInput:
+      type: object
+      description: >-
+        One candidate member for a bulk selection-set preview. The server
+        resolves the disposition from the NAMED recommendation's own persisted
+        state (approvable / blockers) — never from a client assertion.
+      required:
+        - variantId
+        - recommendationId
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    SelectionSetPreviewRequest:
+      type: object
+      description: >-
+        The screens-native bulk preview request (PD-3 item 4). Carries NO
+        version field by construction — the server is the sole authority that
+        mints the selection-set version.
+      required:
+        - marketplaceAccountId
+        - name
+        - members
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        lineageId:
+          type: string
+          format: uuid
+          description: >-
+            Existing selection-set lineage to mint the NEXT version within (a
+            refreshed preview). Omit to start a brand-new lineage.
+        name:
+          type: string
+          minLength: 1
+        criteria:
+          type: object
+          description: Deterministic query criteria the set was compiled from.
+          additionalProperties:
+            type: string
+        members:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SelectionSetPreviewMemberInput'
+      additionalProperties: false
+
+    SelectionSetMemberView:
+      type: object
+      required:
+        - variantId
+        - recommendationId
+        - disposition
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+        disposition:
+          $ref: '#/components/schemas/SelectionSetDisposition'
+      additionalProperties: false
+
+    SelectionSetPreviewResult:
+      type: object
+      description: >-
+        The server-minted selection-set preview (PD-3 item 4). `version` is
+        assigned ENTIRELY server-side (append-only "next version per lineage");
+        a subsequent bulk confirmation (POST /approvals/bulk/confirm) binds to
+        EXACTLY this lineage + version.
+      required:
+        - id
+        - lineageId
+        - version
+        - name
+        - memberCount
+        - members
+      properties:
+        id:
+          type: string
+          format: uuid
+        lineageId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+        name:
+          type: string
+        memberCount:
+          type: integer
+          format: int32
+        aggregateImpact:
+          $ref: '#/components/schemas/EventExposure'
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/SelectionSetMemberView'
+      additionalProperties: false
+
+    ActionSummary:
+      type: object
+      description: One row of the actions queue (PD-3 item 5) — an approval card, unexpanded.
+      required:
+        - id
+        - recommendationId
+        - version
+        - state
+        - price
+        - expiresAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+        version:
+          type: integer
+          format: int64
+        state:
+          $ref: '#/components/schemas/ApprovalState'
+        price:
+          $ref: '#/components/schemas/MoneyAmount'
+        idempotencyKey:
+          type: string
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ActionList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionSummary'
+      additionalProperties: false
+
+    OutcomeSummary:
+      type: object
+      description: One row of the outcomes queue (OUT-001, PD-3 item 5).
+      required:
+        - actionId
+        - openedAt
+        - closesAt
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        cardId:
+          type: string
+          format: uuid
+        openedAt:
+          type: string
+          format: date-time
+        closesAt:
+          type: string
+          format: date-time
+        result:
+          type: string
+          description: The §15.3 result, present only once the window has closed.
+          enum:
+            - positive
+            - negative
+            - neutral
+            - inconclusive
+            - not_measurable
+        confidence:
+          type: string
+          enum:
+            - high
+            - medium
+            - low
+      additionalProperties: false
+
+    OutcomeList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutcomeSummary'
+      additionalProperties: false
+
+    GuardrailSettings:
+      type: object
+      description: The L3 commercial guardrails (PD-3 item 6).
+      required:
+        - contributionFloor
+        - movementCapBasisPoints
+        - cooldownSeconds
+        - strategy
+        - strategyEnabled
+      properties:
+        contributionFloor:
+          $ref: '#/components/schemas/MoneyAmount'
+        movementCapBasisPoints:
+          type: integer
+          format: int64
+          description: Maximum price movement in basis points (§9.3 default 500).
+        cooldownSeconds:
+          type: integer
+          format: int64
+          description: Minimum interval between actions in seconds (§9.3 default 3600).
+        strategy:
+          $ref: '#/components/schemas/PolicyStrategy'
+        strategyEnabled:
+          type: boolean
+      additionalProperties: false
+
+    GuardrailConfigView:
+      type: object
+      required:
+        - marketplaceAccountId
+        - settings
+        - updatedAt
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        settings:
+          $ref: '#/components/schemas/GuardrailSettings'
+        updatedAt:
+          type: string
+          format: date-time
+        updatedBy:
+          type: string
+          description: The Owner actor id who last wrote these guardrails (AUD-001).
+      additionalProperties: false
+
+    GuardrailWriteRequest:
+      type: object
+      required:
+        - marketplaceAccountId
+        - settings
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        settings:
+          $ref: '#/components/schemas/GuardrailSettings'
+      additionalProperties: false
+
+    UserSummary:
+      type: object
+      required:
+        - id
+        - email
+        - role
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        email:
+          type: string
+        role:
+          $ref: '#/components/schemas/UserRole'
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    UserList:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UserSummary'
+      additionalProperties: false
+
+    PendingReconciliationAction:
+      type: object
+      description: One EXE-003 action awaiting reconciliation (an unknown external result).
+      required:
+        - actionId
+        - cardId
+        - idempotencyKey
+        - createdAt
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        cardId:
+          type: string
+          format: uuid
+        idempotencyKey:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    ParserDriftQueue:
+      type: object
+      description: >-
+        The Route C parser/schema-drift queue. NOT YET backed by a persisted
+        store (§10.4) — `available` is false with an explicit reason rather than
+        a fabricated empty success, per the screens-only-fallback /
+        unavailable-with-reason posture (PRC-001 optionality). Closing this is a
+        named follow-up on the Route C observer plane.
+      required:
+        - available
+        - items
+      properties:
+        available:
+          type: boolean
+        reason:
+          type: string
+        items:
+          type: array
+          items: {}
+      additionalProperties: false
+
+    OperationsQueues:
+      type: object
+      required:
+        - marketplaceAccountId
+        - pendingReconciliation
+        - parserDrift
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        pendingReconciliation:
+          type: array
+          items:
+            $ref: '#/components/schemas/PendingReconciliationAction'
+        parserDrift:
+          $ref: '#/components/schemas/ParserDriftQueue'
+      additionalProperties: false
+
+    WatchlistEntry:
+      type: object
+      description: One EXT-007 priority-watchlist entry.
+      required:
+        - id
+        - marketplaceAccountId
+        - variantId
+        - createdAt
+      properties:
+        id:
+          type: string
+          format: uuid
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+        createdAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    WatchlistView:
+      type: object
+      required:
+        - marketplaceAccountId
+        - cap
+        - items
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        cap:
+          type: integer
+          format: int32
+          description: The server-enforced maximum watchlist size (EXT-007).
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/WatchlistEntry'
+      additionalProperties: false
+
+    WatchlistAddRequest:
+      type: object
+      required:
+        - marketplaceAccountId
+        - variantId
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        variantId:
+          type: string
+          format: uuid
+          description: MUST be a Confirmed owned product (CAT-002); otherwise rejected.
+      additionalProperties: false
+
+    ChatStatementKind:
+      type: string
+      description: >-
+        The seven typed statement kinds an LLM-plane response envelope carries
+        (S29/S37 addendum). Free text alone never carries authority — a
+        statement is category-separated content, not an approval control.
+      enum:
+        - answer
+        - clarification
+        - table
+        - card_reference
+        - evidence_citation
+        - action_summary
+        - degraded_notice
+
+    ChatEvidenceRef:
+      type: object
+      description: One cited evidence reference inside a chat envelope statement.
+      required:
+        - observationId
+      properties:
+        observationId:
+          type: string
+          format: uuid
+        quality:
+          $ref: '#/components/schemas/QualityState'
+      additionalProperties: false
+
+    ChatStatement:
+      type: object
+      description: One typed statement inside the final chat envelope.
+      required:
+        - kind
+        - text
+      properties:
+        kind:
+          $ref: '#/components/schemas/ChatStatementKind'
+        text:
+          type: string
+          description: The rendered text for this statement. Free text; carries no authority.
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatEvidenceRef'
+        cardId:
+          type: string
+          format: uuid
+          description: Present only for a card_reference statement (never a control).
+        tableRows:
+          type: array
+          description: Present only for a table statement. Rows of string cells.
+          items:
+            type: array
+            items:
+              type: string
+      additionalProperties: false
+
+    ChatEnvelope:
+      type: object
+      description: >-
+        The PROPOSED typed final response envelope (S29/S37 addendum,
+        CHAT-030/050/060 chat-vs-screen parity) — an additive schema artifact,
+        NOT YET WIRED to ChatStreamEvent.envelope (see that field's
+        description): adopting it is a breaking change for the current S29 web
+        view-model and needs `web_frontend` coordination in a follow-up step.
+        Category-separated statements + evidence + freshness; JSON-safe
+        business fields only — no LangGraph/LangChain framework type ever
+        appears here (plan §4.8). NEVER carries an approval control (§8,
+        §12.3): a structured control lives only outside the model plane, on the
+        same endpoints screens use. `additionalProperties: true` so an
+        incremental FE migration can read both the legacy and typed fields
+        during the transition.
+      properties:
+        statements:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatStatement'
+        generatedAt:
+          type: string
+          format: date-time
+      additionalProperties: true

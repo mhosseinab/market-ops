@@ -6,8 +6,11 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
+
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
 )
 
 // SessionCookieName is the name of the server-side session cookie (matches the
@@ -21,6 +24,8 @@ type AuthService interface {
 	Login(ctx context.Context, email, password string) (auth.Session, error)
 	Resolve(ctx context.Context, token string) (auth.Principal, error)
 	Logout(ctx context.Context, token string) error
+	// ListUsers returns the organization's user roster (PD-3 item 7, S37).
+	ListUsers(ctx context.Context, organizationID uuid.UUID) ([]db.User, error)
 }
 
 // CookieSecure controls the Secure attribute of the session cookie. It defaults

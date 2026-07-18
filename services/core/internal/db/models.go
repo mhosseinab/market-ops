@@ -274,6 +274,19 @@ type ExtensionPairing struct {
 	CreatedAt            time.Time
 }
 
+type GuardrailSetting struct {
+	MarketplaceAccountID      uuid.UUID
+	ContributionFloorMantissa int64
+	ContributionFloorCurrency string
+	ContributionFloorExponent int16
+	MovementCapBasisPoints    int64
+	CooldownSeconds           int64
+	Strategy                  string
+	StrategyEnabled           bool
+	UpdatedBy                 string
+	UpdatedAt                 time.Time
+}
+
 type Level2Proposal struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -738,4 +751,12 @@ type Variant struct {
 	Title                string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+type WatchlistEntry struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	AddedBy              string
+	CreatedAt            time.Time
 }

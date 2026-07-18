@@ -83,6 +83,9 @@ func (f *fakeObservation) Ingest(_ context.Context, c observation.Capture) (obse
 	f.ingested = append(f.ingested, c)
 	return observation.IngestResult{ObservationID: uuid.New(), Quality: "verified"}, nil
 }
+func (f *fakeObservation) ListConflictedObservedOffers(context.Context, uuid.UUID) ([]db.ObservedOffer, error) {
+	return nil, nil
+}
 
 func serverWithPairing(t *testing.T, fa *fakeAuth, fp *fakePairing, fo *fakeObservation) *http.Server {
 	t.Helper()

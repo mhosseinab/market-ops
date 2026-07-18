@@ -88,6 +88,12 @@ type Querier interface {
 	CountSelectionSetMembers(ctx context.Context, selectionSetID uuid.UUID) (int64, error)
 	CountUnreadNotifications(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountVariants(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	// EXT-007 priority watchlist (S37). Add is idempotent (ON CONFLICT DO NOTHING —
+	// a duplicate variant returns no new row, never a second entry and never an
+	// error); the cap is enforced in Go (internal/watchlist) BEFORE the insert, from
+	// CountWatchlistEntries, so the insert itself never needs to race a check
+	// constraint.
+	CountWatchlistEntries(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
 	CreateCostImportBatch(ctx context.Context, arg CreateCostImportBatchParams) (CostImportBatch, error)
 	// Market Product Identity queries (S11, CAT-002, §6.5 journey 4, §16).
@@ -208,6 +214,10 @@ type Querier interface {
 	// the organization has no users (the digest is then unsendable — fail closed).
 	GetDigestRecipientEmail(ctx context.Context, id uuid.UUID) (string, error)
 	GetEvent(ctx context.Context, id uuid.UUID) (MarketEvent, error)
+	// L3 commercial guardrail persistence (PD-3 item 6, S37). One row per account;
+	// a write is an upsert (Owner-only, audited atomically by the caller in the SAME
+	// transaction — see internal/guardrail).
+	GetGuardrailSettings(ctx context.Context, marketplaceAccountID uuid.UUID) (GuardrailSetting, error)
 	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
 	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (CatalogSyncRun, error)
@@ -246,6 +256,7 @@ type Querier interface {
 	// The account a variant belongs to — used to recompute readiness for a variant
 	// when the caller only has the variant id (e.g. the readiness read endpoint).
 	GetVariantAccountID(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	GetWatchlistEntry(ctx context.Context, arg GetWatchlistEntryParams) (WatchlistEntry, error)
 	GetWriteVerification(ctx context.Context, marketplaceAccountID uuid.UUID) (AccountWriteVerification, error)
 	// Analytics event queries (PRD §18). analytics_events is APPEND-ONLY: INSERT and
 	// SELECT only — there is deliberately NO UPDATE/DELETE query. Every insert carries
@@ -334,6 +345,7 @@ type Querier interface {
 	// UPDATE/DELETE — the current set is the greatest version per lineage.
 	InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error)
 	InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error)
+	InsertWatchlistEntry(ctx context.Context, arg InsertWatchlistEntryParams) (WatchlistEntry, error)
 	// The S35 write-verification flag for an account. Returns false when there is no
 	// row (writes OFF by default) — the two-key write gate's second key.
 	IsWriteVerified(ctx context.Context, marketplaceAccountID uuid.UUID) (bool, error)
@@ -350,6 +362,10 @@ type Querier interface {
 	ListAnalyticsEventsByFamily(ctx context.Context, arg ListAnalyticsEventsByFamilyParams) ([]AnalyticsEvent, error)
 	// The append-only lifecycle history for a card, in occurrence order (AUD-001).
 	ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) ([]ApprovalCardState, error)
+	// Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
+	// (greatest) version per lineage, newest first. State filtering is done in Go
+	// (internal/recommendation) to keep this one simple, always-safe read.
+	ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error)
 	// The complete append-only audit trail for an action, in occurrence order. This
 	// is the reproduction read (AUD-001): it joins NOTHING in the conversation tables,
 	// so deleting a conversation leaves the trail intact.
@@ -369,6 +385,10 @@ type Querier interface {
 	// are EXACTLY its active Confirmed mappings. NeedsReview/Rejected/Obsolete are
 	// excluded by construction — no target exists for an unconfirmed identity.
 	ListConfirmedObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketProductIdentity, error)
+	// Cross-route conflicted Observed Offers (PD-3 item 8, S37 Market conflict
+	// banner — §16 "routes disagree → Conflicted; block"). The price of record is
+	// untouched; only the quality state signals the conflict.
+	ListConflictedObservedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservedOffer, error)
 	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
 	ListCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
 	// Full version history for one (variant, component), newest first — the versioned
@@ -414,11 +434,22 @@ type Querier interface {
 	// exposed. Newest evidence first gives a stable base order.
 	ListOpenEvents(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketEvent, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
+	// The account's outcome windows (PD-3 item 5, S37), newest first, with the
+	// §15.3 result/confidence when the window has closed (absent otherwise — never
+	// a fabricated Not Measurable before the window actually closes). Scoped via
+	// the window's bound approval_cards row (outcome_windows carries no account
+	// column of its own).
+	ListOutcomeWindowsByAccount(ctx context.Context, arg ListOutcomeWindowsByAccountParams) ([]ListOutcomeWindowsByAccountRow, error)
 	// The notifications eligible for the batched daily digest for one account and
 	// business day: NOT bypass_digest (execution/safety failures bypass the digest and
 	// were delivered immediately) and created within the business-day window. Oldest
 	// first so the digest reads in occurrence order. Shared event ids flow through.
 	ListPendingDigestNotifications(ctx context.Context, arg ListPendingDigestNotificationsParams) ([]Notification, error)
+	// The account's action_executions still in pending_reconciliation (PD-3 item 8,
+	// S37 Operations queue) — an unknown external write result that must resolve
+	// before any retry (EXE-003, never inferred). Scoped via the bound
+	// approval_cards row (action_executions carries no account column of its own).
+	ListPendingReconciliationByAccount(ctx context.Context, arg ListPendingReconciliationByAccountParams) ([]ActionExecution, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)
@@ -429,6 +460,7 @@ type Querier interface {
 	// and never stacks duplicate candidates. A previously rejected/obsolete variant
 	// becomes eligible again for a fresh candidate.
 	ListVariantsWithoutActiveIdentity(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListVariantsWithoutActiveIdentityRow, error)
+	ListWatchlistEntries(ctx context.Context, marketplaceAccountID uuid.UUID) ([]WatchlistEntry, error)
 	// Commit a preview batch. The WHERE clause is a guard: only a batch that is still
 	// in 'preview' AND carries NO unresolved duplicate conflict (§16) may be
 	// committed. A batch that is already committed/cancelled, or that still has
@@ -525,6 +557,7 @@ type Querier interface {
 	UpsertAccountCostPolicy(ctx context.Context, arg UpsertAccountCostPolicyParams) (AccountCostPolicy, error)
 	// Establish or update the connection with sealed tokens (connect / refresh).
 	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)
+	UpsertGuardrailSettings(ctx context.Context, arg UpsertGuardrailSettingsParams) (GuardrailSetting, error)
 	UpsertListing(ctx context.Context, arg UpsertListingParams) (UpsertListingRow, error)
 	// Recompute the derived readiness projection (CST-003). Upsert: readiness is a
 	// current-state projection, recomputed on any input change.

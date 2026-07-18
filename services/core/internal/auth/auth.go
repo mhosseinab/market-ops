@@ -68,6 +68,7 @@ type Store interface {
 	GetSessionUser(ctx context.Context, tokenHash string) (db.GetSessionUserRow, error)
 	DeleteSession(ctx context.Context, tokenHash string) error
 	UpsertUserCredential(ctx context.Context, arg db.UpsertUserCredentialParams) error
+	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]db.User, error)
 }
 
 // Clock supplies the current time; overridable in tests.
@@ -205,6 +206,19 @@ func (s *Service) Logout(ctx context.Context, token string) error {
 		return fmt.Errorf("auth: delete session: %w", err)
 	}
 	return nil
+}
+
+// ListUsers returns every user in organizationID, in a stable order (PD-3 item
+// 7, S37 read). Reading is L1 — the transport boundary (perm) restricts nothing
+// further here; scoping to the caller's OWN organization is the caller's
+// responsibility (the gateway handler passes the authenticated principal's
+// OrganizationID, never a client-supplied one).
+func (s *Service) ListUsers(ctx context.Context, organizationID uuid.UUID) ([]db.User, error) {
+	users, err := s.store.ListUsersByOrganization(ctx, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("auth: list users: %w", err)
+	}
+	return users, nil
 }
 
 // newToken returns a 256-bit random token as URL-safe hex.

@@ -54,6 +54,19 @@ SELECT * FROM approval_card_states
 WHERE card_id = $1
 ORDER BY occurred_at, id;
 
+-- name: ListApprovalCardsByAccount :many
+-- Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
+-- (greatest) version per lineage, newest first. State filtering is done in Go
+-- (internal/recommendation) to keep this one simple, always-safe read.
+SELECT latest.* FROM (
+    SELECT DISTINCT ON (ac.lineage_id) ac.*
+    FROM approval_cards ac
+    WHERE ac.marketplace_account_id = $1
+    ORDER BY ac.lineage_id, ac.version DESC
+) latest
+ORDER BY latest.created_at DESC
+LIMIT $2;
+
 -- name: ListLiveCardsForVariant :many
 -- Live (control-bearing or revalidating) cards for a variant. Used by the
 -- identity-reopen consumer to expire dependent recommendations (§16): a reopened
