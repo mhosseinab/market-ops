@@ -1,0 +1,17 @@
+# GitGuardian configuration — https://docs.gitguardian.com/ggshield-docs/configuration
+#
+# Scoped false-positive suppression. This does NOT disable the scanner or
+# ignore any file wholesale — it suppresses one specific, confirmed-safe match.
+version: 2
+
+secret:
+  ignored-matches:
+    # FALSE POSITIVE (confirmed): `.github/workflows/ci.yml` generates an
+    # EPHEMERAL, per-run password for the TEST-ONLY tool
+    # `services/core/cmd/seede2e` via `openssl rand -hex 16`, written to
+    # $GITHUB_ENV for the compose-based `task test:integration` job. It is
+    # regenerated on every run and is never a production credential — there is
+    # no secret to leak. GitGuardian's generic-password detector matches the
+    # `SEEDE2E_PASSWORD=<high-entropy>` assignment shape.
+    - name: "seede2e test-only runtime-generated CI password (openssl rand)"
+      match: "int-$(openssl rand -hex 16)"
