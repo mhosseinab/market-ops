@@ -14,6 +14,7 @@
     "assert:prod-clean": "node scripts/assert-prod-clean.mjs"
   },
   "dependencies": {
+    "@assistant-ui/react": "0.14.27",
     "@market-ops/gen-ts": "workspace:*",
     "@market-ops/locale": "workspace:*",
     "@sentry/react": "10.66.0",

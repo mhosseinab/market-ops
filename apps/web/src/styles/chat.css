@@ -1,0 +1,212 @@
+/* Chat dock (S29). Logical CSS only — the dock mirrors with the app direction
+ * (RTL → it sits on the inline-start edge). No locale/direction branch here;
+ * tokens swap with theme on :root. Structural cards reuse the panel/banner styles.
+ */
+
+.chat-dock {
+  position: fixed;
+  inset-block: 0;
+  inset-inline-start: 0;
+  inline-size: 392px;
+  max-inline-size: 100vw;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: var(--panel);
+  border-inline-end: 1px solid var(--line);
+  overflow-y: auto;
+  z-index: 40;
+}
+
+.chat-dock__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.chat-dock__title {
+  font-weight: 600;
+}
+
+.chat-context-chip {
+  font-size: 0.8em;
+  color: var(--ink-2);
+  background: var(--panel-2);
+  padding: 2px 8px;
+  border-radius: 12px;
+}
+
+.chat-dock__close {
+  margin-inline-start: auto;
+  background: none;
+  border: none;
+  color: var(--ink-2);
+  cursor: pointer;
+  font-size: 1.1em;
+}
+
+.chat-dock__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-chip {
+  font-size: 0.8em;
+  padding: 4px 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  background: var(--panel-3);
+  cursor: pointer;
+}
+
+.chat-thread {
+  flex: 1;
+  min-block-size: 120px;
+}
+
+.chat-thread__viewport {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-msg {
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel-3);
+}
+
+.chat-msg--user {
+  background: var(--accent-bg);
+}
+
+.chat-msg__text {
+  white-space: pre-wrap;
+}
+
+.chat-envelope,
+.chat-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.statement {
+  border-inline-start: 3px solid var(--line-2);
+  padding-inline-start: 8px;
+}
+
+.statement[data-kind="observed"] {
+  border-inline-start-color: var(--pos);
+}
+.statement[data-kind="dk"] {
+  border-inline-start-color: var(--info);
+}
+.statement[data-kind="config"] {
+  border-inline-start-color: var(--ink-3);
+}
+.statement[data-kind="calculation"] {
+  border-inline-start-color: var(--ink-2);
+}
+.statement[data-kind="missing"] {
+  border-inline-start-color: var(--warn);
+}
+.statement[data-kind="recommendation"] {
+  border-inline-start-color: var(--accent);
+}
+/* Model inference renders in an accent panel and is explicitly labeled. */
+.statement[data-kind="inference"] {
+  border-inline-start-color: var(--conflict);
+  background: var(--conflict-bg);
+  padding: 6px 8px;
+}
+
+.statement__head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.statement__dot {
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.statement__note {
+  font-size: 0.8em;
+  color: var(--conflict);
+}
+
+.chat-evidence__missing {
+  color: var(--warn);
+  font-size: 0.85em;
+}
+
+.chat-table__grid {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-size: 0.85em;
+}
+
+.chat-table__grid th,
+.chat-table__grid td {
+  text-align: start;
+  border-block-end: 1px solid var(--line);
+  padding: 4px 6px;
+}
+
+.chat-deeplink {
+  color: var(--accent);
+  font-size: 0.85em;
+}
+
+.chat-composer {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.chat-composer__input {
+  flex: 1;
+  resize: none;
+  padding: 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--panel-3);
+  color: var(--ink);
+}
+
+.chat-composer__send {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+.chat-dock__footnote {
+  font-size: 0.75em;
+  color: var(--ink-3);
+}
+
+.briefing {
+  background: var(--panel-2);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.briefing--failed {
+  background: var(--warn-bg);
+}
+
+.briefing__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

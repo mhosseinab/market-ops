@@ -1,9 +1,11 @@
 import { HttpResponse, http } from "msw";
+import type { ChatStreamEvent } from "../../chat/types";
 import {
   approvalCardAwaiting,
   bulkValid,
   confirmApproved,
   connectorUnknown,
+  dailyBriefing,
   execAccepted,
   marketEvent,
   needsReviewQueue,
@@ -14,6 +16,22 @@ import {
   sessionOwner,
   target,
 } from "./fixtures";
+
+/** Build a `text/event-stream` response from a list of ChatStreamEvents. */
+export function sseResponse(events: readonly ChatStreamEvent[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      }
+      controller.close();
+    },
+  });
+  return new HttpResponse(stream, {
+    headers: { "content-type": "text/event-stream" },
+  });
+}
 
 // Default MSW handlers mirroring the core contract. Tests pin an absolute gateway
 // base (see vite.config test.env), so handlers use that exact origin/prefix —
@@ -87,6 +105,18 @@ export const handlers = [
     HttpResponse.json({ actionId: execAccepted.actionId, eligible: true, state: "failed" }),
   ),
   http.post(`${B}/approvals/bulk/confirm`, () => HttpResponse.json(bulkValid)),
+
+  // ── S29: chat dock ──────────────────────────────────────────────────────────
+  http.get(`${B}/briefing`, () => HttpResponse.json(dailyBriefing)),
+  // Default chat turn: a conversation id + a token + a final envelope frame. The
+  // free-text-never-approves invariant holds regardless — /chat carries no control.
+  http.post(`${B}/chat`, () =>
+    sseResponse([
+      { kind: "conversation", conversationId: "99999999-9999-9999-9999-999999999999" },
+      { kind: "token", token: "…" },
+      { kind: "final", envelope: { sections: [], evidence: [] } },
+    ]),
+  ),
 
   http.post(`${B}/cost/value`, () =>
     HttpResponse.json({

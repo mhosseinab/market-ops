@@ -115,6 +115,79 @@ export const MESSAGE_KEYS = [
   // Chat dock footnote (free text never executes)
   "chat.footnote",
 
+  // ── S29: Chat dock ────────────────────────────────────────────────────────
+  // Dock chrome
+  "chat.title",
+  "chat.close",
+  "chat.deepLink",
+  "chat.composer.placeholder",
+  "chat.composer.send",
+  "chat.empty.title",
+  "chat.empty.body",
+  "chat.card.unavailable",
+  // Context chip (8 contexts, PRD §8.1)
+  "chat.context.label",
+  "chat.context.global",
+  "chat.context.product",
+  "chat.context.event",
+  "chat.context.recommendation",
+  "chat.context.bulk",
+  "chat.context.action",
+  "chat.context.settings",
+  "chat.context.operations",
+  // Curated suggested prompts (not model-generated in P0)
+  "chat.prompt.briefing",
+  "chat.prompt.blockers",
+  "chat.prompt.freshness",
+  // Seven CHAT-004 statement kinds
+  "chat.statement.observed",
+  "chat.statement.dk",
+  "chat.statement.config",
+  "chat.statement.calculation",
+  "chat.statement.inference",
+  "chat.statement.inferenceNote",
+  "chat.statement.missing",
+  "chat.statement.recommendation",
+  // Evidence refs (CHAT-005)
+  "chat.evidence.title",
+  "chat.evidence.ref",
+  "chat.evidence.capturedAt",
+  "chat.evidence.missing",
+  // Inline table (20-row rule, CHAT-023)
+  "chat.table.summary",
+  "chat.table.deepLink",
+  // Ambiguity picker (CHAT-007)
+  "chat.picker.title",
+  "chat.picker.hint",
+  "chat.picker.select",
+  // Level-2 proposal card (CHAT-061)
+  "chat.l2.title",
+  "chat.l2.setting",
+  "chat.l2.before",
+  "chat.l2.after",
+  "chat.l2.scope",
+  "chat.l2.consequence",
+  "chat.l2.expiry",
+  "chat.l2.confirmInSettings",
+  // Daily briefing (CHAT-010) + §16 failure
+  "chat.briefing.title",
+  "chat.briefing.rank",
+  "chat.briefing.open",
+  "chat.briefing.empty",
+  "chat.briefing.generatedAt",
+  "chat.briefing.failure.title",
+  "chat.briefing.failure.body",
+  // Kill switch / provider outage (CHAT-009 / §16)
+  "chat.unavailable.title",
+  "chat.unavailable.kill_switch_global",
+  "chat.unavailable.kill_switch_account",
+  "chat.unavailable.provider_unavailable",
+  "chat.unavailable.screensNote",
+  "chat.unavailable.toActions",
+  // Structured failure (§12.4)
+  "chat.failure.title",
+  "chat.failure.deepLink",
+
   // ── S26 screens ──────────────────────────────────────────────────────────
   // Shared actions / common
   "action.retry",

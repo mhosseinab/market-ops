@@ -1,3 +1,4 @@
+import type { DailyBriefing } from "../../chat/types";
 import type {
   ActionExecutionView,
   ApprovalCardView,
@@ -325,6 +326,18 @@ export const bulkStale: BulkApprovalConfirmResult = {
   currentVersion: 2,
   valid: false,
   executionPending: false,
+};
+
+// ── S29: chat daily briefing (CHAT-010) ─────────────────────────────────────
+/** A stored briefing whose event ids/order match the Today feed. */
+export const dailyBriefing: DailyBriefing = {
+  marketplaceAccountId: ACCOUNT_ID,
+  businessDay: "2026-07-18",
+  generatedAt: "2026-07-18T05:00:00Z",
+  events: [
+    { rank: 1, eventId: EVENT_ID, eventType: "competitor_price", severity: "warning" },
+    { rank: 2, eventId: EVENT_ID_BLOCKED, eventType: "winning_state", severity: "critical" },
+  ],
 };
 
 /** Complete readiness — drives an EXECUTABLE bulk candidate. */
