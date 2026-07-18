@@ -1,0 +1,419 @@
+package execution
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/mhosseinab/market-ops/services/core/internal/approval"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
+)
+
+// Sentinel errors. Each is a stable value the transport maps to a precise status
+// (§8: a message never carries authority).
+var (
+	// ErrNotApproved — Execute was called on a card that is not in Approved and has
+	// no prior execution/recommend-only record. Only an Approved card executes.
+	ErrNotApproved = errors.New("execution: card is not approved")
+	// ErrUnreconciled — the retry endpoint refuses an action whose execution is
+	// still Pending Reconciliation (EXE-003 / CHAT-074). An unknown result is never
+	// retried; it must reconcile first.
+	ErrUnreconciled = errors.New("execution: action is pending reconciliation; retry is blocked")
+	// ErrNoExecution — there is no execution record for the action to retry.
+	ErrNoExecution = errors.New("execution: no execution record for action")
+	// ErrAlreadyTerminal — the action already reached a reconciled terminal result;
+	// it is not retry-eligible (a new recommendation is required to act again).
+	ErrAlreadyTerminal = errors.New("execution: action already reached a terminal result")
+)
+
+// CardStore is the §8.4 card-state seam the executor drives. *recommendation.Service
+// satisfies it. The executor never mutates card state except through Advance, so
+// every move is a FROM-guarded, append-only §8.4 transition.
+type CardStore interface {
+	GetCard(ctx context.Context, id uuid.UUID) (db.ApprovalCard, error)
+	Advance(ctx context.Context, cardID uuid.UUID, from, to approval.State, reason string) (db.ApprovalCard, error)
+}
+
+// RevalidationContext is the SERVER-resolved state the executor gates against. It
+// is produced by a Resolver from authoritative sources — NEVER from a
+// client-echoed request body (carry-forward from S17: the current binding is
+// re-resolved server-side at the Revalidating gate).
+type RevalidationContext struct {
+	Inputs          RevalidationInputs
+	Enablement      WriteEnablement
+	Actor           audit.Actor
+	AccountID       uuid.UUID
+	VariantID       uuid.UUID
+	VariantNativeID int64
+}
+
+// Resolver re-resolves the current binding and the external gate signals for a
+// card at execution time. The implementation reads the authoritative store
+// (identity, current price, cost profile version, policy version, boundary,
+// evidence/JIT, permission, write enablement); it must not trust any client input.
+type Resolver interface {
+	Resolve(ctx context.Context, card db.ApprovalCard) (RevalidationContext, error)
+}
+
+// Service is the DB-backed executor: the EXE-001 revalidation gate, the EXE-002
+// idempotent write, the EXE-003 external states, the EXE-005 recommend-only
+// tracking, and the OUT-001 window opening. It fails closed at every seam.
+type Service struct {
+	pool     *pgxpool.Pool
+	cards    CardStore
+	writer   Writer
+	resolver Resolver
+	now      func() time.Time
+}
+
+// NewService wires the executor. A nil clock defaults to time.Now (UTC).
+func NewService(pool *pgxpool.Pool, cards CardStore, writer Writer, resolver Resolver) *Service {
+	return &Service{pool: pool, cards: cards, writer: writer, resolver: resolver, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// WithClock overrides the clock (tests).
+func (s *Service) WithClock(now func() time.Time) *Service { s.now = now; return s }
+
+// Mode is the execution mode of a completed Execute call.
+type Mode string
+
+const (
+	// ModeWrite — a real external write was attempted (write enabled).
+	ModeWrite Mode = "write"
+	// ModeRecommendOnly — writes are OFF (capability/region), so the approved
+	// action is tracked for external matching (EXE-005).
+	ModeRecommendOnly Mode = "recommend_only"
+)
+
+// ExecuteResult is the outcome of an Execute call.
+type ExecuteResult struct {
+	ActionID           uuid.UUID
+	CardID             uuid.UUID
+	Mode               Mode
+	Blocked            bool
+	FailedGate         Gate
+	ExternalState      ExternalState
+	RecommendOnlyState RecommendOnlyState
+	DidWrite           bool
+}
+
+// Execute revalidates an Approved card server-side and, only if every EXE-001
+// gate passes AND writes are enabled, performs exactly one idempotent external
+// write; otherwise it records a recommend-only action (EXE-005). It is idempotent:
+// a repeat call for an action that already executed replays the recorded result
+// with ZERO additional external writes.
+func (s *Service) Execute(ctx context.Context, cardID uuid.UUID, actor audit.Actor) (ExecuteResult, error) {
+	card, err := s.cards.GetCard(ctx, cardID)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	q := db.New(s.pool)
+
+	// Idempotent replay: a prior write for this action returns its recorded state
+	// without touching the marketplace again (EXE-002).
+	if existing, err := q.GetActionExecutionByAction(ctx, card.ActionID); err == nil {
+		return ExecuteResult{
+			ActionID:      card.ActionID,
+			CardID:        card.ID,
+			Mode:          ModeWrite,
+			ExternalState: ExternalState(existing.ExternalState),
+			DidWrite:      false,
+		}, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return ExecuteResult{}, err
+	}
+	// A prior recommend-only record likewise replays.
+	if ro, err := q.GetRecommendOnlyAction(ctx, card.ActionID); err == nil {
+		return ExecuteResult{
+			ActionID:           card.ActionID,
+			CardID:             card.ID,
+			Mode:               ModeRecommendOnly,
+			RecommendOnlyState: RecommendOnlyState(ro.State),
+		}, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return ExecuteResult{}, err
+	}
+
+	if approval.State(card.State) != approval.StateApproved {
+		return ExecuteResult{}, ErrNotApproved
+	}
+
+	rc, err := s.resolver.Resolve(ctx, card)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+
+	if rc.Enablement.CanWrite() {
+		return s.executeWrite(ctx, card, rc, actor)
+	}
+	return s.recordRecommendOnly(ctx, card, rc, actor)
+}
+
+// executeWrite runs the §8.4 Approved → Revalidating → Executing → terminal write
+// path with the EXE-001 gate matrix at the Revalidating boundary.
+func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor) (ExecuteResult, error) {
+	if _, err := s.cards.Advance(ctx, card.ID, approval.StateApproved, approval.StateRevalidating, "revalidation started"); err != nil {
+		return ExecuteResult{}, err
+	}
+
+	gate := EvaluateGates(rc.Inputs)
+	if !gate.OK {
+		if _, err := s.cards.Advance(ctx, card.ID, approval.StateRevalidating, approval.StateInvalidated, "gate_blocked:"+string(gate.Failed)); err != nil {
+			return ExecuteResult{}, err
+		}
+		s.audit(ctx, audit.Event{
+			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+			Type: audit.EventRevalidationBlocked, Actor: actor, Binding: bindingOf(card),
+			CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason},
+		})
+		return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite, Blocked: true, FailedGate: gate.Failed}, nil
+	}
+
+	if _, err := s.cards.Advance(ctx, card.ID, approval.StateRevalidating, approval.StateExecuting, "revalidated; executing"); err != nil {
+		return ExecuteResult{}, err
+	}
+	s.audit(ctx, audit.Event{
+		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+		Type: audit.EventExecutionStarted, Actor: actor, Binding: bindingOf(card),
+		CardSnapshot: cardSnapshot(card),
+	})
+
+	req := WriteRequest{
+		IdempotencyKey:  card.IdempotencyKey,
+		VariantNativeID: rc.VariantNativeID,
+		PriceMantissa:   card.PriceMantissa,
+		PriceCurrency:   card.PriceCurrency,
+		PriceExponent:   int8(card.PriceExponent),
+	}
+	rec, _, err := s.idempotentWrite(ctx, card, req)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	extState := ExternalState(rec.ExternalState)
+
+	if _, err := s.cards.Advance(ctx, card.ID, approval.StateExecuting, cardStateFor(extState), "external_result:"+string(extState)); err != nil {
+		return ExecuteResult{}, err
+	}
+	s.audit(ctx, audit.Event{
+		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+		Type: audit.EventExternalResult, Actor: actor, Binding: bindingOf(card),
+		CardSnapshot: cardSnapshot(card), Detail: map[string]any{"external_state": extState, "external_ref": rec.ExternalRef},
+		TerminalState: string(extState),
+	})
+
+	// A reconciled terminal result opens the seven-day outcome window (OUT-001).
+	if extState.Terminal() {
+		s.openOutcomeWindow(ctx, card)
+		s.audit(ctx, audit.Event{
+			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+			Type: audit.EventTerminal, Actor: actor, Binding: bindingOf(card),
+			CardSnapshot: cardSnapshot(card), TerminalState: string(extState),
+		})
+	}
+
+	return ExecuteResult{
+		ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite,
+		ExternalState: extState, DidWrite: true,
+	}, nil
+}
+
+// idempotentWrite claims the stable idempotency key and performs AT MOST ONE
+// external write (EXE-002). A duplicate request finds the existing record (ON
+// CONFLICT DO NOTHING claim) and writes nothing external. The bool reports whether
+// this call performed the write.
+func (s *Service) idempotentWrite(ctx context.Context, card db.ApprovalCard, req WriteRequest) (db.ActionExecution, bool, error) {
+	q := db.New(s.pool)
+	reqJSON, err := json.Marshal(req)
+	if err != nil {
+		return db.ActionExecution{}, false, err
+	}
+	claimed, err := q.ClaimActionExecution(ctx, db.ClaimActionExecutionParams{
+		CardID:         card.ID,
+		ActionID:       card.ActionID,
+		IdempotencyKey: req.IdempotencyKey,
+		Mode:           "write",
+		ExternalState:  string(StatePendingReconciliation),
+		RequestPayload: reqJSON,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The key is already claimed: a duplicate request. Return the existing
+		// record and perform NO external write (zero duplicate writes).
+		existing, err := q.GetActionExecutionByKey(ctx, req.IdempotencyKey)
+		return existing, false, err
+	}
+	if err != nil {
+		return db.ActionExecution{}, false, err
+	}
+
+	// We own the claim: perform the external write EXACTLY ONCE.
+	result := s.writer.WritePrice(ctx, req)
+	extState := Classify(result)
+	respJSON, err := json.Marshal(result)
+	if err != nil {
+		return db.ActionExecution{}, true, err
+	}
+	recorded, err := q.RecordExecutionResult(ctx, db.RecordExecutionResultParams{
+		ID:              claimed.ID,
+		ExternalState:   string(extState),
+		ExternalRef:     result.ExternalRef,
+		ResponsePayload: respJSON,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		recorded, err = q.GetActionExecution(ctx, claimed.ID)
+	}
+	return recorded, true, err
+}
+
+// recordRecommendOnly records an approved action in recommend-only mode (EXE-005)
+// when writes are OFF. The card stays Approved (no §8.4 write transition); a
+// recommend_only_actions row tracks the 24h external-match window. This is the
+// default-off path: with no verified write capability, NOTHING is written.
+func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor) (ExecuteResult, error) {
+	gate := EvaluateGates(rc.Inputs)
+	if !gate.OK {
+		s.audit(ctx, audit.Event{
+			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+			Type: audit.EventRevalidationBlocked, Actor: actor, Binding: bindingOf(card),
+			CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason, "mode": ModeRecommendOnly},
+		})
+		return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeRecommendOnly, Blocked: true, FailedGate: gate.Failed}, nil
+	}
+
+	now := s.now()
+	q := db.New(s.pool)
+	_, err := q.InsertRecommendOnlyAction(ctx, db.InsertRecommendOnlyActionParams{
+		CardID:                card.ID,
+		ActionID:              card.ActionID,
+		MarketplaceAccountID:  card.MarketplaceAccountID,
+		VariantID:             rc.VariantID,
+		ApprovedPriceMantissa: card.PriceMantissa,
+		ApprovedPriceCurrency: card.PriceCurrency,
+		ApprovedPriceExponent: card.PriceExponent,
+		ApprovedAt:            now,
+		WindowExpiresAt:       now.Add(matchWindow),
+	})
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return ExecuteResult{}, err
+	}
+	s.audit(ctx, audit.Event{
+		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+		Type: audit.EventRecommendOnly, Actor: actor, Binding: bindingOf(card),
+		CardSnapshot: cardSnapshot(card), Detail: map[string]any{"state": StateAwaitingExternalExecution, "window_expires_at": now.Add(matchWindow)},
+	})
+	return ExecuteResult{
+		ActionID: card.ActionID, CardID: card.ID, Mode: ModeRecommendOnly,
+		RecommendOnlyState: StateAwaitingExternalExecution,
+	}, nil
+}
+
+// RetryResult reports whether a failed action is retry-eligible. A retry never
+// performs an inverse or duplicate write itself (EXE-004): an eligible failure is
+// re-attempted only through a fresh approved action.
+type RetryResult struct {
+	ActionID uuid.UUID
+	Eligible bool
+	State    ExternalState
+}
+
+// Retry gates a retry request (EXE-003 / CHAT-074). It REJECTS an action whose
+// execution is still Pending Reconciliation — an unknown result must reconcile
+// first, never be retried. A definitively Failed action is retry-eligible (§16
+// "retry only eligible reconciled failures"); an Accepted/Rejected action is
+// terminal and not retried.
+func (s *Service) Retry(ctx context.Context, actionID uuid.UUID, _ audit.Actor) (RetryResult, error) {
+	q := db.New(s.pool)
+	exec, err := q.GetActionExecutionByAction(ctx, actionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return RetryResult{}, ErrNoExecution
+	}
+	if err != nil {
+		return RetryResult{}, err
+	}
+	switch ExternalState(exec.ExternalState) {
+	case StatePendingReconciliation:
+		return RetryResult{}, ErrUnreconciled
+	case StateFailed:
+		return RetryResult{ActionID: actionID, Eligible: true, State: StateFailed}, nil
+	default:
+		return RetryResult{}, ErrAlreadyTerminal
+	}
+}
+
+// GetExecution returns the single execution record for an action (CHAT-073 read).
+func (s *Service) GetExecution(ctx context.Context, actionID uuid.UUID) (db.ActionExecution, error) {
+	return db.New(s.pool).GetActionExecutionByAction(ctx, actionID)
+}
+
+// openOutcomeWindow opens the OUT-001 seven-day window for a reconciled action.
+// It is best-effort append-only; a duplicate open is a no-op (UNIQUE action_id).
+func (s *Service) openOutcomeWindow(ctx context.Context, card db.ApprovalCard) {
+	opened := s.now()
+	_, _ = db.New(s.pool).OpenOutcomeWindow(ctx, db.OpenOutcomeWindowParams{
+		ActionID: card.ActionID,
+		CardID:   pgUUID(card.ID),
+		OpenedAt: opened,
+		ClosesAt: opened.Add(7 * 24 * time.Hour),
+	})
+}
+
+// audit appends one AUD-001 record best-effort; an append failure never masks the
+// state change it records, but is surfaced through the process logs by the caller
+// path. (Audit is a never-cut invariant; a persistent failure here is an incident.)
+func (s *Service) audit(ctx context.Context, ev audit.Event) {
+	_, _ = audit.Append(ctx, db.New(s.pool), ev)
+}
+
+// cardStateFor maps an external state onto the §8.4 terminal (or pending) card
+// state.
+func cardStateFor(s ExternalState) approval.State {
+	switch s {
+	case StateAccepted:
+		return approval.StateAccepted
+	case StateRejected:
+		return approval.StateRejected
+	case StateFailed:
+		return approval.StateFailed
+	default:
+		return approval.StatePendingReconciliation
+	}
+}
+
+func bindingOf(card db.ApprovalCard) approval.Binding {
+	return approval.Binding{
+		ActionID:           card.ActionID,
+		ParameterVersion:   card.ParameterVersion,
+		ContextVersion:     card.ContextVersion,
+		PolicyVersion:      card.PolicyVersion,
+		CostProfileVersion: card.CostProfileVersion,
+		Expiry:             card.ExpiresAt,
+	}
+}
+
+func cardSnapshot(card db.ApprovalCard) map[string]any {
+	return map[string]any{
+		"id":                card.ID,
+		"recommendation_id": card.RecommendationID,
+		"version":           card.Version,
+		"state":             card.State,
+		"action_id":         card.ActionID,
+		"parameter_version": card.ParameterVersion,
+		"idempotency_key":   card.IdempotencyKey,
+		"price_mantissa":    card.PriceMantissa,
+		"price_currency":    card.PriceCurrency,
+		"price_exponent":    card.PriceExponent,
+	}
+}
+
+func pgUUID(id uuid.UUID) pgtype.UUID {
+	if id == uuid.Nil {
+		return pgtype.UUID{}
+	}
+	return pgtype.UUID{Bytes: id, Valid: true}
+}

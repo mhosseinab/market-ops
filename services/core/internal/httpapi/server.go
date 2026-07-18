@@ -85,6 +85,20 @@ func WithApproval(a ApprovalService) Option {
 	return func(s *gatewayServer) { s.approval = a }
 }
 
+// WithExecution injects the execution/reconciliation service backing the
+// /actions/* routes (PRD §7.5 EXE-001..005). Without it those routes fail closed
+// with a structured error. Writes stay OFF by default even when wired: a write
+// requires a Supported price_write capability AND the S35 region flag.
+func WithExecution(e ExecutionService) Option {
+	return func(s *gatewayServer) { s.execution = e }
+}
+
+// WithOutcome injects the outcome-window service backing GET /outcomes (OUT-001).
+// Without it that route fails closed with a structured error.
+func WithOutcome(o OutcomeService) Option {
+	return func(s *gatewayServer) { s.outcome = o }
+}
+
 // WithCookieSecure overrides the Secure attribute of the session cookie. Default
 // is true; local plain-HTTP dev sets it false so the browser sends the cookie.
 func WithCookieSecure(secure bool) Option {

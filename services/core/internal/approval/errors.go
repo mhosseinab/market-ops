@@ -19,10 +19,7 @@ const (
 	ErrInvalidated errorString = "approval: bound version changed; control invalidated (APR-001)"
 	// ErrNoControl — a control was requested on a card that is not in a
 	// control-bearing state (only AwaitingConfirmation carries the structured
-	// control). A Draft/Blocked/Simulation card exposes none (PRC-002, §8).
+	// control), OR Revalidate was called on a card that is not in Revalidating.
+	// A Draft/Blocked/Simulation card exposes none (PRC-002, §8).
 	ErrNoControl errorString = "approval: no structured approval control on this card"
-	// ErrExecutionUnavailable — the Revalidating → Executing boundary is stubbed
-	// CLOSED until S18 (execution/reconciliation/audit). It fails closed by design:
-	// no write path exists yet. S18 replaces this stub with the idempotent writer.
-	ErrExecutionUnavailable errorString = "approval: execution revalidation is not available until S18; the Revalidating→Executing boundary is stubbed closed"
 )

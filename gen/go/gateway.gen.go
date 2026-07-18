@@ -550,6 +550,90 @@ func (e EventType) Valid() bool {
 	}
 }
 
+// Defines values for ExecutionExternalState.
+const (
+	ExecutionExternalStateAccepted              ExecutionExternalState = "accepted"
+	ExecutionExternalStateFailed                ExecutionExternalState = "failed"
+	ExecutionExternalStatePendingReconciliation ExecutionExternalState = "pending_reconciliation"
+	ExecutionExternalStateRejected              ExecutionExternalState = "rejected"
+)
+
+// Valid indicates whether the value is a known member of the ExecutionExternalState enum.
+func (e ExecutionExternalState) Valid() bool {
+	switch e {
+	case ExecutionExternalStateAccepted:
+		return true
+	case ExecutionExternalStateFailed:
+		return true
+	case ExecutionExternalStatePendingReconciliation:
+		return true
+	case ExecutionExternalStateRejected:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExecutionGate.
+const (
+	ExecutionGateBoundary     ExecutionGate = "boundary"
+	ExecutionGateCosts        ExecutionGate = "costs"
+	ExecutionGateCurrentPrice ExecutionGate = "current_price"
+	ExecutionGateEmpty        ExecutionGate = ""
+	ExecutionGateEvidenceJit  ExecutionGate = "evidence_jit"
+	ExecutionGateExpiry       ExecutionGate = "expiry"
+	ExecutionGateGuardrails   ExecutionGate = "guardrails"
+	ExecutionGateIdentity     ExecutionGate = "identity"
+	ExecutionGateMoneyUnit    ExecutionGate = "money_unit"
+	ExecutionGatePermission   ExecutionGate = "permission"
+)
+
+// Valid indicates whether the value is a known member of the ExecutionGate enum.
+func (e ExecutionGate) Valid() bool {
+	switch e {
+	case ExecutionGateBoundary:
+		return true
+	case ExecutionGateCosts:
+		return true
+	case ExecutionGateCurrentPrice:
+		return true
+	case ExecutionGateEmpty:
+		return true
+	case ExecutionGateEvidenceJit:
+		return true
+	case ExecutionGateExpiry:
+		return true
+	case ExecutionGateGuardrails:
+		return true
+	case ExecutionGateIdentity:
+		return true
+	case ExecutionGateMoneyUnit:
+		return true
+	case ExecutionGatePermission:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ExecutionMode.
+const (
+	RecommendOnly ExecutionMode = "recommend_only"
+	Write         ExecutionMode = "write"
+)
+
+// Valid indicates whether the value is a known member of the ExecutionMode enum.
+func (e ExecutionMode) Valid() bool {
+	switch e {
+	case RecommendOnly:
+		return true
+	case Write:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for HealthStatus.
 const (
 	Ok HealthStatus = "ok"
@@ -655,6 +739,54 @@ func (e ObservationTargetTier) Valid() bool {
 	}
 }
 
+// Defines values for OutcomeResultViewConfidence.
+const (
+	High   OutcomeResultViewConfidence = "high"
+	Low    OutcomeResultViewConfidence = "low"
+	Medium OutcomeResultViewConfidence = "medium"
+)
+
+// Valid indicates whether the value is a known member of the OutcomeResultViewConfidence enum.
+func (e OutcomeResultViewConfidence) Valid() bool {
+	switch e {
+	case High:
+		return true
+	case Low:
+		return true
+	case Medium:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OutcomeResultViewResult.
+const (
+	Inconclusive  OutcomeResultViewResult = "inconclusive"
+	Negative      OutcomeResultViewResult = "negative"
+	Neutral       OutcomeResultViewResult = "neutral"
+	NotMeasurable OutcomeResultViewResult = "not_measurable"
+	Positive      OutcomeResultViewResult = "positive"
+)
+
+// Valid indicates whether the value is a known member of the OutcomeResultViewResult enum.
+func (e OutcomeResultViewResult) Valid() bool {
+	switch e {
+	case Inconclusive:
+		return true
+	case Negative:
+		return true
+	case Neutral:
+		return true
+	case NotMeasurable:
+		return true
+	case Positive:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PolicyBlockerCode.
 const (
 	BoundaryInvalid         PolicyBlockerCode = "boundary_invalid"
@@ -711,28 +843,28 @@ func (e PolicyObjective) Valid() bool {
 
 // Defines values for PolicyStage.
 const (
-	Boundary    PolicyStage = "boundary"
-	Cooldown    PolicyStage = "cooldown"
-	HardFloor   PolicyStage = "hard_floor"
-	MovementCap PolicyStage = "movement_cap"
-	Objective   PolicyStage = "objective"
-	Strategy    PolicyStage = "strategy"
+	PolicyStageBoundary    PolicyStage = "boundary"
+	PolicyStageCooldown    PolicyStage = "cooldown"
+	PolicyStageHardFloor   PolicyStage = "hard_floor"
+	PolicyStageMovementCap PolicyStage = "movement_cap"
+	PolicyStageObjective   PolicyStage = "objective"
+	PolicyStageStrategy    PolicyStage = "strategy"
 )
 
 // Valid indicates whether the value is a known member of the PolicyStage enum.
 func (e PolicyStage) Valid() bool {
 	switch e {
-	case Boundary:
+	case PolicyStageBoundary:
 		return true
-	case Cooldown:
+	case PolicyStageCooldown:
 		return true
-	case HardFloor:
+	case PolicyStageHardFloor:
 		return true
-	case MovementCap:
+	case PolicyStageMovementCap:
 		return true
-	case Objective:
+	case PolicyStageObjective:
 		return true
-	case Strategy:
+	case PolicyStageStrategy:
 		return true
 	default:
 		return false
@@ -790,6 +922,30 @@ func (e QualityState) Valid() bool {
 	}
 }
 
+// Defines values for RecommendOnlyState.
+const (
+	RecommendOnlyStateAwaitingExternalExecution RecommendOnlyState = "awaiting_external_execution"
+	RecommendOnlyStateEmpty                     RecommendOnlyState = ""
+	RecommendOnlyStateExternallyExecuted        RecommendOnlyState = "externally_executed"
+	RecommendOnlyStateLapsed                    RecommendOnlyState = "lapsed"
+)
+
+// Valid indicates whether the value is a known member of the RecommendOnlyState enum.
+func (e RecommendOnlyState) Valid() bool {
+	switch e {
+	case RecommendOnlyStateAwaitingExternalExecution:
+		return true
+	case RecommendOnlyStateEmpty:
+		return true
+	case RecommendOnlyStateExternallyExecuted:
+		return true
+	case RecommendOnlyStateLapsed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UserRole.
 const (
 	Internal UserRole = "internal"
@@ -809,6 +965,24 @@ func (e UserRole) Valid() bool {
 	default:
 		return false
 	}
+}
+
+// ActionExecutionView The single EXE-002 execution record for an action (CHAT-073 read).
+type ActionExecutionView struct {
+	ActionId openapi_types.UUID `json:"actionId"`
+	CardId   openapi_types.UUID `json:"cardId"`
+
+	// ExternalRef The marketplace's handle for the write (e.g. batch id), when present.
+	ExternalRef *string `json:"externalRef,omitempty"`
+
+	// ExternalState The EXE-003 external result of a write. `pending_reconciliation` is the fail-closed state for an UNKNOWN result — never inferred as success/failure.
+	ExternalState ExecutionExternalState `json:"externalState"`
+
+	// Mode The execution mode of a completed Execute call. `write` attempted a real external write (write enabled); `recommend_only` tracked the approved action for external matching because writes are OFF (EXE-005).
+	Mode ExecutionMode `json:"mode"`
+
+	// ReconciledAt When the external result was reconciled to a terminal state.
+	ReconciledAt *time.Time `json:"reconciledAt,omitempty"`
 }
 
 // ApprovalBinding The APR-001 version binding of an approval control: the exact action id, parameter/context/policy/cost versions, evidence versions, and expiry. ANY change to a bound dimension, or a reached expiry, invalidates the control.
@@ -1323,6 +1497,42 @@ type EvidenceVersion struct {
 	Version       int64              `json:"version"`
 }
 
+// ExecuteActionRequest Request to revalidate and execute an approved card (§7.5).
+type ExecuteActionRequest struct {
+	CardId openapi_types.UUID `json:"cardId"`
+}
+
+// ExecuteActionResult The outcome of an Execute call. `blocked` is true when an EXE-001 gate prevented the write (`failedGate` names it). For a write, `externalState` is the EXE-003 result and `didWrite` reports whether THIS call performed the single external write. For recommend-only, `recommendOnlyState` is set.
+type ExecuteActionResult struct {
+	ActionId openapi_types.UUID `json:"actionId"`
+	Blocked  bool               `json:"blocked"`
+	CardId   openapi_types.UUID `json:"cardId"`
+
+	// DidWrite True only when THIS call performed the single external write (EXE-002).
+	DidWrite bool `json:"didWrite"`
+
+	// ExternalState The EXE-003 external result of a write. `pending_reconciliation` is the fail-closed state for an UNKNOWN result — never inferred as success/failure.
+	ExternalState *ExecutionExternalState `json:"externalState,omitempty"`
+
+	// FailedGate One of the nine EXE-001 revalidation gates. Present on a blocked result to name the gate that prevented the write.
+	FailedGate *ExecutionGate `json:"failedGate,omitempty"`
+
+	// Mode The execution mode of a completed Execute call. `write` attempted a real external write (write enabled); `recommend_only` tracked the approved action for external matching because writes are OFF (EXE-005).
+	Mode ExecutionMode `json:"mode"`
+
+	// RecommendOnlyState The EXE-005 recommend-only tracking state.
+	RecommendOnlyState *RecommendOnlyState `json:"recommendOnlyState,omitempty"`
+}
+
+// ExecutionExternalState The EXE-003 external result of a write. `pending_reconciliation` is the fail-closed state for an UNKNOWN result — never inferred as success/failure.
+type ExecutionExternalState string
+
+// ExecutionGate One of the nine EXE-001 revalidation gates. Present on a blocked result to name the gate that prevented the write.
+type ExecutionGate string
+
+// ExecutionMode The execution mode of a completed Execute call. `write` attempted a real external write (write enabled); `recommend_only` tracked the approved action for external matching because writes are OFF (EXE-005).
+type ExecutionMode string
+
 // Health Liveness plus build identity, returned by GET /healthz.
 type Health struct {
 	// Build Identity of the running binary.
@@ -1591,6 +1801,29 @@ type ObservedOfferList struct {
 	Items []ObservedOffer `json:"items"`
 }
 
+// OutcomeResultView The §15.3 result + confidence of a closed outcome window.
+type OutcomeResultView struct {
+	ComputedAt *time.Time                  `json:"computedAt,omitempty"`
+	Confidence OutcomeResultViewConfidence `json:"confidence"`
+	Result     OutcomeResultViewResult     `json:"result"`
+}
+
+// OutcomeResultViewConfidence defines model for OutcomeResultView.Confidence.
+type OutcomeResultViewConfidence string
+
+// OutcomeResultViewResult defines model for OutcomeResultView.Result.
+type OutcomeResultViewResult string
+
+// OutcomeView An action's OUT-001 seven-day outcome window and, once closed, its §15.3 result. `result` is absent while the window is still open.
+type OutcomeView struct {
+	ActionId openapi_types.UUID `json:"actionId"`
+	ClosesAt time.Time          `json:"closesAt"`
+	OpenedAt time.Time          `json:"openedAt"`
+
+	// Result The §15.3 result + confidence of a closed outcome window.
+	Result *OutcomeResultView `json:"result,omitempty"`
+}
+
 // PolicyBlocker One typed reason a policy stage prevented a proposal (in policy order).
 type PolicyBlocker struct {
 	// Code Stable, machine-readable reason a policy stage blocked. Free text lives only in a blocker's message and carries no authority (§8).
@@ -1732,6 +1965,23 @@ type RawAmount struct {
 	Value string `json:"value"`
 }
 
+// RecommendOnlyState The EXE-005 recommend-only tracking state.
+type RecommendOnlyState string
+
+// RetryActionRequest Request to retry an eligible failed action (EXE-003 / CHAT-074).
+type RetryActionRequest struct {
+	ActionId openapi_types.UUID `json:"actionId"`
+}
+
+// RetryActionResult The retry eligibility outcome. `eligible` is true only for a definitively Failed action; a Pending Reconciliation action is refused with an error.
+type RetryActionResult struct {
+	ActionId openapi_types.UUID `json:"actionId"`
+	Eligible bool               `json:"eligible"`
+
+	// State The EXE-003 external result of a write. `pending_reconciliation` is the fail-closed state for an UNKNOWN result — never inferred as success/failure.
+	State *ExecutionExternalState `json:"state,omitempty"`
+}
+
 // SessionInfo Identity of the authenticated session. This is the single shape both chat and screens read the current principal from; role drives the shared permission matrix (ACC-002).
 type SessionInfo struct {
 	// Email The user's email.
@@ -1777,6 +2027,12 @@ type TodayFeed struct {
 
 // UserRole Product role (PRD §2.2). Owner governs commercial boundaries and users; Operator executes day-to-day within Owner-defined permissions; Internal diagnoses data/execution and cannot change seller commercial rules.
 type UserRole string
+
+// GetActionExecutionParams defines parameters for GetActionExecution.
+type GetActionExecutionParams struct {
+	// ActionId The action id (the card's bound action).
+	ActionId openapi_types.UUID `form:"actionId" json:"actionId"`
+}
 
 // GetApprovalCardParams defines parameters for GetApprovalCard.
 type GetApprovalCardParams struct {
@@ -1850,11 +2106,22 @@ type ListObservationTargetsParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
+// GetOutcomeParams defines parameters for GetOutcome.
+type GetOutcomeParams struct {
+	ActionId openapi_types.UUID `form:"actionId" json:"actionId"`
+}
+
 // GetTodayFeedParams defines parameters for GetTodayFeed.
 type GetTodayFeedParams struct {
 	// MarketplaceAccountId Marketplace account whose Today feed is requested.
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
+
+// ExecuteActionJSONRequestBody defines body for ExecuteAction for application/json ContentType.
+type ExecuteActionJSONRequestBody = ExecuteActionRequest
+
+// RetryActionJSONRequestBody defines body for RetryAction for application/json ContentType.
+type RetryActionJSONRequestBody = RetryActionRequest
 
 // ConfirmBulkApprovalJSONRequestBody defines body for ConfirmBulkApproval for application/json ContentType.
 type ConfirmBulkApprovalJSONRequestBody = BulkApprovalConfirmRequest
@@ -1906,6 +2173,15 @@ type SimulatePolicyJSONRequestBody = PolicySimulationRequest
 
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ExecuteAction Revalidate and execute an approved action (EXE-001/002/005).
+	// (POST /actions/execute)
+	ExecuteAction(w http.ResponseWriter, r *http.Request)
+	// GetActionExecution Get an action's execution record (CHAT-073).
+	// (GET /actions/execution)
+	GetActionExecution(w http.ResponseWriter, r *http.Request, params GetActionExecutionParams)
+	// RetryAction Retry an eligible failed action (EXE-003, CHAT-074).
+	// (POST /actions/retry)
+	RetryAction(w http.ResponseWriter, r *http.Request)
 	// ConfirmBulkApproval Confirm a bulk approval bound to one selection-set version (CHAT-052).
 	// (POST /approvals/bulk/confirm)
 	ConfirmBulkApproval(w http.ResponseWriter, r *http.Request)
@@ -1993,6 +2269,9 @@ type ServerInterface interface {
 	// ListObservationTargets List the account's observation targets.
 	// (GET /observation/targets)
 	ListObservationTargets(w http.ResponseWriter, r *http.Request, params ListObservationTargetsParams)
+	// GetOutcome Get an action's seven-day outcome window and result (OUT-001).
+	// (GET /outcomes)
+	GetOutcome(w http.ResponseWriter, r *http.Request, params GetOutcomeParams)
 	// SimulatePolicy Simulate the contribution + six-stage policy engines (non-executable).
 	// (POST /policy/simulate)
 	SimulatePolicy(w http.ResponseWriter, r *http.Request)
@@ -2009,6 +2288,67 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ExecuteAction operation middleware
+func (siw *ServerInterfaceWrapper) ExecuteAction(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ExecuteAction(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetActionExecution operation middleware
+func (siw *ServerInterfaceWrapper) GetActionExecution(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetActionExecutionParams
+
+	// ------------- Required query parameter "actionId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "actionId", r.URL.Query(), &params.ActionId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "actionId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "actionId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetActionExecution(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RetryAction operation middleware
+func (siw *ServerInterfaceWrapper) RetryAction(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RetryAction(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ConfirmBulkApproval operation middleware
 func (siw *ServerInterfaceWrapper) ConfirmBulkApproval(w http.ResponseWriter, r *http.Request) {
@@ -2651,6 +2991,39 @@ func (siw *ServerInterfaceWrapper) ListObservationTargets(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
+// GetOutcome operation middleware
+func (siw *ServerInterfaceWrapper) GetOutcome(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetOutcomeParams
+
+	// ------------- Required query parameter "actionId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "actionId", r.URL.Query(), &params.ActionId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "actionId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "actionId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetOutcome(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SimulatePolicy operation middleware
 func (siw *ServerInterfaceWrapper) SimulatePolicy(w http.ResponseWriter, r *http.Request) {
 
@@ -2849,8 +3222,129 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/approvals/card", wrapper.GetApprovalCard)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/approvals/confirm", wrapper.ConfirmApproval)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/approvals/bulk/confirm", wrapper.ConfirmBulkApproval)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/actions/execute", wrapper.ExecuteAction)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/actions/retry", wrapper.RetryAction)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/actions/execution", wrapper.GetActionExecution)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/outcomes", wrapper.GetOutcome)
 
 	return m
+}
+
+type ExecuteActionRequestObject struct {
+	Body *ExecuteActionJSONRequestBody
+}
+
+type ExecuteActionResponseObject interface {
+	VisitExecuteActionResponse(w http.ResponseWriter) error
+}
+
+type ExecuteAction200JSONResponse ExecuteActionResult
+
+func (response ExecuteAction200JSONResponse) VisitExecuteActionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ExecuteActiondefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ExecuteActiondefaultJSONResponse) VisitExecuteActionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetActionExecutionRequestObject struct {
+	Params GetActionExecutionParams
+}
+
+type GetActionExecutionResponseObject interface {
+	VisitGetActionExecutionResponse(w http.ResponseWriter) error
+}
+
+type GetActionExecution200JSONResponse ActionExecutionView
+
+func (response GetActionExecution200JSONResponse) VisitGetActionExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetActionExecutiondefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetActionExecutiondefaultJSONResponse) VisitGetActionExecutionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RetryActionRequestObject struct {
+	Body *RetryActionJSONRequestBody
+}
+
+type RetryActionResponseObject interface {
+	VisitRetryActionResponse(w http.ResponseWriter) error
+}
+
+type RetryAction200JSONResponse RetryActionResult
+
+func (response RetryAction200JSONResponse) VisitRetryActionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RetryActiondefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response RetryActiondefaultJSONResponse) VisitRetryActionResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type ConfirmBulkApprovalRequestObject struct {
@@ -4046,6 +4540,45 @@ func (response ListObservationTargetsdefaultJSONResponse) VisitListObservationTa
 	return err
 }
 
+type GetOutcomeRequestObject struct {
+	Params GetOutcomeParams
+}
+
+type GetOutcomeResponseObject interface {
+	VisitGetOutcomeResponse(w http.ResponseWriter) error
+}
+
+type GetOutcome200JSONResponse OutcomeView
+
+func (response GetOutcome200JSONResponse) VisitGetOutcomeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetOutcomedefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetOutcomedefaultJSONResponse) VisitGetOutcomeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type SimulatePolicyRequestObject struct {
 	Body *SimulatePolicyJSONRequestBody
 }
@@ -4126,6 +4659,15 @@ func (response GetTodayFeeddefaultJSONResponse) VisitGetTodayFeedResponse(w http
 
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ExecuteAction Revalidate and execute an approved action (EXE-001/002/005).
+	// (POST /actions/execute)
+	ExecuteAction(ctx context.Context, request ExecuteActionRequestObject) (ExecuteActionResponseObject, error)
+	// GetActionExecution Get an action's execution record (CHAT-073).
+	// (GET /actions/execution)
+	GetActionExecution(ctx context.Context, request GetActionExecutionRequestObject) (GetActionExecutionResponseObject, error)
+	// RetryAction Retry an eligible failed action (EXE-003, CHAT-074).
+	// (POST /actions/retry)
+	RetryAction(ctx context.Context, request RetryActionRequestObject) (RetryActionResponseObject, error)
 	// ConfirmBulkApproval Confirm a bulk approval bound to one selection-set version (CHAT-052).
 	// (POST /approvals/bulk/confirm)
 	ConfirmBulkApproval(ctx context.Context, request ConfirmBulkApprovalRequestObject) (ConfirmBulkApprovalResponseObject, error)
@@ -4213,6 +4755,9 @@ type StrictServerInterface interface {
 	// ListObservationTargets List the account's observation targets.
 	// (GET /observation/targets)
 	ListObservationTargets(ctx context.Context, request ListObservationTargetsRequestObject) (ListObservationTargetsResponseObject, error)
+	// GetOutcome Get an action's seven-day outcome window and result (OUT-001).
+	// (GET /outcomes)
+	GetOutcome(ctx context.Context, request GetOutcomeRequestObject) (GetOutcomeResponseObject, error)
 	// SimulatePolicy Simulate the contribution + six-stage policy engines (non-executable).
 	// (POST /policy/simulate)
 	SimulatePolicy(ctx context.Context, request SimulatePolicyRequestObject) (SimulatePolicyResponseObject, error)
@@ -4258,6 +4803,94 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ExecuteAction operation middleware
+func (sh *strictHandler) ExecuteAction(w http.ResponseWriter, r *http.Request) {
+	var request ExecuteActionRequestObject
+
+	var body ExecuteActionJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ExecuteAction(ctx, request.(ExecuteActionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ExecuteAction")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ExecuteActionResponseObject); ok {
+		if err := validResponse.VisitExecuteActionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetActionExecution operation middleware
+func (sh *strictHandler) GetActionExecution(w http.ResponseWriter, r *http.Request, params GetActionExecutionParams) {
+	var request GetActionExecutionRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetActionExecution(ctx, request.(GetActionExecutionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetActionExecution")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetActionExecutionResponseObject); ok {
+		if err := validResponse.VisitGetActionExecutionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RetryAction operation middleware
+func (sh *strictHandler) RetryAction(w http.ResponseWriter, r *http.Request) {
+	var request RetryActionRequestObject
+
+	var body RetryActionJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RetryAction(ctx, request.(RetryActionRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RetryAction")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RetryActionResponseObject); ok {
+		if err := validResponse.VisitRetryActionResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // ConfirmBulkApproval operation middleware
@@ -5076,6 +5709,32 @@ func (sh *strictHandler) ListObservationTargets(w http.ResponseWriter, r *http.R
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ListObservationTargetsResponseObject); ok {
 		if err := validResponse.VisitListObservationTargetsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetOutcome operation middleware
+func (sh *strictHandler) GetOutcome(w http.ResponseWriter, r *http.Request, params GetOutcomeParams) {
+	var request GetOutcomeRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetOutcome(ctx, request.(GetOutcomeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetOutcome")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetOutcomeResponseObject); ok {
+		if err := validResponse.VisitGetOutcomeResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -22,9 +22,11 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
+	"github.com/mhosseinab/market-ops/services/core/internal/execution"
 	"github.com/mhosseinab/market-ops/services/core/internal/httpapi"
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
 	"github.com/mhosseinab/market-ops/services/core/internal/obs"
+	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
@@ -146,8 +148,23 @@ func run() error {
 		// Wire the recommendation/approval plane (PRC-001/002, APR-001, §8.4): the
 		// version-bound approval control and the append-only state machine. Execution
 		// itself lands in S18; the Revalidating→Executing boundary is stubbed closed.
-		serverOpts = append(serverOpts, httpapi.WithApproval(recommendation.NewService(pool)))
+		recSvc := recommendation.NewService(pool)
+		serverOpts = append(serverOpts, httpapi.WithApproval(recSvc))
 		logger.Info("approval service wired")
+
+		// Wire the execution/reconciliation/outcome plane (EXE-001..005, AUD-001,
+		// OUT-001). Execution ships DARK: the DefaultResolver reports write
+		// enablement OFF (Unknown price_write capability AND the S35 region flag
+		// absent), so an Approved card is tracked recommend-only and NOTHING is
+		// written until the gated S35 probes record verified parameters. The HTTP
+		// writer targets the DK batch endpoint; it is exercised only once
+		// enablement flips on. A nil capability check fails closed (never Supported).
+		writer := execution.NewHTTPWriter("", "", nil)
+		resolver := execution.NewDefaultResolver(pool, nil)
+		serverOpts = append(serverOpts, httpapi.WithExecution(
+			execution.NewService(pool, recSvc, writer, resolver)))
+		serverOpts = append(serverOpts, httpapi.WithOutcome(outcome.NewService(pool)))
+		logger.Info("execution service wired (dark; writes OFF until S35)")
 	} else {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
 	}

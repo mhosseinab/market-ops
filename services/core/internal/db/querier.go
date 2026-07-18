@@ -6,6 +6,7 @@ package db
 
 import (
 	"context"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -23,7 +24,28 @@ type Querier interface {
 	AdvanceCatalogSyncRun(ctx context.Context, arg AdvanceCatalogSyncRunParams) (CatalogSyncRun, error)
 	// APPEND-ONLY §8.4 history. One row per state change; INSERT only.
 	AppendApprovalCardState(ctx context.Context, arg AppendApprovalCardStateParams) (ApprovalCardState, error)
+	// Audit trail queries (PRD §7.5 AUD-001). audit_records is STRICTLY APPEND-ONLY:
+	// INSERT/SELECT only — there is deliberately NO UPDATE/DELETE query. A historical
+	// action is reproducible from these rows (plus approval_card_states and
+	// action_executions) WITHOUT the chat transcript (transcript-independent audit).
+	AppendAuditRecord(ctx context.Context, arg AppendAuditRecordParams) (AuditRecord, error)
+	// Append the §15.3 result + confidence at window close (once per window;
+	// UNIQUE(window_id)).
+	AppendOutcomeResult(ctx context.Context, arg AppendOutcomeResultParams) (OutcomeResult, error)
 	CancelCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
+	// Execution + recommend-only + write-verification queries (PRD §7.5 EXE-002..005).
+	// Discipline:
+	//   * action_executions is the EXE-002 SINGLE record per action, keyed by the
+	//     stable idempotency_key (UNIQUE). Claiming is an INSERT ... ON CONFLICT DO
+	//     NOTHING: a duplicate request finds the existing row and performs NO second
+	//     external write. The external_state projection is advanced by a FROM-guarded
+	//     UPDATE (pending_reconciliation → terminal), never a blind overwrite.
+	//   * account_write_verification is the S35 write-verification flag; ABSENT/false
+	//     means writes are OFF (the read returns false when there is no row).
+	// Claim the idempotency key. ON CONFLICT DO NOTHING makes this idempotent: a
+	// second request for the same key returns NO row (the service then reads the
+	// existing record and writes nothing external).
+	ClaimActionExecution(ctx context.Context, arg ClaimActionExecutionParams) (ActionExecution, error)
 	// OBS-008 atomic dedup. A returned row = first sighting (accept the observation);
 	// an empty result = replay (dedup — create no duplicate current offer). The key
 	// carries the route, so a different route observing the same value is a distinct
@@ -136,6 +158,9 @@ type Querier interface {
 	//   * margin_readiness and the two policy/requirement tables are current-state
 	//     projections (upserted).
 	GetAccountCostPolicy(ctx context.Context, marketplaceAccountID uuid.UUID) (AccountCostPolicy, error)
+	GetActionExecution(ctx context.Context, id uuid.UUID) (ActionExecution, error)
+	GetActionExecutionByAction(ctx context.Context, actionID uuid.UUID) (ActionExecution, error)
+	GetActionExecutionByKey(ctx context.Context, idempotencyKey string) (ActionExecution, error)
 	// EXECUTABLE-PATH query (CAT-002/OBS-001). Returns the variant's mapping ONLY
 	// when it is Confirmed AND active. A NeedsReview/Rejected/Obsolete mapping yields
 	// no row, so no executable recommendation can be built on an unconfirmed identity.
@@ -146,6 +171,12 @@ type Querier interface {
 	GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	// The greatest-version card for a lineage (the live card version).
 	GetCurrentApprovalCard(ctx context.Context, lineageID uuid.UUID) (ApprovalCard, error)
+	// Server-side re-resolution for the Revalidating gate (EXE-001): the account,
+	// variant, and native variant id for a card's recommendation, PLUS the CURRENT
+	// (greatest-version) cost/policy/context/parameter versions in the recommendation
+	// lineage. Comparing these to the card's BOUND versions catches an out-of-band
+	// version change that never passed through a state-machine invalidation.
+	GetCurrentExecutionContext(ctx context.Context, id uuid.UUID) (GetCurrentExecutionContextRow, error)
 	// The greatest-version row for a lineage (the current recommendation).
 	GetCurrentRecommendation(ctx context.Context, lineageID uuid.UUID) (Recommendation, error)
 	GetCurrentSelectionSet(ctx context.Context, lineageID uuid.UUID) (SelectionSet, error)
@@ -166,6 +197,9 @@ type Querier interface {
 	GetObservedOffer(ctx context.Context, arg GetObservedOfferParams) (ObservedOffer, error)
 	GetOpenEventByDedupKey(ctx context.Context, dedupKey string) (MarketEvent, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
+	GetOutcomeResult(ctx context.Context, windowID uuid.UUID) (OutcomeResult, error)
+	GetOutcomeWindowByAction(ctx context.Context, actionID uuid.UUID) (OutcomeWindow, error)
+	GetRecommendOnlyAction(ctx context.Context, actionID uuid.UUID) (RecommendOnlyAction, error)
 	GetRecommendation(ctx context.Context, id uuid.UUID) (Recommendation, error)
 	GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error)
 	// Resolve a live session to its principal (user + role + organization). Rows
@@ -181,6 +215,7 @@ type Querier interface {
 	// The account a variant belongs to — used to recompute readiness for a variant
 	// when the caller only has the variant id (e.g. the readiness read endpoint).
 	GetVariantAccountID(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	GetWriteVerification(ctx context.Context, marketplaceAccountID uuid.UUID) (AccountWriteVerification, error)
 	// Approval card queries (PRD §7.5 APR-001, §8.4 state machine). Write discipline:
 	//   * approval_cards is APPEND-ONLY within a lineage (a price edit is a new
 	//     version). The `state` column is a CURRENT-state projection advanced by a
@@ -222,6 +257,7 @@ type Querier interface {
 	// identity_id is an active Confirmed mapping (OBS-001) — the negative test drives
 	// exactly this path with an unconfirmed identity and asserts the raise.
 	InsertObservationTarget(ctx context.Context, arg InsertObservationTargetParams) (ObservationTarget, error)
+	InsertRecommendOnlyAction(ctx context.Context, arg InsertRecommendOnlyActionParams) (RecommendOnlyAction, error)
 	// Recommendation queries (PRD §7.5 PRC-001/002). recommendations is APPEND-ONLY
 	// within a lineage: a new version is a new row whose version is the greatest in
 	// the lineage plus one (computed in SQL, never floated). There is NO UPDATE/DELETE
@@ -240,6 +276,9 @@ type Querier interface {
 	// UPDATE/DELETE — the current set is the greatest version per lineage.
 	InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error)
 	InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error)
+	// The S35 write-verification flag for an account. Returns false when there is no
+	// row (writes OFF by default) — the two-key write gate's second key.
+	IsWriteVerified(ctx context.Context, marketplaceAccountID uuid.UUID) (bool, error)
 	// The rows a commit turns into cost_profile versions: accepted rows with a
 	// resolved variant. Duplicate/reject rows are excluded by construction.
 	ListAcceptedCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
@@ -251,6 +290,15 @@ type Querier interface {
 	ListActiveTargetsByTier(ctx context.Context, tier string) ([]ObservationTarget, error)
 	// The append-only lifecycle history for a card, in occurrence order (AUD-001).
 	ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) ([]ApprovalCardState, error)
+	// The complete append-only audit trail for an action, in occurrence order. This
+	// is the reproduction read (AUD-001): it joins NOTHING in the conversation tables,
+	// so deleting a conversation leaves the trail intact.
+	ListAuditRecordsForAction(ctx context.Context, actionID uuid.UUID) ([]AuditRecord, error)
+	// Awaiting recommend-only actions for a variant (the recommend-only matcher runs
+	// these against fresh owned-price observations).
+	ListAwaitingRecommendOnlyForVariant(ctx context.Context, variantID uuid.UUID) ([]RecommendOnlyAction, error)
+	// Windows whose seven days have elapsed and that have no computed result yet.
+	ListClosableOutcomeWindows(ctx context.Context, closesAt time.Time) ([]OutcomeWindow, error)
 	// EXECUTABLE-PATH query (OBS-001): the observation targets an account may create
 	// are EXACTLY its active Confirmed mappings. NeedsReview/Rejected/Obsolete are
 	// excluded by construction — no target exists for an unconfirmed identity.
@@ -328,6 +376,22 @@ type Querier interface {
 	// unknown exposure passes exposure_known=false with NULL mantissa (the CHECK
 	// rejects a fabricated number).
 	OpenEvent(ctx context.Context, arg OpenEventParams) (MarketEvent, error)
+	// Outcome window queries (PRD §7.5 OUT-001, §15.3). Both tables are APPEND-ONLY:
+	//   * outcome_windows — one seven-day window per reconciled action (INSERT/SELECT).
+	//   * outcome_results — the §15.3 result + confidence, computed once at close
+	//     (INSERT/SELECT). There is deliberately NO UPDATE/DELETE query on either.
+	// Open the seven-day window for a reconciled action. UNIQUE(action_id) makes this
+	// idempotent: a second open for the same action returns no row.
+	OpenOutcomeWindow(ctx context.Context, arg OpenOutcomeWindowParams) (OutcomeWindow, error)
+	// Resolve a pending_reconciliation record to a terminal state (post-write
+	// read-back or periodic reconciliation, §16). FROM-guarded on pending so only an
+	// unresolved record is reconciled; the retry endpoint refuses any record still
+	// pending (EXE-003). The observed external ref (batch handle) is recorded verbatim.
+	ReconcileActionExecution(ctx context.Context, arg ReconcileActionExecutionParams) (ActionExecution, error)
+	// Record the classified write result. FROM-guarded on the pending state so a
+	// definitive result is written exactly once; a row already resolved to a terminal
+	// state is not overwritten (idempotent result recording).
+	RecordExecutionResult(ctx context.Context, arg RecordExecutionResultParams) (ActionExecution, error)
 	// Transition NeedsReview -> Rejected and deactivate. A rejected mapping never
 	// feeds an executable path and frees the variant for a fresh candidate later.
 	RejectIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
@@ -359,6 +423,9 @@ type Querier interface {
 	// Record a probe result. Only a probe calls this; status is set explicitly and
 	// last_verified_at stamps when it was determined.
 	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
+	// Advance a recommend-only action to a terminal EXE-005 state. FROM-guarded on
+	// the awaiting state so a resolved action is not re-resolved.
+	SetRecommendOnlyState(ctx context.Context, arg SetRecommendOnlyStateParams) (RecommendOnlyAction, error)
 	// EVT-003 / §16: a duplicate detection UPDATES the open record in place — it
 	// refreshes the evidence, factors, exposure, severity, and expiry, marks the row
 	// 'updated', and bumps evidence_update_count. It produces ZERO new events rows,
@@ -393,6 +460,9 @@ type Querier interface {
 	// password change replaces the hash in place.
 	UpsertUserCredential(ctx context.Context, arg UpsertUserCredentialParams) error
 	UpsertVariant(ctx context.Context, arg UpsertVariantParams) (UpsertVariantRow, error)
+	// Set the S35 write-verification flag (called only by the gated S35 probe path,
+	// never at runtime). Present for completeness of the seam.
+	UpsertWriteVerification(ctx context.Context, arg UpsertWriteVerificationParams) (AccountWriteVerification, error)
 }
 
 var _ Querier = (*Queries)(nil)

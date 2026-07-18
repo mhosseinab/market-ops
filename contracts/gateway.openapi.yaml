@@ -1110,6 +1110,140 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /actions/execute:
+    post:
+      operationId: executeAction
+      tags:
+        - execution
+      summary: Revalidate and execute an approved action (EXE-001/002/005).
+      description: >-
+        The L4 execution path (PRD §7.5). It re-resolves the current binding
+        SERVER-SIDE and runs the EXE-001 nine-gate revalidation matrix (identity,
+        current price, costs, money unit, boundary, evidence/JIT, guardrails,
+        permission, expiry); an injected change in ANY gate prevents the write and
+        invalidates the card. When gates pass AND writes are enabled (a Supported
+        price_write capability AND the S35 region write-verification flag), it
+        performs EXACTLY ONE idempotent write keyed by the card's stable idempotency
+        key (EXE-002) and reports the external state (EXE-003). When writes are OFF
+        (default), NOTHING is written: the action is tracked recommend-only
+        (EXE-005). It is idempotent: a repeat call replays the recorded result with
+        zero additional external writes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExecuteActionRequest'
+      responses:
+        '200':
+          description: The execution outcome (write, blocked, or recommend-only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecuteActionResult'
+        default:
+          description: Unexpected error (including a card that is not approved).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /actions/retry:
+    post:
+      operationId: retryAction
+      tags:
+        - execution
+      summary: Retry an eligible failed action (EXE-003, CHAT-074).
+      description: >-
+        Gates a retry. It REJECTS an action whose execution is still Pending
+        Reconciliation — an unknown result must reconcile first, never be retried
+        (EXE-003 / CHAT-074). A definitively Failed action is retry-eligible (§16
+        "retry only eligible reconciled failures"); the actual re-write proceeds
+        only through a fresh approved action (rollback/retry is never an automatic
+        inverse or duplicate write, EXE-004).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetryActionRequest'
+      responses:
+        '200':
+          description: The retry eligibility outcome.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetryActionResult'
+        default:
+          description: Unexpected error (including an unreconciled or terminal action).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /actions/execution:
+    get:
+      operationId: getActionExecution
+      tags:
+        - execution
+      summary: Get an action's execution record (CHAT-073).
+      description: >-
+        Returns the single execution record for an action (EXE-002): its mode,
+        external state (EXE-003), external ref, and reconciliation instant. This is
+        a read; it never writes or advances state.
+      parameters:
+        - name: actionId
+          in: query
+          required: true
+          description: The action id (the card's bound action).
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The execution record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionExecutionView'
+        default:
+          description: Unexpected error (including no execution record).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /outcomes:
+    get:
+      operationId: getOutcome
+      tags:
+        - execution
+      summary: Get an action's seven-day outcome window and result (OUT-001).
+      description: >-
+        Returns the OUT-001 seven-day outcome window for a reconciled action and,
+        once the window has closed, its §15.3 result and confidence (or Not
+        Measurable when the required evidence is absent). This is a read.
+      parameters:
+        - name: actionId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The outcome window and (when closed) its result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OutcomeView'
+        default:
+          description: Unexpected error (including no outcome window).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -3187,4 +3321,203 @@ components:
           type: boolean
         executionPending:
           type: boolean
+      additionalProperties: false
+
+    ExecutionMode:
+      type: string
+      description: >-
+        The execution mode of a completed Execute call. `write` attempted a real
+        external write (write enabled); `recommend_only` tracked the approved
+        action for external matching because writes are OFF (EXE-005).
+      enum:
+        - write
+        - recommend_only
+
+    ExecutionExternalState:
+      type: string
+      description: >-
+        The EXE-003 external result of a write. `pending_reconciliation` is the
+        fail-closed state for an UNKNOWN result — never inferred as success/failure.
+      enum:
+        - accepted
+        - rejected
+        - pending_reconciliation
+        - failed
+
+    ExecutionGate:
+      type: string
+      description: >-
+        One of the nine EXE-001 revalidation gates. Present on a blocked result to
+        name the gate that prevented the write.
+      enum:
+        - ""
+        - identity
+        - current_price
+        - costs
+        - money_unit
+        - boundary
+        - evidence_jit
+        - guardrails
+        - permission
+        - expiry
+
+    RecommendOnlyState:
+      type: string
+      description: The EXE-005 recommend-only tracking state.
+      enum:
+        - ""
+        - awaiting_external_execution
+        - externally_executed
+        - lapsed
+
+    ExecuteActionRequest:
+      type: object
+      description: Request to revalidate and execute an approved card (§7.5).
+      required:
+        - cardId
+      properties:
+        cardId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    ExecuteActionResult:
+      type: object
+      description: >-
+        The outcome of an Execute call. `blocked` is true when an EXE-001 gate
+        prevented the write (`failedGate` names it). For a write, `externalState`
+        is the EXE-003 result and `didWrite` reports whether THIS call performed the
+        single external write. For recommend-only, `recommendOnlyState` is set.
+      required:
+        - actionId
+        - cardId
+        - mode
+        - blocked
+        - didWrite
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        cardId:
+          type: string
+          format: uuid
+        mode:
+          $ref: '#/components/schemas/ExecutionMode'
+        blocked:
+          type: boolean
+        failedGate:
+          $ref: '#/components/schemas/ExecutionGate'
+        externalState:
+          $ref: '#/components/schemas/ExecutionExternalState'
+        recommendOnlyState:
+          $ref: '#/components/schemas/RecommendOnlyState'
+        didWrite:
+          type: boolean
+          description: True only when THIS call performed the single external write (EXE-002).
+      additionalProperties: false
+
+    RetryActionRequest:
+      type: object
+      description: Request to retry an eligible failed action (EXE-003 / CHAT-074).
+      required:
+        - actionId
+      properties:
+        actionId:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    RetryActionResult:
+      type: object
+      description: >-
+        The retry eligibility outcome. `eligible` is true only for a definitively
+        Failed action; a Pending Reconciliation action is refused with an error.
+      required:
+        - actionId
+        - eligible
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        eligible:
+          type: boolean
+        state:
+          $ref: '#/components/schemas/ExecutionExternalState'
+      additionalProperties: false
+
+    ActionExecutionView:
+      type: object
+      description: The single EXE-002 execution record for an action (CHAT-073 read).
+      required:
+        - actionId
+        - cardId
+        - mode
+        - externalState
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        cardId:
+          type: string
+          format: uuid
+        mode:
+          $ref: '#/components/schemas/ExecutionMode'
+        externalState:
+          $ref: '#/components/schemas/ExecutionExternalState'
+        externalRef:
+          type: string
+          description: The marketplace's handle for the write (e.g. batch id), when present.
+        reconciledAt:
+          type: string
+          format: date-time
+          description: When the external result was reconciled to a terminal state.
+      additionalProperties: false
+
+    OutcomeResultView:
+      type: object
+      description: The §15.3 result + confidence of a closed outcome window.
+      required:
+        - result
+        - confidence
+      properties:
+        result:
+          type: string
+          enum:
+            - positive
+            - negative
+            - neutral
+            - inconclusive
+            - not_measurable
+        confidence:
+          type: string
+          enum:
+            - high
+            - medium
+            - low
+        computedAt:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    OutcomeView:
+      type: object
+      description: >-
+        An action's OUT-001 seven-day outcome window and, once closed, its §15.3
+        result. `result` is absent while the window is still open.
+      required:
+        - actionId
+        - openedAt
+        - closesAt
+      properties:
+        actionId:
+          type: string
+          format: uuid
+        openedAt:
+          type: string
+          format: date-time
+        closesAt:
+          type: string
+          format: date-time
+        result:
+          $ref: '#/components/schemas/OutcomeResultView'
       additionalProperties: false
