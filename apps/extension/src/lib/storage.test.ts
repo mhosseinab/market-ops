@@ -16,8 +16,8 @@ describe("storage audit — EXT-001: ONLY a capture credential, NEVER a seller t
       credentialId: "33333333-3333-3333-3333-333333333333",
       marketplaceAccountId: "11111111-1111-1111-1111-111111111111",
       expiresAt: "2026-08-01T00:00:00Z",
-      sellerApiToken: "eyJhbGciOiJIUzI1NiJ9.SELLER.SECRET",
-      dkOpenApiKey: "dk-secret",
+      sellerApiToken: "FAKE-seller-token-should-be-stripped",
+      dkOpenApiKey: "FAKE-dk-key-should-be-stripped",
     } as unknown as PairingCredential;
 
     const stored = sanitizeCredential(claim);
@@ -28,8 +28,8 @@ describe("storage audit — EXT-001: ONLY a capture credential, NEVER a seller t
       "expiresAt",
       "marketplaceAccountId",
     ]);
-    expect(JSON.stringify(stored)).not.toContain("SELLER.SECRET");
-    expect(JSON.stringify(stored)).not.toContain("dk-secret");
+    expect(JSON.stringify(stored)).not.toContain("FAKE-seller-token-should-be-stripped");
+    expect(JSON.stringify(stored)).not.toContain("FAKE-dk-key-should-be-stripped");
   });
 
   it("auditNoSellerToken finds NO seller-token-shaped secret in a real storage snapshot", async () => {
