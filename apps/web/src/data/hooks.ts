@@ -2,15 +2,21 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { gateway } from "../app/query";
 import { useAccount } from "./account";
 import type {
+  ActionExecutionView,
   ApprovalBinding,
   ApprovalCardView,
   ApprovalConfirmResult,
+  BulkApprovalConfirmRequest,
+  BulkApprovalConfirmResult,
   CostImportCommitResult,
   CostImportPreview,
   CostProfileVersion,
   EventRelevanceKind,
   MarginReadiness,
   MarketEvent,
+  OutcomeView,
+  RetryActionResult,
+  SessionInfo,
   SingleCostEntryRequest,
   TodayFeed,
 } from "./types";
@@ -40,6 +46,9 @@ export const queryKeys = {
   today: (accountId: string) => ["today", accountId] as const,
   event: (eventId: string) => ["event", eventId] as const,
   approvalCard: (cardId: string) => ["approval-card", cardId] as const,
+  session: () => ["session"] as const,
+  actionExecution: (actionId: string) => ["action-execution", actionId] as const,
+  outcome: (actionId: string) => ["outcome", actionId] as const,
 };
 
 export function useConnectorStatus() {
@@ -288,6 +297,84 @@ export function useEventRelevance() {
           },
         }),
       ),
+  });
+}
+
+// ── S28: session / actions-outcomes / bulk ──────────────────────────────────
+
+// The current principal (ACC-002): role drives the SHARED permission matrix that
+// gates L3 guardrail edits (Owner-only) and the internal Operations surfaces. The
+// screen renders what the session says; it never infers or elevates a role.
+export function useSession() {
+  return useQuery({
+    queryKey: queryKeys.session(),
+    queryFn: async (): Promise<SessionInfo> => unwrap(await gateway.GET("/auth/me")),
+  });
+}
+
+// An action's single EXE-002 execution record (CHAT-073 read): mode + EXE-003
+// external state + reconciliation instant. The external state is rendered exactly
+// as given — pending_reconciliation is NEVER coerced to success/failure.
+export function useActionExecution(actionId: string | undefined) {
+  return useQuery({
+    enabled: Boolean(actionId),
+    queryKey: queryKeys.actionExecution(actionId ?? ""),
+    queryFn: async (): Promise<ActionExecutionView> =>
+      unwrap(
+        await gateway.GET("/actions/execution", {
+          params: { query: { actionId: actionId as string } },
+        }),
+      ),
+  });
+}
+
+// The OUT-001 seven-day outcome window and, once closed, its §15.3 result +
+// confidence (or Not Measurable). A read; it never advances state.
+export function useOutcome(actionId: string | undefined) {
+  return useQuery({
+    enabled: Boolean(actionId),
+    queryKey: queryKeys.outcome(actionId ?? ""),
+    queryFn: async (): Promise<OutcomeView> =>
+      unwrap(
+        await gateway.GET("/outcomes", {
+          params: { query: { actionId: actionId as string } },
+        }),
+      ),
+  });
+}
+
+// Retry eligibility (EXE-003 / CHAT-074). The server REFUSES an action still in
+// pending_reconciliation — an unknown result must reconcile first. The screen
+// never even offers this control for an unreconciled action; this hook exists for
+// the definitively-Failed path, and the actual re-write is a fresh approval card.
+export function useRetryAction() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (actionId: string): Promise<RetryActionResult> => {
+      const res = await gateway.POST("/actions/retry", { body: { actionId } });
+      if (res.error) {
+        const env = res.error as { code?: string; message?: string };
+        throw Object.assign(new Error(env.message ?? env.code ?? "retry_failed"), {
+          code: env.code,
+        });
+      }
+      if (res.data === undefined) throw new Error("empty_response");
+      return res.data;
+    },
+    onSuccess: (r) => {
+      void qc.invalidateQueries({ queryKey: queryKeys.actionExecution(r.actionId) });
+    },
+  });
+}
+
+// The ONLY bulk-approval path (§8, free-text containment): a structured control
+// POST bound to ONE exact selection-set version (CHAT-052). The server rejects a
+// stale bound version (any set/evidence change mints a new version). Free text can
+// never satisfy this contract; the payload carries the bound version verbatim.
+export function useBulkConfirm() {
+  return useMutation({
+    mutationFn: async (req: BulkApprovalConfirmRequest): Promise<BulkApprovalConfirmResult> =>
+      unwrap(await gateway.POST("/approvals/bulk/confirm", { body: req })),
   });
 }
 

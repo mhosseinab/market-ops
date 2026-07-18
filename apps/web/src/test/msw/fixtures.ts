@@ -1,6 +1,8 @@
 import type {
+  ActionExecutionView,
   ApprovalCardView,
   ApprovalConfirmResult,
+  BulkApprovalConfirmResult,
   ConnectorStatus,
   CostImportPreview,
   MarginReadiness,
@@ -8,6 +10,8 @@ import type {
   NeedsReviewQueue,
   ObservationTarget,
   ObservedOffer,
+  OutcomeView,
+  SessionInfo,
   TodayFeed,
 } from "../../data/types";
 
@@ -255,4 +259,80 @@ export const confirmInvalidated: ApprovalConfirmResult = {
   state: "invalidated",
   reason: "parameter_version_changed",
   executionPending: false,
+};
+
+// ── S28: sessions / actions-outcomes / bulk ─────────────────────────────────
+const USER_ID = "10000000-0000-0000-0000-000000000001";
+const ORG_ID = "20000000-0000-0000-0000-000000000002";
+
+export const sessionOwner: SessionInfo = {
+  userId: USER_ID,
+  organizationId: ORG_ID,
+  email: "owner@example.com",
+  role: "owner",
+  expiresAt: "2026-07-18T12:00:00Z",
+};
+
+export const sessionOperator: SessionInfo = { ...sessionOwner, role: "operator" };
+export const sessionInternal: SessionInfo = { ...sessionOwner, role: "internal" };
+
+/** Unknown external result — never shown as success/failure; no retry (EXE-003). */
+export const execPendingReconciliation: ActionExecutionView = {
+  actionId: ACTION_ID,
+  cardId: CARD_ID,
+  mode: "write",
+  externalState: "pending_reconciliation",
+};
+
+/** Definitively failed — retry-eligible only through a fresh approval card. */
+export const execFailed: ActionExecutionView = {
+  ...execPendingReconciliation,
+  externalState: "failed",
+  reconciledAt: "2026-07-17T11:00:00Z",
+};
+
+/** Accepted by DK — carries an external ref and opens a 7-day outcome window. */
+export const execAccepted: ActionExecutionView = {
+  ...execPendingReconciliation,
+  externalState: "accepted",
+  externalRef: "batch-8842213",
+  reconciledAt: "2026-07-17T11:00:00Z",
+};
+
+export const outcomeOpen: OutcomeView = {
+  actionId: ACTION_ID,
+  openedAt: "2026-07-17T11:00:00Z",
+  closesAt: "2026-07-24T11:00:00Z",
+};
+
+export const outcomeClosed: OutcomeView = {
+  ...outcomeOpen,
+  result: { result: "positive", confidence: "high", computedAt: "2026-07-24T11:05:00Z" },
+};
+
+/** A valid bulk confirmation bound to the previewed selection-set version. */
+export const bulkValid: BulkApprovalConfirmResult = {
+  selectionSetLineage: "30000000-0000-0000-0000-000000000003",
+  boundVersion: 1,
+  valid: true,
+  executionPending: true,
+};
+
+/** A stale bulk confirmation: the bound version is no longer current. */
+export const bulkStale: BulkApprovalConfirmResult = {
+  selectionSetLineage: "30000000-0000-0000-0000-000000000003",
+  boundVersion: 1,
+  currentVersion: 2,
+  valid: false,
+  executionPending: false,
+};
+
+/** Complete readiness — drives an EXECUTABLE bulk candidate. */
+export const readinessComplete: MarginReadiness = {
+  variantId: VARIANT_ID,
+  marketplaceAccountId: ACCOUNT_ID,
+  state: "complete",
+  missingComponents: [],
+  staleComponents: [],
+  computedAt: "2026-07-17T09:00:00Z",
 };
