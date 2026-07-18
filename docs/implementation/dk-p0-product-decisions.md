@@ -62,3 +62,8 @@ Each entry:
     - **Private beta (§20.2):** items **1, 3, 5, 8** are effectively **beta-needed** — pilots cannot run the daily-review / WVRA success model (§5) or hit observation-readiness (≥70% Complete per assortment) if recommendation detail, contribution, the actions queue, and Market/Operations conflict/reconciliation visibility all read unavailable. Items 6 (guardrails read) + 7 (users roster) are beta-desirable Settings/admin surfaces, not WVRA-blocking.
     - **S35 write-enablement gate:** **#4 is a hard precondition** and #2/#6-write ride the same gate (server must mint versions before any write is enabled).
 - Disposition: *(empty until decided — awaiting product-owner "go" to insert the consolidated [C] step; recorded here as a tracked delivery risk, holds no current step or gate)*
+
+### PD-3 addendum (S29 chat dock, 2026-07-18)
+Two more gateway-contract gaps surfaced by S29, same disposition as PD-3 (consolidated api_data_contracts [C] step, pending product-owner go):
+- **S29 chat-envelope untyped:** `/chat` `final` event `envelope` is `additionalProperties:true`; the FE parses a client-side view-model defensively. Needs the owned response-envelope contract (7 statement kinds, evidence, table, card payloads) so `gen/ts` types it and CHAT-030/050/060 chat-vs-screen parity contract-tests can bind. Private-beta-desirable (parity assurance).
+- **No browser-facing (cookie-auth) Level-2 confirm endpoint:** only the machine-plane `/chat/cards/level2-proposal` (bearerAuth, Draft) exists; chat-side L2 confirmation currently deep-links to Settings (screens-only). Needed only if chat-side L2 confirm is in P0 scope — otherwise screens-only is an acceptable posture.
