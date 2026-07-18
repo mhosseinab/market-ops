@@ -25,7 +25,11 @@ echo "== build the web bundle (default /api base — routes through the Caddy te
 (cd apps/web && pnpm run build)
 
 echo "== bring up the integration stack =="
-$COMPOSE up -d --wait postgres mockdk llm core web caddy
+if ! $COMPOSE up -d --wait postgres mockdk llm core web caddy; then
+  echo "== compose up --wait failed; dumping llm/core/mockdk logs for diagnosis =="
+  $COMPOSE logs llm core mockdk || true
+  exit 1
+fi
 
 echo "== STOP the LLM plane container (the actual kill-switch condition) =="
 $COMPOSE stop llm

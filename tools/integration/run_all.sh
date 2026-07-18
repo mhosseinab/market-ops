@@ -46,7 +46,24 @@ fi
 
 # --- bring the stack back up (with the LLM plane LIVE) for scenarios 2-5 ---
 echo "### bringing the stack up (LLM plane live) for scenarios 2-5 ###"
-$COMPOSE up -d --wait postgres mockdk llm core web caddy
+if ! $COMPOSE up -d --wait postgres mockdk llm core web caddy; then
+  echo "== compose up --wait failed; dumping llm/core/mockdk logs for diagnosis =="
+  $COMPOSE logs llm core mockdk || true
+  report "2. adversarial containment replay (CHAT-041/045)" "FAIL"
+  report "3. §16 edge-case fixtures" "FAIL"
+  report "4. permission parity (CHAT-064)" "FAIL"
+  report "5. system duplicate-write (EXE-002)" "FAIL"
+  echo
+  echo "=== S32 test:integration — per-scenario report ==="
+  for name in "1. kill-switch journey (CHAT-009)" \
+              "2. adversarial containment replay (CHAT-041/045)" \
+              "3. §16 edge-case fixtures" \
+              "4. permission parity (CHAT-064)" \
+              "5. system duplicate-write (EXE-002)"; do
+    printf '%-55s %s\n' "$name" "${RESULT[$name]:-MISSING}"
+  done
+  exit 1
+fi
 DATABASE_URL="postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable"
 export DATABASE_URL
 
