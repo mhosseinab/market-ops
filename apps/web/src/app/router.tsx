@@ -9,9 +9,12 @@ import type { ReactElement } from "react";
 import { AppShell } from "../components/AppShell";
 import { EmptyState } from "../components/EmptyState";
 import { CostImport } from "../screens/CostImport";
+import { EventDetail } from "../screens/EventDetail";
 import { Onboarding } from "../screens/Onboarding";
 import { ProductDetail } from "../screens/ProductDetail";
 import { Products } from "../screens/Products";
+import { Recommendation } from "../screens/Recommendation";
+import { Today } from "../screens/Today";
 import { ROUTES, type RouteKey } from "./navConfig";
 
 // Code-based route tree derived from the DATA in navConfig. Root renders the
@@ -34,15 +37,26 @@ const indexRoute = createRoute({
 });
 
 const SCREENS: Partial<Record<RouteKey, () => ReactElement>> = {
+  today: Today,
   products: Products,
   product: ProductDetail,
   cost: CostImport,
   onboarding: Onboarding,
+  event: EventDetail,
+  recommendation: Recommendation,
 };
 
-/** Uniform, permissive search validation so deep-link `variantId` stays typed. */
-function validateSearch(search: Record<string, unknown>): { variantId?: string } {
-  return typeof search.variantId === "string" ? { variantId: search.variantId } : {};
+/** Uniform, permissive search validation so typed deep-link keys stay typed. */
+function validateSearch(search: Record<string, unknown>): {
+  variantId?: string;
+  eventId?: string;
+  cardId?: string;
+} {
+  const out: { variantId?: string; eventId?: string; cardId?: string } = {};
+  if (typeof search.variantId === "string") out.variantId = search.variantId;
+  if (typeof search.eventId === "string") out.eventId = search.eventId;
+  if (typeof search.cardId === "string") out.cardId = search.cardId;
+  return out;
 }
 
 const screenRoutes = ROUTES.map((r) =>

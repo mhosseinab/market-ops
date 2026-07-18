@@ -2,11 +2,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { gateway } from "../app/query";
 import { useAccount } from "./account";
 import type {
+  ApprovalBinding,
+  ApprovalCardView,
+  ApprovalConfirmResult,
   CostImportCommitResult,
   CostImportPreview,
   CostProfileVersion,
+  EventRelevanceKind,
   MarginReadiness,
+  MarketEvent,
   SingleCostEntryRequest,
+  TodayFeed,
 } from "./types";
 
 // TanStack Query hooks over the GENERATED gateway client. Every hook is a thin,
@@ -31,6 +37,9 @@ export const queryKeys = {
   readiness: (variantId: string) => ["margin-readiness", variantId] as const,
   costProfiles: (variantId: string) => ["cost-profiles", variantId] as const,
   needsReview: (accountId: string) => ["needs-review", accountId] as const,
+  today: (accountId: string) => ["today", accountId] as const,
+  event: (eventId: string) => ["event", eventId] as const,
+  approvalCard: (cardId: string) => ["approval-card", cardId] as const,
 };
 
 export function useConnectorStatus() {
@@ -124,6 +133,49 @@ export function useNeedsReview() {
   });
 }
 
+export function useTodayFeed() {
+  const { marketplaceAccountId } = useAccount();
+  return useQuery({
+    queryKey: queryKeys.today(marketplaceAccountId),
+    queryFn: async (): Promise<TodayFeed> =>
+      unwrap(
+        await gateway.GET("/today", {
+          params: { query: { marketplaceAccountId } },
+        }),
+      ),
+  });
+}
+
+export function useEvent(eventId: string | undefined) {
+  return useQuery({
+    enabled: Boolean(eventId),
+    queryKey: queryKeys.event(eventId ?? ""),
+    queryFn: async (): Promise<MarketEvent> =>
+      unwrap(
+        await gateway.GET("/event", {
+          params: { query: { eventId: eventId as string } },
+        }),
+      ),
+  });
+}
+
+// The approval card POLLS (APR-001 / journey 6): a version change under a live
+// control must be observed so the surface can disable the stale control and
+// offer recalculate. Polling is the read side; it never advances state.
+export function useApprovalCard(cardId: string | undefined) {
+  return useQuery({
+    enabled: Boolean(cardId),
+    queryKey: queryKeys.approvalCard(cardId ?? ""),
+    refetchInterval: 4000,
+    queryFn: async (): Promise<ApprovalCardView> =>
+      unwrap(
+        await gateway.GET("/approvals/card", {
+          params: { query: { cardId: cardId as string } },
+        }),
+      ),
+  });
+}
+
 // ── Mutations ──────────────────────────────────────────────────────────────
 
 export function useConnect() {
@@ -193,6 +245,49 @@ export function useSingleCostEntry() {
       void qc.invalidateQueries({ queryKey: queryKeys.readiness(version.variantId) });
       void qc.invalidateQueries({ queryKey: queryKeys.costProfiles(version.variantId) });
     },
+  });
+}
+
+// The ONLY individual-approval path (§8, free-text containment): a structured
+// control POST carrying the EXACT bound versions. Free text can never satisfy
+// this contract. On success we refetch the card so its new §8.4 state renders.
+export function useConfirmApproval(cardId: string | undefined) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (binding: ApprovalBinding): Promise<ApprovalConfirmResult> => {
+      // Unlike other reads, the confirm surface must branch on the machine-readable
+      // error code (permission-denied vs idempotency/duplicate), so preserve it on
+      // the thrown error rather than collapsing to a message string.
+      const res = await gateway.POST("/approvals/confirm", {
+        body: { cardId: cardId as string, binding },
+      });
+      if (res.error) {
+        const env = res.error as { code?: string; message?: string };
+        throw Object.assign(new Error(env.message ?? env.code ?? "confirm_failed"), {
+          code: env.code,
+        });
+      }
+      if (res.data === undefined) throw new Error("empty_response");
+      return res.data;
+    },
+    onSuccess: () => {
+      if (cardId) void qc.invalidateQueries({ queryKey: queryKeys.approvalCard(cardId) });
+    },
+  });
+}
+
+export function useEventRelevance() {
+  return useMutation({
+    mutationFn: async (args: { eventId: string; relevance: EventRelevanceKind; note?: string }) =>
+      unwrap(
+        await gateway.POST("/events/relevance", {
+          body: {
+            eventId: args.eventId,
+            relevance: args.relevance,
+            ...(args.note ? { note: args.note } : {}),
+          },
+        }),
+      ),
   });
 }
 

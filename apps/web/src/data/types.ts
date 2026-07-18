@@ -30,3 +30,25 @@ export type SingleCostEntryRequest = components["schemas"]["SingleCostEntryReque
 
 export type NeedsReviewItem = components["schemas"]["NeedsReviewItem"];
 export type NeedsReviewQueue = components["schemas"]["NeedsReviewQueue"];
+
+// ── S27: Today / events / recommendation + approval ─────────────────────────
+export type MarketEvent = components["schemas"]["MarketEvent"];
+export type MarketEventList = components["schemas"]["MarketEventList"];
+export type TodayFeed = components["schemas"]["TodayFeed"];
+export type RankedEvent = components["schemas"]["RankedEvent"];
+export type EventRankFactors = components["schemas"]["EventRankFactors"];
+export type EventExposure = components["schemas"]["EventExposure"];
+export type EventType = components["schemas"]["EventType"];
+export type EventSeverity = components["schemas"]["EventSeverity"];
+export type EventLifecycleState = components["schemas"]["EventLifecycleState"];
+export type EventRelevanceKind = components["schemas"]["EventRelevanceKind"];
+
+export type ApprovalCardView = components["schemas"]["ApprovalCardView"];
+export type ApprovalBinding = components["schemas"]["ApprovalBinding"];
+export type ApprovalState = components["schemas"]["ApprovalState"];
+export type ApprovalInvalidationReason = components["schemas"]["ApprovalInvalidationReason"];
+export type ApprovalConfirmRequest = components["schemas"]["ApprovalConfirmRequest"];
+export type ApprovalConfirmResult = components["schemas"]["ApprovalConfirmResult"];
+export type ApprovalStateHistoryEntry = components["schemas"]["ApprovalStateHistoryEntry"];
+export type Contribution = components["schemas"]["Contribution"];
+export type ContributionDeduction = components["schemas"]["ContributionDeduction"];

@@ -1,6 +1,9 @@
 import { HttpResponse, http } from "msw";
 import {
+  approvalCardAwaiting,
+  confirmApproved,
   connectorUnknown,
+  marketEvent,
   needsReviewQueue,
   offer,
   previewWithDuplicate,
@@ -54,6 +57,23 @@ export const handlers = [
   ),
   http.post(`${B}/identity/reject`, () => HttpResponse.json({ ok: true })),
   http.post(`${B}/identity/defer`, () => HttpResponse.json({ ok: true })),
+
+  // Today defaults to EMPTY (deterministic no-action) so the app-shell snapshot
+  // stays stable; Today's own tests override with a populated feed.
+  http.get(`${B}/today`, () => HttpResponse.json({ items: [] })),
+  http.get(`${B}/events`, () => HttpResponse.json({ items: [marketEvent] })),
+  http.get(`${B}/event`, () => HttpResponse.json(marketEvent)),
+  http.post(`${B}/events/relevance`, () =>
+    HttpResponse.json({
+      id: "relevance-1",
+      eventId: marketEvent.id,
+      relevance: "muted",
+      createdAt: "2026-07-17T10:00:00Z",
+    }),
+  ),
+
+  http.get(`${B}/approvals/card`, () => HttpResponse.json(approvalCardAwaiting)),
+  http.post(`${B}/approvals/confirm`, () => HttpResponse.json(confirmApproved)),
 
   http.post(`${B}/cost/value`, () =>
     HttpResponse.json({
