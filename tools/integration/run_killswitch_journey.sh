@@ -13,7 +13,7 @@
 # This script assumes docker compose is available (CI's integration job) and
 # is deliberately NOT part of `task ci:local` — it is the `task test:integration`
 # path, which per dk-p0-monorepo.md §7 runs on merges to dk-p0/main, not per-PR.
-set -uo pipefail
+set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
@@ -36,63 +36,53 @@ echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} 
 # left running after a failed journey here previously meant run_all.sh's
 # NEXT `compose up` (scenarios 2-5) reused an already-running `core` whose
 # `migrate` dependency was skipped on that second up, silently leaving the
-# owner without a freshly-set password (the S32 seed-lifecycle race). Tearing
-# down unconditionally means scenario 2 always starts from a clean,
-# freshly-migrated-and-seeded stack regardless of how scenario 1 ended.
-# deploy/.env is only removed here when run standalone — run_all.sh, when it
-# orchestrates this script, owns deploy/.env's lifecycle via its own trap and
-# still needs the file for its later `compose up`.
+# owner without a freshly-set password (the S32 seed-lifecycle race, now
+# independently closed by folding seede2e into `migrate` — see
+# deploy/compose.test.yml). Tearing down unconditionally here means scenario
+# 2 always starts from a clean, freshly-migrated-and-seeded stack regardless
+# of how scenario 1 ended. Kept deliberately simple (a single EXIT trap, plain
+# `set -euo pipefail` for every other command) rather than per-command `if !`
+# guards: `-e` already guarantees the EXIT trap fires with the failing
+# command's exit code preserved in `$?` at trap time, so extra manual
+# exit-code bookkeeping only adds control-flow surface without changing
+# behavior. deploy/.env is only removed here when run standalone —
+# run_all.sh, when it orchestrates this script (MARKET_OPS_RUN_ALL_ORCHESTRATED=1),
+# owns deploy/.env's lifecycle via its own trap and still needs the file to
+# exist for its later `compose up`.
 cleanup() {
   local exit_code=$?
   if [ "$exit_code" -ne 0 ]; then
-    echo "== kill-switch journey failed (exit=$exit_code); dumping core/migrate logs for diagnosis =="
-    $COMPOSE logs core migrate || true
+    echo "== kill-switch journey failed (exit=$exit_code); dumping llm/core/mockdk/migrate logs for diagnosis =="
+    $COMPOSE logs llm core mockdk migrate || true
     echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
   fi
   $COMPOSE down -v >/dev/null 2>&1 || true
   if [ -z "${MARKET_OPS_RUN_ALL_ORCHESTRATED:-}" ]; then
     rm -f deploy/.env
   fi
-  return "$exit_code"
 }
 trap cleanup EXIT
 
 echo "== build the web bundle (default /api base — routes through the Caddy test ingress) =="
-if ! (cd apps/web && pnpm run build); then
-  echo "== web bundle build failed =="
-  exit 1
-fi
+(cd apps/web && pnpm run build)
 
 echo "== bring up the integration stack =="
-if ! $COMPOSE up -d --wait postgres mockdk llm core web caddy; then
-  echo "== compose up --wait failed; dumping llm/core/mockdk/migrate logs for diagnosis =="
-  $COMPOSE logs llm core mockdk migrate || true
-  exit 1
-fi
+$COMPOSE up -d --wait postgres mockdk llm core web caddy
 
 echo "== STOP the LLM plane container (the actual kill-switch condition) =="
-if ! $COMPOSE stop llm; then
-  echo "== compose stop llm failed =="
-  exit 1
-fi
+$COMPOSE stop llm
 
 echo "== confirm /chat fails closed while screens stay up =="
-if ! curl -sf http://localhost:8888/api/healthz >/dev/null; then
-  echo "== /api/healthz check failed =="
-  exit 1
-fi
+curl -sf http://localhost:8888/api/healthz >/dev/null
 
 echo "== run the full Playwright journey set against the single Caddy origin =="
-if ! (
+(
   cd apps/web
   E2E_WEB_URL="http://localhost:8888" \
   VITE_GATEWAY_BASE_URL="http://localhost:8888/api" \
   E2E_EMAIL="$SEEDE2E_EMAIL" \
   E2E_PASSWORD="$SEEDE2E_PASSWORD" \
   pnpm exec playwright test
-); then
-  echo "== Playwright journey run failed =="
-  exit 1
-fi
+)
 
 echo "== kill-switch journey: ALL Playwright journeys passed with the LLM plane stopped =="
