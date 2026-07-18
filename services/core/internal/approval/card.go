@@ -238,6 +238,15 @@ func (c Card) Recalculate() (Card, error) {
 // card. This is the version-binding subset of the EXE-001 gate matrix; the
 // external gates (identity, money unit, boundary, permission, JIT freshness) are
 // checked by internal/execution before this boundary is reached.
+//
+// INTENTIONAL SPLIT (do not diverge): the production write path in
+// internal/execution runs the version comparison through EvaluateGates +
+// AdvanceTx (so the external gates and the persisted state advance stay in one
+// place), rather than calling this method. This method is the DOMAIN-level
+// statement of the same version-binding rule, used by the approval unit tests. The
+// two MUST agree; TestRevalidate_AgreesWithBindingValidation asserts that the
+// pass/fail decision here matches Binding.ValidateAgainst (which EvaluateGates also
+// consults), so the split can never silently drift.
 func (c Card) Revalidate(current Binding, now time.Time) (RevalidationResult, error) {
 	if c.Simulation {
 		return RevalidationResult{}, ErrNoControl

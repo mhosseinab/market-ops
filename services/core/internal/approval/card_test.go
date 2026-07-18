@@ -269,6 +269,51 @@ func TestRevalidate_InvalidatesOnAnyBoundChange(t *testing.T) {
 	}
 }
 
+// TestRevalidate_AgreesWithBindingValidation pins the INTENTIONAL split (N6):
+// Card.Revalidate's advance decision (Executing vs Invalidated) must always match
+// the version-binding verdict of Binding.ValidateAgainst — the same verdict the
+// production EvaluateGates path consults. If the two ever disagree, the parallel
+// implementations have drifted and this test fails.
+func TestRevalidate_AgreesWithBindingValidation(t *testing.T) {
+	now := time.Now()
+	base := liveBinding(t, now)
+
+	type scenario struct {
+		mutate func(b Binding) Binding
+		at     time.Time
+	}
+	scenarios := map[string]scenario{
+		"match":     {func(b Binding) Binding { return b }, now},
+		"parameter": {func(b Binding) Binding { b.ParameterVersion = int64(42); return b }, now},
+		"context":   {func(b Binding) Binding { b.ContextVersion = int64(42); return b }, now},
+		"policy":    {func(b Binding) Binding { b.PolicyVersion = int64(42); return b }, now},
+		"cost":      {func(b Binding) Binding { b.CostProfileVersion = int64(42); return b }, now},
+		"expired":   {func(b Binding) Binding { return b }, base.Expiry},
+	}
+	for name, sc := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			reval := revalidatingCard(t, now, base)
+			current := sc.mutate(base)
+
+			bindingOK := reval.Binding.ValidateAgainst(current, sc.at) == ReasonNone
+			res, err := reval.Revalidate(current, sc.at)
+			if err != nil {
+				t.Fatalf("Revalidate: %v", err)
+			}
+			if res.OK != bindingOK {
+				t.Fatalf("Revalidate OK=%v disagrees with Binding.ValidateAgainst OK=%v", res.OK, bindingOK)
+			}
+			wantState := StateInvalidated
+			if bindingOK {
+				wantState = StateExecuting
+			}
+			if res.Card.State != wantState {
+				t.Fatalf("state = %s; want %s", res.Card.State, wantState)
+			}
+		})
+	}
+}
+
 // TestRevalidate_RejectsNonRevalidatingCard fails closed: Revalidate is valid only
 // from Revalidating; a card in any other state (or a simulation) returns
 // ErrNoControl and cannot reach Executing.

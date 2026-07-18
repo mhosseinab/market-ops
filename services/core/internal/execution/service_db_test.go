@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -192,6 +193,103 @@ func TestExecute_DuplicateRequestZeroDuplicateWrites(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(writes); got != 1 {
 		t.Fatalf("external writes = %d; want exactly 1 (EXE-002)", got)
+	}
+}
+
+// TestClaimAndWrite_ConcurrentSingleWrite is the EXE-002 concurrency proof at the
+// claim mechanism: N goroutines racing the SAME idempotency key produce EXACTLY
+// ONE external write and EXACTLY ONE action_executions row — the UI-double-click /
+// retry-races-original scenario the web review confirmed is reachable.
+func TestClaimAndWrite_ConcurrentSingleWrite(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	card, native := seedApprovedCard(t, pool, q)
+	srv, writes := countingMockDK(t)
+
+	writer := NewHTTPWriter(srv.URL, "tok", srv.Client())
+	svc := NewService(pool, recommendation.NewService(pool), writer, fakeResolver{ctx: enabledContext(card, native)})
+	req := WriteRequest{IdempotencyKey: card.IdempotencyKey, VariantNativeID: native, PriceMantissa: card.PriceMantissa, PriceCurrency: card.PriceCurrency, PriceExponent: int8(card.PriceExponent)}
+
+	const n = 12
+	var wrote int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start // release all goroutines simultaneously.
+			_, _, didWrite, err := svc.claimAndWrite(ctx, card, req)
+			if err != nil {
+				t.Errorf("claimAndWrite: %v", err)
+				return
+			}
+			if didWrite {
+				atomic.AddInt32(&wrote, 1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&wrote); got != 1 {
+		t.Fatalf("claims that wrote = %d; want exactly 1", got)
+	}
+	if got := atomic.LoadInt32(writes); got != 1 {
+		t.Fatalf("external writes = %d; want exactly 1 (EXE-002 concurrent)", got)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM action_executions WHERE action_id = $1`, card.ActionID).Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("action_executions rows = %d; want exactly 1", rows)
+	}
+}
+
+// TestExecute_ConcurrentExecuteSingleWrite is the end-to-end concurrency proof: N
+// goroutines firing full Execute for the SAME approved card produce exactly one
+// external write and one execution row. The §8.4 FROM-guard serialises the card
+// while the idempotency claim guards the write; either way, zero duplicates.
+func TestExecute_ConcurrentExecuteSingleWrite(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	card, native := seedApprovedCard(t, pool, q)
+	srv, writes := countingMockDK(t)
+
+	writer := NewHTTPWriter(srv.URL, "tok", srv.Client())
+	svc := NewService(pool, recommendation.NewService(pool), writer, fakeResolver{ctx: enabledContext(card, native)})
+
+	const n = 10
+	var succeeded int32
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			res, err := svc.Execute(ctx, card.ID, audit.Actor{ID: "owner-1", Role: "owner", Surface: "screen"})
+			if err == nil && res.Mode == ModeWrite {
+				atomic.AddInt32(&succeeded, 1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if atomic.LoadInt32(&succeeded) < 1 {
+		t.Fatalf("no Execute call succeeded")
+	}
+	if got := atomic.LoadInt32(writes); got != 1 {
+		t.Fatalf("external writes = %d; want exactly 1 (concurrent Execute)", got)
+	}
+	var rows int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM action_executions WHERE action_id = $1`, card.ActionID).Scan(&rows); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("action_executions rows = %d; want exactly 1", rows)
 	}
 }
 

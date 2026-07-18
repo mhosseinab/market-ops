@@ -82,6 +82,15 @@ SELECT * FROM recommend_only_actions
 WHERE variant_id = $1 AND state = 'awaiting_external_execution'
 ORDER BY approved_at;
 
+-- name: ListAwaitingRecommendOnlyActions :many
+-- Every awaiting recommend-only action (the periodic matcher job iterates these,
+-- matching each against fresh owned-price observations or lapsing it once its 24h
+-- window has passed). Bounded batch to bound the job's work per pass.
+SELECT * FROM recommend_only_actions
+WHERE state = 'awaiting_external_execution'
+ORDER BY approved_at
+LIMIT $1;
+
 -- name: GetCurrentExecutionContext :one
 -- Server-side re-resolution for the Revalidating gate (EXE-001): the account,
 -- variant, and native variant id for a card's recommendation, PLUS the CURRENT

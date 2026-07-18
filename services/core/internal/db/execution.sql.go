@@ -309,6 +309,51 @@ func (q *Queries) IsWriteVerified(ctx context.Context, marketplaceAccountID uuid
 	return verified, err
 }
 
+const listAwaitingRecommendOnlyActions = `-- name: ListAwaitingRecommendOnlyActions :many
+SELECT id, card_id, action_id, marketplace_account_id, variant_id, approved_price_mantissa, approved_price_currency, approved_price_exponent, approved_at, window_expires_at, state, matched_observation_at, created_at, updated_at FROM recommend_only_actions
+WHERE state = 'awaiting_external_execution'
+ORDER BY approved_at
+LIMIT $1
+`
+
+// Every awaiting recommend-only action (the periodic matcher job iterates these,
+// matching each against fresh owned-price observations or lapsing it once its 24h
+// window has passed). Bounded batch to bound the job's work per pass.
+func (q *Queries) ListAwaitingRecommendOnlyActions(ctx context.Context, limit int32) ([]RecommendOnlyAction, error) {
+	rows, err := q.db.Query(ctx, listAwaitingRecommendOnlyActions, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecommendOnlyAction{}
+	for rows.Next() {
+		var i RecommendOnlyAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.ActionID,
+			&i.MarketplaceAccountID,
+			&i.VariantID,
+			&i.ApprovedPriceMantissa,
+			&i.ApprovedPriceCurrency,
+			&i.ApprovedPriceExponent,
+			&i.ApprovedAt,
+			&i.WindowExpiresAt,
+			&i.State,
+			&i.MatchedObservationAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAwaitingRecommendOnlyForVariant = `-- name: ListAwaitingRecommendOnlyForVariant :many
 SELECT id, card_id, action_id, marketplace_account_id, variant_id, approved_price_mantissa, approved_price_currency, approved_price_exponent, approved_at, window_expires_at, state, matched_observation_at, created_at, updated_at FROM recommend_only_actions
 WHERE variant_id = $1 AND state = 'awaiting_external_execution'

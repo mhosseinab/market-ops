@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -14,6 +15,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
 // Sentinel errors. Each is a stable value the transport maps to a precise status
@@ -34,11 +36,13 @@ var (
 )
 
 // CardStore is the §8.4 card-state seam the executor drives. *recommendation.Service
-// satisfies it. The executor never mutates card state except through Advance, so
-// every move is a FROM-guarded, append-only §8.4 transition.
+// satisfies it. The executor never mutates card state except through AdvanceTx, so
+// every move is a FROM-guarded, append-only §8.4 transition that commits in the
+// SAME transaction as its AUD-001 audit record (a state change never lands without
+// its audit row).
 type CardStore interface {
 	GetCard(ctx context.Context, id uuid.UUID) (db.ApprovalCard, error)
-	Advance(ctx context.Context, cardID uuid.UUID, from, to approval.State, reason string) (db.ApprovalCard, error)
+	AdvanceTx(ctx context.Context, q *db.Queries, cardID uuid.UUID, from, to approval.State, reason string) (db.ApprovalCard, error)
 }
 
 // RevalidationContext is the SERVER-resolved state the executor gates against. It
@@ -64,22 +68,60 @@ type Resolver interface {
 
 // Service is the DB-backed executor: the EXE-001 revalidation gate, the EXE-002
 // idempotent write, the EXE-003 external states, the EXE-005 recommend-only
-// tracking, and the OUT-001 window opening. It fails closed at every seam.
+// tracking, and the OUT-001 window opening. It fails closed at every seam and is
+// fully instrumented (metrics + traces + structured logs) on the never-cut
+// boundaries.
 type Service struct {
 	pool     *pgxpool.Pool
 	cards    CardStore
 	writer   Writer
 	resolver Resolver
 	now      func() time.Time
+	tel      *telemetry
 }
 
 // NewService wires the executor. A nil clock defaults to time.Now (UTC).
 func NewService(pool *pgxpool.Pool, cards CardStore, writer Writer, resolver Resolver) *Service {
-	return &Service{pool: pool, cards: cards, writer: writer, resolver: resolver, now: func() time.Time { return time.Now().UTC() }}
+	return &Service{
+		pool: pool, cards: cards, writer: writer, resolver: resolver,
+		now: func() time.Time { return time.Now().UTC() },
+		tel: newTelemetry(nil),
+	}
 }
 
 // WithClock overrides the clock (tests).
 func (s *Service) WithClock(now func() time.Time) *Service { s.now = now; return s }
+
+// WithLogger overrides the structured logger (tests, and to attach request scope).
+func (s *Service) WithLogger(logger *slog.Logger) *Service { s.tel = newTelemetry(logger); return s }
+
+// advanceWithAudit advances a card from → to and appends its AUD-001 audit record
+// in ONE transaction, so a state transition NEVER commits without its audit row
+// (AUD-001 never-cut). On an audit-append failure the whole transaction rolls back
+// (fail closed) and the failure is surfaced as a metric + structured error log —
+// never swallowed. It returns the advanced card.
+func (s *Service) advanceWithAudit(ctx context.Context, card db.ApprovalCard, from, to approval.State, reason string, ev audit.Event) (db.ApprovalCard, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	advanced, err := s.cards.AdvanceTx(ctx, q, card.ID, from, to, reason)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
+	if _, err := audit.Append(ctx, q, ev); err != nil {
+		s.tel.auditWriteFailed(ctx, card.ActionID, err)
+		return db.ApprovalCard{}, err // rollback via defer: state change reverts.
+	}
+	if err := tx.Commit(ctx); err != nil {
+		s.tel.auditWriteFailed(ctx, card.ActionID, err)
+		return db.ApprovalCard{}, err
+	}
+	return advanced, nil
+}
 
 // Mode is the execution mode of a completed Execute call.
 type Mode string
@@ -157,33 +199,41 @@ func (s *Service) Execute(ctx context.Context, cardID uuid.UUID, actor audit.Act
 }
 
 // executeWrite runs the §8.4 Approved → Revalidating → Executing → terminal write
-// path with the EXE-001 gate matrix at the Revalidating boundary.
+// path with the EXE-001 gate matrix at the Revalidating boundary. Every state
+// transition that carries an AUD-001 event commits atomically with its audit row.
 func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor) (ExecuteResult, error) {
-	if _, err := s.cards.Advance(ctx, card.ID, approval.StateApproved, approval.StateRevalidating, "revalidation started"); err != nil {
+	ctx, span := s.tel.startSpan(ctx, "execution.write", card)
+	defer span.End()
+
+	// Approved → Revalidating (its append-only §8.4 history row is written in the
+	// same transaction by AdvanceTx; the semantic audit events land below).
+	if _, err := s.advance(ctx, card, approval.StateApproved, approval.StateRevalidating, "revalidation started"); err != nil {
 		return ExecuteResult{}, err
 	}
 
 	gate := EvaluateGates(rc.Inputs)
 	if !gate.OK {
-		if _, err := s.cards.Advance(ctx, card.ID, approval.StateRevalidating, approval.StateInvalidated, "gate_blocked:"+string(gate.Failed)); err != nil {
+		s.tel.gateBlocked(ctx, card, gate.Failed, ModeWrite)
+		if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateInvalidated,
+			"gate_blocked:"+string(gate.Failed), audit.Event{
+				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: bindingOf(card),
+				CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason},
+			}); err != nil {
 			return ExecuteResult{}, err
 		}
-		s.audit(ctx, audit.Event{
-			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-			Type: audit.EventRevalidationBlocked, Actor: actor, Binding: bindingOf(card),
-			CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason},
-		})
 		return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite, Blocked: true, FailedGate: gate.Failed}, nil
 	}
 
-	if _, err := s.cards.Advance(ctx, card.ID, approval.StateRevalidating, approval.StateExecuting, "revalidated; executing"); err != nil {
+	// Revalidating → Executing + execution_started audit (atomic).
+	if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateExecuting,
+		"revalidated; executing", audit.Event{
+			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+			Type: audit.EventExecutionStarted, Actor: actor, Binding: bindingOf(card),
+			CardSnapshot: cardSnapshot(card),
+		}); err != nil {
 		return ExecuteResult{}, err
 	}
-	s.audit(ctx, audit.Event{
-		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-		Type: audit.EventExecutionStarted, Actor: actor, Binding: bindingOf(card),
-		CardSnapshot: cardSnapshot(card),
-	})
 
 	req := WriteRequest{
 		IdempotencyKey:  card.IdempotencyKey,
@@ -192,47 +242,45 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 		PriceCurrency:   card.PriceCurrency,
 		PriceExponent:   int8(card.PriceExponent),
 	}
-	rec, _, err := s.idempotentWrite(ctx, card, req)
+	// Claim the idempotency key and perform AT MOST ONE external write (EXE-002).
+	claimed, result, wrote, err := s.claimAndWrite(ctx, card, req)
 	if err != nil {
 		return ExecuteResult{}, err
 	}
-	extState := ExternalState(rec.ExternalState)
-
-	if _, err := s.cards.Advance(ctx, card.ID, approval.StateExecuting, cardStateFor(extState), "external_result:"+string(extState)); err != nil {
-		return ExecuteResult{}, err
+	var extState ExternalState
+	if wrote {
+		extState = Classify(result)
+		s.tel.wroteExternal(ctx, card, extState)
+	} else {
+		// A duplicate claim (concurrent request): this call wrote nothing. Adopt the
+		// existing record's state so the card converges without a second write.
+		extState = ExternalState(claimed.ExternalState)
 	}
-	s.audit(ctx, audit.Event{
-		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-		Type: audit.EventExternalResult, Actor: actor, Binding: bindingOf(card),
-		CardSnapshot: cardSnapshot(card), Detail: map[string]any{"external_state": extState, "external_ref": rec.ExternalRef},
-		TerminalState: string(extState),
-	})
 
-	// A reconciled terminal result opens the seven-day outcome window (OUT-001).
-	if extState.Terminal() {
-		s.openOutcomeWindow(ctx, card)
-		s.audit(ctx, audit.Event{
-			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-			Type: audit.EventTerminal, Actor: actor, Binding: bindingOf(card),
-			CardSnapshot: cardSnapshot(card), TerminalState: string(extState),
-		})
+	// Record the classified result, advance Executing → terminal/pending, append the
+	// external_result (and terminal) audit, and open the OUT-001 window — ALL in ONE
+	// transaction, so an external mutation never lands without its audit + state.
+	if err := s.commitWriteResult(ctx, card, rc, actor, claimed, result, extState, wrote); err != nil {
+		return ExecuteResult{}, err
 	}
 
 	return ExecuteResult{
 		ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite,
-		ExternalState: extState, DidWrite: true,
+		ExternalState: extState, DidWrite: wrote,
 	}, nil
 }
 
-// idempotentWrite claims the stable idempotency key and performs AT MOST ONE
-// external write (EXE-002). A duplicate request finds the existing record (ON
-// CONFLICT DO NOTHING claim) and writes nothing external. The bool reports whether
-// this call performed the write.
-func (s *Service) idempotentWrite(ctx context.Context, card db.ApprovalCard, req WriteRequest) (db.ActionExecution, bool, error) {
+// claimAndWrite claims the stable idempotency key (EXE-002) and, only when THIS
+// call wins the claim, performs EXACTLY ONE external write. A duplicate request
+// (ON CONFLICT DO NOTHING returns no row) finds the existing record and writes
+// nothing external — proven by the concurrent duplicate-request suite. The claim
+// is durable BEFORE the write, so a crash mid-write leaves a pending record for
+// reconciliation, never a silent success.
+func (s *Service) claimAndWrite(ctx context.Context, card db.ApprovalCard, req WriteRequest) (db.ActionExecution, WriteResult, bool, error) {
 	q := db.New(s.pool)
 	reqJSON, err := json.Marshal(req)
 	if err != nil {
-		return db.ActionExecution{}, false, err
+		return db.ActionExecution{}, WriteResult{}, false, err
 	}
 	claimed, err := q.ClaimActionExecution(ctx, db.ClaimActionExecutionParams{
 		CardID:         card.ID,
@@ -243,52 +291,131 @@ func (s *Service) idempotentWrite(ctx context.Context, card db.ApprovalCard, req
 		RequestPayload: reqJSON,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		// The key is already claimed: a duplicate request. Return the existing
-		// record and perform NO external write (zero duplicate writes).
+		s.tel.dedupHit(ctx, req.IdempotencyKey)
 		existing, err := q.GetActionExecutionByKey(ctx, req.IdempotencyKey)
-		return existing, false, err
+		return existing, WriteResult{}, false, err
 	}
 	if err != nil {
-		return db.ActionExecution{}, false, err
+		return db.ActionExecution{}, WriteResult{}, false, err
+	}
+	// We own the claim: write EXACTLY ONCE.
+	result := s.writer.WritePrice(ctx, req)
+	return claimed, result, true, nil
+}
+
+// commitWriteResult records the classified external result, advances the card to
+// its terminal/pending §8.4 state, appends the external_result and (when terminal)
+// the terminal audit records, and opens the OUT-001 window — all in ONE
+// transaction. On any failure the whole transaction rolls back (fail closed): the
+// execution record stays pending and the card stays Executing, so reconciliation
+// resolves it; no partial, audit-less state is ever committed.
+func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor, claimed db.ActionExecution, result WriteResult, extState ExternalState, wrote bool) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	if wrote {
+		respJSON, err := json.Marshal(result)
+		if err != nil {
+			return err
+		}
+		if _, err := q.RecordExecutionResult(ctx, db.RecordExecutionResultParams{
+			ID:              claimed.ID,
+			ExternalState:   string(extState),
+			ExternalRef:     result.ExternalRef,
+			ResponsePayload: respJSON,
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 	}
 
-	// We own the claim: perform the external write EXACTLY ONCE.
-	result := s.writer.WritePrice(ctx, req)
-	extState := Classify(result)
-	respJSON, err := json.Marshal(result)
-	if err != nil {
-		return db.ActionExecution{}, true, err
+	if _, err := s.cards.AdvanceTx(ctx, q, card.ID, approval.StateExecuting, cardStateFor(extState), "external_result:"+string(extState)); err != nil {
+		// A concurrent duplicate that already terminalised the card matches no row.
+		if errors.Is(err, recommendation.ErrRejectedTransition) {
+			return tx.Commit(ctx)
+		}
+		return err
 	}
-	recorded, err := q.RecordExecutionResult(ctx, db.RecordExecutionResultParams{
-		ID:              claimed.ID,
-		ExternalState:   string(extState),
-		ExternalRef:     result.ExternalRef,
-		ResponsePayload: respJSON,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		recorded, err = q.GetActionExecution(ctx, claimed.ID)
+	if _, err := audit.Append(ctx, q, audit.Event{
+		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+		Type: audit.EventExternalResult, Actor: actor, Binding: bindingOf(card),
+		CardSnapshot: cardSnapshot(card), Detail: map[string]any{"external_state": extState, "external_ref": result.ExternalRef, "wrote": wrote},
+		TerminalState: string(extState),
+	}); err != nil {
+		s.tel.auditWriteFailed(ctx, card.ActionID, err)
+		return err
 	}
-	return recorded, true, err
+
+	if extState.Terminal() {
+		opened := s.now()
+		if _, err := q.OpenOutcomeWindow(ctx, db.OpenOutcomeWindowParams{
+			ActionID: card.ActionID, CardID: pgUUID(card.ID),
+			OpenedAt: opened, ClosesAt: opened.Add(outcomeWindow),
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if _, err := audit.Append(ctx, q, audit.Event{
+			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+			Type: audit.EventTerminal, Actor: actor, Binding: bindingOf(card),
+			CardSnapshot: cardSnapshot(card), TerminalState: string(extState),
+		}); err != nil {
+			s.tel.auditWriteFailed(ctx, card.ActionID, err)
+			return err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		s.tel.auditWriteFailed(ctx, card.ActionID, err)
+		return err
+	}
+	if extState.Terminal() {
+		s.tel.terminal(ctx, extState)
+	}
+	return nil
 }
 
 // recordRecommendOnly records an approved action in recommend-only mode (EXE-005)
-// when writes are OFF. The card stays Approved (no §8.4 write transition); a
-// recommend_only_actions row tracks the 24h external-match window. This is the
-// default-off path: with no verified write capability, NOTHING is written.
+// when writes are OFF. A gate block invalidates the card (Approved → Revalidating
+// → Invalidated, aligned with the write path); otherwise the card stays Approved
+// and a recommend_only_actions row (+ its audit) tracks the 24h external-match
+// window ATOMICALLY. This is the default-off path: with no verified write
+// capability, NOTHING is written to the marketplace.
 func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor) (ExecuteResult, error) {
+	ctx, span := s.tel.startSpan(ctx, "execution.recommend_only", card)
+	defer span.End()
+	s.tel.recommendOnlyFallback(ctx, card)
+
 	gate := EvaluateGates(rc.Inputs)
 	if !gate.OK {
-		s.audit(ctx, audit.Event{
-			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-			Type: audit.EventRevalidationBlocked, Actor: actor, Binding: bindingOf(card),
-			CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason, "mode": ModeRecommendOnly},
-		})
+		s.tel.gateBlocked(ctx, card, gate.Failed, ModeRecommendOnly)
+		// Align state-consistency with the write path: a stale binding invalidates
+		// the card via Revalidating → Invalidated rather than leaving it Approved.
+		if _, err := s.advance(ctx, card, approval.StateApproved, approval.StateRevalidating, "revalidation started (recommend-only)"); err != nil {
+			return ExecuteResult{}, err
+		}
+		if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateInvalidated,
+			"gate_blocked:"+string(gate.Failed), audit.Event{
+				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: bindingOf(card),
+				CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason, "mode": ModeRecommendOnly},
+			}); err != nil {
+			return ExecuteResult{}, err
+		}
 		return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeRecommendOnly, Blocked: true, FailedGate: gate.Failed}, nil
 	}
 
 	now := s.now()
-	q := db.New(s.pool)
-	_, err := q.InsertRecommendOnlyAction(ctx, db.InsertRecommendOnlyActionParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	if _, err := q.InsertRecommendOnlyAction(ctx, db.InsertRecommendOnlyActionParams{
 		CardID:                card.ID,
 		ActionID:              card.ActionID,
 		MarketplaceAccountID:  card.MarketplaceAccountID,
@@ -298,15 +425,20 @@ func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard,
 		ApprovedPriceExponent: card.PriceExponent,
 		ApprovedAt:            now,
 		WindowExpiresAt:       now.Add(matchWindow),
-	})
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return ExecuteResult{}, err
 	}
-	s.audit(ctx, audit.Event{
+	if _, err := audit.Append(ctx, q, audit.Event{
 		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
 		Type: audit.EventRecommendOnly, Actor: actor, Binding: bindingOf(card),
 		CardSnapshot: cardSnapshot(card), Detail: map[string]any{"state": StateAwaitingExternalExecution, "window_expires_at": now.Add(matchWindow)},
-	})
+	}); err != nil {
+		s.tel.auditWriteFailed(ctx, card.ActionID, err)
+		return ExecuteResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ExecuteResult{}, err
+	}
 	return ExecuteResult{
 		ActionID: card.ActionID, CardID: card.ID, Mode: ModeRecommendOnly,
 		RecommendOnlyState: StateAwaitingExternalExecution,
@@ -351,23 +483,27 @@ func (s *Service) GetExecution(ctx context.Context, actionID uuid.UUID) (db.Acti
 	return db.New(s.pool).GetActionExecutionByAction(ctx, actionID)
 }
 
-// openOutcomeWindow opens the OUT-001 seven-day window for a reconciled action.
-// It is best-effort append-only; a duplicate open is a no-op (UNIQUE action_id).
-func (s *Service) openOutcomeWindow(ctx context.Context, card db.ApprovalCard) {
-	opened := s.now()
-	_, _ = db.New(s.pool).OpenOutcomeWindow(ctx, db.OpenOutcomeWindowParams{
-		ActionID: card.ActionID,
-		CardID:   pgUUID(card.ID),
-		OpenedAt: opened,
-		ClosesAt: opened.Add(7 * 24 * time.Hour),
-	})
-}
+// outcomeWindow is the OUT-001 seven-day span.
+const outcomeWindow = 7 * 24 * time.Hour
 
-// audit appends one AUD-001 record best-effort; an append failure never masks the
-// state change it records, but is surfaced through the process logs by the caller
-// path. (Audit is a never-cut invariant; a persistent failure here is an incident.)
-func (s *Service) audit(ctx context.Context, ev audit.Event) {
-	_, _ = audit.Append(ctx, db.New(s.pool), ev)
+// advance performs a §8.4 move whose only audit is its append-only
+// approval_card_states row (written atomically by AdvanceTx). It is used for the
+// internal Approved → Revalidating prelude; every transition carrying a semantic
+// AUD-001 event uses advanceWithAudit instead.
+func (s *Service) advance(ctx context.Context, card db.ApprovalCard, from, to approval.State, reason string) (db.ApprovalCard, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	advanced, err := s.cards.AdvanceTx(ctx, db.New(tx), card.ID, from, to, reason)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.ApprovalCard{}, err
+	}
+	return advanced, nil
 }
 
 // cardStateFor maps an external state onto the §8.4 terminal (or pending) card

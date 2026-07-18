@@ -24,6 +24,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
 	"github.com/mhosseinab/market-ops/services/core/internal/execution"
 	"github.com/mhosseinab/market-ops/services/core/internal/httpapi"
+	"github.com/mhosseinab/market-ops/services/core/internal/jobs"
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
 	"github.com/mhosseinab/market-ops/services/core/internal/obs"
 	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
@@ -146,8 +147,7 @@ func run() error {
 		logger.Info("event service wired")
 
 		// Wire the recommendation/approval plane (PRC-001/002, APR-001, §8.4): the
-		// version-bound approval control and the append-only state machine. Execution
-		// itself lands in S18; the Revalidating→Executing boundary is stubbed closed.
+		// version-bound approval control and the append-only state machine.
 		recSvc := recommendation.NewService(pool)
 		serverOpts = append(serverOpts, httpapi.WithApproval(recSvc))
 		logger.Info("approval service wired")
@@ -162,9 +162,31 @@ func run() error {
 		writer := execution.NewHTTPWriter("", "", nil)
 		resolver := execution.NewDefaultResolver(pool, nil)
 		serverOpts = append(serverOpts, httpapi.WithExecution(
-			execution.NewService(pool, recSvc, writer, resolver)))
+			execution.NewService(pool, recSvc, writer, resolver).WithLogger(logger)))
 		serverOpts = append(serverOpts, httpapi.WithOutcome(outcome.NewService(pool)))
 		logger.Info("execution service wired (dark; writes OFF until S35)")
+
+		// Start the River worker pipeline that drives the periodic execution-plane
+		// passes (EXE-005 recommend-only matching, OUT-001 outcome close). Both run
+		// their REAL production logic on a schedule; while writes are dark, the
+		// matcher's default owned-price source yields no comparable Money (so actions
+		// lapse after 24h) and the closer's default evidence source yields Not
+		// Measurable — the honest fail-closed behaviour until the verified pipelines land.
+		matcher := execution.NewRecommendOnlyReconciler(pool, nil)
+		closer := outcome.NewCloser(pool, nil)
+		stopJobs, jobsErr := startJobPipeline(ctx, logger, pool, jobs.ExecutionRunners{
+			RecommendOnlyMatch: func(c context.Context) (int, error) {
+				s, err := matcher.RunOnce(c)
+				return s.ExternallyExecuted + s.Lapsed, err
+			},
+			OutcomeClose: closer.RunOnce,
+		})
+		if jobsErr != nil {
+			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)
+		} else {
+			defer stopJobs()
+			logger.Info("job pipeline started (recommend-only matcher, outcome close)")
+		}
 	} else {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
 	}
@@ -238,4 +260,31 @@ func buildConnector(
 	}
 	logger.Info("connector target", "dk_base_url", dkBase)
 	return connector.NewService(queries, cipher, dk), nil
+}
+
+// startJobPipeline ensures River's schema, registers the workers (heartbeat +
+// periodic execution passes), and starts the client. It returns a stop function
+// that drains the client on shutdown. It fails soft: a wiring error is returned so
+// the caller can log it and keep serving screens (the periodic passes are
+// advisory, never on the approval/write critical path).
+func startJobPipeline(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, runners jobs.ExecutionRunners) (func(), error) {
+	if err := jobs.Migrate(ctx, pool); err != nil {
+		return nil, err
+	}
+	workers, err := jobs.NewWorkers(logger, runners)
+	if err != nil {
+		return nil, err
+	}
+	client, err := jobs.NewClient(pool, workers, logger)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Start(ctx); err != nil {
+		return nil, err
+	}
+	return func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = client.Stop(stopCtx)
+	}, nil
 }

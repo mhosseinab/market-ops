@@ -294,6 +294,10 @@ type Querier interface {
 	// is the reproduction read (AUD-001): it joins NOTHING in the conversation tables,
 	// so deleting a conversation leaves the trail intact.
 	ListAuditRecordsForAction(ctx context.Context, actionID uuid.UUID) ([]AuditRecord, error)
+	// Every awaiting recommend-only action (the periodic matcher job iterates these,
+	// matching each against fresh owned-price observations or lapsing it once its 24h
+	// window has passed). Bounded batch to bound the job's work per pass.
+	ListAwaitingRecommendOnlyActions(ctx context.Context, limit int32) ([]RecommendOnlyAction, error)
 	// Awaiting recommend-only actions for a variant (the recommend-only matcher runs
 	// these against fresh owned-price observations).
 	ListAwaitingRecommendOnlyForVariant(ctx context.Context, variantID uuid.UUID) ([]RecommendOnlyAction, error)

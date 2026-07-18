@@ -35,9 +35,10 @@ import (
 var ErrNotPending = errors.New("reconcile: action is not pending reconciliation")
 
 // CardStore is the §8.4 card-state seam (satisfied by *recommendation.Service).
+// AdvanceTx lets the state transition commit atomically with its AUD-001 audit row.
 type CardStore interface {
 	GetCard(ctx context.Context, id uuid.UUID) (db.ApprovalCard, error)
-	Advance(ctx context.Context, cardID uuid.UUID, from, to approval.State, reason string) (db.ApprovalCard, error)
+	AdvanceTx(ctx context.Context, q *db.Queries, cardID uuid.UUID, from, to approval.State, reason string) (db.ApprovalCard, error)
 }
 
 // StaleCardInvalidator invalidates live cards for a variant (satisfied by
@@ -97,38 +98,54 @@ func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, reso
 		cardState = approval.StateAccepted
 	}
 
-	if _, err := q.ReconcileActionExecution(ctx, db.ReconcileActionExecutionParams{
+	card, err := s.cards.GetCard(ctx, exec.CardID)
+	if err != nil {
+		return err
+	}
+
+	// Resolve the execution record, advance the card PendingReconciliation →
+	// terminal, append the reconciliation + terminal audit records, and open the
+	// OUT-001 window — ALL in ONE transaction. A terminal state never commits
+	// without its audit row; on any failure the whole tx rolls back (fail closed)
+	// and the action stays pending for the next reconciliation pass.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tq := db.New(tx)
+
+	if _, err := tq.ReconcileActionExecution(ctx, db.ReconcileActionExecutionParams{
 		ID:            exec.ID,
 		ExternalState: string(terminal),
 		ExternalRef:   exec.ExternalRef,
 	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
-
-	card, err := s.cards.GetCard(ctx, exec.CardID)
-	if err != nil {
+	if _, err := s.cards.AdvanceTx(ctx, tq, card.ID, approval.StatePendingReconciliation, cardState, "reconciled:"+string(terminal)); err != nil {
 		return err
 	}
-	if _, err := s.cards.Advance(ctx, card.ID, approval.StatePendingReconciliation, cardState, "reconciled:"+string(terminal)); err != nil {
-		return err
-	}
-
-	s.append(ctx, audit.Event{
+	if _, err := audit.Append(ctx, tq, audit.Event{
 		ActionID: actionID, CardID: card.ID, Type: audit.EventReconciliation,
 		Binding: bindingOf(card), CardSnapshot: map[string]any{"state": string(cardState)},
 		Detail: map[string]any{"resolution": terminal, "detail": detail}, TerminalState: string(terminal),
-	})
-	// A reconciled action opens the seven-day outcome window (OUT-001).
+	}); err != nil {
+		return err
+	}
 	opened := s.now()
-	_, _ = q.OpenOutcomeWindow(ctx, db.OpenOutcomeWindowParams{
+	if _, err := tq.OpenOutcomeWindow(ctx, db.OpenOutcomeWindowParams{
 		ActionID: actionID, CardID: pgUUID(card.ID),
 		OpenedAt: opened, ClosesAt: opened.Add(7 * 24 * time.Hour),
-	})
-	s.append(ctx, audit.Event{
+	}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if _, err := audit.Append(ctx, tq, audit.Event{
 		ActionID: actionID, CardID: card.ID, Type: audit.EventTerminal,
 		Binding: bindingOf(card), TerminalState: string(terminal),
-	})
-	return nil
+	}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // InvalidateStaleCardsForVariant is the §16 manual-DK-change consumer: an observed
@@ -137,10 +154,6 @@ func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, reso
 // invalidated.
 func (s *Service) InvalidateStaleCardsForVariant(ctx context.Context, variant uuid.UUID, reason string) (int, error) {
 	return s.invalidator.ExpireDependentForVariant(ctx, variant, "manual_dk_change:"+reason)
-}
-
-func (s *Service) append(ctx context.Context, ev audit.Event) {
-	_, _ = audit.Append(ctx, db.New(s.pool), ev)
 }
 
 func bindingOf(card db.ApprovalCard) approval.Binding {
