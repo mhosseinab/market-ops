@@ -14,7 +14,8 @@
       "!**/gen/ts",
       "!**/dist",
       "!**/node_modules",
-      "!**/*.tsbuildinfo"
+      "!**/*.tsbuildinfo",
+      "!deploy/grafana/dashboards"
     ]
   },
   "formatter": {

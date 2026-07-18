@@ -32,6 +32,7 @@ jobs:
       go: ${{ steps.filter.outputs.go }}
       py: ${{ steps.filter.outputs.py }}
       ts: ${{ steps.filter.outputs.ts }}
+      deploy: ${{ steps.filter.outputs.deploy }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -57,6 +58,10 @@ jobs:
               - 'packages/**'
               - 'gen/ts/**'
               - 'contracts/**'
+            deploy:
+              - 'deploy/**'
+              - 'runbooks/**'
+              - 'tools/obs/**'
 
   contracts:
     name: contracts drift
@@ -237,6 +242,28 @@ jobs:
       # ruff + mypy (mypy is invoked from the repo root, whole packages — §10).
       - run: task py:lint
       - run: task py:test
+
+  deploy-obs:
+    name: deploy · observability artifacts
+    needs: detect
+    if: ${{ needs.detect.outputs.deploy == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: install Task
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSL https://taskfile.dev/install.sh | sh -s -- -b "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      # Deep PromQL parse is best-effort; the drift + series + runbook checks are
+      # stdlib-only, so the gate holds even if the optional parser is unavailable.
+      - name: install optional validators
+        run: pip install promql-parser pyyaml || true
+      # §18 dashboard JSON drift + PromQL/series + §20.1 alert-rule/runbook checks.
+      - run: task obs:validate
 
   ts:
     name: ts

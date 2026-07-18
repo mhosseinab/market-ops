@@ -1,0 +1,17 @@
+# deploy/grafana/provisioning/dashboards/dashboards.yaml
+# Auto-provisions the §18 dashboard set from deploy/grafana/dashboards (mounted at
+# /etc/grafana/dashboards). Grafana loads every *.json under foldersFromFilesStructure.
+
+apiVersion: 1
+
+providers:
+  - name: dk-p0
+    orgId: 1
+    folder: "DK P0"
+    type: file
+    disableDeletion: false
+    allowUiUpdates: false
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

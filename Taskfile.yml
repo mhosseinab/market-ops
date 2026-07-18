@@ -110,6 +110,41 @@ tasks:
       # not exist yet are simply not matched.
       - semgrep --config tools/semgrep/money.yml services/core --error --quiet --disable-version-check
 
+  obs:dashboards:
+    desc: Regenerate the §18 Grafana dashboard JSON from its single source (deploy/grafana/gen_dashboards.py).
+    cmds:
+      - python3 deploy/grafana/gen_dashboards.py
+
+  obs:validate:
+    desc: >-
+      Validate the §18 dashboards + §20.1 alert rules offline: every PromQL parses,
+      every referenced series is one the instrumentation actually emits, and every
+      runbook names an existing Operations queue + alert. Runs without the compose
+      stack; the live non-empty-panel check is tools/obs/check_panels.sh (needs dev).
+    silent: true
+    cmds:
+      # Fail if the committed dashboards drift from their generator source.
+      - |
+        tmp="$(mktemp -d)"
+        python3 - "$tmp" <<'PY'
+        import runpy, sys, pathlib, shutil
+        out = pathlib.Path(sys.argv[1])
+        src = pathlib.Path("deploy/grafana/dashboards")
+        mod = runpy.run_path("deploy/grafana/gen_dashboards.py", run_name="__gen__")
+        import json
+        for dash in mod["build"]():
+            (out / f"{dash['uid']}.json").write_text(json.dumps(dash, indent=2, ensure_ascii=False) + "\n")
+        drift = []
+        for f in out.glob("*.json"):
+            committed = src / f.name
+            if not committed.exists() or committed.read_text() != f.read_text():
+                drift.append(f.name)
+        if drift:
+            print("dashboard JSON drift (run task obs:dashboards):", ", ".join(sorted(drift)))
+            sys.exit(1)
+        PY
+      - python3 deploy/grafana/validate_dashboards.py
+
   db:reset:
     desc: Drop + recreate the dev DB, then goose up + river migrate-up + seed fixtures.
     silent: true
@@ -192,3 +227,6 @@ tasks:
       # Pseudo-locale + copy-lint gate (LOC-011), wired in S25. Runs copy-lint plus
       # the pseudo-localization vitest suite (mirrors the ts CI job).
       - task: ts:pseudoloc
+      # §18 dashboard drift + §20.1 alert-rule/runbook validation (mirrors the CI
+      # deploy-obs job). Stdlib-only checks; deep PromQL parse is best-effort.
+      - task: obs:validate

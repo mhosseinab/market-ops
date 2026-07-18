@@ -1,0 +1,70 @@
+{
+  "uid": "dk-events",
+  "title": "DK · Event precision & noise",
+  "description": "Event precision and noise from the event-family analytics stream.",
+  "tags": [
+    "dk-p0",
+    "events"
+  ],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Event lifecycle & relevance (by name)",
+      "description": "§18 event family: lifecycle + relevance feedback. Precision = relevant / total.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (name) (rate(analytics_events{family=\"event\"}[1h]))",
+          "legendFormat": "{{name}}",
+          "refId": "X",
+          "range": true
+        }
+      ]
+    }
+  ]
+}
