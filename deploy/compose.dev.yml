@@ -50,6 +50,25 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # ─── Prometheus — metrics store; scrapes the collector's prom exporter ──
+  # Grafana's metrics datasource. Loads the §20.1 alert rules from
+  # deploy/prometheus/rules. DEV-ONLY (production alerting lands with S34).
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=48h"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
   # ─── Tempo — trace storage (OTLP in, queried by Grafana) ────────────────
   tempo:
     image: grafana/tempo:2.7.0
@@ -81,6 +100,7 @@ services:
       GF_AUTH_DISABLE_LOGIN_FORM: "true"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
       - "3000:3000"
@@ -88,6 +108,8 @@ services:
       loki:
         condition: service_started
       tempo:
+        condition: service_started
+      prometheus:
         condition: service_started
     restart: unless-stopped
 
@@ -131,3 +153,4 @@ volumes:
   tempo-data:
   loki-data:
   grafana-data:
+  prometheus-data:

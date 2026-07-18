@@ -155,6 +155,11 @@ func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option)
 		handler = newAuthMiddleware(gs.auth, gs.gatewayToken).wrap(handler)
 	}
 
+	// RED/latency + trace-context extraction is the OUTERMOST layer so it times
+	// the whole request (auth included) and continues an inbound web → gateway
+	// trace into every core span. It is safe with a no-op OTel provider.
+	handler = newREDMetrics().wrap(handler)
+
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,

@@ -4,9 +4,12 @@
 // unset no exporter, transport, or global provider is installed, so an outage or
 // misconfiguration of the collector/sidecar can never break the service.
 //
-// This is the S3 collection seam. Span instrumentation of domain code and the
-// production dashboards/alerts land in S33 (docs/14); each domain instruments
-// its own code against the global provider installed here.
+// This is the S3 collection seam, completed in S33: the tracer AND meter global
+// providers are installed here (behind OTEL_ENABLED), plus the W3C trace-context
+// propagator, so the S18 execution telemetry and S19 analytics/cost metric seams
+// actually export and an inbound web → gateway trace continues into core spans.
+// Each domain instruments its own code against these global providers; the §18
+// dashboards and §20.1 alerts consume the exported series (docs/14).
 package obs
 
 import (
@@ -18,7 +21,10 @@ import (
 	"github.com/getsentry/sentry-go"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/propagation"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 
@@ -37,12 +43,27 @@ func Init(ctx context.Context, cfg *config.Config, logger *slog.Logger) (Shutdow
 	var shutdowns []ShutdownFunc
 
 	if cfg.OTelEnabled {
+		// A single W3C trace-context + baggage propagator so an incoming trace
+		// (web → gateway) continues into core spans and outbound calls (core → DK,
+		// core → LLM plane). Set unconditionally with tracing so the approval-control
+		// identity (action ID + parameter/context version) survives every hop.
+		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
+			propagation.TraceContext{}, propagation.Baggage{},
+		))
+
 		sd, err := initTracing(ctx, cfg)
 		if err != nil {
 			return noop, err
 		}
 		shutdowns = append(shutdowns, sd)
 		logger.Info("otel tracing enabled")
+
+		msd, err := initMetrics(ctx, cfg)
+		if err != nil {
+			return combine(shutdowns), err
+		}
+		shutdowns = append(shutdowns, msd)
+		logger.Info("otel metrics enabled")
 	}
 
 	if cfg.SpotlightEnabled() {
@@ -82,6 +103,38 @@ func initTracing(ctx context.Context, cfg *config.Config) (ShutdownFunc, error) 
 	otel.SetTracerProvider(tp)
 
 	return tp.Shutdown, nil
+}
+
+// initMetrics installs the global MeterProvider that exports the domain metric
+// seams wired by S18 (execution) and S19 (analytics/cost) plus the RED/latency
+// instruments added in S33. Without it those meters resolve to the global no-op
+// and nothing reaches the collector, so the §18 dashboards would be empty of
+// real series. otlpmetrichttp reads the same OTEL_EXPORTER_OTLP_* env the tracer
+// uses; the dev collector is provided by compose.dev.yml. The resource carries
+// service.name so Prometheus can roll metrics up by service/version.
+func initMetrics(ctx context.Context, cfg *config.Config) (ShutdownFunc, error) {
+	exporter, err := otlpmetrichttp.New(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	res, err := resource.New(ctx,
+		resource.WithAttributes(
+			attribute.String("service.name", config.ServiceName),
+			attribute.String("deployment.environment", cfg.AppEnv),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exporter)),
+		sdkmetric.WithResource(res),
+	)
+	otel.SetMeterProvider(mp)
+
+	return mp.Shutdown, nil
 }
 
 func initSpotlight(cfg *config.Config) (ShutdownFunc, error) {

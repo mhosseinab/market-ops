@@ -24,6 +24,21 @@ exporters:
   # Logs → Loki native OTLP ingest endpoint.
   otlphttp/loki:
     endpoint: http://loki:3100/otlp
+  # Metrics → a Prometheus scrape endpoint the dev Prometheus polls. The §18
+  # dashboards query these series through the Grafana Prometheus datasource.
+  #
+  # add_metric_suffixes:false keeps the OTLP names stable through the OTLP→Prom
+  # translation: only `.`→`_` is applied (no `_total`/`_seconds` suffixes), so a
+  # counter `execution.write_attempts` becomes exactly `execution_write_attempts`
+  # and the dashboards/alert-rules query the real emitted names. Histograms still
+  # expand to `_bucket`/`_sum`/`_count` per the Prometheus data model.
+  # resource_to_telemetry_conversion promotes service.name → a `service_name`
+  # label so metrics roll up by service/version (docs/14).
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    add_metric_suffixes: false
+    resource_to_telemetry_conversion:
+      enabled: true
   debug:
     verbosity: normal
 
@@ -40,4 +55,4 @@ service:
     metrics:
       receivers: [otlp]
       processors: [batch]
-      exporters: [debug]
+      exporters: [prometheus, debug]
