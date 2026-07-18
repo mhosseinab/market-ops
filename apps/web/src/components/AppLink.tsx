@@ -14,7 +14,7 @@ export function AppLink({
   testId,
 }: {
   to: string;
-  search?: { variantId?: string };
+  search?: { variantId?: string; eventId?: string; cardId?: string };
   className?: string;
   children: ReactNode;
   testId?: string;

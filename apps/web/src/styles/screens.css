@@ -515,3 +515,291 @@
   margin: 0;
   color: var(--ink-2);
 }
+
+/* ── S27: Today / event detail / recommendation ─────────────────────────── */
+
+/* Inline state pill (state machine, blocked panel, edited flag). Color carries
+ * meaning but never stands alone — a text label always accompanies the dot. */
+.sm-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--tone, var(--ink-2));
+}
+.sm-state[data-tone="pos"] {
+  --tone: var(--pos);
+}
+.sm-state[data-tone="risk"] {
+  --tone: var(--risk);
+}
+.sm-state[data-tone="warn"] {
+  --tone: var(--warn);
+}
+.sm-state[data-tone="info"] {
+  --tone: var(--info);
+}
+.sm-state[data-tone="conflict"] {
+  --tone: var(--conflict);
+}
+.sm-state[data-tone="ink2"] {
+  --tone: var(--ink-2);
+}
+
+/* Today priority queue */
+.event-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.event-list__end {
+  text-align: center;
+  padding-block-start: 8px;
+}
+
+.event-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) minmax(160px, auto);
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 12px 14px;
+  background: var(--panel);
+}
+
+.event-row__rank {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-inline-end: 1px solid var(--line);
+}
+
+.event-row__rank-num {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--ink-3);
+}
+
+.event-row__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-inline-size: 0;
+}
+
+.event-row__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.event-row__factors {
+  display: flex;
+  gap: 18px;
+  margin: 0;
+}
+
+.event-row__factor dt {
+  color: var(--ink-3);
+  font-size: 10.5px;
+}
+
+.event-row__factor dd {
+  margin: 0;
+  font-weight: 600;
+}
+
+.event-row__rationale {
+  margin: 0;
+  font-size: 11.5px;
+}
+
+.event-row__rationale-q {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.event-row__action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.event-row__blocked {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
+/* Event detail */
+.event-detail__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.evidence-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.evidence-panel {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.evidence-panel[data-kind="inference"] {
+  background: var(--accent-bg);
+  border-color: var(--accent);
+}
+
+.evidence-panel__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.evidence-panel__dot {
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 50%;
+  background: var(--pos);
+}
+.evidence-panel[data-kind="dk"] .evidence-panel__dot {
+  background: var(--info);
+}
+.evidence-panel[data-kind="config"] .evidence-panel__dot {
+  background: var(--ink-3);
+}
+.evidence-panel[data-kind="inference"] .evidence-panel__dot {
+  background: var(--accent);
+}
+
+.evidence-panel__title {
+  font-weight: 600;
+  font-size: 12px;
+}
+
+.evidence-panel__note {
+  margin: 0;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* State machine */
+.state-machine {
+  gap: 12px;
+}
+
+.sm-gates__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 6px;
+}
+
+.sm-gates__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.sm-gates__mark {
+  color: var(--pos);
+  font-weight: 700;
+}
+
+.sm-terminal {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* Approval card */
+.approval-card {
+  border-color: var(--line-2);
+  gap: 12px;
+}
+
+.approval-card__price {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-card);
+  padding: 12px 14px;
+}
+
+.approval-card__price-label {
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.approval-card__stepper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.approval-card__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.approval-card__footnote {
+  border-block-start: 1px solid var(--line);
+  padding-block-start: 8px;
+}
+
+/* Contribution breakdown */
+.contribution__lines {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.contribution__line {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-block-end: 1px solid var(--line);
+}
+
+.contribution__line--total {
+  font-weight: 700;
+}
+
+.contribution__meta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-block-start: 8px;
+}
+
+.split__main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-inline-size: 0;
+}

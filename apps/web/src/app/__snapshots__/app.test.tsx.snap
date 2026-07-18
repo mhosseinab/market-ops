@@ -146,14 +146,19 @@ exports[`app shell boots RTL, fa-IR > matches the RTL shell snapshot 1`] = `
       class="route-scroll"
     >
       <div
-        class="screen-empty"
+        class="screen"
       >
-        <p>
-          موردی برای نمایش نیست
-        </p>
-        <p>
-          هیچ اقدامی هم‌اکنون لازم نیست.
-        </p>
+        <div
+          class="screen-empty"
+          data-testid="today-no-action"
+        >
+          <p>
+            هیچ اقدامی لازم نیست
+          </p>
+          <p>
+            همه‌چیز پایدار است؛ در صورت تغییر بازار این‌جا مطلع می‌شوید.
+          </p>
+        </div>
       </div>
     </main>
   </div>

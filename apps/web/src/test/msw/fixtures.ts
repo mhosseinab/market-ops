@@ -1,10 +1,14 @@
 import type {
+  ApprovalCardView,
+  ApprovalConfirmResult,
   ConnectorStatus,
   CostImportPreview,
   MarginReadiness,
+  MarketEvent,
   NeedsReviewQueue,
   ObservationTarget,
   ObservedOffer,
+  TodayFeed,
 } from "../../data/types";
 
 // Fixtures mirroring the core contract response shapes (gen/ts schema). Kept
@@ -158,4 +162,97 @@ export const previewClean: CostImportPreview = {
   batchId: "66666666-6666-6666-6666-666666666666",
   counts: { accept: 1, reject: 0, duplicate: 0 },
   rows: [acceptRow],
+};
+
+// ── S27: Today / events / recommendation + approval ─────────────────────────
+export const EVENT_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+export const EVENT_ID_BLOCKED = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
+export const OBSERVATION_ID = "cccccccc-cccc-cccc-cccc-cccccccccccc";
+export const CARD_ID = "dddddddd-dddd-dddd-dddd-dddddddddddd";
+export const ACTION_ID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+export const RECOMMENDATION_ID = "ffffffff-ffff-ffff-ffff-ffffffffffff";
+
+/** An actionable event: verified evidence, known exposure. */
+export const marketEvent: MarketEvent = {
+  id: EVENT_ID,
+  marketplaceAccountId: ACCOUNT_ID,
+  variantId: VARIANT_ID,
+  targetId: TARGET_ID,
+  type: "competitor_price",
+  severity: "warning",
+  state: "open",
+  factors: {
+    exposure: { known: true, amount: { mantissa: 14100000, currency: "IRR", exponent: 0 } },
+    confidenceBp: 9200,
+    urgencyBp: 6000,
+  },
+  thresholdVersion: 3,
+  evidenceObservationId: OBSERVATION_ID,
+  evidenceQuality: "verified",
+  evidenceRef: "obs:route_c:8842213",
+  firstDetectedAt: "2026-07-17T06:00:00Z",
+  lastEvidenceAt: "2026-07-17T09:30:00Z",
+  expiresAt: "2026-07-18T06:00:00Z",
+  evidenceUpdateCount: 2,
+};
+
+/** A blocked event: conflicted observation, unknown exposure (EVT-005). */
+export const blockedEvent: MarketEvent = {
+  ...marketEvent,
+  id: EVENT_ID_BLOCKED,
+  type: "winning_state",
+  severity: "critical",
+  evidenceQuality: "conflicted",
+  factors: { exposure: { known: false }, confidenceBp: 4000, urgencyBp: 8000 },
+};
+
+export const todayFeed: TodayFeed = {
+  items: [
+    { event: marketEvent, rank: 1, factors: marketEvent.factors },
+    { event: blockedEvent, rank: 2, factors: blockedEvent.factors },
+  ],
+};
+
+/** A live approval card in AwaitingConfirmation — carries a structured control. */
+export const approvalCardAwaiting: ApprovalCardView = {
+  id: CARD_ID,
+  recommendationId: RECOMMENDATION_ID,
+  version: 1,
+  state: "awaiting_confirmation",
+  binding: {
+    actionId: ACTION_ID,
+    parameterVersion: 4,
+    contextVersion: 2,
+    policyVersion: 7,
+    costProfileVersion: 5,
+    evidenceVersions: [{ observationId: OBSERVATION_ID, version: 3 }],
+    expiresAt: "2026-07-17T12:00:00Z",
+  },
+  price: { mantissa: 13900000, currency: "IRR", exponent: 0 },
+  idempotencyKey: "idem-dddddddd",
+  hasControl: true,
+  history: [{ toState: "awaiting_confirmation", reason: "", occurredAt: "2026-07-17T09:40:00Z" }],
+};
+
+/** The same card after a NEW version was minted under a live control (APR-001). */
+export const approvalCardV2: ApprovalCardView = {
+  ...approvalCardAwaiting,
+  version: 2,
+  binding: { ...approvalCardAwaiting.binding, parameterVersion: 5 },
+};
+
+/** Recommend-only terminal: Approved, execution deferred to S18. */
+export const confirmApproved: ApprovalConfirmResult = {
+  cardId: CARD_ID,
+  state: "approved",
+  reason: "",
+  executionPending: true,
+};
+
+/** APR-001 invalidation: a bound dimension changed under the control. */
+export const confirmInvalidated: ApprovalConfirmResult = {
+  cardId: CARD_ID,
+  state: "invalidated",
+  reason: "parameter_version_changed",
+  executionPending: false,
 };

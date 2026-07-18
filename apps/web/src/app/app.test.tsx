@@ -43,6 +43,9 @@ describe("app shell boots RTL, fa-IR", () => {
   it("matches the RTL shell snapshot", async () => {
     const { container } = renderApp("/today");
     await waitFor(() => expect(screen.getAllByText("امروز").length).toBeGreaterThan(0));
+    // Today fetches its feed; the default handler is an empty feed, so await the
+    // settled no-action state to keep the shell snapshot deterministic.
+    await screen.findByTestId("today-no-action");
     expect(container.querySelector(".app-shell")).toMatchSnapshot();
   });
 });
