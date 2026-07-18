@@ -10,7 +10,8 @@
     "assert:prod-clean": "node scripts/assert-prod-clean.mjs"
   },
   "dependencies": {
-    "@market-ops/gen-ts": "workspace:*"
+    "@market-ops/gen-ts": "workspace:*",
+    "@market-ops/locale": "workspace:*"
   },
   "devDependencies": {
     "@types/chrome": "0.0.287",

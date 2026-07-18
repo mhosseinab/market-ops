@@ -54,4 +54,16 @@ describe("prepareCapture — EXT-004 + capability gates (never-cut)", () => {
       expect(d).toEqual({ action: "skip", reason: `capability_${cap}` });
     }
   });
+
+  it("attributes the sub-route the extension actually used (OBS-005) — on-demand vs watchlist", () => {
+    const product = parsed();
+    const idx = confirmedIndex(variantId(product));
+    const onDemand = prepareCapture(product, idx, "ready", "2026-07-18T10:00:00Z", "on_demand");
+    if (onDemand.action !== "enqueue") throw new Error("expected enqueue");
+    expect(onDemand.capture.subRoute).toBe("on_demand");
+
+    const watchlist = prepareCapture(product, idx, "ready", "2026-07-18T10:00:00Z", "watchlist");
+    if (watchlist.action !== "enqueue") throw new Error("expected enqueue");
+    expect(watchlist.capture.subRoute).toBe("watchlist");
+  });
 });

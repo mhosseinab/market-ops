@@ -17,7 +17,12 @@ export type MetricName =
   | "queue_backpressure"
   | "upload_accepted"
   | "upload_failed"
-  | "capability_transition";
+  | "capability_transition"
+  | "on_demand_latency_ms"
+  | "watchlist_add"
+  | "schedule_cycle"
+  | "schedule_request_denied"
+  | "schedule_circuit_stop";
 
 export interface LogFields {
   [key: string]: string | number | boolean | null | undefined;
@@ -29,6 +34,10 @@ export const crawlRunId = cryptoRandomId();
 // counters are the local-first metric store. In production a periodic flush would
 // ship these; the point here is that tests and prod share the SAME field names.
 const counters = new Map<string, number>();
+// gauges hold the CURRENT value of a point-in-time metric (e.g. queue depth) —
+// distinct from counters: a gauge is SET to the latest observed value, never
+// accumulated, so it always reads the real current state, not a running sum.
+const gauges = new Map<string, number>();
 
 export function metricKey(name: MetricName, labels: LogFields = {}): string {
   const parts = Object.entries(labels)
@@ -47,8 +56,19 @@ export function counterValue(name: MetricName, labels: LogFields = {}): number {
   return counters.get(metricKey(name, labels)) ?? 0;
 }
 
+// gauge sets a point-in-time metric to its REAL current value (e.g. the actual
+// pending-queue length read fresh from storage) — never a placeholder constant.
+export function gauge(name: MetricName, value: number, labels: LogFields = {}): void {
+  gauges.set(metricKey(name, labels), value);
+}
+
+export function gaugeValue(name: MetricName, labels: LogFields = {}): number {
+  return gauges.get(metricKey(name, labels)) ?? 0;
+}
+
 export function resetCounters(): void {
   counters.clear();
+  gauges.clear();
 }
 
 // log emits one structured record. It NEVER logs Persian-language copy as a

@@ -3,12 +3,19 @@ import type { OwnedTarget } from "./owned-targets";
 import { containsSecretKey } from "./redact";
 import type { CaptureUpload, ParsedProduct } from "./types";
 
+// The Route B sub-route (OBS-005 / PRD §7.3): every capture is ATTRIBUTED to how
+// it was obtained so the core analytics can meter each sub-route against the
+// shared Route B budget. `passive` is explicit browsing (EXT-002), `on_demand` a
+// user refresh (EXT-003), `watchlist` a bounded scheduled refresh (EXT-012). The
+// extension only reports the sub-route it actually used; it can never self-certify
+// a different route (that is a server-side determination).
+export type CaptureSubRoute = CaptureUpload["subRoute"];
+
 // buildCapture assembles the ALLOW-LISTED capture upload (contracts:
 // CaptureUpload, additionalProperties false) from a parsed product and its
 // Confirmed owned target. It is the last gate before the wire: it emits ONLY the
 // permitted fields (no reviewer/question identity, no session data), stamps the
-// parser + connector versions, and forces the Route B sub-route to `passive`
-// (the extension can never self-certify a different route — that is server-side).
+// parser + connector versions, and attributes the Route B sub-route (OBS-005).
 //
 // Returns null when the product has no offer (unavailable): a capture is never
 // fabricated with an invented price (docs/10 step 3).
@@ -16,6 +23,7 @@ export function buildCapture(
   product: ParsedProduct,
   target: OwnedTarget,
   capturedAt: string,
+  subRoute: CaptureSubRoute = "passive",
 ): CaptureUpload | null {
   const offer = product.offer;
   if (offer === null) return null;
@@ -24,7 +32,7 @@ export function buildCapture(
     marketplaceAccountId: target.marketplaceAccountId,
     targetId: target.targetId,
     nativeVariantId: offer.nativeVariantId,
-    subRoute: "passive",
+    subRoute,
     sourceType: "public-web-endpoint",
     parserVersion: product.parserVersion,
     connectorVersion: CONNECTOR_VERSION,

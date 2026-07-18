@@ -31,8 +31,13 @@ tasks:
     desc: >-
       Copy-lint (LOC-002): fail on any inline string literal / Persian-script text
       in UI components. All user-facing copy must flow through catalog keys.
+      Covers apps/web (JSX) and the extension's UI surfaces — popup + content
+      overlay (S31). apps/extension/src/lib is EXCLUDED: it legitimately
+      contains Persian selector/DOM-matching DATA (e.g. the DK "ناموجود"
+      unavailable badge text in dom-validate.ts) that is parsed website
+      content, not user-facing extension copy.
     cmds:
-      - node tools/copylint/copylint.mjs apps/web/src
+      - node tools/copylint/copylint.mjs apps/web/src apps/extension/src/popup apps/extension/src/content
 
   pseudoloc:
     desc: >-

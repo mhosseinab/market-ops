@@ -26,6 +26,9 @@ importers:
       '@market-ops/gen-ts':
         specifier: workspace:*
         version: link:../../gen/ts
+      '@market-ops/locale':
+        specifier: workspace:*
+        version: link:../../packages/locale
     devDependencies:
       '@types/chrome':
         specifier: 0.0.287
