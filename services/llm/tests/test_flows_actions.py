@@ -122,7 +122,7 @@ def test_level3_is_explanation_and_deeplink_only() -> None:
     guidance = level3_explanation(guidance_key="chat.guidance.l3_guardrail")
     # No Draft, no transition — L3 has no chat write tool (CHAT-062).
     assert guidance.transitions == []
-    assert guidance.deep_link == "/app/settings/guardrails"
+    assert guidance.deep_link == "/app/settings?section=guardrails"
 
 
 def test_draft_port_exposes_no_state_changing_method() -> None:

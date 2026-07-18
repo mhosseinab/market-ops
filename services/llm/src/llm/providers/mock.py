@@ -21,13 +21,13 @@ on it (§12.4, no silent truncation).
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 
@@ -48,6 +48,12 @@ class MockScript:
     # Simulated provider finish reason attached to every generated message.
     # ``None`` leaves it unset; ``"length"`` models a token-ceiling truncation.
     finish_reason: str | None = None
+    # Optional content-sensitive intent classifier (mock provider only). When set
+    # AND the response schema tool is IntentClassification, the mock derives the
+    # intent from the LAST human message's text instead of a fixed label — so a
+    # containment test drives the actual message through classification. Never
+    # used with a real endpoint (the model classifies for real there).
+    intent_classifier: Callable[[str], str] | None = None
 
 
 class MockChatModel(BaseChatModel):
@@ -70,7 +76,7 @@ class MockChatModel(BaseChatModel):
         # tool-binding path is identical to production.
         return self
 
-    def _ai_message(self) -> AIMessage:
+    def _ai_message(self, messages: list[BaseMessage] | None = None) -> AIMessage:
         s = self.script
         metadata = {"finish_reason": s.finish_reason} if s.finish_reason is not None else {}
         if s.mode == "loop_tool":
@@ -83,11 +89,26 @@ class MockChatModel(BaseChatModel):
             return AIMessage(
                 content="",
                 tool_calls=[
-                    {"name": s.response_tool_name, "args": s.response_args, "id": "mock-answer"}
+                    {
+                        "name": s.response_tool_name,
+                        "args": self._response_args(messages),
+                        "id": "mock-answer",
+                    }
                 ],
                 response_metadata=metadata,
             )
         return AIMessage(content=s.content, response_metadata=metadata)
+
+    def _response_args(self, messages: list[BaseMessage] | None) -> dict[str, Any]:
+        """The structured response args, content-derived for intent when configured."""
+        s = self.script
+        if (
+            s.response_tool_name == "IntentClassification"
+            and s.intent_classifier is not None
+        ):
+            text = _last_human_text(messages)
+            return {"intent": s.intent_classifier(text), "rationale": "mock-keyword"}
+        return s.response_args
 
     def _generate(
         self,
@@ -101,7 +122,9 @@ class MockChatModel(BaseChatModel):
             if self.script.finish_reason is not None
             else None
         )
-        generation = ChatGeneration(message=self._ai_message(), generation_info=generation_info)
+        generation = ChatGeneration(
+            message=self._ai_message(messages), generation_info=generation_info
+        )
         return ChatResult(generations=[generation])
 
     def _stream(
@@ -117,4 +140,17 @@ class MockChatModel(BaseChatModel):
             for word in self.script.content.split(" "):
                 yield ChatGenerationChunk(message=AIMessageChunk(content=word + " "))
             return
-        yield ChatGenerationChunk(message=AIMessageChunk(content=self._ai_message().content))
+        content = self._ai_message(messages).content
+        yield ChatGenerationChunk(message=AIMessageChunk(content=content))
+
+
+def _last_human_text(messages: list[BaseMessage] | None) -> str:
+    """Extract the last human message's text (for content-aware mock classifying)."""
+    if not messages:
+        return ""
+    for message in reversed(messages):
+        if isinstance(message, HumanMessage):
+            content = message.content
+            return content if isinstance(content, str) else str(content)
+    last = messages[-1].content
+    return last if isinstance(last, str) else str(last)

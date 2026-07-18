@@ -1,0 +1,31 @@
+{
+  "_comment": "Cross-language golden for chat/screens/engine blocker ordering (CHAT-070, never-cut policy order). Emitted from the Go engine constants by services/core/internal/policy/order_golden_test.go (run with UPDATE_GOLDEN=1 to regenerate). The Python chat guard (services/llm/tests/test_flows_blockers.py) asserts llm.flows.blockers matches THIS file, so a reorder of internal/policy Stage or internal/cost AllComponents forces both the Go test and the Python test red.",
+  "policy_stage_order": [
+    "boundary",
+    "hard_floor",
+    "movement_cap",
+    "cooldown",
+    "strategy",
+    "objective"
+  ],
+  "policy_blocker_stage": {
+    "boundary_unknown": "boundary",
+    "boundary_invalid": "boundary",
+    "contribution_below_floor": "hard_floor",
+    "contribution_crosses_zero": "hard_floor",
+    "movement_cap_infeasible": "movement_cap",
+    "cooldown_active": "cooldown",
+    "strategy_disabled": "strategy",
+    "objective_infeasible": "objective"
+  },
+  "cost_component_order": [
+    "cogs",
+    "commission",
+    "fulfillment",
+    "shipping",
+    "packaging",
+    "promotion",
+    "ads",
+    "returns"
+  ]
+}

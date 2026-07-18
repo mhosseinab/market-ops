@@ -13,6 +13,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict
 
 from llm.envelope.contract import Calculation, Recommendation, ResponseEnvelope
+from llm.flows.deep_links import SCREENS_FALLBACK
 
 SIMULATION_STATE_KEY = "state.simulation"
 
@@ -47,7 +48,7 @@ def build_simulation(
     """
     recommendation = Recommendation(
         statement="",
-        deep_link="/app/screens",
+        deep_link=SCREENS_FALLBACK,
         state_key=SIMULATION_STATE_KEY,
     )
     envelope = ResponseEnvelope(

@@ -18,12 +18,14 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from llm.flows.deep_links import ROUTE_ACTIONS
 from llm.flows.models import GuidanceOnly, TransitionKind
 from llm.intents.models import IntentClass, IntentDisposition, route_intent
 
 # Deep link to the external structured control that CAN approve/confirm — the
-# same endpoint the screens use. Chat only points at it; it never owns it.
-STRUCTURED_CONTROL_DEEP_LINK = "/app/screens/approve"
+# actions surface, the SAME place the screens perform L4 approval. Chat only
+# points at it; it never owns it. Sourced from the single deep-link map (N5).
+STRUCTURED_CONTROL_DEEP_LINK = ROUTE_ACTIONS
 
 
 class TransitionLedger(BaseModel):

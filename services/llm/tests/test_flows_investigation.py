@@ -7,12 +7,30 @@ query string, because both go through the single canonical serializer
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from llm.flows.investigation import (
     FilterSpec,
     SortDir,
     SortKey,
     compile_query,
 )
+
+# The cross-boundary query golden — the canonical query bytes the SCREENS emit.
+# Chat's serializer must reproduce them exactly (CHAT-033); this externalizes the
+# expected bytes into a shared contract instead of proving Python self-consistency.
+_GOLDEN = json.loads(
+    (Path(__file__).resolve().parents[3] / "contracts" / "fixtures" / "investigation_query.json")
+    .read_text(encoding="utf-8")
+)
+
+
+def test_compile_query_matches_cross_boundary_screen_golden() -> None:
+    """chat compile_query(spec) == the screen contract's query bytes (CHAT-033)."""
+    for case in _GOLDEN["cases"]:
+        spec = FilterSpec(**case["spec"])
+        assert compile_query(spec) == case["query"], f"query drift on {case['name']}"
 
 
 def test_chat_and_screen_filters_serialize_byte_equal() -> None:

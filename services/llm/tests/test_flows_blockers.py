@@ -8,8 +8,12 @@ CHAT-072: refresh consumes a bounded route budget.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 from llm.flows.blockers import (
     COST_COMPONENT_ORDER,
+    POLICY_BLOCKER_STAGE,
     POLICY_STAGE_ORDER,
     Blocker,
     RefreshBudget,
@@ -19,31 +23,29 @@ from llm.flows.blockers import (
 )
 from llm.flows.models import CostControl
 
-
-def test_policy_stage_order_byte_matches_engine() -> None:
-    """The stage order equals internal/policy's Stage order (§9.3) byte-for-byte."""
-    assert POLICY_STAGE_ORDER == (
-        "boundary",
-        "hard_floor",
-        "movement_cap",
-        "cooldown",
-        "strategy",
-        "objective",
-    )
+# The cross-language golden emitted from the Go engine constants
+# (services/core/internal/policy/order_golden_test.go). Consuming it here means a
+# reorder of the Go Stage iota / cost.AllComponents regenerates the golden and
+# forces THIS Python test red — not a self-referential Python literal (CHAT-070).
+_GOLDEN = json.loads(
+    (Path(__file__).resolve().parents[3] / "contracts" / "fixtures" / "blocker_order.json")
+    .read_text(encoding="utf-8")
+)
 
 
-def test_cost_component_order_byte_matches_engine() -> None:
-    """The component order equals internal/cost AllComponents (§9.2) byte-for-byte."""
-    assert COST_COMPONENT_ORDER == (
-        "cogs",
-        "commission",
-        "fulfillment",
-        "shipping",
-        "packaging",
-        "promotion",
-        "ads",
-        "returns",
-    )
+def test_policy_stage_order_matches_cross_language_golden() -> None:
+    """Chat's stage order equals the Go engine golden (§9.3), not a Python literal."""
+    assert POLICY_STAGE_ORDER == tuple(_GOLDEN["policy_stage_order"])
+
+
+def test_policy_blocker_stage_matches_cross_language_golden() -> None:
+    """Chat's blocker→stage map equals the Go engine golden (CHAT-070)."""
+    assert POLICY_BLOCKER_STAGE == _GOLDEN["policy_blocker_stage"]
+
+
+def test_cost_component_order_matches_cross_language_golden() -> None:
+    """Chat's component order equals the Go cost golden (§9.2)."""
+    assert COST_COMPONENT_ORDER == tuple(_GOLDEN["cost_component_order"])
 
 
 def test_policy_blockers_order_to_policy_order() -> None:

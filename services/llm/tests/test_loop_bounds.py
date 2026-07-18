@@ -18,12 +18,26 @@ import time
 
 from langchain_core.tools import StructuredTool
 from llm.config import ProviderKind, Settings
+from llm.intents.classifier import IntentClassifier
 from llm.orchestrator.agent import build_agent
 from llm.orchestrator.graph import build_turn_graph
 from llm.providers.base import build_chat_model
-from llm.providers.mock import MockScript
+from llm.providers.mock import MockChatModel, MockScript
 from llm.tools.registry import build_registry
 from pydantic import BaseModel, ConfigDict
+
+
+def _question_classifier() -> IntentClassifier:
+    """A classifier fixed to a tool-capable intent so the agent path runs."""
+    return IntentClassifier(
+        MockChatModel(
+            script=MockScript(
+                mode="answer",
+                response_tool_name="IntentClassification",
+                response_args={"intent": "Question", "rationale": "test"},
+            )
+        )
+    )
 
 
 def _loop_turn(settings: Settings):  # type: ignore[no-untyped-def]
@@ -32,7 +46,7 @@ def _loop_turn(settings: Settings):  # type: ignore[no-untyped-def]
         settings, mock_script=MockScript(mode="loop_tool", loop_tool_name="read_observation")
     )
     agent = build_agent(model, registry, settings)
-    return build_turn_graph(agent, settings)
+    return build_turn_graph(agent, settings, _question_classifier())
 
 
 def test_recursion_limit_maps_to_structured_failure() -> None:
@@ -100,7 +114,7 @@ def test_per_tool_timeout_maps_to_structured_failure() -> None:
         settings, mock_script=MockScript(mode="loop_tool", loop_tool_name="read_observation")
     )
     agent = build_agent(model, registry, settings)
-    graph = build_turn_graph(agent, settings)
+    graph = build_turn_graph(agent, settings, _question_classifier())
 
     started = time.monotonic()
     result = graph.run({"message": "read the observation"})
@@ -128,7 +142,7 @@ def test_token_ceiling_maps_to_structured_failure() -> None:
         settings, mock_script=MockScript(mode="answer", finish_reason="length")
     )
     agent = build_agent(model, registry, settings)
-    graph = build_turn_graph(agent, settings)
+    graph = build_turn_graph(agent, settings, _question_classifier())
 
     result = graph.run({"message": "write me a very long answer"})
 
@@ -147,7 +161,7 @@ def test_normal_completion_without_length_finish_reason_succeeds() -> None:
     registry = build_registry()
     model = build_chat_model(settings, mock_script=MockScript(mode="answer"))
     agent = build_agent(model, registry, settings)
-    graph = build_turn_graph(agent, settings)
+    graph = build_turn_graph(agent, settings, _question_classifier())
 
     result = graph.run({"message": "hello"})
 
@@ -164,7 +178,7 @@ def test_single_transient_retry_then_failure() -> None:
     settings = Settings(provider_kind=ProviderKind.MOCK, node_transient_retries=1)
     model = build_chat_model(settings, mock_script=MockScript(mode="answer"))
     agent = build_agent(model, registry, settings)
-    graph = build_turn_graph(agent, settings)
+    graph = build_turn_graph(agent, settings, _question_classifier())
 
     calls = {"n": 0}
     original_invoke = agent.graph.invoke

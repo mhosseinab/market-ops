@@ -78,26 +78,46 @@ class ActionRecord(BaseModel):
 
 
 class MonitoringView(BaseModel):
-    """Actions grouped by state for the monitoring surface (CHAT-073)."""
+    """Actions grouped by state, segregated terminal vs in-flight (CHAT-073).
+
+    ``groups`` holds every state's action ids; ``terminal`` and ``in_flight`` are
+    the two top-level buckets the surface renders separately — a settled action
+    (accepted/rejected/failed/expired) is shown apart from one still moving
+    (awaiting/executing/pending reconciliation), so "done" never reads as "live".
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     groups: dict[str, list[str]] = Field(default_factory=dict)
+    terminal: dict[str, list[str]] = Field(default_factory=dict)
+    in_flight: dict[str, list[str]] = Field(default_factory=dict)
 
     def action_ids_in(self, state: ActionState) -> list[str]:
         return self.groups.get(state.value, [])
 
+    def terminal_action_ids(self) -> list[str]:
+        return [aid for ids in self.terminal.values() for aid in ids]
+
+    def in_flight_action_ids(self) -> list[str]:
+        return [aid for ids in self.in_flight.values() for aid in ids]
+
 
 def group_by_state(actions: list[ActionRecord]) -> MonitoringView:
-    """Group action ids by their current state (CHAT-073). Deterministic order.
+    """Group action ids by state and segregate terminal vs in-flight (CHAT-073).
 
     Within a group, action ids preserve the order they arrived from the
     append-only history — the surface never re-sorts across the state boundary.
+    Terminal states (:data:`TERMINAL_STATES`) bucket into ``terminal``; every
+    other state buckets into ``in_flight``.
     """
     groups: dict[str, list[str]] = {}
+    terminal: dict[str, list[str]] = {}
+    in_flight: dict[str, list[str]] = {}
     for record in actions:
         groups.setdefault(record.state.value, []).append(record.action_id)
-    return MonitoringView(groups=groups)
+        bucket = terminal if record.state in TERMINAL_STATES else in_flight
+        bucket.setdefault(record.state.value, []).append(record.action_id)
+    return MonitoringView(groups=groups, terminal=terminal, in_flight=in_flight)
 
 
 def can_retry(record: ActionRecord) -> bool:

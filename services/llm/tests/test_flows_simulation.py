@@ -41,7 +41,7 @@ def test_simulation_recommendation_carries_no_authority() -> None:
     rec = sim.envelope.recommendation
     assert rec is not None
     # Only a deep link — never a control/authority token.
-    assert rec.deep_link == "/app/screens"
+    assert rec.deep_link == "/app/today"
     # The Recommendation model has no field that could approve/execute.
     assert set(rec.model_dump().keys()) == {"statement", "deep_link", "state_key"}
 

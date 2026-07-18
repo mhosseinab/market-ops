@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
 
+from llm.flows.deep_links import level3_explanation as _level3_deep_link
 from llm.flows.models import (
     DraftTicket,
     GuidanceOnly,
@@ -111,15 +112,12 @@ def propose_level2_change(
     return Level2Result(card=card, transitions=[TransitionKind.DRAFT])
 
 
-# Deep link to the Level-3 commercial-guardrail screen (explanation target).
-_LEVEL3_DEEP_LINK = "/app/settings/guardrails"
-
-
 def level3_explanation(*, guidance_key: str) -> GuidanceOnly:
     """Level-3 admin: explanation + deep-link ONLY (CHAT-062). No write, no Draft.
 
     Commercial guardrails have no chat write tool in P0; a request to change one
-    is answered with guidance and a deep link to the structured screen. No
-    transition is recorded — there is nothing to originate.
+    is answered with guidance and a deep link to the structured screen (sourced
+    from the single deep-link map). No transition is recorded — there is nothing
+    to originate.
     """
-    return GuidanceOnly(guidance_key=guidance_key, deep_link=_LEVEL3_DEEP_LINK)
+    return GuidanceOnly(guidance_key=guidance_key, deep_link=_level3_deep_link())
