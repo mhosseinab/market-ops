@@ -1,0 +1,14 @@
+{
+  "status": 200,
+  "data": {
+    "product": {
+      "id": 3456789,
+      "title_fa": "کالای ناموجود نمونه",
+      "status": "out_of_stock",
+      "url": { "uri": "/product/dkp-3456789/out-of-stock-sample/" },
+      "default_variant": {},
+      "variants": [],
+      "last_comments": []
+    }
+  }
+}

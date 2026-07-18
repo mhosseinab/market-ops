@@ -1,0 +1,43 @@
+{
+  "status": 200,
+  "data": {
+    "product": {
+      "id": 2345678,
+      "title_fa": "گوشی موبایل نمونه ۱۲۸ گیگابایت",
+      "title_en": "Sample Phone 128GB",
+      "status": "marketable",
+      "url": { "uri": "/product/dkp-2345678/sample-phone-128gb/" },
+      "colors": [{ "title": "مشکی", "hex_code": "#000000" }],
+      "default_variant": {
+        "id": 987654321,
+        "seller": { "id": 4321, "title": "فروشنده نمونه", "code": "1ABCD" },
+        "warranty": { "title_fa": "گارانتی ۱۸ ماهه" },
+        "price": {
+          "selling_price": 125000000,
+          "rrp_price": 139000000,
+          "discount_percent": 10,
+          "marketable_stock": 7
+        }
+      },
+      "variants": [
+        {
+          "id": 987654321,
+          "seller": { "id": 4321, "title": "فروشنده نمونه", "code": "1ABCD" },
+          "price": { "selling_price": 125000000, "rrp_price": 139000000, "marketable_stock": 7 }
+        }
+      ],
+      "last_comments": [
+        {
+          "id": 11,
+          "body": "کیفیت خوب",
+          "rate": 5,
+          "user_name": "کاربر دیجی‌کالا",
+          "created_at": "2026-01-02"
+        }
+      ],
+      "questions": {
+        "items": [{ "id": 22, "text": "گارانتی دارد؟", "sender": "پرسنده ناشناس" }]
+      }
+    }
+  }
+}

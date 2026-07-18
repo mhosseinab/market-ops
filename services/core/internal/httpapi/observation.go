@@ -94,6 +94,14 @@ func (s *gatewayServer) UploadCapture(
 	if req.Body == nil {
 		return gateway.UploadCapturedefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
+	// A capture credential is scoped to ONE marketplace account (EXT-001). If the
+	// request authenticated with a capture credential, its account MUST match the
+	// upload body — an extension can never post captures for a different seller's
+	// account (cross-account containment). A human-session upload has no injected
+	// capture account and skips this check (perm already authorized it).
+	if acct, ok := captureAccountFrom(ctx); ok && acct != req.Body.MarketplaceAccountId {
+		return gateway.UploadCapturedefaultJSONResponse{StatusCode: 403, Body: forbiddenErr()}, nil
+	}
 	capture := captureFromUpload(*req.Body)
 	res, err := s.observation.Ingest(ctx, capture)
 	if err != nil {

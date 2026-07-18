@@ -55,7 +55,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: AuthenticatedClient,
     body: CaptureUpload,
 ) -> Response[CaptureAccepted | ErrorEnvelope]:
     """Upload an extension (Route B) observation capture.
@@ -66,7 +66,9 @@ def sync_detailed(
     fields, and may NOT self-certify schema/identity validity, conflict, or forge Route C freshness —
     those are server-side determinations. Price is raw evidence only (money quarantine); a capture never
     carries a Money. An equivalent replay is deduplicated (OBS-008): it creates no duplicate current
-    offer and retains route provenance.
+    offer and retains route provenance. Authenticated by the extension's scoped capture credential
+    (captureAuth) obtained through pairing (EXT-001); a human session cookie is also accepted for first-
+    party tooling. The capture credential is NEVER a seller-API token.
 
     Args:
         body (CaptureUpload): ALLOW-LISTED extension (Route B) capture upload (PRD §10.1). Only
@@ -95,7 +97,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: AuthenticatedClient,
     body: CaptureUpload,
 ) -> CaptureAccepted | ErrorEnvelope | None:
     """Upload an extension (Route B) observation capture.
@@ -106,7 +108,9 @@ def sync(
     fields, and may NOT self-certify schema/identity validity, conflict, or forge Route C freshness —
     those are server-side determinations. Price is raw evidence only (money quarantine); a capture never
     carries a Money. An equivalent replay is deduplicated (OBS-008): it creates no duplicate current
-    offer and retains route provenance.
+    offer and retains route provenance. Authenticated by the extension's scoped capture credential
+    (captureAuth) obtained through pairing (EXT-001); a human session cookie is also accepted for first-
+    party tooling. The capture credential is NEVER a seller-API token.
 
     Args:
         body (CaptureUpload): ALLOW-LISTED extension (Route B) capture upload (PRD §10.1). Only
@@ -130,7 +134,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: AuthenticatedClient,
     body: CaptureUpload,
 ) -> Response[CaptureAccepted | ErrorEnvelope]:
     """Upload an extension (Route B) observation capture.
@@ -141,7 +145,9 @@ async def asyncio_detailed(
     fields, and may NOT self-certify schema/identity validity, conflict, or forge Route C freshness —
     those are server-side determinations. Price is raw evidence only (money quarantine); a capture never
     carries a Money. An equivalent replay is deduplicated (OBS-008): it creates no duplicate current
-    offer and retains route provenance.
+    offer and retains route provenance. Authenticated by the extension's scoped capture credential
+    (captureAuth) obtained through pairing (EXT-001); a human session cookie is also accepted for first-
+    party tooling. The capture credential is NEVER a seller-API token.
 
     Args:
         body (CaptureUpload): ALLOW-LISTED extension (Route B) capture upload (PRD §10.1). Only
@@ -168,7 +174,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: AuthenticatedClient,
     body: CaptureUpload,
 ) -> CaptureAccepted | ErrorEnvelope | None:
     """Upload an extension (Route B) observation capture.
@@ -179,7 +185,9 @@ async def asyncio(
     fields, and may NOT self-certify schema/identity validity, conflict, or forge Route C freshness —
     those are server-side determinations. Price is raw evidence only (money quarantine); a capture never
     carries a Money. An equivalent replay is deduplicated (OBS-008): it creates no duplicate current
-    offer and retains route provenance.
+    offer and retains route provenance. Authenticated by the extension's scoped capture credential
+    (captureAuth) obtained through pairing (EXT-001); a human session cookie is also accepted for first-
+    party tooling. The capture credential is NEVER a seller-API token.
 
     Args:
         body (CaptureUpload): ALLOW-LISTED extension (Route B) capture upload (PRD §10.1). Only
