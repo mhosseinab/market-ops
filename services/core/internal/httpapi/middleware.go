@@ -177,6 +177,38 @@ var routePolicies = []routePolicy{
 	// Ack advances only a bounded read-state projection; neither carries a control.
 	{http.MethodGet, "/notifications", kindProtected, perm.ActionReadNotifications},
 	{http.MethodPost, "/notifications/ack", kindProtected, perm.ActionAckNotification},
+
+	// --- S37 consolidated PD-3 gateway endpoints (dk-p0-product-decisions.md) ---
+	// Recommendation detail + contribution breakdown (items 1/3) — L1 read.
+	{http.MethodGet, "/recommendations/detail", kindProtected, perm.ActionReadRecommendationDetail},
+	// Edit-price (item 2) — L2, Owner/Operator only; the machine gateway
+	// credential falls through to GatewayCan(price.edit), which denies it
+	// (not L1, not a Draft action — §12.3).
+	{http.MethodPost, "/approvals/card/edit-price", kindProtected, perm.ActionEditPrice},
+	// Bulk selection-set preview, SERVER-mints the version (item 4) — L2,
+	// Owner/Operator only; same machine-exclusion posture as edit-price.
+	{http.MethodPost, "/selection-sets/preview", kindProtected, perm.ActionBulkPreview},
+	// Actions/outcomes queue reads (item 5) — L1 read.approvals (same domain as
+	// the existing single-card/execution/outcome reads).
+	{http.MethodGet, "/actions", kindProtected, perm.ActionReadApprovals},
+	{http.MethodGet, "/outcomes/list", kindProtected, perm.ActionReadApprovals},
+	// Guardrails (item 6): read is L1; write is L3 Owner-only — the machine
+	// gateway credential falls through to GatewayCan(guardrail.write), which
+	// denies it (§12.3 "guardrail-write is never an LLM-plane tool").
+	{http.MethodGet, "/guardrails", kindProtected, perm.ActionReadGuardrails},
+	{http.MethodPost, "/guardrails", kindProtected, perm.ActionWriteGuardrails},
+	// Users roster (item 7) — L1 read.
+	{http.MethodGet, "/users", kindProtected, perm.ActionReadUsers},
+	// Operations queues (item 8) — off-ladder operational read, Owner + Internal
+	// only (same posture as ops.read_state).
+	{http.MethodGet, "/ops/queues", kindProtected, perm.ActionReadOperationsQueues},
+	// Market conflict view (item 8) — L1 read.observations (same domain as the
+	// other observation reads).
+	{http.MethodGet, "/market/conflicts", kindProtected, perm.ActionReadObservations},
+	// EXT-007 watchlist: read is L1; add is the existing L2 config.watchlist
+	// action (Owner/Operator).
+	{http.MethodGet, "/watchlist", kindProtected, perm.ActionReadWatchlist},
+	{http.MethodPost, "/watchlist", kindProtected, perm.ActionSetWatchlist},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.

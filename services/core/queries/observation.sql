@@ -200,3 +200,11 @@ WHERE marketplace_account_id = $1
 SELECT * FROM observed_offers
 WHERE marketplace_account_id = $1
 ORDER BY updated_at DESC;
+
+-- name: ListConflictedObservedOffers :many
+-- Cross-route conflicted Observed Offers (PD-3 item 8, S37 Market conflict
+-- banner — §16 "routes disagree → Conflicted; block"). The price of record is
+-- untouched; only the quality state signals the conflict.
+SELECT * FROM observed_offers
+WHERE marketplace_account_id = $1 AND quality = 'conflicted'
+ORDER BY updated_at DESC;

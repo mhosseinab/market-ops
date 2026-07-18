@@ -46,6 +46,13 @@ const (
 	// (CHAT-061/062). It is a Draft-only governance write; recording it in the one
 	// AUD-001 trail keeps the proposal transcript-independently reproducible.
 	EventLevel2Proposal EventType = "level2_proposal"
+	// EventGuardrailChange — the L3 commercial guardrails were written (S37 PD-3
+	// item 6). Owner-only, structured, versioned governance write; recorded here
+	// so a guardrail change is transcript-independently reproducible.
+	EventGuardrailChange EventType = "guardrail_change"
+	// EventWatchlistChange — an EXT-007 priority-watchlist entry was added (S37).
+	// Cap-enforced, structured write; recorded atomically with the insert.
+	EventWatchlistChange EventType = "watchlist_change"
 )
 
 // Actor is the AUD-001 actor + surface. It is identity, never free-text

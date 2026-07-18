@@ -483,6 +483,19 @@ func (s *Service) GetExecution(ctx context.Context, actionID uuid.UUID) (db.Acti
 	return db.New(s.pool).GetActionExecutionByAction(ctx, actionID)
 }
 
+// ListPendingReconciliation returns the account's action_executions still
+// awaiting reconciliation (PD-3 item 8, S37 Operations queue) — an unknown
+// external result that must resolve before any retry (EXE-003, never inferred).
+func (s *Service) ListPendingReconciliation(ctx context.Context, account uuid.UUID, limit int32) ([]db.ActionExecution, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	return db.New(s.pool).ListPendingReconciliationByAccount(ctx, db.ListPendingReconciliationByAccountParams{
+		MarketplaceAccountID: account,
+		Limit:                limit,
+	})
+}
+
 // outcomeWindow is the OUT-001 seven-day span.
 const outcomeWindow = 7 * 24 * time.Hour
 

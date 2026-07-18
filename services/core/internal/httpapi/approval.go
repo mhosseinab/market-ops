@@ -11,6 +11,7 @@ import (
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/money"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
@@ -24,6 +25,17 @@ type ApprovalService interface {
 	ConfirmIndividual(ctx context.Context, cardID uuid.UUID, presented approval.Binding, now time.Time) (recommendation.ConfirmOutcome, error)
 	BulkPreviewValid(ctx context.Context, lineage uuid.UUID, boundVersion int32) (bool, error)
 	CurrentSelectionSetVersion(ctx context.Context, lineage uuid.UUID) (int32, error)
+	// EditPrice mints a new card version with the edited price (CHAT-044, PD-3
+	// item 2, S37).
+	EditPrice(ctx context.Context, cardID uuid.UUID, newPrice money.Money, now time.Time) (db.ApprovalCard, error)
+	// ListActions returns the account's actions queue (PD-3 item 5, S37).
+	ListActions(ctx context.Context, account uuid.UUID, stateFilter string, limit int32) ([]db.ApprovalCard, error)
+	// GetRecommendation returns a single recommendation's full PRC-001 record
+	// (PD-3 items 1/3, S37).
+	GetRecommendation(ctx context.Context, id uuid.UUID) (db.Recommendation, error)
+	// PreviewBulkSelection mints a SERVER-side selection-set preview version
+	// (PD-3 item 4, S37 hard safety precondition).
+	PreviewBulkSelection(ctx context.Context, account, lineage uuid.UUID, name string, criteria map[string]string, members []recommendation.PreviewMemberInput) (recommendation.PreviewResult, error)
 }
 
 // GetApprovalCard returns a card, its current §8.4 state, and its append-only

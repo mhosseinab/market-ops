@@ -504,6 +504,58 @@ func (q *Queries) ListActiveTargetsByTier(ctx context.Context, tier string) ([]O
 	return items, nil
 }
 
+const listConflictedObservedOffers = `-- name: ListConflictedObservedOffers :many
+SELECT id, target_id, marketplace_account_id, offer_identity, native_variant_id, native_seller_id, price_raw_text, price_raw_value, price_raw_unit, list_price_raw_text, list_price_raw_value, list_price_raw_unit, availability_status, stock_signal, quality, captured_at, freshness_deadline, routes, last_observation_id, ended_at, created_at, updated_at FROM observed_offers
+WHERE marketplace_account_id = $1 AND quality = 'conflicted'
+ORDER BY updated_at DESC
+`
+
+// Cross-route conflicted Observed Offers (PD-3 item 8, S37 Market conflict
+// banner — §16 "routes disagree → Conflicted; block"). The price of record is
+// untouched; only the quality state signals the conflict.
+func (q *Queries) ListConflictedObservedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservedOffer, error) {
+	rows, err := q.db.Query(ctx, listConflictedObservedOffers, marketplaceAccountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ObservedOffer{}
+	for rows.Next() {
+		var i ObservedOffer
+		if err := rows.Scan(
+			&i.ID,
+			&i.TargetID,
+			&i.MarketplaceAccountID,
+			&i.OfferIdentity,
+			&i.NativeVariantID,
+			&i.NativeSellerID,
+			&i.PriceRawText,
+			&i.PriceRawValue,
+			&i.PriceRawUnit,
+			&i.ListPriceRawText,
+			&i.ListPriceRawValue,
+			&i.ListPriceRawUnit,
+			&i.AvailabilityStatus,
+			&i.StockSignal,
+			&i.Quality,
+			&i.CapturedAt,
+			&i.FreshnessDeadline,
+			&i.Routes,
+			&i.LastObservationID,
+			&i.EndedAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listInWindowRouteValues = `-- name: ListInWindowRouteValues :many
 SELECT DISTINCT ON (route)
     route, price_raw_value, price_raw_unit, availability_status, freshness_deadline, captured_at

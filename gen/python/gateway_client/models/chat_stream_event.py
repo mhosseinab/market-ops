@@ -30,8 +30,10 @@ class ChatStreamEvent:
             conversation_id (UUID | Unset): Emitted once on the `conversation` frame for a new conversation.
             token (str | Unset): Incremental assistant text on a `token` frame.
             envelope (ChatStreamEventEnvelope | Unset): The final typed response envelope on a `final` frame. Its internal
-                shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2) and
-                lands with the response contract step; the gateway relays it verbatim.
+                shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2).
+                UNCHANGED in S37: narrowing this field to the new ChatEnvelope schema (below) is a breaking change for the S29
+                web consumer's current view-model (`{sections, evidence}`) and needs FE coordination outside this step's
+                delegation boundary — see the S37 PD-3 addendum note on ChatEnvelope. The gateway relays this verbatim.
             failure (ChatFailure | Unset): The §12.4 structured failure state: after one automatic retry, a concise message
                 plus a deep link to the structured screen. Free text only; no authority. Emitted as the `failure` frame, or when
                 a hard bound (turn recursion limit, tool-call limit, timeout, token ceiling) is exceeded.

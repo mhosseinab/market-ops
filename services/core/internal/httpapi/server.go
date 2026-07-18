@@ -134,6 +134,19 @@ func WithPairing(p PairingService) Option {
 	return func(s *gatewayServer) { s.pairing = p }
 }
 
+// WithGuardrail injects the guardrail-settings service backing the /guardrails
+// routes (PD-3 item 6, S37). Without it those routes fail closed with a
+// structured error.
+func WithGuardrail(g GuardrailService) Option {
+	return func(s *gatewayServer) { s.guardrail = g }
+}
+
+// WithWatchlist injects the EXT-007 watchlist service backing the /watchlist
+// routes (S37). Without it those routes fail closed with a structured error.
+func WithWatchlist(w WatchlistService) Option {
+	return func(s *gatewayServer) { s.watchlistSvc = w }
+}
+
 // WithGatewayToken sets the read/Draft-only machine credential (LLM_GATEWAY_TOKEN)
 // the middleware matches to authenticate the machine principal on the Draft-only
 // routes and the machine read envelope (perm.GatewayCan). Empty ⇒ no machine

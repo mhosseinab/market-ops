@@ -45,11 +45,50 @@ func TestGatewayTokenIsReadAndDraftOnly(t *testing.T) {
 		ActionSetStrategyEnablement,
 		ActionSetApprovalPermission,
 		ActionManageUsers,
+		// S37 consolidated PD-3 endpoints: edit-price, the server-minted bulk
+		// selection-set preview, and the consolidated guardrail write are all
+		// write-adjacent/L3 and must be structurally unreachable by the machine
+		// gateway credential — see TestGatewayCannotWriteGuardrailsEditPriceOrBulkMint
+		// for the dedicated, named assertion.
+		ActionEditPrice,
+		ActionBulkPreview,
+		ActionWriteGuardrails,
 	}
 	for _, a := range prohibited {
 		if GatewayCan(a) {
 			t.Fatalf("§12.3 structural prohibition breached: gateway token can reach %q", a)
 		}
+	}
+}
+
+// TestGatewayCannotWriteGuardrailsEditPriceOrBulkMint is the S37 dedicated,
+// explicitly-named negative test (dk-p0-product-decisions.md PD-3): the
+// read/Draft-only LLM machine credential must never reach the guardrail write
+// endpoint, the edit-price endpoint, or the bulk selection-set preview/mint
+// endpoint. The selection-set VERSION is always server-minted — a client
+// (including the machine plane) never presents or reaches the minting action.
+func TestGatewayCannotWriteGuardrailsEditPriceOrBulkMint(t *testing.T) {
+	cases := []struct {
+		name   string
+		action Action
+	}{
+		{"guardrail write (L3, Owner only)", ActionWriteGuardrails},
+		{"edit-price (L2, mints a new card/parameter version)", ActionEditPrice},
+		{"bulk-preview (L2, server-mints the selection-set version)", ActionBulkPreview},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if GatewayCan(c.action) {
+				t.Fatalf("gateway token must NOT reach %q", c.action)
+			}
+			// It must also be absent from the granted-action set, not merely
+			// denied by a coincidental fallthrough.
+			for _, granted := range GatewayGrantedActions() {
+				if granted == c.action {
+					t.Fatalf("%q must not appear in GatewayGrantedActions()", c.action)
+				}
+			}
+		})
 	}
 }
 

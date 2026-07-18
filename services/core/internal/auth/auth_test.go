@@ -75,6 +75,16 @@ func (f *fakeStore) DeleteSession(_ context.Context, tokenHash string) error {
 	return nil
 }
 
+func (f *fakeStore) ListUsersByOrganization(_ context.Context, organizationID uuid.UUID) ([]db.User, error) {
+	out := make([]db.User, 0)
+	for _, u := range f.usersByEmail {
+		if u.OrganizationID == organizationID {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
 func usersByID(f *fakeStore, id uuid.UUID) db.User {
 	for _, u := range f.usersByEmail {
 		if u.ID == id {
@@ -184,5 +194,53 @@ func TestResolveEmptyAndExpired(t *testing.T) {
 	}
 	if _, err := svc.Resolve(context.Background(), sess.Token); err != ErrNoSession {
 		t.Fatalf("expired session resolve = %v, want ErrNoSession", err)
+	}
+}
+
+// TestListUsersScopesToOrganization is PD-3 item 7 (S37): ListUsers returns
+// every user in the named organization, in a stable order, and never leaks a
+// user from a DIFFERENT organization (cross-org containment for the roster
+// read).
+func TestListUsersScopesToOrganization(t *testing.T) {
+	f := newFakeStore()
+	svc := NewService(f)
+	org := uuid.New()
+	other := uuid.New()
+
+	a := db.User{ID: uuid.New(), OrganizationID: org, Email: "a@x.io", Role: string(perm.RoleOwner)}
+	b := db.User{ID: uuid.New(), OrganizationID: org, Email: "b@x.io", Role: string(perm.RoleOperator)}
+	c := db.User{ID: uuid.New(), OrganizationID: other, Email: "c@y.io", Role: string(perm.RoleOwner)}
+	f.usersByEmail[a.Email] = a
+	f.usersByEmail[b.Email] = b
+	f.usersByEmail[c.Email] = c
+
+	got, err := svc.ListUsers(context.Background(), org)
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListUsers returned %d users, want 2 (org-scoped)", len(got))
+	}
+	for _, u := range got {
+		if u.OrganizationID != org {
+			t.Fatalf("ListUsers leaked a foreign-organization user: %+v", u)
+		}
+		if u.ID == c.ID {
+			t.Fatal("ListUsers leaked the OTHER organization's user")
+		}
+	}
+}
+
+// TestListUsersEmptyOrganization proves an organization with no users returns
+// an empty, non-error result — never a fabricated roster.
+func TestListUsersEmptyOrganization(t *testing.T) {
+	f := newFakeStore()
+	svc := NewService(f)
+	got, err := svc.ListUsers(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("ListUsers on an unknown org = %d users, want 0", len(got))
 	}
 }

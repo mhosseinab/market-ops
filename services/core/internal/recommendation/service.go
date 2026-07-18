@@ -171,6 +171,12 @@ func (s *Service) GetCard(ctx context.Context, id uuid.UUID) (db.ApprovalCard, e
 	return db.New(s.pool).GetApprovalCard(ctx, id)
 }
 
+// GetRecommendation returns a single persisted recommendation row by id
+// (PD-3 items 1/3, S37 recommendation-detail read). pgx.ErrNoRows means unknown.
+func (s *Service) GetRecommendation(ctx context.Context, id uuid.UUID) (db.Recommendation, error) {
+	return db.New(s.pool).GetRecommendation(ctx, id)
+}
+
 // ExpireDependentForVariant invalidates every LIVE control-bearing card for a
 // variant (§16 "Reopen mapping; expire dependent recommendation"). It is the S11
 // identity-reopen consumer: a reopened mapping means the recommendation's identity

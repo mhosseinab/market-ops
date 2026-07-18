@@ -81,6 +81,18 @@ func (s *Service) ListObservedOffers(ctx context.Context, account uuid.UUID) ([]
 	return rows, nil
 }
 
+// ListConflictedObservedOffers returns the account's Observed Offers currently
+// in the `conflicted` quality state (§16, PD-3 item 8 / S37 Market conflict
+// banner) — routes disagree, the price of record is untouched, and only the
+// quality state blocks recommend/execute (§10.3 matrix).
+func (s *Service) ListConflictedObservedOffers(ctx context.Context, account uuid.UUID) ([]db.ObservedOffer, error) {
+	rows, err := db.New(s.pool).ListConflictedObservedOffers(ctx, account)
+	if err != nil {
+		return nil, fmt.Errorf("observation: list conflicted observed offers: %w", err)
+	}
+	return rows, nil
+}
+
 // ListObservations returns up to limit append-only observations for a target,
 // newest first.
 func (s *Service) ListObservations(ctx context.Context, target uuid.UUID, limit int32) ([]db.Observation, error) {

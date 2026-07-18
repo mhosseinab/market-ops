@@ -884,6 +884,214 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/recommendations/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one recommendation's full PRC-001 record + contribution breakdown (S37).
+         * @description Returns the complete PRC-001 record for a single, persisted recommendation version: objective, current/proposed price, the contribution breakdown (§9.2 deductions — present-or-unavailable-with-reason, never fabricated), the allowed range, evidence quality, readiness, assumptions, and blockers (PRC-002, in policy order). This is the consolidated read PD-3 items 1/3 (dk-p0-product-decisions.md) — the same PRC-001-complete payload the approval card is minted from. It is a read; it never advances state or mints a control.
+         */
+        get: operations["getRecommendationDetail"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/card/edit-price": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Edit an approval card's proposed price before confirmation (CHAT-044, PD-3 item 2).
+         * @description Mints a NEW card version with a NEW parameter version and a fresh control-eligible Draft state (approval.Card.EditPrice) — the price is NEVER mutated in place, and the prior control (if any) is thereby invalidated (its parameter version no longer matches). This is write-adjacent but reversible: L2 price.edit, Owner + Operator only. The read/Draft-only LLM machine credential can never reach this endpoint (§12.3) — it is deliberately neither an L1 read nor a Draft-only action.
+         */
+        post: operations["editApprovalCardPrice"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/selection-sets/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Build a bulk selection-set preview with a SERVER-MINTED version (PD-3 item 4).
+         * @description The screens-native bulk preview (as distinct from the chat draft.selection_set compile path). The request carries NO version field — the SERVER is the sole authority that mints the selection-set version (recommendation.CreateSelectionSet's append-only "next version per lineage" numbering); a client can never present or influence it. This is the hard S35/S37 safety precondition for bulk execution: any later bulk confirmation binds to EXACTLY this server-minted version, and any set change mints a new one, invalidating a stale bound confirmation (CHAT-051/052). Omitting `lineageId` starts a NEW lineage; supplying an existing one mints the next version within it (a refreshed preview). Each member's disposition is resolved SERVER-SIDE from its current, persisted recommendation — never taken from the client. L2 selection.bulk_preview, Owner + Operator only; the machine gateway credential can never reach it.
+         */
+        post: operations["previewSelectionSet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
+         * @description Returns the account's approval cards (one row per action, current version), newest first, optionally filtered by §8.4 state — the grouped multi-row queue the Actions screen needs beyond the single deep-linked card read (GET /approvals/card). This is a read; it never advances state.
+         */
+        get: operations["listActions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/outcomes/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List an account's outcome windows and results (OUT-001, PD-3 item 5).
+         * @description Returns the account's OUT-001 outcome windows, newest first, with their §15.3 result and confidence once closed (absent while the window is still open — never a fabricated Not Measurable before it is actually computed). This is a read.
+         */
+        get: operations["listOutcomes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/guardrails": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an account's L3 commercial guardrails (PD-3 item 6).
+         * @description Returns the account's persisted L3 commercial guardrails (contribution floor, movement cap, cooldown, strategy enablement). Reading is L1, every role. Absent (never configured) is a structured 404, never a fabricated default.
+         */
+        get: operations["getGuardrails"];
+        put?: never;
+        /**
+         * Write an account's L3 commercial guardrails, Owner only (PD-3 item 6).
+         * @description Sets the account's L3 commercial guardrails. Owner ONLY (guardrail.write) — Operator and Internal are denied, and the read/Draft-only LLM machine credential can never reach this endpoint (§12.3, "guardrail-write is never an LLM-plane tool"). Every write appends an append-only AUD-001 audit record ATOMICALLY with the mutation, on the SAME transaction: the write never commits without its audit row.
+         */
+        post: operations["setGuardrails"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the organization's user roster (PD-3 item 7).
+         * @description Returns every user in the caller's organization (id, email, role, created_at) — the roster the Settings screen needs beyond the current session principal (GET /auth/me). Reading is L1, every role; adding or changing a user's role stays the existing L3 guardrail.manage_users write path (unaffected by this read).
+         */
+        get: operations["listUsers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ops/queues": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Aggregated Operations screen queues (PD-3 item 8).
+         * @description Returns the Operations screen's aggregated queues: pending-reconciliation actions (EXE-003, an unresolved external write awaiting resolution — never retried, never inferred). The parser/schema-drift queue (§10.4 Route C parser-drift events) is NOT YET backed by a persisted store; it reports `available: false` with an explicit reason rather than a fabricated empty success — closing it is a named follow-up on the Route C observer plane (go_connector_observer), not improvised here. Off-ladder operational read: Owner + Internal only, never Operator, never the machine gateway principal.
+         */
+        get: operations["getOperationsQueues"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/market/conflicts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List cross-route conflicted Observed Offers (Market conflict banner, PD-3 item 8).
+         * @description Returns the account's Observed Offers currently in the `conflicted` quality state (§16 "routes disagree → Conflicted; block") — the values the Market screen's conflict banner surfaces. The underlying price of record is left intact (never zeroed, never silently overwritten); only the quality state blocks recommend/execute (§10.3 matrix). This is a read, same L1 read.observations posture as the other observation reads.
+         */
+        get: operations["listMarketConflicts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/watchlist": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List an account's priority watchlist (EXT-007).
+         * @description Returns the account's priority watchlist entries, newest first. This is a read; adding an entry is the separate POST below.
+         */
+        get: operations["listWatchlist"];
+        put?: never;
+        /**
+         * Add a Confirmed owned product to the priority watchlist (EXT-007).
+         * @description Adds one Confirmed owned product (CAT-002 Confirmed Market Product Identity) to the account's priority watchlist. The SERVER enforces the watchlist cap (PRD EXT-007 "Server enforces cap") — a request that would exceed it is rejected, never silently truncated. Every accepted add appends an append-only AUD-001 audit record ATOMICALLY with the insert, on the SAME transaction (EXT-007 "change is audited"). L2 config.watchlist, Owner + Operator only.
+         */
+        post: operations["addWatchlistEntry"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1034,7 +1242,7 @@ export interface components {
             conversationId?: string;
             /** @description Incremental assistant text on a `token` frame. */
             token?: string;
-            /** @description The final typed response envelope on a `final` frame. Its internal shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2) and lands with the response contract step; the gateway relays it verbatim. */
+            /** @description The final typed response envelope on a `final` frame. Its internal shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2). UNCHANGED in S37: narrowing this field to the new ChatEnvelope schema (below) is a breaking change for the S29 web consumer's current view-model (`{sections, evidence}`) and needs FE coordination outside this step's delegation boundary — see the S37 PD-3 addendum note on ChatEnvelope. The gateway relays this verbatim. */
             envelope?: {
                 [key: string]: unknown;
             };
@@ -2079,6 +2287,270 @@ export interface components {
             /** Format: uuid */
             notificationId: string;
             changed: boolean;
+        };
+        /** @description The full PRC-001 record for one persisted recommendation version, including the §9.2 contribution breakdown (PD-3 items 1/3). Every optional field is present-or-unavailable-with-reason — never a fabricated value. */
+        RecommendationDetail: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: uuid */
+            variantId: string;
+            /** Format: uuid */
+            lineageId: string;
+            /** Format: int64 */
+            version: number;
+            /**
+             * Format: uuid
+             * @description The driving market event, when this recommendation is event-driven.
+             */
+            eventId?: string;
+            objective: components["schemas"]["PolicyObjective"];
+            currentPrice: components["schemas"]["MoneyAmount"];
+            proposedPrice?: components["schemas"]["MoneyAmount"];
+            currentContribution?: components["schemas"]["MoneyAmount"];
+            proposedContribution?: components["schemas"]["MoneyAmount"];
+            /** @description The §9.2 contribution breakdown (PRC-001 inputs) for the proposed contribution — the SAME deductions persisted on the recommendation row, decoded verbatim (never recomputed/fabricated at read time). */
+            contributionDeductions: components["schemas"]["ContributionDeduction"][];
+            allowedRange?: components["schemas"]["PolicyBoundary"];
+            readiness: components["schemas"]["MarginReadinessState"];
+            evidenceQuality: components["schemas"]["QualityState"];
+            /** Format: uuid */
+            evidenceObservationId?: string;
+            /** Format: date-time */
+            evidenceAsOf?: string;
+            assumptions: string[];
+            blockers: components["schemas"]["RecommendationBlocker"][];
+            approvable: boolean;
+            simulation: boolean;
+            /** Format: date-time */
+            expiresAt?: string;
+        };
+        /** @description One typed PRC-002 reason no approval control exists (in policy order). The code is stable and machine-readable; the message carries no authority (§8). */
+        RecommendationBlocker: {
+            code: string;
+            message: string;
+        };
+        /** @description The CHAT-044 price edit request. */
+        EditApprovalCardPriceRequest: {
+            /** Format: uuid */
+            cardId: string;
+            newPrice: components["schemas"]["MoneyAmount"];
+        };
+        /**
+         * @description A selection-set member's bulk disposition (CHAT-050).
+         * @enum {string}
+         */
+        SelectionSetDisposition: "executable" | "warning" | "blocked";
+        /** @description One candidate member for a bulk selection-set preview. The server resolves the disposition from the NAMED recommendation's own persisted state (approvable / blockers) — never from a client assertion. */
+        SelectionSetPreviewMemberInput: {
+            /** Format: uuid */
+            variantId: string;
+            /** Format: uuid */
+            recommendationId: string;
+        };
+        /** @description The screens-native bulk preview request (PD-3 item 4). Carries NO version field by construction — the server is the sole authority that mints the selection-set version. */
+        SelectionSetPreviewRequest: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /**
+             * Format: uuid
+             * @description Existing selection-set lineage to mint the NEXT version within (a refreshed preview). Omit to start a brand-new lineage.
+             */
+            lineageId?: string;
+            name: string;
+            /** @description Deterministic query criteria the set was compiled from. */
+            criteria?: {
+                [key: string]: string;
+            };
+            members: components["schemas"]["SelectionSetPreviewMemberInput"][];
+        };
+        SelectionSetMemberView: {
+            /** Format: uuid */
+            variantId: string;
+            /** Format: uuid */
+            recommendationId: string;
+            disposition: components["schemas"]["SelectionSetDisposition"];
+        };
+        /** @description The server-minted selection-set preview (PD-3 item 4). `version` is assigned ENTIRELY server-side (append-only "next version per lineage"); a subsequent bulk confirmation (POST /approvals/bulk/confirm) binds to EXACTLY this lineage + version. */
+        SelectionSetPreviewResult: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            lineageId: string;
+            /** Format: int64 */
+            version: number;
+            name: string;
+            /** Format: int32 */
+            memberCount: number;
+            aggregateImpact?: components["schemas"]["EventExposure"];
+            members: components["schemas"]["SelectionSetMemberView"][];
+        };
+        /** @description One row of the actions queue (PD-3 item 5) — an approval card, unexpanded. */
+        ActionSummary: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            recommendationId: string;
+            /** Format: int64 */
+            version: number;
+            state: components["schemas"]["ApprovalState"];
+            price: components["schemas"]["MoneyAmount"];
+            idempotencyKey?: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            createdAt?: string;
+        };
+        ActionList: {
+            items: components["schemas"]["ActionSummary"][];
+        };
+        /** @description One row of the outcomes queue (OUT-001, PD-3 item 5). */
+        OutcomeSummary: {
+            /** Format: uuid */
+            actionId: string;
+            /** Format: uuid */
+            cardId?: string;
+            /** Format: date-time */
+            openedAt: string;
+            /** Format: date-time */
+            closesAt: string;
+            /**
+             * @description The §15.3 result, present only once the window has closed.
+             * @enum {string}
+             */
+            result?: "positive" | "negative" | "neutral" | "inconclusive" | "not_measurable";
+            /** @enum {string} */
+            confidence?: "high" | "medium" | "low";
+        };
+        OutcomeList: {
+            items: components["schemas"]["OutcomeSummary"][];
+        };
+        /** @description The L3 commercial guardrails (PD-3 item 6). */
+        GuardrailSettings: {
+            contributionFloor: components["schemas"]["MoneyAmount"];
+            /**
+             * Format: int64
+             * @description Maximum price movement in basis points (§9.3 default 500).
+             */
+            movementCapBasisPoints: number;
+            /**
+             * Format: int64
+             * @description Minimum interval between actions in seconds (§9.3 default 3600).
+             */
+            cooldownSeconds: number;
+            strategy: components["schemas"]["PolicyStrategy"];
+            strategyEnabled: boolean;
+        };
+        GuardrailConfigView: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            settings: components["schemas"]["GuardrailSettings"];
+            /** Format: date-time */
+            updatedAt: string;
+            /** @description The Owner actor id who last wrote these guardrails (AUD-001). */
+            updatedBy?: string;
+        };
+        GuardrailWriteRequest: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            settings: components["schemas"]["GuardrailSettings"];
+        };
+        UserSummary: {
+            /** Format: uuid */
+            id: string;
+            email: string;
+            role: components["schemas"]["UserRole"];
+            /** Format: date-time */
+            createdAt: string;
+        };
+        UserList: {
+            items: components["schemas"]["UserSummary"][];
+        };
+        /** @description One EXE-003 action awaiting reconciliation (an unknown external result). */
+        PendingReconciliationAction: {
+            /** Format: uuid */
+            actionId: string;
+            /** Format: uuid */
+            cardId: string;
+            idempotencyKey: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        /** @description The Route C parser/schema-drift queue. NOT YET backed by a persisted store (§10.4) — `available` is false with an explicit reason rather than a fabricated empty success, per the screens-only-fallback / unavailable-with-reason posture (PRC-001 optionality). Closing this is a named follow-up on the Route C observer plane. */
+        ParserDriftQueue: {
+            available: boolean;
+            reason?: string;
+            items: unknown[];
+        };
+        OperationsQueues: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            pendingReconciliation: components["schemas"]["PendingReconciliationAction"][];
+            parserDrift: components["schemas"]["ParserDriftQueue"];
+        };
+        /** @description One EXT-007 priority-watchlist entry. */
+        WatchlistEntry: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: uuid */
+            variantId: string;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        WatchlistView: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /**
+             * Format: int32
+             * @description The server-enforced maximum watchlist size (EXT-007).
+             */
+            cap: number;
+            items: components["schemas"]["WatchlistEntry"][];
+        };
+        WatchlistAddRequest: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /**
+             * Format: uuid
+             * @description MUST be a Confirmed owned product (CAT-002); otherwise rejected.
+             */
+            variantId: string;
+        };
+        /**
+         * @description The seven typed statement kinds an LLM-plane response envelope carries (S29/S37 addendum). Free text alone never carries authority — a statement is category-separated content, not an approval control.
+         * @enum {string}
+         */
+        ChatStatementKind: "answer" | "clarification" | "table" | "card_reference" | "evidence_citation" | "action_summary" | "degraded_notice";
+        /** @description One cited evidence reference inside a chat envelope statement. */
+        ChatEvidenceRef: {
+            /** Format: uuid */
+            observationId: string;
+            quality?: components["schemas"]["QualityState"];
+        };
+        /** @description One typed statement inside the final chat envelope. */
+        ChatStatement: {
+            kind: components["schemas"]["ChatStatementKind"];
+            /** @description The rendered text for this statement. Free text; carries no authority. */
+            text: string;
+            evidence?: components["schemas"]["ChatEvidenceRef"][];
+            /**
+             * Format: uuid
+             * @description Present only for a card_reference statement (never a control).
+             */
+            cardId?: string;
+            /** @description Present only for a table statement. Rows of string cells. */
+            tableRows?: string[][];
+        };
+        /** @description The PROPOSED typed final response envelope (S29/S37 addendum, CHAT-030/050/060 chat-vs-screen parity) — an additive schema artifact, NOT YET WIRED to ChatStreamEvent.envelope (see that field's description): adopting it is a breaking change for the current S29 web view-model and needs `web_frontend` coordination in a follow-up step. Category-separated statements + evidence + freshness; JSON-safe business fields only — no LangGraph/LangChain framework type ever appears here (plan §4.8). NEVER carries an approval control (§8, §12.3): a structured control lives only outside the model plane, on the same endpoints screens use. `additionalProperties: true` so an incremental FE migration can read both the legacy and typed fields during the transition. */
+        ChatEnvelope: {
+            statements?: components["schemas"]["ChatStatement"][];
+            /** Format: date-time */
+            generatedAt?: string;
+        } & {
+            [key: string]: unknown;
         };
     };
     responses: never;
@@ -3531,6 +4003,388 @@ export interface operations {
                 };
             };
             /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getRecommendationDetail: {
+        parameters: {
+            query: {
+                recommendationId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The recommendation's full detail record. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecommendationDetail"];
+                };
+            };
+            /** @description Unexpected error (including an unknown recommendation). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    editApprovalCardPrice: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditApprovalCardPriceRequest"];
+            };
+        };
+        responses: {
+            /** @description The newly minted Draft card carrying the edited price. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalCardView"];
+                };
+            };
+            /** @description Unexpected error (including an unknown card). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    previewSelectionSet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SelectionSetPreviewRequest"];
+            };
+        };
+        responses: {
+            /** @description The server-minted selection-set preview. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelectionSetPreviewResult"];
+                };
+            };
+            /** @description Unexpected error (including an unknown member recommendation). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listActions: {
+        parameters: {
+            query: {
+                marketplaceAccountId: string;
+                /** @description Optional §8.4 state filter. */
+                state?: components["schemas"]["ApprovalState"];
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's action queue. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listOutcomes: {
+        parameters: {
+            query: {
+                marketplaceAccountId: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's outcome windows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getGuardrails: {
+        parameters: {
+            query: {
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's current guardrail settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardrailConfigView"];
+                };
+            };
+            /** @description Unexpected error (including no guardrails configured yet). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    setGuardrails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GuardrailWriteRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated guardrail settings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GuardrailConfigView"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The organization's user roster. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getOperationsQueues: {
+        parameters: {
+            query: {
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's aggregated operations queues. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OperationsQueues"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listMarketConflicts: {
+        parameters: {
+            query: {
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's currently conflicted Observed Offers. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservedOfferList"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listWatchlist: {
+        parameters: {
+            query: {
+                marketplaceAccountId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The account's watchlist. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistView"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    addWatchlistEntry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["WatchlistAddRequest"];
+            };
+        };
+        responses: {
+            /** @description The watchlist entry (idempotent on a duplicate variant). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WatchlistEntry"];
+                };
+            };
+            /** @description Unexpected error (including cap exceeded or an unconfirmed variant). */
             default: {
                 headers: {
                     [name: string]: unknown;

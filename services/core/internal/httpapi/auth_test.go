@@ -13,6 +13,7 @@ import (
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 )
 
@@ -23,10 +24,16 @@ type fakeAuth struct {
 	loginOK    map[string]auth.Session   // email -> session on correct password
 	password   string
 	loggedOut  []string
+	usersByOrg map[uuid.UUID][]db.User
 }
 
 func newFakeAuth() *fakeAuth {
-	return &fakeAuth{principals: map[string]auth.Principal{}, loginOK: map[string]auth.Session{}, password: "pw"}
+	return &fakeAuth{
+		principals: map[string]auth.Principal{},
+		loginOK:    map[string]auth.Session{},
+		password:   "pw",
+		usersByOrg: map[uuid.UUID][]db.User{},
+	}
 }
 
 func (f *fakeAuth) Login(_ context.Context, email, password string) (auth.Session, error) {
@@ -53,6 +60,10 @@ func (f *fakeAuth) Logout(_ context.Context, token string) error {
 	f.loggedOut = append(f.loggedOut, token)
 	delete(f.principals, token)
 	return nil
+}
+
+func (f *fakeAuth) ListUsers(_ context.Context, organizationID uuid.UUID) ([]db.User, error) {
+	return f.usersByOrg[organizationID], nil
 }
 
 func principal(role perm.Role) auth.Principal {

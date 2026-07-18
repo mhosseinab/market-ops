@@ -14,6 +14,7 @@ import (
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/money"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
@@ -26,6 +27,15 @@ type fakeApproval struct {
 	bulkValid  bool
 	current    int32
 	err        error
+
+	editedCard   db.ApprovalCard
+	editErr      error
+	actions      []db.ApprovalCard
+	rec          db.Recommendation
+	recErr       error
+	preview      recommendation.PreviewResult
+	previewErr   error
+	previewCalls int
 }
 
 func (f *fakeApproval) GetCard(context.Context, uuid.UUID) (db.ApprovalCard, error) {
@@ -42,6 +52,19 @@ func (f *fakeApproval) BulkPreviewValid(context.Context, uuid.UUID, int32) (bool
 }
 func (f *fakeApproval) CurrentSelectionSetVersion(context.Context, uuid.UUID) (int32, error) {
 	return f.current, f.err
+}
+func (f *fakeApproval) EditPrice(context.Context, uuid.UUID, money.Money, time.Time) (db.ApprovalCard, error) {
+	return f.editedCard, f.editErr
+}
+func (f *fakeApproval) ListActions(context.Context, uuid.UUID, string, int32) ([]db.ApprovalCard, error) {
+	return f.actions, f.err
+}
+func (f *fakeApproval) GetRecommendation(context.Context, uuid.UUID) (db.Recommendation, error) {
+	return f.rec, f.recErr
+}
+func (f *fakeApproval) PreviewBulkSelection(context.Context, uuid.UUID, uuid.UUID, string, map[string]string, []recommendation.PreviewMemberInput) (recommendation.PreviewResult, error) {
+	f.previewCalls++
+	return f.preview, f.previewErr
 }
 
 func confirmBody(t *testing.T, cardID, action uuid.UUID, paramVersion int64) string {

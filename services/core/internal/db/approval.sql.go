@@ -276,6 +276,64 @@ func (q *Queries) ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) 
 	return items, nil
 }
 
+const listApprovalCardsByAccount = `-- name: ListApprovalCardsByAccount :many
+SELECT latest.id, latest.recommendation_id, latest.marketplace_account_id, latest.lineage_id, latest.version, latest.action_id, latest.parameter_version, latest.context_version, latest.policy_version, latest.cost_profile_version, latest.evidence_versions, latest.idempotency_key, latest.state, latest.price_mantissa, latest.price_currency, latest.price_exponent, latest.expires_at, latest.created_at FROM (
+    SELECT DISTINCT ON (ac.lineage_id) ac.id, ac.recommendation_id, ac.marketplace_account_id, ac.lineage_id, ac.version, ac.action_id, ac.parameter_version, ac.context_version, ac.policy_version, ac.cost_profile_version, ac.evidence_versions, ac.idempotency_key, ac.state, ac.price_mantissa, ac.price_currency, ac.price_exponent, ac.expires_at, ac.created_at
+    FROM approval_cards ac
+    WHERE ac.marketplace_account_id = $1
+    ORDER BY ac.lineage_id, ac.version DESC
+) latest
+ORDER BY latest.created_at DESC
+LIMIT $2
+`
+
+type ListApprovalCardsByAccountParams struct {
+	MarketplaceAccountID uuid.UUID
+	Limit                int32
+}
+
+// Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
+// (greatest) version per lineage, newest first. State filtering is done in Go
+// (internal/recommendation) to keep this one simple, always-safe read.
+func (q *Queries) ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error) {
+	rows, err := q.db.Query(ctx, listApprovalCardsByAccount, arg.MarketplaceAccountID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApprovalCard{}
+	for rows.Next() {
+		var i ApprovalCard
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecommendationID,
+			&i.MarketplaceAccountID,
+			&i.LineageID,
+			&i.Version,
+			&i.ActionID,
+			&i.ParameterVersion,
+			&i.ContextVersion,
+			&i.PolicyVersion,
+			&i.CostProfileVersion,
+			&i.EvidenceVersions,
+			&i.IdempotencyKey,
+			&i.State,
+			&i.PriceMantissa,
+			&i.PriceCurrency,
+			&i.PriceExponent,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLiveCardsForVariant = `-- name: ListLiveCardsForVariant :many
 SELECT ac.id, ac.recommendation_id, ac.marketplace_account_id, ac.lineage_id, ac.version, ac.action_id, ac.parameter_version, ac.context_version, ac.policy_version, ac.cost_profile_version, ac.evidence_versions, ac.idempotency_key, ac.state, ac.price_mantissa, ac.price_currency, ac.price_exponent, ac.expires_at, ac.created_at FROM approval_cards ac
 JOIN recommendations r ON r.id = ac.recommendation_id

@@ -21,6 +21,8 @@ type ObservationService interface {
 	ListObservedOffers(ctx context.Context, account uuid.UUID) ([]db.ObservedOffer, error)
 	ListObservations(ctx context.Context, target uuid.UUID, limit int32) ([]db.Observation, error)
 	Ingest(ctx context.Context, c observation.Capture) (observation.IngestResult, error)
+	// ListConflictedObservedOffers backs GET /market/conflicts (PD-3 item 8, S37).
+	ListConflictedObservedOffers(ctx context.Context, account uuid.UUID) ([]db.ObservedOffer, error)
 }
 
 // ListObservationTargets returns the account's active observation targets.

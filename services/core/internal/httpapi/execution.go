@@ -21,11 +21,15 @@ type ExecutionService interface {
 	Execute(ctx context.Context, cardID uuid.UUID, actor audit.Actor) (execution.ExecuteResult, error)
 	Retry(ctx context.Context, actionID uuid.UUID, actor audit.Actor) (execution.RetryResult, error)
 	GetExecution(ctx context.Context, actionID uuid.UUID) (db.ActionExecution, error)
+	// ListPendingReconciliation backs GET /ops/queues (PD-3 item 8, S37).
+	ListPendingReconciliation(ctx context.Context, account uuid.UUID, limit int32) ([]db.ActionExecution, error)
 }
 
 // OutcomeService backs GET /outcomes (OUT-001). *outcome.Service satisfies it.
 type OutcomeService interface {
 	Get(ctx context.Context, actionID uuid.UUID) (outcome.View, error)
+	// ListByAccount backs GET /outcomes/list (PD-3 item 5, S37).
+	ListByAccount(ctx context.Context, account uuid.UUID, limit int32) ([]db.ListOutcomeWindowsByAccountRow, error)
 }
 
 // ExecuteAction revalidates and executes an approved card (EXE-001/002/005). The

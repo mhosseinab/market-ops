@@ -783,19 +783,19 @@ func (e ObservationTargetTier) Valid() bool {
 
 // Defines values for OutcomeResultViewConfidence.
 const (
-	High   OutcomeResultViewConfidence = "high"
-	Low    OutcomeResultViewConfidence = "low"
-	Medium OutcomeResultViewConfidence = "medium"
+	OutcomeResultViewConfidenceHigh   OutcomeResultViewConfidence = "high"
+	OutcomeResultViewConfidenceLow    OutcomeResultViewConfidence = "low"
+	OutcomeResultViewConfidenceMedium OutcomeResultViewConfidence = "medium"
 )
 
 // Valid indicates whether the value is a known member of the OutcomeResultViewConfidence enum.
 func (e OutcomeResultViewConfidence) Valid() bool {
 	switch e {
-	case High:
+	case OutcomeResultViewConfidenceHigh:
 		return true
-	case Low:
+	case OutcomeResultViewConfidenceLow:
 		return true
-	case Medium:
+	case OutcomeResultViewConfidenceMedium:
 		return true
 	default:
 		return false
@@ -804,25 +804,73 @@ func (e OutcomeResultViewConfidence) Valid() bool {
 
 // Defines values for OutcomeResultViewResult.
 const (
-	Inconclusive  OutcomeResultViewResult = "inconclusive"
-	Negative      OutcomeResultViewResult = "negative"
-	Neutral       OutcomeResultViewResult = "neutral"
-	NotMeasurable OutcomeResultViewResult = "not_measurable"
-	Positive      OutcomeResultViewResult = "positive"
+	OutcomeResultViewResultInconclusive  OutcomeResultViewResult = "inconclusive"
+	OutcomeResultViewResultNegative      OutcomeResultViewResult = "negative"
+	OutcomeResultViewResultNeutral       OutcomeResultViewResult = "neutral"
+	OutcomeResultViewResultNotMeasurable OutcomeResultViewResult = "not_measurable"
+	OutcomeResultViewResultPositive      OutcomeResultViewResult = "positive"
 )
 
 // Valid indicates whether the value is a known member of the OutcomeResultViewResult enum.
 func (e OutcomeResultViewResult) Valid() bool {
 	switch e {
-	case Inconclusive:
+	case OutcomeResultViewResultInconclusive:
 		return true
-	case Negative:
+	case OutcomeResultViewResultNegative:
 		return true
-	case Neutral:
+	case OutcomeResultViewResultNeutral:
 		return true
-	case NotMeasurable:
+	case OutcomeResultViewResultNotMeasurable:
 		return true
-	case Positive:
+	case OutcomeResultViewResultPositive:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OutcomeSummaryConfidence.
+const (
+	OutcomeSummaryConfidenceHigh   OutcomeSummaryConfidence = "high"
+	OutcomeSummaryConfidenceLow    OutcomeSummaryConfidence = "low"
+	OutcomeSummaryConfidenceMedium OutcomeSummaryConfidence = "medium"
+)
+
+// Valid indicates whether the value is a known member of the OutcomeSummaryConfidence enum.
+func (e OutcomeSummaryConfidence) Valid() bool {
+	switch e {
+	case OutcomeSummaryConfidenceHigh:
+		return true
+	case OutcomeSummaryConfidenceLow:
+		return true
+	case OutcomeSummaryConfidenceMedium:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for OutcomeSummaryResult.
+const (
+	OutcomeSummaryResultInconclusive  OutcomeSummaryResult = "inconclusive"
+	OutcomeSummaryResultNegative      OutcomeSummaryResult = "negative"
+	OutcomeSummaryResultNeutral       OutcomeSummaryResult = "neutral"
+	OutcomeSummaryResultNotMeasurable OutcomeSummaryResult = "not_measurable"
+	OutcomeSummaryResultPositive      OutcomeSummaryResult = "positive"
+)
+
+// Valid indicates whether the value is a known member of the OutcomeSummaryResult enum.
+func (e OutcomeSummaryResult) Valid() bool {
+	switch e {
+	case OutcomeSummaryResultInconclusive:
+		return true
+	case OutcomeSummaryResultNegative:
+		return true
+	case OutcomeSummaryResultNeutral:
+		return true
+	case OutcomeSummaryResultNotMeasurable:
+		return true
+	case OutcomeSummaryResultPositive:
 		return true
 	default:
 		return false
@@ -988,6 +1036,27 @@ func (e RecommendOnlyState) Valid() bool {
 	}
 }
 
+// Defines values for SelectionSetDisposition.
+const (
+	SelectionSetDispositionBlocked    SelectionSetDisposition = "blocked"
+	SelectionSetDispositionExecutable SelectionSetDisposition = "executable"
+	SelectionSetDispositionWarning    SelectionSetDisposition = "warning"
+)
+
+// Valid indicates whether the value is a known member of the SelectionSetDisposition enum.
+func (e SelectionSetDisposition) Valid() bool {
+	switch e {
+	case SelectionSetDispositionBlocked:
+		return true
+	case SelectionSetDispositionExecutable:
+		return true
+	case SelectionSetDispositionWarning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for UserRole.
 const (
 	Internal UserRole = "internal"
@@ -1025,6 +1094,27 @@ type ActionExecutionView struct {
 
 	// ReconciledAt When the external result was reconciled to a terminal state.
 	ReconciledAt *time.Time `json:"reconciledAt,omitempty"`
+}
+
+// ActionList defines model for ActionList.
+type ActionList struct {
+	Items []ActionSummary `json:"items"`
+}
+
+// ActionSummary One row of the actions queue (PD-3 item 5) — an approval card, unexpanded.
+type ActionSummary struct {
+	CreatedAt      *time.Time         `json:"createdAt,omitempty"`
+	ExpiresAt      time.Time          `json:"expiresAt"`
+	Id             openapi_types.UUID `json:"id"`
+	IdempotencyKey *string            `json:"idempotencyKey,omitempty"`
+
+	// Price An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	Price            MoneyAmount        `json:"price"`
+	RecommendationId openapi_types.UUID `json:"recommendationId"`
+
+	// State One node of the §8.4 approval state machine. The set is closed; it is the authoritative lifecycle vocabulary for a card and its history.
+	State   ApprovalState `json:"state"`
+	Version int64         `json:"version"`
 }
 
 // ApprovalBinding The APR-001 version binding of an approval control: the exact action id, parameter/context/policy/cost versions, evidence versions, and expiry. ANY change to a bound dimension, or a reached expiry, invalidates the control.
@@ -1480,6 +1570,14 @@ type DetectedMapping struct {
 	SkuColumn string `json:"skuColumn"`
 }
 
+// EditApprovalCardPriceRequest The CHAT-044 price edit request.
+type EditApprovalCardPriceRequest struct {
+	CardId openapi_types.UUID `json:"cardId"`
+
+	// NewPrice An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	NewPrice MoneyAmount `json:"newPrice"`
+}
+
 // ErrorEnvelope Canonical error shape for every gateway endpoint. Free text lives in `message`/`detail` only and never carries authority (PRD §8 free-text containment); `code` is the stable machine-readable discriminator.
 type ErrorEnvelope struct {
 	// Code Stable, machine-readable error code (screaming_snake_case).
@@ -1590,6 +1688,42 @@ type ExecutionGate string
 
 // ExecutionMode The execution mode of a completed Execute call. `write` attempted a real external write (write enabled); `recommend_only` tracked the approved action for external matching because writes are OFF (EXE-005).
 type ExecutionMode string
+
+// GuardrailConfigView defines model for GuardrailConfigView.
+type GuardrailConfigView struct {
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+
+	// Settings The L3 commercial guardrails (PD-3 item 6).
+	Settings  GuardrailSettings `json:"settings"`
+	UpdatedAt time.Time         `json:"updatedAt"`
+
+	// UpdatedBy The Owner actor id who last wrote these guardrails (AUD-001).
+	UpdatedBy *string `json:"updatedBy,omitempty"`
+}
+
+// GuardrailSettings The L3 commercial guardrails (PD-3 item 6).
+type GuardrailSettings struct {
+	// ContributionFloor An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	ContributionFloor MoneyAmount `json:"contributionFloor"`
+
+	// CooldownSeconds Minimum interval between actions in seconds (§9.3 default 3600).
+	CooldownSeconds int64 `json:"cooldownSeconds"`
+
+	// MovementCapBasisPoints Maximum price movement in basis points (§9.3 default 500).
+	MovementCapBasisPoints int64 `json:"movementCapBasisPoints"`
+
+	// Strategy The selected pricing strategy (stage 5, §9.3). Closed set for P0.
+	Strategy        PolicyStrategy `json:"strategy"`
+	StrategyEnabled bool           `json:"strategyEnabled"`
+}
+
+// GuardrailWriteRequest defines model for GuardrailWriteRequest.
+type GuardrailWriteRequest struct {
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+
+	// Settings The L3 commercial guardrails (PD-3 item 6).
+	Settings GuardrailSettings `json:"settings"`
+}
 
 // Health Liveness plus build identity, returned by GET /healthz.
 type Health struct {
@@ -1923,6 +2057,20 @@ type ObservedOfferList struct {
 	Items []ObservedOffer `json:"items"`
 }
 
+// OperationsQueues defines model for OperationsQueues.
+type OperationsQueues struct {
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+
+	// ParserDrift The Route C parser/schema-drift queue. NOT YET backed by a persisted store (§10.4) — `available` is false with an explicit reason rather than a fabricated empty success, per the screens-only-fallback / unavailable-with-reason posture (PRC-001 optionality). Closing this is a named follow-up on the Route C observer plane.
+	ParserDrift           ParserDriftQueue              `json:"parserDrift"`
+	PendingReconciliation []PendingReconciliationAction `json:"pendingReconciliation"`
+}
+
+// OutcomeList defines model for OutcomeList.
+type OutcomeList struct {
+	Items []OutcomeSummary `json:"items"`
+}
+
 // OutcomeResultView The §15.3 result + confidence of a closed outcome window.
 type OutcomeResultView struct {
 	ComputedAt *time.Time                  `json:"computedAt,omitempty"`
@@ -1935,6 +2083,24 @@ type OutcomeResultViewConfidence string
 
 // OutcomeResultViewResult defines model for OutcomeResultView.Result.
 type OutcomeResultViewResult string
+
+// OutcomeSummary One row of the outcomes queue (OUT-001, PD-3 item 5).
+type OutcomeSummary struct {
+	ActionId   openapi_types.UUID        `json:"actionId"`
+	CardId     *openapi_types.UUID       `json:"cardId,omitempty"`
+	ClosesAt   time.Time                 `json:"closesAt"`
+	Confidence *OutcomeSummaryConfidence `json:"confidence,omitempty"`
+	OpenedAt   time.Time                 `json:"openedAt"`
+
+	// Result The §15.3 result, present only once the window has closed.
+	Result *OutcomeSummaryResult `json:"result,omitempty"`
+}
+
+// OutcomeSummaryConfidence defines model for OutcomeSummary.Confidence.
+type OutcomeSummaryConfidence string
+
+// OutcomeSummaryResult The §15.3 result, present only once the window has closed.
+type OutcomeSummaryResult string
 
 // OutcomeView An action's OUT-001 seven-day outcome window and, once closed, its §15.3 result. `result` is absent while the window is still open.
 type OutcomeView struct {
@@ -1976,6 +2142,21 @@ type PairingCredential struct {
 
 	// MarketplaceAccountId The marketplace account this credential is scoped to.
 	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+}
+
+// ParserDriftQueue The Route C parser/schema-drift queue. NOT YET backed by a persisted store (§10.4) — `available` is false with an explicit reason rather than a fabricated empty success, per the screens-only-fallback / unavailable-with-reason posture (PRC-001 optionality). Closing this is a named follow-up on the Route C observer plane.
+type ParserDriftQueue struct {
+	Available bool          `json:"available"`
+	Items     []interface{} `json:"items"`
+	Reason    *string       `json:"reason,omitempty"`
+}
+
+// PendingReconciliationAction One EXE-003 action awaiting reconciliation (an unknown external result).
+type PendingReconciliationAction struct {
+	ActionId       openapi_types.UUID `json:"actionId"`
+	CardId         openapi_types.UUID `json:"cardId"`
+	CreatedAt      time.Time          `json:"createdAt"`
+	IdempotencyKey string             `json:"idempotencyKey"`
 }
 
 // PolicyBlocker One typed reason a policy stage prevented a proposal (in policy order).
@@ -2122,6 +2303,57 @@ type RawAmount struct {
 // RecommendOnlyState The EXE-005 recommend-only tracking state.
 type RecommendOnlyState string
 
+// RecommendationBlocker One typed PRC-002 reason no approval control exists (in policy order). The code is stable and machine-readable; the message carries no authority (§8).
+type RecommendationBlocker struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// RecommendationDetail The full PRC-001 record for one persisted recommendation version, including the §9.2 contribution breakdown (PD-3 items 1/3). Every optional field is present-or-unavailable-with-reason — never a fabricated value.
+type RecommendationDetail struct {
+	// AllowedRange The marketplace price boundary (stage 1, §9.2). `known` false is an UNKNOWN boundary and blocks (§16). Min/Max are required when known.
+	AllowedRange *PolicyBoundary         `json:"allowedRange,omitempty"`
+	Approvable   bool                    `json:"approvable"`
+	Assumptions  []string                `json:"assumptions"`
+	Blockers     []RecommendationBlocker `json:"blockers"`
+
+	// ContributionDeductions The §9.2 contribution breakdown (PRC-001 inputs) for the proposed contribution — the SAME deductions persisted on the recommendation row, decoded verbatim (never recomputed/fabricated at read time).
+	ContributionDeductions []ContributionDeduction `json:"contributionDeductions"`
+
+	// CurrentContribution An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	CurrentContribution *MoneyAmount `json:"currentContribution,omitempty"`
+
+	// CurrentPrice An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	CurrentPrice MoneyAmount `json:"currentPrice"`
+
+	// EventId The driving market event, when this recommendation is event-driven.
+	EventId               *openapi_types.UUID `json:"eventId,omitempty"`
+	EvidenceAsOf          *time.Time          `json:"evidenceAsOf,omitempty"`
+	EvidenceObservationId *openapi_types.UUID `json:"evidenceObservationId,omitempty"`
+
+	// EvidenceQuality The SIX evidence-quality states (PRD §10.3, OBS-003). The set is closed; each state has a fixed display/recommend/execute consequence. An expired value is `stale` and can never satisfy a current-data gate (OBS-004).
+	EvidenceQuality      QualityState       `json:"evidenceQuality"`
+	ExpiresAt            *time.Time         `json:"expiresAt,omitempty"`
+	Id                   openapi_types.UUID `json:"id"`
+	LineageId            openapi_types.UUID `json:"lineageId"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+
+	// Objective The optimization objective (stage 6, §9.3).
+	Objective PolicyObjective `json:"objective"`
+
+	// ProposedContribution An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	ProposedContribution *MoneyAmount `json:"proposedContribution,omitempty"`
+
+	// ProposedPrice An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
+	ProposedPrice *MoneyAmount `json:"proposedPrice,omitempty"`
+
+	// Readiness The four closed margin-readiness states (CST-003). Only `complete` may drive an executable recommendation; `partial` may show analysis but no approval control; `stale` and `missing` block.
+	Readiness  MarginReadinessState `json:"readiness"`
+	Simulation bool                 `json:"simulation"`
+	VariantId  openapi_types.UUID   `json:"variantId"`
+	Version    int64                `json:"version"`
+}
+
 // RecommendationDraftRequest A PrepareAction hand-off (CHAT-041): create the individual-approval Draft for one persisted, approvable recommendation. All identifiers are snake_case to match the LLM plane's Draft-only transport contract.
 type RecommendationDraftRequest struct {
 	// EntityId The variant (entity) the recommendation targets.
@@ -2154,6 +2386,9 @@ type RetryActionResult struct {
 	State *ExecutionExternalState `json:"state,omitempty"`
 }
 
+// SelectionSetDisposition A selection-set member's bulk disposition (CHAT-050).
+type SelectionSetDisposition string
+
 // SelectionSetDraftRequest A bulk hand-off (CHAT-050/051): compile the conversational query into a named, versioned selection set. There is NO chat bulk approval.
 type SelectionSetDraftRequest struct {
 	MarketplaceAccountId openapi_types.UUID `json:"marketplace_account_id"`
@@ -2169,6 +2404,44 @@ type SelectionSetDraftResult struct {
 	DraftId          openapi_types.UUID `json:"draft_id"`
 	ExpiresAt        time.Time          `json:"expires_at"`
 	ParameterVersion string             `json:"parameter_version"`
+}
+
+// SelectionSetMemberView defines model for SelectionSetMemberView.
+type SelectionSetMemberView struct {
+	// Disposition A selection-set member's bulk disposition (CHAT-050).
+	Disposition      SelectionSetDisposition `json:"disposition"`
+	RecommendationId openapi_types.UUID      `json:"recommendationId"`
+	VariantId        openapi_types.UUID      `json:"variantId"`
+}
+
+// SelectionSetPreviewMemberInput One candidate member for a bulk selection-set preview. The server resolves the disposition from the NAMED recommendation's own persisted state (approvable / blockers) — never from a client assertion.
+type SelectionSetPreviewMemberInput struct {
+	RecommendationId openapi_types.UUID `json:"recommendationId"`
+	VariantId        openapi_types.UUID `json:"variantId"`
+}
+
+// SelectionSetPreviewRequest The screens-native bulk preview request (PD-3 item 4). Carries NO version field by construction — the server is the sole authority that mints the selection-set version.
+type SelectionSetPreviewRequest struct {
+	// Criteria Deterministic query criteria the set was compiled from.
+	Criteria *map[string]string `json:"criteria,omitempty"`
+
+	// LineageId Existing selection-set lineage to mint the NEXT version within (a refreshed preview). Omit to start a brand-new lineage.
+	LineageId            *openapi_types.UUID              `json:"lineageId,omitempty"`
+	MarketplaceAccountId openapi_types.UUID               `json:"marketplaceAccountId"`
+	Members              []SelectionSetPreviewMemberInput `json:"members"`
+	Name                 string                           `json:"name"`
+}
+
+// SelectionSetPreviewResult The server-minted selection-set preview (PD-3 item 4). `version` is assigned ENTIRELY server-side (append-only "next version per lineage"); a subsequent bulk confirmation (POST /approvals/bulk/confirm) binds to EXACTLY this lineage + version.
+type SelectionSetPreviewResult struct {
+	// AggregateImpact An event's business impact (PRD §7.4 EVT-004/EVT-005). It is EITHER a known Money amount (derived from margin/sales context) OR explicitly unknown. When `known` is false there is NO `amount` at all — a missing sales/cost context is never a fabricated number (EVT-005).
+	AggregateImpact *EventExposure           `json:"aggregateImpact,omitempty"`
+	Id              openapi_types.UUID       `json:"id"`
+	LineageId       openapi_types.UUID       `json:"lineageId"`
+	MemberCount     int32                    `json:"memberCount"`
+	Members         []SelectionSetMemberView `json:"members"`
+	Name            string                   `json:"name"`
+	Version         int64                    `json:"version"`
 }
 
 // SessionInfo Identity of the authenticated session. This is the single shape both chat and screens read the current principal from; role drives the shared permission matrix (ACC-002).
@@ -2214,8 +2487,56 @@ type TodayFeed struct {
 	Items []RankedEvent `json:"items"`
 }
 
+// UserList defines model for UserList.
+type UserList struct {
+	Items []UserSummary `json:"items"`
+}
+
 // UserRole Product role (PRD §2.2). Owner governs commercial boundaries and users; Operator executes day-to-day within Owner-defined permissions; Internal diagnoses data/execution and cannot change seller commercial rules.
 type UserRole string
+
+// UserSummary defines model for UserSummary.
+type UserSummary struct {
+	CreatedAt time.Time          `json:"createdAt"`
+	Email     string             `json:"email"`
+	Id        openapi_types.UUID `json:"id"`
+
+	// Role Product role (PRD §2.2). Owner governs commercial boundaries and users; Operator executes day-to-day within Owner-defined permissions; Internal diagnoses data/execution and cannot change seller commercial rules.
+	Role UserRole `json:"role"`
+}
+
+// WatchlistAddRequest defines model for WatchlistAddRequest.
+type WatchlistAddRequest struct {
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+
+	// VariantId MUST be a Confirmed owned product (CAT-002); otherwise rejected.
+	VariantId openapi_types.UUID `json:"variantId"`
+}
+
+// WatchlistEntry One EXT-007 priority-watchlist entry.
+type WatchlistEntry struct {
+	CreatedAt            time.Time          `json:"createdAt"`
+	Id                   openapi_types.UUID `json:"id"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+	VariantId            openapi_types.UUID `json:"variantId"`
+}
+
+// WatchlistView defines model for WatchlistView.
+type WatchlistView struct {
+	// Cap The server-enforced maximum watchlist size (EXT-007).
+	Cap                  int32              `json:"cap"`
+	Items                []WatchlistEntry   `json:"items"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+}
+
+// ListActionsParams defines parameters for ListActions.
+type ListActionsParams struct {
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+
+	// State Optional §8.4 state filter.
+	State *ApprovalState `form:"state,omitempty" json:"state,omitempty"`
+	Limit *int32         `form:"limit,omitempty" json:"limit,omitempty"`
+}
 
 // GetActionExecutionParams defines parameters for GetActionExecution.
 type GetActionExecutionParams struct {
@@ -2276,9 +2597,19 @@ type ListEventsParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
+// GetGuardrailsParams defines parameters for GetGuardrails.
+type GetGuardrailsParams struct {
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
 // ListNeedsReviewParams defines parameters for ListNeedsReview.
 type ListNeedsReviewParams struct {
 	// MarketplaceAccountId Marketplace account whose review queue is requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
+// ListMarketConflictsParams defines parameters for ListMarketConflicts.
+type ListMarketConflictsParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
@@ -2309,14 +2640,35 @@ type ListObservationTargetsParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
+// GetOperationsQueuesParams defines parameters for GetOperationsQueues.
+type GetOperationsQueuesParams struct {
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
 // GetOutcomeParams defines parameters for GetOutcome.
 type GetOutcomeParams struct {
 	ActionId openapi_types.UUID `form:"actionId" json:"actionId"`
 }
 
+// ListOutcomesParams defines parameters for ListOutcomes.
+type ListOutcomesParams struct {
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+	Limit                *int32             `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetRecommendationDetailParams defines parameters for GetRecommendationDetail.
+type GetRecommendationDetailParams struct {
+	RecommendationId openapi_types.UUID `form:"recommendationId" json:"recommendationId"`
+}
+
 // GetTodayFeedParams defines parameters for GetTodayFeed.
 type GetTodayFeedParams struct {
 	// MarketplaceAccountId Marketplace account whose Today feed is requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+}
+
+// ListWatchlistParams defines parameters for ListWatchlist.
+type ListWatchlistParams struct {
 	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
 }
 
@@ -2328,6 +2680,9 @@ type RetryActionJSONRequestBody = RetryActionRequest
 
 // ConfirmBulkApprovalJSONRequestBody defines body for ConfirmBulkApproval for application/json ContentType.
 type ConfirmBulkApprovalJSONRequestBody = BulkApprovalConfirmRequest
+
+// EditApprovalCardPriceJSONRequestBody defines body for EditApprovalCardPrice for application/json ContentType.
+type EditApprovalCardPriceJSONRequestBody = EditApprovalCardPriceRequest
 
 // ConfirmApprovalJSONRequestBody defines body for ConfirmApproval for application/json ContentType.
 type ConfirmApprovalJSONRequestBody = ApprovalConfirmRequest
@@ -2371,6 +2726,9 @@ type RecordEventRelevanceJSONRequestBody = EventRelevanceRequest
 // ClaimPairingCodeJSONRequestBody defines body for ClaimPairingCode for application/json ContentType.
 type ClaimPairingCodeJSONRequestBody = PairingClaimRequest
 
+// SetGuardrailsJSONRequestBody defines body for SetGuardrails for application/json ContentType.
+type SetGuardrailsJSONRequestBody = GuardrailWriteRequest
+
 // ConfirmIdentityJSONRequestBody defines body for ConfirmIdentity for application/json ContentType.
 type ConfirmIdentityJSONRequestBody = IdentityDecisionRequest
 
@@ -2389,8 +2747,17 @@ type UploadCaptureJSONRequestBody = CaptureUpload
 // SimulatePolicyJSONRequestBody defines body for SimulatePolicy for application/json ContentType.
 type SimulatePolicyJSONRequestBody = PolicySimulationRequest
 
+// PreviewSelectionSetJSONRequestBody defines body for PreviewSelectionSet for application/json ContentType.
+type PreviewSelectionSetJSONRequestBody = SelectionSetPreviewRequest
+
+// AddWatchlistEntryJSONRequestBody defines body for AddWatchlistEntry for application/json ContentType.
+type AddWatchlistEntryJSONRequestBody = WatchlistAddRequest
+
 // ServerInterface represents all server handlers.
 type ServerInterface interface {
+	// ListActions List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
+	// (GET /actions)
+	ListActions(w http.ResponseWriter, r *http.Request, params ListActionsParams)
 	// ExecuteAction Revalidate and execute an approved action (EXE-001/002/005).
 	// (POST /actions/execute)
 	ExecuteAction(w http.ResponseWriter, r *http.Request)
@@ -2406,6 +2773,9 @@ type ServerInterface interface {
 	// GetApprovalCard Get an approval card and its append-only §8.4 state history.
 	// (GET /approvals/card)
 	GetApprovalCard(w http.ResponseWriter, r *http.Request, params GetApprovalCardParams)
+	// EditApprovalCardPrice Edit an approval card's proposed price before confirmation (CHAT-044, PD-3 item 2).
+	// (POST /approvals/card/edit-price)
+	EditApprovalCardPrice(w http.ResponseWriter, r *http.Request)
 	// ConfirmApproval Activate the structured control on an individual approval card (APR-001).
 	// (POST /approvals/confirm)
 	ConfirmApproval(w http.ResponseWriter, r *http.Request)
@@ -2481,6 +2851,12 @@ type ServerInterface interface {
 	// RevokePairing Revoke a paired extension's capture credential (EXT-001).
 	// (POST /ext/pairing/revoke)
 	RevokePairing(w http.ResponseWriter, r *http.Request)
+	// GetGuardrails Read an account's L3 commercial guardrails (PD-3 item 6).
+	// (GET /guardrails)
+	GetGuardrails(w http.ResponseWriter, r *http.Request, params GetGuardrailsParams)
+	// SetGuardrails Write an account's L3 commercial guardrails, Owner only (PD-3 item 6).
+	// (POST /guardrails)
+	SetGuardrails(w http.ResponseWriter, r *http.Request)
 	// GetHealthz Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
@@ -2496,6 +2872,9 @@ type ServerInterface interface {
 	// RejectIdentity Reject a Needs Review candidate.
 	// (POST /identity/reject)
 	RejectIdentity(w http.ResponseWriter, r *http.Request)
+	// ListMarketConflicts List cross-route conflicted Observed Offers (Market conflict banner, PD-3 item 8).
+	// (GET /market/conflicts)
+	ListMarketConflicts(w http.ResponseWriter, r *http.Request, params ListMarketConflictsParams)
 	// ListNotifications List the in-app notifications for an account (NOT-001).
 	// (GET /notifications)
 	ListNotifications(w http.ResponseWriter, r *http.Request, params ListNotificationsParams)
@@ -2514,15 +2893,36 @@ type ServerInterface interface {
 	// ListObservationTargets List the account's observation targets.
 	// (GET /observation/targets)
 	ListObservationTargets(w http.ResponseWriter, r *http.Request, params ListObservationTargetsParams)
+	// GetOperationsQueues Aggregated Operations screen queues (PD-3 item 8).
+	// (GET /ops/queues)
+	GetOperationsQueues(w http.ResponseWriter, r *http.Request, params GetOperationsQueuesParams)
 	// GetOutcome Get an action's seven-day outcome window and result (OUT-001).
 	// (GET /outcomes)
 	GetOutcome(w http.ResponseWriter, r *http.Request, params GetOutcomeParams)
+	// ListOutcomes List an account's outcome windows and results (OUT-001, PD-3 item 5).
+	// (GET /outcomes/list)
+	ListOutcomes(w http.ResponseWriter, r *http.Request, params ListOutcomesParams)
 	// SimulatePolicy Simulate the contribution + six-stage policy engines (non-executable).
 	// (POST /policy/simulate)
 	SimulatePolicy(w http.ResponseWriter, r *http.Request)
+	// GetRecommendationDetail Get one recommendation's full PRC-001 record + contribution breakdown (S37).
+	// (GET /recommendations/detail)
+	GetRecommendationDetail(w http.ResponseWriter, r *http.Request, params GetRecommendationDetailParams)
+	// PreviewSelectionSet Build a bulk selection-set preview with a SERVER-MINTED version (PD-3 item 4).
+	// (POST /selection-sets/preview)
+	PreviewSelectionSet(w http.ResponseWriter, r *http.Request)
 	// GetTodayFeed Get the ranked Today feed for the account.
 	// (GET /today)
 	GetTodayFeed(w http.ResponseWriter, r *http.Request, params GetTodayFeedParams)
+	// ListUsers List the organization's user roster (PD-3 item 7).
+	// (GET /users)
+	ListUsers(w http.ResponseWriter, r *http.Request)
+	// ListWatchlist List an account's priority watchlist (EXT-007).
+	// (GET /watchlist)
+	ListWatchlist(w http.ResponseWriter, r *http.Request, params ListWatchlistParams)
+	// AddWatchlistEntry Add a Confirmed owned product to the priority watchlist (EXT-007).
+	// (POST /watchlist)
+	AddWatchlistEntry(w http.ResponseWriter, r *http.Request)
 }
 
 // ServerInterfaceWrapper converts contexts to parameters.
@@ -2533,6 +2933,65 @@ type ServerInterfaceWrapper struct {
 }
 
 type MiddlewareFunc func(http.Handler) http.Handler
+
+// ListActions operation middleware
+func (siw *ServerInterfaceWrapper) ListActions(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListActionsParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "state" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "state", r.URL.Query(), &params.State, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "state"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "state", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListActions(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
 
 // ExecuteAction operation middleware
 func (siw *ServerInterfaceWrapper) ExecuteAction(w http.ResponseWriter, r *http.Request) {
@@ -2633,6 +3092,20 @@ func (siw *ServerInterfaceWrapper) GetApprovalCard(w http.ResponseWriter, r *htt
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetApprovalCard(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// EditApprovalCardPrice operation middleware
+func (siw *ServerInterfaceWrapper) EditApprovalCardPrice(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.EditApprovalCardPrice(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3151,6 +3624,53 @@ func (siw *ServerInterfaceWrapper) RevokePairing(w http.ResponseWriter, r *http.
 	handler.ServeHTTP(w, r)
 }
 
+// GetGuardrails operation middleware
+func (siw *ServerInterfaceWrapper) GetGuardrails(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetGuardrailsParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetGuardrails(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SetGuardrails operation middleware
+func (siw *ServerInterfaceWrapper) SetGuardrails(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SetGuardrails(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(w http.ResponseWriter, r *http.Request) {
 
@@ -3231,6 +3751,39 @@ func (siw *ServerInterfaceWrapper) RejectIdentity(w http.ResponseWriter, r *http
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RejectIdentity(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListMarketConflicts operation middleware
+func (siw *ServerInterfaceWrapper) ListMarketConflicts(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListMarketConflictsParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListMarketConflicts(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3413,6 +3966,39 @@ func (siw *ServerInterfaceWrapper) ListObservationTargets(w http.ResponseWriter,
 	handler.ServeHTTP(w, r)
 }
 
+// GetOperationsQueues operation middleware
+func (siw *ServerInterfaceWrapper) GetOperationsQueues(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetOperationsQueuesParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetOperationsQueues(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetOutcome operation middleware
 func (siw *ServerInterfaceWrapper) GetOutcome(w http.ResponseWriter, r *http.Request) {
 
@@ -3446,11 +4032,104 @@ func (siw *ServerInterfaceWrapper) GetOutcome(w http.ResponseWriter, r *http.Req
 	handler.ServeHTTP(w, r)
 }
 
+// ListOutcomes operation middleware
+func (siw *ServerInterfaceWrapper) ListOutcomes(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListOutcomesParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: "int32"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListOutcomes(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // SimulatePolicy operation middleware
 func (siw *ServerInterfaceWrapper) SimulatePolicy(w http.ResponseWriter, r *http.Request) {
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.SimulatePolicy(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetRecommendationDetail operation middleware
+func (siw *ServerInterfaceWrapper) GetRecommendationDetail(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetRecommendationDetailParams
+
+	// ------------- Required query parameter "recommendationId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "recommendationId", r.URL.Query(), &params.RecommendationId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "recommendationId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "recommendationId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetRecommendationDetail(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// PreviewSelectionSet operation middleware
+func (siw *ServerInterfaceWrapper) PreviewSelectionSet(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.PreviewSelectionSet(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3484,6 +4163,67 @@ func (siw *ServerInterfaceWrapper) GetTodayFeed(w http.ResponseWriter, r *http.R
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetTodayFeed(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListUsers operation middleware
+func (siw *ServerInterfaceWrapper) ListUsers(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListUsers(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListWatchlist operation middleware
+func (siw *ServerInterfaceWrapper) ListWatchlist(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListWatchlistParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListWatchlist(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// AddWatchlistEntry operation middleware
+func (siw *ServerInterfaceWrapper) AddWatchlistEntry(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.AddWatchlistEntry(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3657,8 +4397,59 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/briefing", wrapper.GetBriefing)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/notifications", wrapper.ListNotifications)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/notifications/ack", wrapper.AckNotification)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/recommendations/detail", wrapper.GetRecommendationDetail)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/approvals/card/edit-price", wrapper.EditApprovalCardPrice)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/selection-sets/preview", wrapper.PreviewSelectionSet)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/actions", wrapper.ListActions)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/outcomes/list", wrapper.ListOutcomes)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/guardrails", wrapper.GetGuardrails)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/guardrails", wrapper.SetGuardrails)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/users", wrapper.ListUsers)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/ops/queues", wrapper.GetOperationsQueues)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/market/conflicts", wrapper.ListMarketConflicts)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/watchlist", wrapper.ListWatchlist)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/watchlist", wrapper.AddWatchlistEntry)
 
 	return m
+}
+
+type ListActionsRequestObject struct {
+	Params ListActionsParams
+}
+
+type ListActionsResponseObject interface {
+	VisitListActionsResponse(w http.ResponseWriter) error
+}
+
+type ListActions200JSONResponse ActionList
+
+func (response ListActions200JSONResponse) VisitListActionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListActionsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListActionsdefaultJSONResponse) VisitListActionsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
 }
 
 type ExecuteActionRequestObject struct {
@@ -3845,6 +4636,45 @@ type GetApprovalCarddefaultJSONResponse struct {
 }
 
 func (response GetApprovalCarddefaultJSONResponse) VisitGetApprovalCardResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditApprovalCardPriceRequestObject struct {
+	Body *EditApprovalCardPriceJSONRequestBody
+}
+
+type EditApprovalCardPriceResponseObject interface {
+	VisitEditApprovalCardPriceResponse(w http.ResponseWriter) error
+}
+
+type EditApprovalCardPrice200JSONResponse ApprovalCardView
+
+func (response EditApprovalCardPrice200JSONResponse) VisitEditApprovalCardPriceResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type EditApprovalCardPricedefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response EditApprovalCardPricedefaultJSONResponse) VisitEditApprovalCardPriceResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -4900,6 +5730,84 @@ func (response RevokePairingdefaultJSONResponse) VisitRevokePairingResponse(w ht
 	return err
 }
 
+type GetGuardrailsRequestObject struct {
+	Params GetGuardrailsParams
+}
+
+type GetGuardrailsResponseObject interface {
+	VisitGetGuardrailsResponse(w http.ResponseWriter) error
+}
+
+type GetGuardrails200JSONResponse GuardrailConfigView
+
+func (response GetGuardrails200JSONResponse) VisitGetGuardrailsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetGuardrailsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetGuardrailsdefaultJSONResponse) VisitGetGuardrailsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetGuardrailsRequestObject struct {
+	Body *SetGuardrailsJSONRequestBody
+}
+
+type SetGuardrailsResponseObject interface {
+	VisitSetGuardrailsResponse(w http.ResponseWriter) error
+}
+
+type SetGuardrails200JSONResponse GuardrailConfigView
+
+func (response SetGuardrails200JSONResponse) VisitSetGuardrailsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SetGuardrailsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response SetGuardrailsdefaultJSONResponse) VisitSetGuardrailsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthzRequestObject struct {
 }
 
@@ -5083,6 +5991,45 @@ type RejectIdentitydefaultJSONResponse struct {
 }
 
 func (response RejectIdentitydefaultJSONResponse) VisitRejectIdentityResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMarketConflictsRequestObject struct {
+	Params ListMarketConflictsParams
+}
+
+type ListMarketConflictsResponseObject interface {
+	VisitListMarketConflictsResponse(w http.ResponseWriter) error
+}
+
+type ListMarketConflicts200JSONResponse ObservedOfferList
+
+func (response ListMarketConflicts200JSONResponse) VisitListMarketConflictsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListMarketConflictsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListMarketConflictsdefaultJSONResponse) VisitListMarketConflictsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -5328,6 +6275,45 @@ func (response ListObservationTargetsdefaultJSONResponse) VisitListObservationTa
 	return err
 }
 
+type GetOperationsQueuesRequestObject struct {
+	Params GetOperationsQueuesParams
+}
+
+type GetOperationsQueuesResponseObject interface {
+	VisitGetOperationsQueuesResponse(w http.ResponseWriter) error
+}
+
+type GetOperationsQueues200JSONResponse OperationsQueues
+
+func (response GetOperationsQueues200JSONResponse) VisitGetOperationsQueuesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetOperationsQueuesdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetOperationsQueuesdefaultJSONResponse) VisitGetOperationsQueuesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetOutcomeRequestObject struct {
 	Params GetOutcomeParams
 }
@@ -5356,6 +6342,45 @@ type GetOutcomedefaultJSONResponse struct {
 }
 
 func (response GetOutcomedefaultJSONResponse) VisitGetOutcomeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListOutcomesRequestObject struct {
+	Params ListOutcomesParams
+}
+
+type ListOutcomesResponseObject interface {
+	VisitListOutcomesResponse(w http.ResponseWriter) error
+}
+
+type ListOutcomes200JSONResponse OutcomeList
+
+func (response ListOutcomes200JSONResponse) VisitListOutcomesResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListOutcomesdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListOutcomesdefaultJSONResponse) VisitListOutcomesResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -5406,6 +6431,84 @@ func (response SimulatePolicydefaultJSONResponse) VisitSimulatePolicyResponse(w 
 	return err
 }
 
+type GetRecommendationDetailRequestObject struct {
+	Params GetRecommendationDetailParams
+}
+
+type GetRecommendationDetailResponseObject interface {
+	VisitGetRecommendationDetailResponse(w http.ResponseWriter) error
+}
+
+type GetRecommendationDetail200JSONResponse RecommendationDetail
+
+func (response GetRecommendationDetail200JSONResponse) VisitGetRecommendationDetailResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetRecommendationDetaildefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetRecommendationDetaildefaultJSONResponse) VisitGetRecommendationDetailResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewSelectionSetRequestObject struct {
+	Body *PreviewSelectionSetJSONRequestBody
+}
+
+type PreviewSelectionSetResponseObject interface {
+	VisitPreviewSelectionSetResponse(w http.ResponseWriter) error
+}
+
+type PreviewSelectionSet200JSONResponse SelectionSetPreviewResult
+
+func (response PreviewSelectionSet200JSONResponse) VisitPreviewSelectionSetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type PreviewSelectionSetdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response PreviewSelectionSetdefaultJSONResponse) VisitPreviewSelectionSetResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetTodayFeedRequestObject struct {
 	Params GetTodayFeedParams
 }
@@ -5445,8 +6548,127 @@ func (response GetTodayFeeddefaultJSONResponse) VisitGetTodayFeedResponse(w http
 	return err
 }
 
+type ListUsersRequestObject struct {
+}
+
+type ListUsersResponseObject interface {
+	VisitListUsersResponse(w http.ResponseWriter) error
+}
+
+type ListUsers200JSONResponse UserList
+
+func (response ListUsers200JSONResponse) VisitListUsersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListUsersdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListUsersdefaultJSONResponse) VisitListUsersResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWatchlistRequestObject struct {
+	Params ListWatchlistParams
+}
+
+type ListWatchlistResponseObject interface {
+	VisitListWatchlistResponse(w http.ResponseWriter) error
+}
+
+type ListWatchlist200JSONResponse WatchlistView
+
+func (response ListWatchlist200JSONResponse) VisitListWatchlistResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListWatchlistdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListWatchlistdefaultJSONResponse) VisitListWatchlistResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddWatchlistEntryRequestObject struct {
+	Body *AddWatchlistEntryJSONRequestBody
+}
+
+type AddWatchlistEntryResponseObject interface {
+	VisitAddWatchlistEntryResponse(w http.ResponseWriter) error
+}
+
+type AddWatchlistEntry200JSONResponse WatchlistEntry
+
+func (response AddWatchlistEntry200JSONResponse) VisitAddWatchlistEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type AddWatchlistEntrydefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response AddWatchlistEntrydefaultJSONResponse) VisitAddWatchlistEntryResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 // StrictServerInterface represents all server handlers.
 type StrictServerInterface interface {
+	// ListActions List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
+	// (GET /actions)
+	ListActions(ctx context.Context, request ListActionsRequestObject) (ListActionsResponseObject, error)
 	// ExecuteAction Revalidate and execute an approved action (EXE-001/002/005).
 	// (POST /actions/execute)
 	ExecuteAction(ctx context.Context, request ExecuteActionRequestObject) (ExecuteActionResponseObject, error)
@@ -5462,6 +6684,9 @@ type StrictServerInterface interface {
 	// GetApprovalCard Get an approval card and its append-only §8.4 state history.
 	// (GET /approvals/card)
 	GetApprovalCard(ctx context.Context, request GetApprovalCardRequestObject) (GetApprovalCardResponseObject, error)
+	// EditApprovalCardPrice Edit an approval card's proposed price before confirmation (CHAT-044, PD-3 item 2).
+	// (POST /approvals/card/edit-price)
+	EditApprovalCardPrice(ctx context.Context, request EditApprovalCardPriceRequestObject) (EditApprovalCardPriceResponseObject, error)
 	// ConfirmApproval Activate the structured control on an individual approval card (APR-001).
 	// (POST /approvals/confirm)
 	ConfirmApproval(ctx context.Context, request ConfirmApprovalRequestObject) (ConfirmApprovalResponseObject, error)
@@ -5537,6 +6762,12 @@ type StrictServerInterface interface {
 	// RevokePairing Revoke a paired extension's capture credential (EXT-001).
 	// (POST /ext/pairing/revoke)
 	RevokePairing(ctx context.Context, request RevokePairingRequestObject) (RevokePairingResponseObject, error)
+	// GetGuardrails Read an account's L3 commercial guardrails (PD-3 item 6).
+	// (GET /guardrails)
+	GetGuardrails(ctx context.Context, request GetGuardrailsRequestObject) (GetGuardrailsResponseObject, error)
+	// SetGuardrails Write an account's L3 commercial guardrails, Owner only (PD-3 item 6).
+	// (POST /guardrails)
+	SetGuardrails(ctx context.Context, request SetGuardrailsRequestObject) (SetGuardrailsResponseObject, error)
 	// GetHealthz Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(ctx context.Context, request GetHealthzRequestObject) (GetHealthzResponseObject, error)
@@ -5552,6 +6783,9 @@ type StrictServerInterface interface {
 	// RejectIdentity Reject a Needs Review candidate.
 	// (POST /identity/reject)
 	RejectIdentity(ctx context.Context, request RejectIdentityRequestObject) (RejectIdentityResponseObject, error)
+	// ListMarketConflicts List cross-route conflicted Observed Offers (Market conflict banner, PD-3 item 8).
+	// (GET /market/conflicts)
+	ListMarketConflicts(ctx context.Context, request ListMarketConflictsRequestObject) (ListMarketConflictsResponseObject, error)
 	// ListNotifications List the in-app notifications for an account (NOT-001).
 	// (GET /notifications)
 	ListNotifications(ctx context.Context, request ListNotificationsRequestObject) (ListNotificationsResponseObject, error)
@@ -5570,15 +6804,36 @@ type StrictServerInterface interface {
 	// ListObservationTargets List the account's observation targets.
 	// (GET /observation/targets)
 	ListObservationTargets(ctx context.Context, request ListObservationTargetsRequestObject) (ListObservationTargetsResponseObject, error)
+	// GetOperationsQueues Aggregated Operations screen queues (PD-3 item 8).
+	// (GET /ops/queues)
+	GetOperationsQueues(ctx context.Context, request GetOperationsQueuesRequestObject) (GetOperationsQueuesResponseObject, error)
 	// GetOutcome Get an action's seven-day outcome window and result (OUT-001).
 	// (GET /outcomes)
 	GetOutcome(ctx context.Context, request GetOutcomeRequestObject) (GetOutcomeResponseObject, error)
+	// ListOutcomes List an account's outcome windows and results (OUT-001, PD-3 item 5).
+	// (GET /outcomes/list)
+	ListOutcomes(ctx context.Context, request ListOutcomesRequestObject) (ListOutcomesResponseObject, error)
 	// SimulatePolicy Simulate the contribution + six-stage policy engines (non-executable).
 	// (POST /policy/simulate)
 	SimulatePolicy(ctx context.Context, request SimulatePolicyRequestObject) (SimulatePolicyResponseObject, error)
+	// GetRecommendationDetail Get one recommendation's full PRC-001 record + contribution breakdown (S37).
+	// (GET /recommendations/detail)
+	GetRecommendationDetail(ctx context.Context, request GetRecommendationDetailRequestObject) (GetRecommendationDetailResponseObject, error)
+	// PreviewSelectionSet Build a bulk selection-set preview with a SERVER-MINTED version (PD-3 item 4).
+	// (POST /selection-sets/preview)
+	PreviewSelectionSet(ctx context.Context, request PreviewSelectionSetRequestObject) (PreviewSelectionSetResponseObject, error)
 	// GetTodayFeed Get the ranked Today feed for the account.
 	// (GET /today)
 	GetTodayFeed(ctx context.Context, request GetTodayFeedRequestObject) (GetTodayFeedResponseObject, error)
+	// ListUsers List the organization's user roster (PD-3 item 7).
+	// (GET /users)
+	ListUsers(ctx context.Context, request ListUsersRequestObject) (ListUsersResponseObject, error)
+	// ListWatchlist List an account's priority watchlist (EXT-007).
+	// (GET /watchlist)
+	ListWatchlist(ctx context.Context, request ListWatchlistRequestObject) (ListWatchlistResponseObject, error)
+	// AddWatchlistEntry Add a Confirmed owned product to the priority watchlist (EXT-007).
+	// (POST /watchlist)
+	AddWatchlistEntry(ctx context.Context, request AddWatchlistEntryRequestObject) (AddWatchlistEntryResponseObject, error)
 }
 
 type StrictHandlerFunc func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error)
@@ -5618,6 +6873,32 @@ type strictHandler struct {
 	ssi         StrictServerInterface
 	middlewares []StrictMiddlewareFunc
 	options     StrictHTTPServerOptions
+}
+
+// ListActions operation middleware
+func (sh *strictHandler) ListActions(w http.ResponseWriter, r *http.Request, params ListActionsParams) {
+	var request ListActionsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListActions(ctx, request.(ListActionsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListActions")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListActionsResponseObject); ok {
+		if err := validResponse.VisitListActionsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
 }
 
 // ExecuteAction operation middleware
@@ -5758,6 +7039,37 @@ func (sh *strictHandler) GetApprovalCard(w http.ResponseWriter, r *http.Request,
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetApprovalCardResponseObject); ok {
 		if err := validResponse.VisitGetApprovalCardResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// EditApprovalCardPrice operation middleware
+func (sh *strictHandler) EditApprovalCardPrice(w http.ResponseWriter, r *http.Request) {
+	var request EditApprovalCardPriceRequestObject
+
+	var body EditApprovalCardPriceJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.EditApprovalCardPrice(ctx, request.(EditApprovalCardPriceRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "EditApprovalCardPrice")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(EditApprovalCardPriceResponseObject); ok {
+		if err := validResponse.VisitEditApprovalCardPriceResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6477,6 +7789,63 @@ func (sh *strictHandler) RevokePairing(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetGuardrails operation middleware
+func (sh *strictHandler) GetGuardrails(w http.ResponseWriter, r *http.Request, params GetGuardrailsParams) {
+	var request GetGuardrailsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetGuardrails(ctx, request.(GetGuardrailsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetGuardrails")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetGuardrailsResponseObject); ok {
+		if err := validResponse.VisitGetGuardrailsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SetGuardrails operation middleware
+func (sh *strictHandler) SetGuardrails(w http.ResponseWriter, r *http.Request) {
+	var request SetGuardrailsRequestObject
+
+	var body SetGuardrailsJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SetGuardrails(ctx, request.(SetGuardrailsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SetGuardrails")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SetGuardrailsResponseObject); ok {
+		if err := validResponse.VisitSetGuardrailsResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetHealthz operation middleware
 func (sh *strictHandler) GetHealthz(w http.ResponseWriter, r *http.Request) {
 	var request GetHealthzRequestObject
@@ -6613,6 +7982,32 @@ func (sh *strictHandler) RejectIdentity(w http.ResponseWriter, r *http.Request) 
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RejectIdentityResponseObject); ok {
 		if err := validResponse.VisitRejectIdentityResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListMarketConflicts operation middleware
+func (sh *strictHandler) ListMarketConflicts(w http.ResponseWriter, r *http.Request, params ListMarketConflictsParams) {
+	var request ListMarketConflictsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListMarketConflicts(ctx, request.(ListMarketConflictsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListMarketConflicts")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListMarketConflictsResponseObject); ok {
+		if err := validResponse.VisitListMarketConflictsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6786,6 +8181,32 @@ func (sh *strictHandler) ListObservationTargets(w http.ResponseWriter, r *http.R
 	}
 }
 
+// GetOperationsQueues operation middleware
+func (sh *strictHandler) GetOperationsQueues(w http.ResponseWriter, r *http.Request, params GetOperationsQueuesParams) {
+	var request GetOperationsQueuesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetOperationsQueues(ctx, request.(GetOperationsQueuesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetOperationsQueues")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetOperationsQueuesResponseObject); ok {
+		if err := validResponse.VisitGetOperationsQueuesResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetOutcome operation middleware
 func (sh *strictHandler) GetOutcome(w http.ResponseWriter, r *http.Request, params GetOutcomeParams) {
 	var request GetOutcomeRequestObject
@@ -6805,6 +8226,32 @@ func (sh *strictHandler) GetOutcome(w http.ResponseWriter, r *http.Request, para
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetOutcomeResponseObject); ok {
 		if err := validResponse.VisitGetOutcomeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListOutcomes operation middleware
+func (sh *strictHandler) ListOutcomes(w http.ResponseWriter, r *http.Request, params ListOutcomesParams) {
+	var request ListOutcomesRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListOutcomes(ctx, request.(ListOutcomesRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListOutcomes")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListOutcomesResponseObject); ok {
+		if err := validResponse.VisitListOutcomesResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {
@@ -6843,6 +8290,63 @@ func (sh *strictHandler) SimulatePolicy(w http.ResponseWriter, r *http.Request) 
 	}
 }
 
+// GetRecommendationDetail operation middleware
+func (sh *strictHandler) GetRecommendationDetail(w http.ResponseWriter, r *http.Request, params GetRecommendationDetailParams) {
+	var request GetRecommendationDetailRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetRecommendationDetail(ctx, request.(GetRecommendationDetailRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetRecommendationDetail")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetRecommendationDetailResponseObject); ok {
+		if err := validResponse.VisitGetRecommendationDetailResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// PreviewSelectionSet operation middleware
+func (sh *strictHandler) PreviewSelectionSet(w http.ResponseWriter, r *http.Request) {
+	var request PreviewSelectionSetRequestObject
+
+	var body PreviewSelectionSetJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.PreviewSelectionSet(ctx, request.(PreviewSelectionSetRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "PreviewSelectionSet")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(PreviewSelectionSetResponseObject); ok {
+		if err := validResponse.VisitPreviewSelectionSetResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // GetTodayFeed operation middleware
 func (sh *strictHandler) GetTodayFeed(w http.ResponseWriter, r *http.Request, params GetTodayFeedParams) {
 	var request GetTodayFeedRequestObject
@@ -6862,6 +8366,87 @@ func (sh *strictHandler) GetTodayFeed(w http.ResponseWriter, r *http.Request, pa
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetTodayFeedResponseObject); ok {
 		if err := validResponse.VisitGetTodayFeedResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListUsers operation middleware
+func (sh *strictHandler) ListUsers(w http.ResponseWriter, r *http.Request) {
+	var request ListUsersRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListUsers(ctx, request.(ListUsersRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListUsers")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListUsersResponseObject); ok {
+		if err := validResponse.VisitListUsersResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListWatchlist operation middleware
+func (sh *strictHandler) ListWatchlist(w http.ResponseWriter, r *http.Request, params ListWatchlistParams) {
+	var request ListWatchlistRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListWatchlist(ctx, request.(ListWatchlistRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListWatchlist")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListWatchlistResponseObject); ok {
+		if err := validResponse.VisitListWatchlistResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// AddWatchlistEntry operation middleware
+func (sh *strictHandler) AddWatchlistEntry(w http.ResponseWriter, r *http.Request) {
+	var request AddWatchlistEntryRequestObject
+
+	var body AddWatchlistEntryJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.AddWatchlistEntry(ctx, request.(AddWatchlistEntryRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "AddWatchlistEntry")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(AddWatchlistEntryResponseObject); ok {
+		if err := validResponse.VisitAddWatchlistEntryResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

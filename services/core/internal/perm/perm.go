@@ -147,8 +147,43 @@ const (
 	// seller-configuration change: L1, every authenticated role. It advances only a
 	// bounded read-state projection — it never touches seller commercial state.
 	ActionAckNotification Action = "notification.ack"
+	// ActionReadRecommendationDetail authorizes reading a single recommendation's
+	// full PRC-001 record (objective, current/proposed price, contribution
+	// breakdown, allowed range, quality, readiness, assumptions) — the S37
+	// consolidated read (dk-p0-product-decisions.md PD-3 item 1/3). Reading is
+	// always L1 (§8.3); a machine data-read tool may hold it.
+	ActionReadRecommendationDetail Action = "read.recommendation_detail"
+	// ActionReadGuardrails authorizes reading the L3 commercial guardrails
+	// (contribution floor, movement cap, cooldown, strategy enablement) for an
+	// account (PD-3 item 6). The VALUE is sensitive to change (L3, Owner only —
+	// ActionWriteGuardrails), but reading it is an L1 read every role may perform,
+	// same posture as read.current_strategy.
+	ActionReadGuardrails Action = "read.guardrails"
+	// ActionReadUsers authorizes reading the account's user roster (PD-3 item 7).
+	// Reading is L1 (§8.3); management (add/remove/change role) stays the existing
+	// L3 guardrail.manage_users action.
+	ActionReadUsers Action = "read.users"
+	// ActionReadWatchlist authorizes reading the EXT-007 priority watchlist. L1
+	// read; adding an entry is the existing L2 config.watchlist action.
+	ActionReadWatchlist Action = "read.watchlist"
 
 	// --- L2 reversible configuration ----------------------------------------
+	// ActionEditPrice authorizes editing an approval card's proposed price before
+	// confirmation (CHAT-044; PD-3 item 2). It mints a NEW card version with a NEW
+	// parameter version (approval.Card.EditPrice) — the price is never mutated in
+	// place. This is write-adjacent but reversible (a fresh Draft, not a write):
+	// Owner + Operator, same baseline as the other seller-config L2 actions. It is
+	// DELIBERATELY not an L1 read and not a Draft action, so the read/Draft-only
+	// machine gateway credential can never reach it (§12.3).
+	ActionEditPrice Action = "price.edit"
+	// ActionBulkPreview authorizes minting a SERVER-side selection-set preview
+	// version from screens-native criteria (PD-3 item 4, the hard S35/S37 safety
+	// precondition: the server, never the client, mints the selection-set
+	// version). Owner + Operator, same baseline as the other seller L2 actions.
+	// DELIBERATELY not an L1 read and not a Draft action — the machine gateway
+	// credential can never mint a selection-set version outside the chat
+	// draft.selection_set compile path.
+	ActionBulkPreview      Action = "selection.bulk_preview"
 	ActionConnectorConnect Action = "connector.connect"
 	// ActionResolveIdentity authorizes confirm/reject/defer on a Market Product
 	// Identity candidate (CAT-002, journey 4). It is a reversible data-resolution
@@ -190,6 +225,13 @@ const (
 	ActionSetStrategyEnablement Action = "guardrail.strategy_enablement"
 	ActionSetApprovalPermission Action = "guardrail.approval_permission"
 	ActionManageUsers           Action = "guardrail.manage_users"
+	// ActionWriteGuardrails authorizes the consolidated L3 guardrail write
+	// endpoint (PD-3 item 6: floor/cap/cooldown/strategy enablement in one call).
+	// Owner only, same baseline as every other L3 guardrail action. Every write
+	// appends an append-only audit record ATOMICALLY with the mutation (AUD-001);
+	// it is never gateway-granted (§12.3 "guardrail-write is never an LLM-plane
+	// tool").
+	ActionWriteGuardrails Action = "guardrail.write"
 
 	// --- L4 marketplace mutation --------------------------------------------
 	ActionApprovePriceChange Action = "price.approve"
@@ -198,6 +240,12 @@ const (
 	// --- Operational recovery (off the §8.3 ladder) -------------------------
 	ActionReadOperationalState Action = "ops.read_state"
 	ActionManageRecoveryQueue  Action = "ops.manage_recovery_queue"
+	// ActionReadOperationsQueues authorizes reading the Operations screen's
+	// aggregated queues — pending-reconciliation actions and (when wired)
+	// parser/schema-drift signals (PD-3 item 8). Same off-ladder posture as
+	// ops.read_state: Owner + Internal, never Operator (not a recovery actor),
+	// never the machine gateway principal.
+	ActionReadOperationsQueues Action = "ops.read_queues"
 )
 
 // Rule is one row of the permission matrix: an action, its §8.3 admin level,
@@ -245,6 +293,12 @@ var Matrix = []Rule{
 	// bounded read-state projection and never carries a control.
 	{ActionReadNotifications, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 	{ActionAckNotification, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	// Recommendation detail + contribution breakdown, guardrail values, user
+	// roster, and watchlist reads (PD-3 items 1/3/6/7, EXT-007) — L1, every role.
+	{ActionReadRecommendationDetail, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	{ActionReadGuardrails, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	{ActionReadUsers, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	{ActionReadWatchlist, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 
 	// L2 reversible configuration. Account-lifecycle connector actions are
 	// account management — Owner only (PRD §2.2 "Connect account") — a valid
@@ -266,6 +320,12 @@ var Matrix = []Rule{
 	// Event relevance feedback is a reversible seller-data task within the L2
 	// baseline {Owner, Operator}; Internal is not a seller-feedback actor.
 	{ActionEventRelevanceFeedback, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
+	// Edit-price (CHAT-044) and bulk-preview server-side selection-set minting
+	// (PD-3 items 2/4) are reversible seller-config writes within the L2 baseline
+	// {Owner, Operator}; DELIBERATELY excluded from the machine gateway envelope
+	// (not L1, not a Draft action) — see the action doc comments above.
+	{ActionEditPrice, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
+	{ActionBulkPreview, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	// Extension capture upload is a reversible data-ingestion task within the L2
 	// baseline {Owner, Operator}; Internal is not an ingestor.
 	{ActionUploadCapture, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
@@ -283,6 +343,9 @@ var Matrix = []Rule{
 	{ActionSetStrategyEnablement, L3CommercialGuardrail, allow(RoleOwner)},
 	{ActionSetApprovalPermission, L3CommercialGuardrail, allow(RoleOwner)},
 	{ActionManageUsers, L3CommercialGuardrail, allow(RoleOwner)},
+	// Consolidated guardrail write endpoint (PD-3 item 6) — Owner only, same as
+	// every per-field guardrail action above.
+	{ActionWriteGuardrails, L3CommercialGuardrail, allow(RoleOwner)},
 
 	// L4 marketplace mutation — Owner approves; Operator approves within
 	// Owner-defined permissions. Internal never mutates seller commercial state.
@@ -294,6 +357,7 @@ var Matrix = []Rule{
 	// actor.
 	{ActionReadOperationalState, LevelOperational, allow(RoleOwner, RoleInternal)},
 	{ActionManageRecoveryQueue, LevelOperational, allow(RoleOwner, RoleInternal)},
+	{ActionReadOperationsQueues, LevelOperational, allow(RoleOwner, RoleInternal)},
 }
 
 // index maps action → rule for O(1), fail-closed lookup.
