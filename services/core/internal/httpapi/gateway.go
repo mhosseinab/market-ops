@@ -35,6 +35,13 @@ type gatewayServer struct {
 	// wired; the handlers fail closed with a structured error when it is absent, so
 	// no card, confirmation, or bulk approval is served on an unwired plane.
 	approval ApprovalService
+	// execution backs the /actions/* routes (PRD §7.5 EXE-001..005). Nil until
+	// wired; the handlers fail closed, so no execution/retry/read is served on an
+	// unwired execution plane. Writes stay OFF by default even when wired.
+	execution ExecutionService
+	// outcome backs GET /outcomes (OUT-001). Nil until wired; the handler fails
+	// closed with a structured error when it is absent.
+	outcome OutcomeService
 	// cookieSecure sets the Secure attribute on the session cookie. Defaults to
 	// true (production posture); local plain-HTTP dev may disable it.
 	cookieSecure CookieSecure

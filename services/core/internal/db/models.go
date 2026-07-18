@@ -20,6 +20,31 @@ type AccountCostPolicy struct {
 	UpdatedAt                  time.Time
 }
 
+type AccountWriteVerification struct {
+	MarketplaceAccountID     uuid.UUID
+	RegionCode               string
+	Verified                 bool
+	ParameterContractVersion int64
+	VerifiedAt               pgtype.Timestamptz
+	Note                     string
+	UpdatedAt                time.Time
+}
+
+type ActionExecution struct {
+	ID              uuid.UUID
+	CardID          uuid.UUID
+	ActionID        uuid.UUID
+	IdempotencyKey  string
+	Mode            string
+	ExternalState   string
+	ExternalRef     string
+	RequestPayload  []byte
+	ResponsePayload []byte
+	ReconciledAt    pgtype.Timestamptz
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
 type ApprovalCard struct {
 	ID                   uuid.UUID
 	RecommendationID     uuid.UUID
@@ -49,6 +74,26 @@ type ApprovalCardState struct {
 	ToState     string
 	Reason      string
 	OccurredAt  time.Time
+}
+
+type AuditRecord struct {
+	ID                   uuid.UUID
+	ActionID             uuid.UUID
+	CardID               pgtype.UUID
+	MarketplaceAccountID pgtype.UUID
+	EventType            string
+	Actor                string
+	ActorRole            string
+	Surface              string
+	ContextVersion       int64
+	ParameterVersion     int64
+	PolicyVersion        int64
+	CostProfileVersion   int64
+	EvidenceVersions     []byte
+	CardSnapshot         []byte
+	Detail               []byte
+	TerminalState        string
+	OccurredAt           time.Time
 }
 
 type CatalogPayloadSnapshot struct {
@@ -406,6 +451,23 @@ type Organization struct {
 	UpdatedAt time.Time
 }
 
+type OutcomeResult struct {
+	ID         uuid.UUID
+	WindowID   uuid.UUID
+	Result     string
+	Confidence string
+	ComputedAt time.Time
+}
+
+type OutcomeWindow struct {
+	ID        uuid.UUID
+	ActionID  uuid.UUID
+	CardID    pgtype.UUID
+	OpenedAt  time.Time
+	ClosesAt  time.Time
+	CreatedAt time.Time
+}
+
 type OwnedOffer struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -431,6 +493,23 @@ type Product struct {
 	ProductUrl           string
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
+}
+
+type RecommendOnlyAction struct {
+	ID                    uuid.UUID
+	CardID                uuid.UUID
+	ActionID              uuid.UUID
+	MarketplaceAccountID  uuid.UUID
+	VariantID             uuid.UUID
+	ApprovedPriceMantissa int64
+	ApprovedPriceCurrency string
+	ApprovedPriceExponent int16
+	ApprovedAt            time.Time
+	WindowExpiresAt       time.Time
+	State                 string
+	MatchedObservationAt  pgtype.Timestamptz
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 type Recommendation struct {

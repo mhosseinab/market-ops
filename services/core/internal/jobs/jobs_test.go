@@ -40,7 +40,7 @@ func TestHeartbeatEnqueueAndWork(t *testing.T) {
 	ctx := context.Background()
 	pool := newPool(t)
 
-	workers, err := jobs.NewWorkers(nil)
+	workers, err := jobs.NewWorkers(nil, jobs.ExecutionRunners{})
 	if err != nil {
 		t.Fatalf("workers: %v", err)
 	}

@@ -19,6 +19,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -32,20 +33,54 @@ import (
 // the single handle callers use to enqueue work and that main() starts/stops.
 type Client = river.Client[pgx.Tx]
 
+// ExecutionRunners bundles the periodic execution-plane passes the platform
+// schedules (EXE-005 recommend-only matching and OUT-001 outcome close). Both are
+// injected as RunOnceFuncs so the jobs package depends on no domain package. A nil
+// runner registers a no-op worker (fail closed).
+type ExecutionRunners struct {
+	RecommendOnlyMatch RunOnceFunc
+	OutcomeClose       RunOnceFunc
+}
+
 // NewWorkers builds the worker registry for the core binary. Every worker the
-// platform runs is registered here; domain steps add their workers alongside
-// the heartbeat as they land.
-func NewWorkers(logger *slog.Logger) (*river.Workers, error) {
+// platform runs is registered here: the heartbeat plus the periodic execution-plane
+// passes (recommend-only matcher, outcome closer).
+func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, error) {
 	workers := river.NewWorkers()
 	if err := river.AddWorkerSafely(workers, &HeartbeatWorker{logger: logger}); err != nil {
 		return nil, fmt.Errorf("jobs: register heartbeat worker: %w", err)
 	}
+	if err := river.AddWorkerSafely(workers, NewRecommendOnlyMatchWorker(runners.RecommendOnlyMatch, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register recommend-only worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewOutcomeCloseWorker(runners.OutcomeClose, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register outcome-close worker: %w", err)
+	}
 	return workers, nil
+}
+
+// periodicJobs schedules the execution-plane passes. Recommend-only matching runs
+// often (a 24h window, so minute-granularity is ample); outcome close runs hourly
+// (seven-day windows). RunOnStart makes them fire once at boot too.
+func periodicJobs() []*river.PeriodicJob {
+	return []*river.PeriodicJob{
+		river.NewPeriodicJob(
+			river.PeriodicInterval(5*time.Minute),
+			func() (river.JobArgs, *river.InsertOpts) { return RecommendOnlyMatchArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return OutcomeCloseArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+	}
 }
 
 // NewClient constructs the River client over a pgx pool with the default queue
 // enabled. A nil workers registry yields an insert-only client (no queues), for
-// callers that enqueue but do not process.
+// callers that enqueue but do not process. When workers are present the periodic
+// execution-plane jobs are scheduled.
 func NewClient(pool *pgxpool.Pool, workers *river.Workers, logger *slog.Logger) (*Client, error) {
 	cfg := &river.Config{Logger: logger}
 	if workers != nil {
@@ -53,6 +88,7 @@ func NewClient(pool *pgxpool.Pool, workers *river.Workers, logger *slog.Logger) 
 		cfg.Queues = map[string]river.QueueConfig{
 			river.QueueDefault: {MaxWorkers: 5},
 		}
+		cfg.PeriodicJobs = periodicJobs()
 	}
 	client, err := river.NewClient(riverpgxv5.New(pool), cfg)
 	if err != nil {

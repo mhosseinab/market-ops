@@ -130,13 +130,16 @@ type ConfirmResult struct {
 	Reason InvalidationReason
 }
 
-// Confirm activates the structured control against the freshly-resolved CURRENT
-// binding at instant now (§8.4 AwaitingConfirmation → {Approved | Expired |
-// Invalidated}). It is the ONLY approval path and it ALWAYS re-checks every bound
-// version (APR-001 / EXE-001 groundwork): any change routes to Invalidated, an
-// elapsed expiry routes to Expired, and only a fully-matching, live control
-// reaches Approved. Free text cannot reach Approved because it cannot present a
-// matching binding.
+// Confirm activates the structured control against the CURRENT binding the
+// SERVICE resolved at instant now (§8.4 AwaitingConfirmation → {Approved |
+// Expired | Invalidated}). The caller is responsible for building `current` from
+// the authoritative store, NOT from a client-echoed request body; this method
+// only compares the card's bound versions against whatever `current` it is given.
+// It is the ONLY approval path and it ALWAYS re-checks every bound version
+// (APR-001 / EXE-001 groundwork): any change routes to Invalidated, an elapsed
+// expiry routes to Expired, and only a fully-matching, live control reaches
+// Approved. Free text cannot reach Approved because it cannot present a matching
+// binding.
 func (c Card) Confirm(current Binding, now time.Time) (ConfirmResult, error) {
 	if c.Simulation {
 		return ConfirmResult{}, ErrNoControl
@@ -190,10 +193,24 @@ func (c Card) EditPrice(newPrice money.Money, nextCardVersion, nextParameterVers
 	}
 }
 
-// BeginRevalidation advances Approved → Revalidating (§8.4). The subsequent
-// Revalidating → Executing boundary is stubbed closed until S18 (see Revalidate).
+// BeginRevalidation advances Approved → Revalidating (§8.4). The Revalidating →
+// Executing boundary itself is crossed by Revalidate, which re-checks the bound
+// versions against the SERVER-resolved current binding.
 func (c Card) BeginRevalidation() (Card, error) {
 	return c.withState(StateRevalidating)
+}
+
+// RevalidationResult is the outcome of the Revalidating → {Executing |
+// Invalidated} boundary (§8.4). OK is true only when every bound version still
+// matches the server-resolved current binding and the control has not expired, in
+// which case Card is in Executing and the idempotent write may proceed. Otherwise
+// Card is Invalidated and Reason names the changed dimension (an elapsed expiry
+// routes to Invalidated with ReasonExpired — §8.4 has no Revalidating → Expired
+// edge; a lapsed control at execution time recalculates from Draft).
+type RevalidationResult struct {
+	Card   Card
+	Reason InvalidationReason
+	OK     bool
 }
 
 // Invalidate advances a live control-bearing or revalidating card to Invalidated
@@ -210,12 +227,44 @@ func (c Card) Recalculate() (Card, error) {
 	return c.withState(StateDraft)
 }
 
-// Revalidate is the EXPLICITLY-PLANNED S18 STUB for the Revalidating → Executing
-// boundary. It fails CLOSED: it always returns ErrExecutionUnavailable, so an
-// Approved+Revalidating card can NEVER cross into Executing in this step. S18
-// (execution/reconciliation/audit) replaces this with the idempotent writer keyed
-// by Control.IdempotencyKey. A negative test asserts this stub blocks and names
-// S18 as the completing step.
-func (c Card) Revalidate(_ Binding, _ time.Time) (Card, error) {
-	return Card{}, ErrExecutionUnavailable
+// Revalidate crosses the Revalidating → Executing boundary (§8.4, EXE-001). It
+// re-checks the card's bound versions against `current` — the binding the SERVICE
+// resolved SERVER-SIDE from the authoritative store at instant now, NEVER a
+// client-echoed binding from the request body. On a full match it advances the
+// card to Executing (OK true) so the idempotent writer keyed by
+// Control.IdempotencyKey may proceed; on ANY changed dimension or an elapsed
+// expiry it advances to Invalidated (OK false, Reason names the change) and no
+// write occurs. It is valid only from Revalidating and only for a non-simulation
+// card. This is the version-binding subset of the EXE-001 gate matrix; the
+// external gates (identity, money unit, boundary, permission, JIT freshness) are
+// checked by internal/execution before this boundary is reached.
+//
+// INTENTIONAL SPLIT (do not diverge): the production write path in
+// internal/execution runs the version comparison through EvaluateGates +
+// AdvanceTx (so the external gates and the persisted state advance stay in one
+// place), rather than calling this method. This method is the DOMAIN-level
+// statement of the same version-binding rule, used by the approval unit tests. The
+// two MUST agree; TestRevalidate_AgreesWithBindingValidation asserts that the
+// pass/fail decision here matches Binding.ValidateAgainst (which EvaluateGates also
+// consults), so the split can never silently drift.
+func (c Card) Revalidate(current Binding, now time.Time) (RevalidationResult, error) {
+	if c.Simulation {
+		return RevalidationResult{}, ErrNoControl
+	}
+	if c.State != StateRevalidating {
+		return RevalidationResult{}, ErrNoControl
+	}
+	reason := c.Binding.ValidateAgainst(current, now)
+	if reason == ReasonNone {
+		next, err := c.withState(StateExecuting)
+		if err != nil {
+			return RevalidationResult{}, err
+		}
+		return RevalidationResult{Card: next, Reason: ReasonNone, OK: true}, nil
+	}
+	next, err := c.withState(StateInvalidated)
+	if err != nil {
+		return RevalidationResult{}, err
+	}
+	return RevalidationResult{Card: next, Reason: reason, OK: false}, nil
 }

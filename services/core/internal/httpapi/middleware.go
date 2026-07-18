@@ -106,6 +106,13 @@ var routePolicies = []routePolicy{
 	// Bulk approval confirmation bound to one selection-set version (CHAT-052) —
 	// L4 price.approve.
 	{http.MethodPost, "/approvals/bulk/confirm", kindProtected, perm.ActionApprovePriceChange},
+	// Execute + retry an approved action (EXE-001..005) — L4 price.execute.
+	// Owner/Operator only; the machine principal is never granted this action.
+	{http.MethodPost, "/actions/execute", kindProtected, perm.ActionExecutePriceChange},
+	{http.MethodPost, "/actions/retry", kindProtected, perm.ActionExecutePriceChange},
+	// Execution + outcome reads (CHAT-073, OUT-001) — L1 read.approvals.
+	{http.MethodGet, "/actions/execution", kindProtected, perm.ActionReadApprovals},
+	{http.MethodGet, "/outcomes", kindProtected, perm.ActionReadApprovals},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.

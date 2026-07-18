@@ -1,7 +1,6 @@
 package approval
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -194,11 +193,10 @@ func TestEditPrice_MintsNewVersionAndInvalidatesOldControl(t *testing.T) {
 	}
 }
 
-// TestRevalidate_S18StubBlocks is the explicitly-planned S18 stub assertion: the
-// Revalidating → Executing boundary fails CLOSED here and names S18.
-func TestRevalidate_S18StubBlocks(t *testing.T) {
-	now := time.Now()
-	binding := liveBinding(t, now)
+// revalidatingCard advances a fresh card through Confirm → BeginRevalidation so a
+// Revalidate test starts from the Revalidating state.
+func revalidatingCard(t *testing.T, now time.Time, binding Binding) Card {
+	t.Helper()
 	opened := openCard(t, now, binding, false)
 	res, err := opened.Confirm(binding, now)
 	if err != nil {
@@ -211,10 +209,119 @@ func TestRevalidate_S18StubBlocks(t *testing.T) {
 	if reval.State != StateRevalidating {
 		t.Fatalf("state = %s; want revalidating", reval.State)
 	}
-	if _, err := reval.Revalidate(binding, now); err != ErrExecutionUnavailable {
-		t.Fatalf("Revalidate stub: want ErrExecutionUnavailable, got %v", err)
+	return reval
+}
+
+// TestRevalidate_AdvancesToExecuting_WhenBindingMatches proves the §8.4
+// Revalidating → Executing boundary is CROSSED (S18) only when every bound
+// version still matches the server-resolved current binding.
+func TestRevalidate_AdvancesToExecuting_WhenBindingMatches(t *testing.T) {
+	now := time.Now()
+	binding := liveBinding(t, now)
+	reval := revalidatingCard(t, now, binding)
+
+	res, err := reval.Revalidate(binding, now)
+	if err != nil {
+		t.Fatalf("Revalidate: %v", err)
 	}
-	if !strings.Contains(ErrExecutionUnavailable.Error(), "S18") {
-		t.Fatalf("execution-unavailable error must name S18: %q", ErrExecutionUnavailable.Error())
+	if !res.OK || res.Card.State != StateExecuting {
+		t.Fatalf("state = %s ok=%v; want executing ok=true", res.Card.State, res.OK)
+	}
+	if res.Reason != ReasonNone {
+		t.Fatalf("reason = %q; want none", res.Reason)
+	}
+}
+
+// TestRevalidate_InvalidatesOnAnyBoundChange proves the §8.4 Revalidating →
+// Invalidated edge fires (no write) for a change in ANY bound dimension detected
+// at the execution gate (EXE-001), including an elapsed expiry (routes to
+// Invalidated, not Expired — there is no Revalidating → Expired edge).
+func TestRevalidate_InvalidatesOnAnyBoundChange(t *testing.T) {
+	now := time.Now()
+	base := liveBinding(t, now)
+
+	cases := map[string]struct {
+		mutate func(b Binding) Binding
+		at     time.Time
+		reason InvalidationReason
+	}{
+		"parameter": {func(b Binding) Binding { b.ParameterVersion = int64(999); return b }, now, ReasonParameterChanged},
+		"context":   {func(b Binding) Binding { b.ContextVersion = int64(999); return b }, now, ReasonContextChanged},
+		"policy":    {func(b Binding) Binding { b.PolicyVersion = int64(999); return b }, now, ReasonPolicyChanged},
+		"cost":      {func(b Binding) Binding { b.CostProfileVersion = int64(999); return b }, now, ReasonCostChanged},
+		"expiry":    {func(b Binding) Binding { return b }, base.Expiry, ReasonExpired},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			reval := revalidatingCard(t, now, base)
+			current := tc.mutate(base)
+			res, err := reval.Revalidate(current, tc.at)
+			if err != nil {
+				t.Fatalf("Revalidate: %v", err)
+			}
+			if res.OK || res.Card.State != StateInvalidated {
+				t.Fatalf("state = %s ok=%v; want invalidated ok=false", res.Card.State, res.OK)
+			}
+			if res.Reason != tc.reason {
+				t.Fatalf("reason = %q; want %q", res.Reason, tc.reason)
+			}
+		})
+	}
+}
+
+// TestRevalidate_AgreesWithBindingValidation pins the INTENTIONAL split (N6):
+// Card.Revalidate's advance decision (Executing vs Invalidated) must always match
+// the version-binding verdict of Binding.ValidateAgainst — the same verdict the
+// production EvaluateGates path consults. If the two ever disagree, the parallel
+// implementations have drifted and this test fails.
+func TestRevalidate_AgreesWithBindingValidation(t *testing.T) {
+	now := time.Now()
+	base := liveBinding(t, now)
+
+	type scenario struct {
+		mutate func(b Binding) Binding
+		at     time.Time
+	}
+	scenarios := map[string]scenario{
+		"match":     {func(b Binding) Binding { return b }, now},
+		"parameter": {func(b Binding) Binding { b.ParameterVersion = int64(42); return b }, now},
+		"context":   {func(b Binding) Binding { b.ContextVersion = int64(42); return b }, now},
+		"policy":    {func(b Binding) Binding { b.PolicyVersion = int64(42); return b }, now},
+		"cost":      {func(b Binding) Binding { b.CostProfileVersion = int64(42); return b }, now},
+		"expired":   {func(b Binding) Binding { return b }, base.Expiry},
+	}
+	for name, sc := range scenarios {
+		t.Run(name, func(t *testing.T) {
+			reval := revalidatingCard(t, now, base)
+			current := sc.mutate(base)
+
+			bindingOK := reval.Binding.ValidateAgainst(current, sc.at) == ReasonNone
+			res, err := reval.Revalidate(current, sc.at)
+			if err != nil {
+				t.Fatalf("Revalidate: %v", err)
+			}
+			if res.OK != bindingOK {
+				t.Fatalf("Revalidate OK=%v disagrees with Binding.ValidateAgainst OK=%v", res.OK, bindingOK)
+			}
+			wantState := StateInvalidated
+			if bindingOK {
+				wantState = StateExecuting
+			}
+			if res.Card.State != wantState {
+				t.Fatalf("state = %s; want %s", res.Card.State, wantState)
+			}
+		})
+	}
+}
+
+// TestRevalidate_RejectsNonRevalidatingCard fails closed: Revalidate is valid only
+// from Revalidating; a card in any other state (or a simulation) returns
+// ErrNoControl and cannot reach Executing.
+func TestRevalidate_RejectsNonRevalidatingCard(t *testing.T) {
+	now := time.Now()
+	binding := liveBinding(t, now)
+	opened := openCard(t, now, binding, false) // AwaitingConfirmation, not Revalidating
+	if _, err := opened.Revalidate(binding, now); err != ErrNoControl {
+		t.Fatalf("Revalidate on AwaitingConfirmation: want ErrNoControl, got %v", err)
 	}
 }

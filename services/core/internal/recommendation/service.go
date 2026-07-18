@@ -100,16 +100,33 @@ func (s *Service) CreateCard(ctx context.Context, recID, lineage uuid.UUID, acco
 // that already left `from` matches no row and the whole advance is rejected —
 // no blind overwrite, and the history stays a faithful, append-only lifecycle.
 func (s *Service) Advance(ctx context.Context, cardID uuid.UUID, from, to approval.State, reason string) (db.ApprovalCard, error) {
-	if err := approval.Advance(from, to); err != nil {
-		return db.ApprovalCard{}, ErrRejectedTransition
-	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return db.ApprovalCard{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	q := db.New(tx)
 
+	card, err := s.AdvanceTx(ctx, db.New(tx), cardID, from, to, reason)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.ApprovalCard{}, err
+	}
+	return card, nil
+}
+
+// AdvanceTx performs the §8.4 move on the caller's transaction q. It applies the
+// FROM-guarded UPDATE + the append-only history row on q, so the state change can
+// commit ATOMICALLY with whatever else the caller writes in the same transaction
+// (e.g. the AUD-001 audit record — a state transition never commits without its
+// audit row). It does NOT begin or commit a transaction. An undefined move or a
+// stale from-state both fail closed with ErrRejectedTransition and leave q for the
+// caller to roll back.
+func (s *Service) AdvanceTx(ctx context.Context, q *db.Queries, cardID uuid.UUID, from, to approval.State, reason string) (db.ApprovalCard, error) {
+	if err := approval.Advance(from, to); err != nil {
+		return db.ApprovalCard{}, ErrRejectedTransition
+	}
 	card, err := q.AdvanceApprovalCardState(ctx, db.AdvanceApprovalCardStateParams{
 		ID:      cardID,
 		State:   string(from),
@@ -128,9 +145,6 @@ func (s *Service) Advance(ctx context.Context, cardID uuid.UUID, from, to approv
 		ToState:     string(to),
 		Reason:      reason,
 	}); err != nil {
-		return db.ApprovalCard{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return db.ApprovalCard{}, err
 	}
 	return card, nil

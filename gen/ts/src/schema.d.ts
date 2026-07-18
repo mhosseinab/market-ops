@@ -624,6 +624,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/actions/execute": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revalidate and execute an approved action (EXE-001/002/005).
+         * @description The L4 execution path (PRD §7.5). It re-resolves the current binding SERVER-SIDE and runs the EXE-001 nine-gate revalidation matrix (identity, current price, costs, money unit, boundary, evidence/JIT, guardrails, permission, expiry); an injected change in ANY gate prevents the write and invalidates the card. When gates pass AND writes are enabled (a Supported price_write capability AND the S35 region write-verification flag), it performs EXACTLY ONE idempotent write keyed by the card's stable idempotency key (EXE-002) and reports the external state (EXE-003). When writes are OFF (default), NOTHING is written: the action is tracked recommend-only (EXE-005). It is idempotent: a repeat call replays the recorded result with zero additional external writes.
+         */
+        post: operations["executeAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/actions/retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry an eligible failed action (EXE-003, CHAT-074).
+         * @description Gates a retry. It REJECTS an action whose execution is still Pending Reconciliation — an unknown result must reconcile first, never be retried (EXE-003 / CHAT-074). A definitively Failed action is retry-eligible (§16 "retry only eligible reconciled failures"); the actual re-write proceeds only through a fresh approved action (rollback/retry is never an automatic inverse or duplicate write, EXE-004).
+         */
+        post: operations["retryAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/actions/execution": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an action's execution record (CHAT-073).
+         * @description Returns the single execution record for an action (EXE-002): its mode, external state (EXE-003), external ref, and reconciliation instant. This is a read; it never writes or advances state.
+         */
+        get: operations["getActionExecution"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get an action's seven-day outcome window and result (OUT-001).
+         * @description Returns the OUT-001 seven-day outcome window for a reconciled action and, once the window has closed, its §15.3 result and confidence (or Not Measurable when the required evidence is absent). This is a read.
+         */
+        get: operations["getOutcome"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1567,6 +1647,92 @@ export interface components {
             currentVersion?: number;
             valid: boolean;
             executionPending: boolean;
+        };
+        /**
+         * @description The execution mode of a completed Execute call. `write` attempted a real external write (write enabled); `recommend_only` tracked the approved action for external matching because writes are OFF (EXE-005).
+         * @enum {string}
+         */
+        ExecutionMode: "write" | "recommend_only";
+        /**
+         * @description The EXE-003 external result of a write. `pending_reconciliation` is the fail-closed state for an UNKNOWN result — never inferred as success/failure.
+         * @enum {string}
+         */
+        ExecutionExternalState: "accepted" | "rejected" | "pending_reconciliation" | "failed";
+        /**
+         * @description One of the nine EXE-001 revalidation gates. Present on a blocked result to name the gate that prevented the write.
+         * @enum {string}
+         */
+        ExecutionGate: "" | "identity" | "current_price" | "costs" | "money_unit" | "boundary" | "evidence_jit" | "guardrails" | "permission" | "expiry";
+        /**
+         * @description The EXE-005 recommend-only tracking state.
+         * @enum {string}
+         */
+        RecommendOnlyState: "" | "awaiting_external_execution" | "externally_executed" | "lapsed";
+        /** @description Request to revalidate and execute an approved card (§7.5). */
+        ExecuteActionRequest: {
+            /** Format: uuid */
+            cardId: string;
+        };
+        /** @description The outcome of an Execute call. `blocked` is true when an EXE-001 gate prevented the write (`failedGate` names it). For a write, `externalState` is the EXE-003 result and `didWrite` reports whether THIS call performed the single external write. For recommend-only, `recommendOnlyState` is set. */
+        ExecuteActionResult: {
+            /** Format: uuid */
+            actionId: string;
+            /** Format: uuid */
+            cardId: string;
+            mode: components["schemas"]["ExecutionMode"];
+            blocked: boolean;
+            failedGate?: components["schemas"]["ExecutionGate"];
+            externalState?: components["schemas"]["ExecutionExternalState"];
+            recommendOnlyState?: components["schemas"]["RecommendOnlyState"];
+            /** @description True only when THIS call performed the single external write (EXE-002). */
+            didWrite: boolean;
+        };
+        /** @description Request to retry an eligible failed action (EXE-003 / CHAT-074). */
+        RetryActionRequest: {
+            /** Format: uuid */
+            actionId: string;
+        };
+        /** @description The retry eligibility outcome. `eligible` is true only for a definitively Failed action; a Pending Reconciliation action is refused with an error. */
+        RetryActionResult: {
+            /** Format: uuid */
+            actionId: string;
+            eligible: boolean;
+            state?: components["schemas"]["ExecutionExternalState"];
+        };
+        /** @description The single EXE-002 execution record for an action (CHAT-073 read). */
+        ActionExecutionView: {
+            /** Format: uuid */
+            actionId: string;
+            /** Format: uuid */
+            cardId: string;
+            mode: components["schemas"]["ExecutionMode"];
+            externalState: components["schemas"]["ExecutionExternalState"];
+            /** @description The marketplace's handle for the write (e.g. batch id), when present. */
+            externalRef?: string;
+            /**
+             * Format: date-time
+             * @description When the external result was reconciled to a terminal state.
+             */
+            reconciledAt?: string;
+        };
+        /** @description The §15.3 result + confidence of a closed outcome window. */
+        OutcomeResultView: {
+            /** @enum {string} */
+            result: "positive" | "negative" | "neutral" | "inconclusive" | "not_measurable";
+            /** @enum {string} */
+            confidence: "high" | "medium" | "low";
+            /** Format: date-time */
+            computedAt?: string;
+        };
+        /** @description An action's OUT-001 seven-day outcome window and, once closed, its §15.3 result. `result` is absent while the window is still open. */
+        OutcomeView: {
+            /** Format: uuid */
+            actionId: string;
+            /** Format: date-time */
+            openedAt: string;
+            /** Format: date-time */
+            closesAt: string;
+            result?: components["schemas"]["OutcomeResultView"];
         };
     };
     responses: never;
@@ -2595,6 +2761,135 @@ export interface operations {
                 };
             };
             /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    executeAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ExecuteActionRequest"];
+            };
+        };
+        responses: {
+            /** @description The execution outcome (write, blocked, or recommend-only). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecuteActionResult"];
+                };
+            };
+            /** @description Unexpected error (including a card that is not approved). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    retryAction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetryActionRequest"];
+            };
+        };
+        responses: {
+            /** @description The retry eligibility outcome. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryActionResult"];
+                };
+            };
+            /** @description Unexpected error (including an unreconciled or terminal action). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getActionExecution: {
+        parameters: {
+            query: {
+                /** @description The action id (the card's bound action). */
+                actionId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The execution record. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActionExecutionView"];
+                };
+            };
+            /** @description Unexpected error (including no execution record). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getOutcome: {
+        parameters: {
+            query: {
+                actionId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The outcome window and (when closed) its result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OutcomeView"];
+                };
+            };
+            /** @description Unexpected error (including no outcome window). */
             default: {
                 headers: {
                     [name: string]: unknown;
