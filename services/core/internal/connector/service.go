@@ -140,16 +140,48 @@ func (s *Service) Status(ctx context.Context, accountID uuid.UUID) (Snapshot, er
 		return Snapshot{}, fmt.Errorf("connector: load connection: %w", err)
 	}
 
+	reg, err := s.capabilityRegistry(ctx, accountID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snap.Registry = reg
+	return snap, nil
+}
+
+// capabilityRegistry loads the account's persisted capability snapshot into a
+// fail-closed Registry. Any capability missing from storage stays Unknown
+// (NewRegistryFrom preserves the Unknown default), so an absent row can never
+// read as Supported. It is the single loader shared by Status and every
+// capability guard, so there is exactly one path from persisted state to an
+// enforcement decision (§15.2 capability-gating invariant).
+func (s *Service) capabilityRegistry(ctx context.Context, accountID uuid.UUID) (*Registry, error) {
 	rows, err := s.store.ListConnectorCapabilities(ctx, accountID)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("connector: list capabilities: %w", err)
+		return nil, fmt.Errorf("connector: list capabilities: %w", err)
 	}
 	statuses := make([]CapabilityStatus, 0, len(rows))
 	for _, r := range rows {
 		statuses = append(statuses, capabilityStatusFrom(r))
 	}
-	snap.Registry = NewRegistryFrom(statuses)
-	return snap, nil
+	return NewRegistryFrom(statuses), nil
+}
+
+// requireCapabilities loads the persisted registry and requires every listed
+// capability to be Supported. It is the centralized enforcement point dependent
+// operations call BEFORE decrypting a token or making any DK request: a single
+// non-Supported capability returns ErrCapabilityNotSupported and the operation
+// fails closed (§15.2, "Unknown never enables dependent logic").
+func (s *Service) requireCapabilities(ctx context.Context, accountID uuid.UUID, caps ...Capability) error {
+	reg, err := s.capabilityRegistry(ctx, accountID)
+	if err != nil {
+		return err
+	}
+	for _, c := range caps {
+		if err := reg.Require(c); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) persistTokens(ctx context.Context, accountID uuid.UUID, tokens TokenSet) error {
