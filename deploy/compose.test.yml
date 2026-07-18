@@ -151,8 +151,20 @@ services:
       # 32-byte key, base64 — test-only, never the production secret
       # (dk-p0-monorepo.md §8: secrets are environment-only, never defaulted).
       CONNECTOR_ENCRYPTION_KEY: mkvAIfG+QW29zMxw5iflub+g59dAj3Dh1KAAcoglQHM=
-      SEEDE2E_EMAIL: owner@dev.local
-      SEEDE2E_PASSWORD: ${SEEDE2E_PASSWORD:-s32-integration-owner-password}
+      # SEEDE2E_EMAIL/SEEDE2E_PASSWORD are REQUIRED here (no in-YAML default):
+      # the caller (tools/integration/run_all.sh /
+      # run_killswitch_journey.sh) is the ONE place that establishes these
+      # values (its own `${VAR:-default}`) and is also what the host-side
+      # replay/Playwright login with — those two host consumers read the
+      # SAME exported variables, never a second, independently-defaulted
+      # copy. A second default HERE would silently diverge from the host's
+      # value if the export ever failed to reach `docker compose up` (e.g.
+      # a future refactor of the caller), producing exactly the confusing
+      # "seede2e succeeded, but every login gets 401" failure this fixes —
+      # `${VAR:?...}` instead fails compose interpolation loudly, up front,
+      # rather than silently minting a mismatched credential.
+      SEEDE2E_EMAIL: ${SEEDE2E_EMAIL:?SEEDE2E_EMAIL must be exported by the caller (see tools/integration/run_all.sh) before compose up}
+      SEEDE2E_PASSWORD: ${SEEDE2E_PASSWORD:?SEEDE2E_PASSWORD must be exported by the caller (see tools/integration/run_all.sh) before compose up}
     volumes:
       - ../:/src
     depends_on:

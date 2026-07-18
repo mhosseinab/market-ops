@@ -20,6 +20,22 @@ cd "$ROOT_DIR"
 
 COMPOSE="docker compose -f deploy/compose.test.yml"
 export SEEDE2E_PASSWORD="${SEEDE2E_PASSWORD:-s32-integration-owner-password}"
+export SEEDE2E_EMAIL="${SEEDE2E_EMAIL:-owner@dev.local}"
+
+# Belt-and-suspenders second propagation path for the SAME owner credential
+# (see run_all.sh's matching comment): deploy/compose.test.yml's `core`
+# service REQUIRES SEEDE2E_EMAIL/SEEDE2E_PASSWORD — writing deploy/.env makes
+# Compose's own project-directory .env auto-load a second, independent path
+# to the exact same value this script's Playwright invocation below sends as
+# E2E_EMAIL/E2E_PASSWORD. Idempotent/safe to overwrite if run_all.sh already
+# wrote the same values.
+printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > deploy/.env
+# Only remove deploy/.env here when run standalone (not via run_all.sh, which
+# owns its own cleanup trap and would otherwise have this delete the file out
+# from under its later scenarios 2-5 `compose up`).
+if [ -z "${MARKET_OPS_RUN_ALL_ORCHESTRATED:-}" ]; then
+  trap 'rm -f deploy/.env' EXIT
+fi
 
 echo "== build the web bundle (default /api base — routes through the Caddy test ingress) =="
 (cd apps/web && pnpm run build)
@@ -42,7 +58,7 @@ echo "== run the full Playwright journey set against the single Caddy origin =="
   cd apps/web
   E2E_WEB_URL="http://localhost:8888" \
   VITE_GATEWAY_BASE_URL="http://localhost:8888/api" \
-  E2E_EMAIL="${SEEDE2E_EMAIL:-owner@dev.local}" \
+  E2E_EMAIL="$SEEDE2E_EMAIL" \
   E2E_PASSWORD="$SEEDE2E_PASSWORD" \
   pnpm exec playwright test
 )
