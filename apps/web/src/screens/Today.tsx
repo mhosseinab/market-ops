@@ -95,7 +95,7 @@ export function Today() {
               />
             ) : null}
 
-            <section className="panel">
+            <section className="panel" data-testid="today-queue">
               <div className="panel__head">
                 <h2 className="panel__title">{t("today.queue.title")}</h2>
               </div>

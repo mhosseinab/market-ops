@@ -35,8 +35,13 @@ test("bulk: preview → mutate set → invalidated → re-preview → structured
 
   const preview = page.getByTestId("bulk-preview");
   if (!(await preview.count())) {
-    // No candidates reachable from this surface; the structured empty state renders.
-    await expect(page.locator(".screen-empty, .view-loading, .view-error")).toBeVisible();
+    // No candidates reachable from this surface; the structured EMPTY state
+    // renders. `.view-error` is deliberately EXCLUDED from this assertion — an
+    // error state is a real failure, not a legitimate "no candidates" outcome,
+    // and must not be able to satisfy this branch (a data-fetch regression must
+    // fail this test, not silently pass as "the empty state rendered").
+    await expect(page.locator(".view-error")).toHaveCount(0);
+    await expect(page.locator(".screen-empty, .view-loading")).toBeVisible();
     return;
   }
 

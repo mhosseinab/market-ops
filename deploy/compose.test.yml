@@ -1,0 +1,183 @@
+# deploy/compose.test.yml — S32 cross-plane integration stack
+# (dk-p0-implementation-steps.md §"S32 — Cross-plane integration + adversarial +
+# kill-switch suites"; dk-p0-monorepo.md §3 `task test:integration`).
+#
+# This is NOT the dev stack (compose.dev.yml, which adds the full observability
+# trio + Spotlight + Mailpit for local development) and NOT the production
+# topology (compose.prod.yml, S34 — distroless core image, uv --no-editable llm
+# image, Caddy TLS ingress, WAL-backed Postgres). It is the minimal set of REAL
+# services the five S32 system suites need: Postgres, mockdk (the offline DK
+# stand-in, PRD §12.5/§19.3 — never live DK), core, the LLM plane, the built
+# web static bundle, and a Caddy ingress that unifies web+gateway under ONE
+# origin exactly like production (§19.3) — required so the browser-driven
+# Playwright suites see real cross-plane data instead of a same-origin-only
+# false green (see docs/implementation/dk-p0-progress.md's S32 entry for why
+# this matters: without a shared origin, ALL cross-origin fetches from the web
+# app fail closed to their generic error state, which several existing journey
+# assertions are loose enough to still call "passing").
+#
+# core and the LLM plane run via `go run` / `uv run uvicorn` against the
+# mounted repo (mirroring compose.dev.yml's mockdk pattern) rather than
+# pre-built images — the distroless/uv production images are a deliberately
+# separate S34 concern (dk-p0-monorepo.md §8).
+
+name: market-ops-test
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: market_ops
+      POSTGRES_PASSWORD: market_ops
+      POSTGRES_DB: market_ops
+    ports:
+      # Exposed so the Go system-test suites (§16 edge cases, permission
+      # parity, EXE-002 duplicate-write — internal/httpapi/system_*_test.go)
+      # can run directly on the CI runner against this same Postgres, exactly
+      # like the existing `go` CI job's scratch postgres:18 service container.
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U market_ops -d market_ops -h 127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  mockdk:
+    image: golang:1.25
+    working_dir: /src/services/core
+    command: ["go", "run", "./cmd/mockdk"]
+    environment:
+      GOWORK: "off"
+      GOFLAGS: "-mod=mod"
+      MOCKDK_ADDR: ":8090"
+    volumes:
+      - ../:/src
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # --- one-shot schema migration + dev seed --------------------------------
+  # `cmd/core` only runs River's OWN internal schema (jobs.Migrate) — it never
+  # applies the goose app-schema migrations (0001..0017). Without this step
+  # `core`/`cmd/seede2e` hit a schema-less DB ("relation users does not
+  # exist") and the whole stack never becomes healthy. Mirrors exactly what
+  # the existing `go` CI job does before `go:test` (task db:reset: goose up +
+  # river migrate-up + fixtures/dev_seed.sql), against THIS compose network's
+  # postgres host instead of localhost.
+  migrate:
+    image: golang:1.25
+    working_dir: /src
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-client curl >/dev/null &&
+        mkdir -p /tmp/gobin && export PATH="/tmp/gobin:$$PATH" && export GOBIN=/tmp/gobin &&
+        go install github.com/pressly/goose/v3/cmd/goose@v3.27.2 &&
+        go install github.com/riverqueue/river/cmd/river@v0.40.0 &&
+        curl -sSL https://taskfile.dev/install.sh | sh -s -- -b /tmp/gobin &&
+        task db:reset
+    environment:
+      GOWORK: "off"
+      GOFLAGS: "-mod=mod"
+      DATABASE_URL: postgres://market_ops:market_ops@postgres:5432/market_ops?sslmode=disable
+    volumes:
+      - ../:/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # --- LLM plane (services/llm), mock provider by default — no paid calls. ---
+  llm:
+    image: python:3.13-slim
+    working_dir: /src/services/llm
+    # uv installs into the mounted repo's cache; the image only needs uv itself.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        pip install --quiet --no-cache-dir uv &&
+        uv sync --frozen --group dev &&
+        uv run uvicorn llm.asgi:app --app-dir src --host 0.0.0.0 --port 8100
+    environment:
+      # LLM_* config is entirely environment-driven (services/llm/src/llm/config.py);
+      # unset ⇒ the mock provider (LLM_PROVIDER_KIND defaults to mock), matching
+      # every other offline suite in this repo (§12.5 — paid provider calls are a
+      # gated, human-authorized S35 operation, never CI).
+      HOME: /tmp
+    volumes:
+      - ../:/src
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/healthz')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # --- Go core (gateway + domain), run against the mounted repo. -------------
+  core:
+    image: golang:1.25
+    working_dir: /src/services/core
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        go run ./cmd/seede2e &&
+        go run ./cmd/core
+    environment:
+      GOWORK: "off"
+      GOFLAGS: "-mod=mod"
+      APP_ENV: dev # Secure cookie flag off — matches the un-TLS'd test ingress.
+      HTTP_ADDR: ":8080"
+      DATABASE_URL: postgres://market_ops:market_ops@postgres:5432/market_ops?sslmode=disable
+      DK_API_BASE_URL: http://mockdk:8090
+      LLM_SERVICE_URL: http://llm:8100
+      LLM_GATEWAY_TOKEN: s32-integration-gateway-token
+      # 32-byte key, base64 — test-only, never the production secret
+      # (dk-p0-monorepo.md §8: secrets are environment-only, never defaulted).
+      CONNECTOR_ENCRYPTION_KEY: mkvAIfG+QW29zMxw5iflub+g59dAj3Dh1KAAcoglQHM=
+      SEEDE2E_EMAIL: owner@dev.local
+      SEEDE2E_PASSWORD: ${SEEDE2E_PASSWORD:-s32-integration-owner-password}
+    volumes:
+      - ../:/src
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+      mockdk:
+        condition: service_started
+      llm:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  # --- web static bundle, built by the CI job before `docker compose up` -----
+  # (the ts CI job already proves `task ts:build`; this stage only SERVES the
+  # already-built dist/ so the compose stack does not duplicate the Node build).
+  web:
+    image: python:3.13-slim
+    working_dir: /src/apps/web/dist
+    command: ["python3", "-m", "http.server", "4173"]
+    volumes:
+      - ../:/src
+    depends_on:
+      core:
+        condition: service_healthy
+
+  # --- Caddy ingress: ONE origin for web + gateway, mirroring §19.3's prod
+  # topology (single VPS, Caddy ingress) — never Kubernetes, never a second
+  # bespoke proxy technology.
+  caddy:
+    image: caddy:2.9-alpine
+    volumes:
+      - ./caddy/Caddyfile.integration:/etc/caddy/Caddyfile:ro
+    ports:
+      - "8888:8888"
+    depends_on:
+      core:
+        condition: service_healthy
+      web:
+        condition: service_started

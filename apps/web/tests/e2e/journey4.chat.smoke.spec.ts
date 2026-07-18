@@ -40,6 +40,16 @@ test("free-text 'approve it' changes nothing; screens-only fallback stays functi
   page,
 }) => {
   await page.goto("/today");
+  // CHAT-009's core claim is that a STRUCTURED, DATA-BEARING screen keeps
+  // working while chat is unavailable — not merely that a generic wrapper div
+  // is present (which is also true in the error state). Today performs a real
+  // gateway fetch, so this is the genuine "still functioning" proof: a real
+  // loaded/empty marker, and explicitly NOT the generic error wrapper.
+  await expect(page.locator(".view-error")).toHaveCount(0);
+  await expect(
+    page.getByTestId("today-no-action").or(page.getByTestId("today-queue")),
+  ).toBeVisible();
+
   const toggle = page.locator("button.top-bar__control").last();
   await toggle.click();
   await expect(page.getByTestId("chat-dock")).toBeVisible();
@@ -58,7 +68,12 @@ test("free-text 'approve it' changes nothing; screens-only fallback stays functi
   await expect(composerConfirm).toHaveCount(0);
 
   // Screens-only fallback: the structured Actions surface remains fully usable
-  // regardless of chat availability (CHAT-009).
+  // regardless of chat availability (CHAT-009). Bare `/actions` (no deep-linked
+  // action id) renders ViewState's `isEmpty` branch WITHOUT issuing a fetch
+  // (Actions.tsx: `isEmpty={!actionId || !exec}`) — so the Today assertion
+  // above is this test's real network-backed CHAT-009 proof; this final check
+  // still pins that /actions itself never falls into the generic error wrapper.
   await page.goto("/actions");
   await expect(page.locator(".screen").first()).toBeVisible();
+  await expect(page.locator(".view-error")).toHaveCount(0);
 });

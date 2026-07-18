@@ -1,0 +1,23 @@
+# deploy/caddy/Caddyfile.integration — S32 integration-stack ingress.
+#
+# Unifies the web static bundle and the core gateway under ONE origin (plain
+# HTTP :8888 — no TLS; that is compose.prod.yml's S34 concern), exactly the
+# shape production uses (PRD §19.3: single VPS, Caddy ingress) so the browser
+# never makes a cross-origin request. /api/* is stripped and proxied to core;
+# everything else falls through to the web static server.
+#
+# apps/web/src/app/query.ts defaults GATEWAY_BASE_URL to "/api" absent
+# VITE_GATEWAY_BASE_URL, so the web bundle built for this stack should be built
+# WITHOUT that override (task ts:build already does this) to pick up the
+# default and route through this ingress.
+
+:8888 {
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy core:8080
+	}
+
+	handle {
+		reverse_proxy web:4173
+	}
+}

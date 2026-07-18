@@ -29,8 +29,14 @@ test.beforeEach(async ({ context }) => {
 
 test("today → event → recommendation renders the structured approval surface", async ({ page }) => {
   await page.goto("/today");
-  // Today renders its structured surface (ranked queue or the no-action state).
-  await expect(page.locator(".screen")).toBeVisible();
+  // Today renders a GENUINE loaded/empty state (never the generic error wrapper,
+  // which the bare `.screen` root class alone cannot distinguish — a data-fetch
+  // regression must fail this assertion, not silently degrade to a "passing"
+  // error screen).
+  await expect(page.locator(".view-error")).toHaveCount(0);
+  await expect(
+    page.getByTestId("today-no-action").or(page.getByTestId("today-queue")),
+  ).toBeVisible();
 
   // If a ranked, actionable event is present, follow it into the event detail.
   const review = page.getByTestId("event-review").first();
@@ -44,13 +50,19 @@ test("today → event → recommendation renders the structured approval surface
     await page.goto("/recommendation");
   }
 
-  // The recommendation surface always renders a structured state (an approval
-  // card, or the no-card fallback) — screens-only fallback (CHAT-009).
-  await expect(page.locator(".screen")).toBeVisible();
+  // The recommendation surface always renders a structured, non-error state (an
+  // approval card, or the no-card fallback) — screens-only fallback (CHAT-009).
+  // `.screen-empty` here is Recommendation.tsx's own ternary INSIDE ViewState's
+  // children slot, which only renders when ViewState's `error` prop is false —
+  // so this pair is already error-exclusive; the explicit `.view-error` count
+  // check pins that invariant rather than relying on it implicitly.
+  await expect(page.locator(".view-error")).toHaveCount(0);
+  await expect(page.getByTestId("approval-card").or(page.locator(".screen-empty"))).toBeVisible();
 });
 
 test("the approval control is a structured button, never a free-text confirm", async ({ page }) => {
   await page.goto("/recommendation");
+  await expect(page.locator(".view-error")).toHaveCount(0);
 
   const card = page.getByTestId("approval-card");
   if (await card.count()) {
@@ -66,7 +78,8 @@ test("the approval control is a structured button, never a free-text confirm", a
       await expect(page.getByTestId("recommend-only")).toBeVisible();
     }
   } else {
-    // No live card reachable from this surface; the no-card fallback still renders.
+    // No live card reachable from this surface; the no-card fallback still
+    // renders (NOT the generic error wrapper — asserted above).
     await expect(page.locator(".screen-empty")).toBeVisible();
   }
 });
