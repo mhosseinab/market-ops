@@ -96,7 +96,7 @@ services:
     command:
       - |
         pip install --quiet --no-cache-dir uv &&
-        uv sync --frozen --group dev &&
+        uv sync --frozen &&
         uv run uvicorn llm.asgi:app --app-dir src --host 0.0.0.0 --port 8100
     environment:
       # LLM_* config is entirely environment-driven (services/llm/src/llm/config.py);
