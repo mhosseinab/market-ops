@@ -1,3 +1,4 @@
+import { FRESHNESS_AGING_MAX_MINUTES, FRESHNESS_FRESH_MAX_MINUTES } from "@market-ops/locale";
 import { useMemo } from "react";
 import { useLocale, useT } from "../app/i18n";
 import { AppLink } from "../components/AppLink";
@@ -41,14 +42,17 @@ function FreshnessCell({ offer, now }: { offer?: ObservedOffer; now: number }) {
   return <FreshnessPill ageMinutes={ageMinutes(offer.capturedAt, now)} />;
 }
 
+// Thresholds are the SHARED constants (packages/locale) — the SAME ones
+// FreshnessPill and the extension overlay's freshnessBucketOf compare
+// against, so this bucketing can never silently drift from either.
 function freshnessSegments(offers: readonly ObservedOffer[], now: number): CoverageSegment[] {
   let fresh = 0;
   let aging = 0;
   let stale = 0;
   for (const o of offers) {
     const age = ageMinutes(o.capturedAt, now);
-    if (age <= 60) fresh += 1;
-    else if (age <= 360) aging += 1;
+    if (age <= FRESHNESS_FRESH_MAX_MINUTES) fresh += 1;
+    else if (age <= FRESHNESS_AGING_MAX_MINUTES) aging += 1;
     else stale += 1;
   }
   return [

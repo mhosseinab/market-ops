@@ -82,11 +82,9 @@ export interface OverlayActions {
 }
 
 // Everything renderOverlay needs that is NOT server data: the current
-// capability (action-button gating) and the product context (deep link,
-// EXT-008).
+// capability, for action-button gating.
 export interface OverlayContext {
   readonly capability: Capability;
-  readonly nativeProductId: number;
 }
 
 // mountOverlay creates (or reuses) the single overlay host + shadow root.
@@ -175,13 +173,19 @@ export function renderOverlay(
       ),
     );
     panel.appendChild(renderHistory(root.ownerDocument, state.history));
-  }
 
-  // EXT-008: a real, user-clicked deep link to the product's context in the
-  // web app (ordinary browser navigation via <a target="_blank">, never an
-  // automated navigation of the CURRENT Digikala page — EXT-010 governs the
-  // content script's effect on digikala.com, not opening a new tab).
-  panel.appendChild(deepLinkChip(root.ownerDocument, context.nativeProductId));
+    // EXT-008: a real, user-clicked deep link to the product's context in the
+    // web app (ordinary browser navigation via <a target="_blank">, never an
+    // automated navigation of the CURRENT Digikala page — EXT-010 governs the
+    // content script's effect on digikala.com, not opening a new tab). Built
+    // ONLY from `view.variantId` — the gateway-generated STRING id
+    // ProductDetail.tsx actually resolves against — NEVER from DK's own
+    // numeric nativeProductId/nativeVariantId (a different id space; a link
+    // built from the wrong space would silently resolve nothing). Rendered
+    // ONLY once we have the real variantId (state.kind === "ready") — no
+    // link is ever shown built from a guessed/wrong id.
+    panel.appendChild(deepLinkChip(root.ownerDocument, view.variantId));
+  }
 
   // Action buttons are gated on capability === "ready" — Unknown (never
   // paired) / disabled / revoked renders NEITHER button (PRD §4.6: Unknown
@@ -255,10 +259,10 @@ function renderHistory(doc: Document, history: HistorySeries | null): HTMLElemen
   return wrap;
 }
 
-function deepLinkChip(doc: Document, nativeProductId: number): HTMLAnchorElement {
+function deepLinkChip(doc: Document, variantId: string): HTMLAnchorElement {
   const a = doc.createElement("a");
   a.dataset.role = "deep-link-product";
-  a.href = buildDeepLink({ kind: "product", id: String(nativeProductId) });
+  a.href = buildDeepLink({ kind: "product", id: variantId });
   a.target = "_blank";
   a.rel = "noopener noreferrer";
   a.textContent = t("ext.deepLink.product");

@@ -90,7 +90,7 @@ async function refreshOverlay(): Promise<void> {
   const stateResp = await send({ kind: "getState" });
   const capability: Capability =
     stateResp.ok && "state" in stateResp ? stateResp.state.capability : "unknown";
-  const context = { capability, nativeProductId: product.nativeProductId };
+  const context = { capability };
   renderOverlay(root, { kind: "pending" }, overlayActions(product), context);
   const resp = await send({ kind: "getOverlayView", product });
   const state: OverlayState = resp.ok && "overlay" in resp ? resp.overlay : { kind: "unavailable" };

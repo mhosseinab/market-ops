@@ -70,6 +70,11 @@ describe("overlay-data — EXT-005 rendered, never recomputed", () => {
     expect(view.lowestQualifying?.value).toBe("120000");
   });
 
+  it("carries the gateway-generated variantId (distinct from nativeVariantId/nativeProductId) — EXT-008 deep-link id space", () => {
+    const view = deriveOverlayView(target(), [], NOW);
+    expect(view.variantId).toBe("variant-1");
+  });
+
   it("excludes offers for OTHER targets and offers that have disappeared (endedAt set)", () => {
     const offers = [
       offer({ id: "1", targetId: "other-target" }),
@@ -98,6 +103,7 @@ describe("overlay-data — EXT-005 rendered, never recomputed", () => {
     const view = deriveOverlayView(target(), [], NOW);
     expect(view).toEqual({
       targetId: "t1",
+      variantId: "variant-1",
       offerCount: 0,
       sellerCount: 0,
       lowestQualifying: null,

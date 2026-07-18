@@ -22,6 +22,14 @@ export type FreshnessBucket = "fresh" | "aging" | "stale";
 
 export interface OverlayView {
   readonly targetId: string;
+  // The gateway-generated STRING id (ObservationTarget.variantId) — the SAME
+  // id apps/web/src/screens/ProductDetail.tsx resolves against
+  // (`targetsQuery.data.items.find(tg => tg.variantId === variantId)`) and
+  // the id `/product?variantId=` deep links expect. This is DISTINCT from
+  // `nativeVariantId`/`nativeProductId` (DK's own numeric ids) — never
+  // interchange them (EXT-008: a deep link built from the wrong id space
+  // resolves nothing).
+  readonly variantId: string;
   readonly offerCount: number;
   readonly sellerCount: number;
   /** Raw evidence only — never a Money. Null when no in-stock/limited offer exists. */
@@ -65,6 +73,7 @@ export function deriveOverlayView(
 
   return {
     targetId: target.id,
+    variantId: target.variantId,
     offerCount: offers.length,
     sellerCount: sellerIds.size,
     lowestQualifying: lowest?.price ?? null,
