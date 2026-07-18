@@ -137,6 +137,16 @@ const (
 	// always L1 (§8.3); it exposes NO control by itself — the control is activated
 	// only through the L4 approve action, never by a read.
 	ActionReadApprovals Action = "read.approvals"
+	// ActionReadNotifications authorizes reading the in-app notification feed
+	// (NOT-001). It is an L1 read every authenticated role may perform on its own
+	// account; a notification exposes NO control (it is advisory), so it is never
+	// more than a read.
+	ActionReadNotifications Action = "read.notifications"
+	// ActionAckNotification authorizes marking one's own in-app notification read
+	// (NOT-001). Like session.logout it is a personal, non-commercial action, not a
+	// seller-configuration change: L1, every authenticated role. It advances only a
+	// bounded read-state projection — it never touches seller commercial state.
+	ActionAckNotification Action = "notification.ack"
 
 	// --- L2 reversible configuration ----------------------------------------
 	ActionConnectorConnect Action = "connector.connect"
@@ -224,6 +234,11 @@ var Matrix = []Rule{
 	// Approval card + history reads (§7.5 APR-001 / AUD-001) — L1 read, every role.
 	// A read never carries a control; approval is the separate L4 action.
 	{ActionReadApprovals, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	// Notification feed read + acknowledgement (NOT-001) — L1, every role. Both are
+	// personal, non-commercial actions on one's own account; ack advances only a
+	// bounded read-state projection and never carries a control.
+	{ActionReadNotifications, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
+	{ActionAckNotification, L1Read, allow(RoleOwner, RoleOperator, RoleInternal)},
 
 	// L2 reversible configuration. Account-lifecycle connector actions are
 	// account management — Owner only (PRD §2.2 "Connect account") — a valid

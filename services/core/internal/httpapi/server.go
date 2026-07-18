@@ -118,6 +118,13 @@ func WithBriefing(b BriefingService) Option {
 	return func(s *gatewayServer) { s.briefing = b }
 }
 
+// WithNotify injects the notification store backing the /notifications routes
+// (NOT-001). Without it those routes fail closed with a structured error, so no
+// notification feed or acknowledgement is served on an unwired notify plane.
+func WithNotify(n NotifyService) Option {
+	return func(s *gatewayServer) { s.notify = n }
+}
+
 // WithGatewayToken sets the read/Draft-only machine credential (LLM_GATEWAY_TOKEN)
 // the middleware matches to authenticate the machine principal on the Draft-only
 // routes and the machine read envelope (perm.GatewayCan). Empty ⇒ no machine

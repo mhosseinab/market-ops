@@ -55,6 +55,35 @@ type Config struct {
 	// envelope is enforced by perm.GatewayCan. Unset ⇒ the LLM plane cannot call
 	// back into read/Draft endpoints. A secret; never defaulted, never logged.
 	LLMGatewayToken string
+
+	// NotifySMTPAddr is the host:port of the SMTP server the daily email digest
+	// sends through (SMTP_ADDR; default localhost:1025 — mailpit in dev, §19.3).
+	NotifySMTPAddr string
+
+	// NotifyFromAddr is the digest From address (NOTIFY_FROM_ADDR). Unset ⇒ the
+	// daily digest job is NOT wired (a nil runner, no-op): the beta never sends
+	// mail without an explicitly configured sender. In-app notifications and the
+	// analytics pipe are unaffected.
+	NotifyFromAddr string
+
+	// AppBaseURL is the base URL the digest deep-links to the briefing from
+	// (APP_BASE_URL; default http://localhost:5173). The email LINKS to the
+	// briefing (§6.8); it never regenerates it.
+	AppBaseURL string
+
+	// NotifyLocale is the render locale for the email digest (NOTIFY_LOCALE;
+	// default fa-IR). Locale is DATA — the digest selects a pack by this string,
+	// never a code branch (LOC-001).
+	NotifyLocale string
+
+	// NotifyRegion is the region label stamped on analytics events emitted by core
+	// jobs (NOTIFY_REGION; default IR). Plain data — never branched on.
+	NotifyRegion string
+
+	// CurrencyContractVersion is the §18 currency-contract-version envelope field
+	// stamped on analytics events (CURRENCY_CONTRACT_VERSION; default v1). An
+	// opaque version string; never used in money arithmetic.
+	CurrencyContractVersion string
 }
 
 // SpotlightEnabled reports whether dev Spotlight wiring should be initialized.
@@ -92,6 +121,13 @@ func Load(getenv func(string) string) (*Config, error) {
 		ChatKillSwitchAccounts: splitList(getenv("CHAT_KILL_SWITCH_ACCOUNTS")),
 		LLMServiceBaseURL:      strings.TrimSpace(getenv("LLM_SERVICE_URL")),
 		LLMGatewayToken:        strings.TrimSpace(getenv("LLM_GATEWAY_TOKEN")),
+
+		NotifySMTPAddr:          r.optional("SMTP_ADDR", "localhost:1025"),
+		NotifyFromAddr:          strings.TrimSpace(getenv("NOTIFY_FROM_ADDR")),
+		AppBaseURL:              r.optional("APP_BASE_URL", "http://localhost:5173"),
+		NotifyLocale:            r.optional("NOTIFY_LOCALE", "fa-IR"),
+		NotifyRegion:            r.optional("NOTIFY_REGION", "IR"),
+		CurrencyContractVersion: r.optional("CURRENCY_CONTRACT_VERSION", "v1"),
 	}
 
 	if len(r.missing) > 0 {

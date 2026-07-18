@@ -10,12 +10,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/analytics"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
 	"github.com/mhosseinab/market-ops/services/core/internal/briefing"
 	"github.com/mhosseinab/market-ops/services/core/internal/config"
@@ -27,6 +29,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/httpapi"
 	"github.com/mhosseinab/market-ops/services/core/internal/jobs"
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
+	"github.com/mhosseinab/market-ops/services/core/internal/notify"
 	"github.com/mhosseinab/market-ops/services/core/internal/obs"
 	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
@@ -106,6 +109,10 @@ func run() error {
 	// A single pgx pool backs every DB-backed route. When DATABASE_URL is unset
 	// the server serves only public routes; nothing DB-backed is wired.
 	var serverOpts []httpapi.Option
+	// analyticsEmitter is the §18 pipe; digestSvc is the NOT-001 daily digest. Both
+	// are populated only when the DB is wired below.
+	var analyticsEmitter *analytics.Emitter
+	var digestSvc *notify.DigestService
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL != "" {
 		pool, err := pgxpool.New(ctx, dbURL)
@@ -165,6 +172,63 @@ func run() error {
 		serverOpts = append(serverOpts, httpapi.WithBriefing(briefingSvc))
 		logger.Info("briefing service wired")
 
+		// Wire the notification store (NOT-001) and the §18 analytics emitter. The
+		// store backs the /notifications read/ack routes; the emitter is the typed
+		// §18 pipe (families + §17.3 cost counters). Both are locale-neutral (LOC-001).
+		notifyStore := notify.NewStore(pool)
+		serverOpts = append(serverOpts, httpapi.WithNotify(notifyStore))
+		analyticsEmitter = analytics.NewEmitter(pool)
+		logger.Info("notification store + analytics emitter wired")
+
+		// The daily email digest (NOT-001) is wired ONLY when a From address is
+		// configured — the beta never sends mail without an explicit sender. It
+		// batches the day's NON-bypass notifications; execution/safety failures were
+		// delivered immediately (bypass). It LINKS to the briefing (§6.8). The job is
+		// idempotent per account business-day. Without a sender the runner is nil (a
+		// no-op worker); in-app notifications and analytics are unaffected.
+		if cfg.NotifyFromAddr != "" {
+			mailer := notify.NewSMTPMailer(cfg.NotifySMTPAddr, cfg.NotifyFromAddr)
+			base := cfg.AppBaseURL
+			resolver := notify.NewDBTargetResolver(pool, cfg.NotifyLocale, func(account uuid.UUID) string {
+				return base + "/briefing?account=" + account.String()
+			})
+			// The digest emits a §18 briefing-family event + a §17.3 briefing cost on
+			// the analytics pipe after each send (the digest reuses/links the daily
+			// briefing, §6.8 + §17.3 ladder step 2). Envelope fields are DATA from
+			// config; a lookup/emit hiccup is logged, never fatal (advisory pipe).
+			emitter := analyticsEmitter
+			digestSvc = notify.NewDigestService(pool, mailer, resolver).WithObserver(
+				func(ctx context.Context, account uuid.UUID, itemCount int) {
+					acct, err := queries.GetMarketplaceAccount(ctx, account)
+					if err != nil {
+						logger.WarnContext(ctx, "digest analytics: account lookup failed", "account", account.String(), "error", err.Error())
+						return
+					}
+					env := analytics.Envelope{
+						Organization:            acct.OrganizationID,
+						Account:                 account,
+						Entity:                  account,
+						Locale:                  cfg.NotifyLocale,
+						Region:                  cfg.NotifyRegion,
+						CurrencyContractVersion: cfg.CurrencyContractVersion,
+						SourceSurface:           "email_digest",
+						Timestamp:               time.Now().UTC(),
+					}
+					if err := emitter.Emit(ctx, analytics.Event{
+						Envelope: env, Family: analytics.FamilyBriefing, Name: "daily_digest_sent",
+						Attributes: map[string]string{"item_count": strconv.Itoa(itemCount)},
+					}); err != nil {
+						logger.WarnContext(ctx, "digest analytics: emit failed", "account", account.String(), "error", err.Error())
+					}
+					if err := emitter.RecordCost(ctx, env, analytics.CostBriefing, int64(itemCount)); err != nil {
+						logger.WarnContext(ctx, "digest analytics: cost failed", "account", account.String(), "error", err.Error())
+					}
+				})
+			logger.Info("daily email digest wired", "smtp_addr", cfg.NotifySMTPAddr)
+		} else {
+			logger.Warn("NOTIFY_FROM_ADDR unset; daily email digest job disabled (in-app notifications unaffected)")
+		}
+
 		// Wire the execution/reconciliation/outcome plane (EXE-001..005, AUD-001,
 		// OUT-001). Execution ships DARK: the DefaultResolver reports write
 		// enablement OFF (Unknown price_write capability AND the S35 region flag
@@ -194,6 +258,7 @@ func run() error {
 			},
 			OutcomeClose:     closer.RunOnce,
 			BriefingGenerate: briefingSvc.GenerateAll,
+			DigestGenerate:   digestRunner(digestSvc),
 		})
 		if jobsErr != nil {
 			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)
@@ -274,6 +339,16 @@ func buildConnector(
 	}
 	logger.Info("connector target", "dk_base_url", dkBase)
 	return connector.NewService(queries, cipher, dk), nil
+}
+
+// digestRunner adapts the daily-digest service to a jobs.RunOnceFunc. A nil
+// service (no configured sender) yields a nil runner, which registers a no-op
+// worker (fail closed) — the digest job never sends without an explicit sender.
+func digestRunner(svc *notify.DigestService) jobs.RunOnceFunc {
+	if svc == nil {
+		return nil
+	}
+	return svc.GenerateAll
 }
 
 // startJobPipeline ensures River's schema, registers the workers (heartbeat +

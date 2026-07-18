@@ -151,6 +151,10 @@ var routePolicies = []routePolicy{
 	// Daily briefing read (CHAT-010) — L1 read.events. A human session reads it;
 	// the machine principal also reads it via the GatewayCan(read.events) fallback.
 	{http.MethodGet, "/briefing", kindProtected, perm.ActionReadEvents},
+	// In-app notification feed read + acknowledgement (NOT-001) — L1, every role.
+	// Ack advances only a bounded read-state projection; neither carries a control.
+	{http.MethodGet, "/notifications", kindProtected, perm.ActionReadNotifications},
+	{http.MethodPost, "/notifications/ack", kindProtected, perm.ActionAckNotification},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.
