@@ -57,7 +57,7 @@ services:
       migrate:
         condition: service_completed_successfully
 
-  # --- one-shot schema migration + dev seed --------------------------------
+  # --- one-shot schema migration + dev seed + owner credential -------------
   # `cmd/core` only runs River's OWN internal schema (jobs.Migrate) — it never
   # applies the goose app-schema migrations (0001..0017). Without this step
   # `core`/`cmd/seede2e` hit a schema-less DB ("relation users does not
@@ -65,6 +65,22 @@ services:
   # the existing `go` CI job does before `go:test` (task db:reset: goose up +
   # river migrate-up + fixtures/dev_seed.sql), against THIS compose network's
   # postgres host instead of localhost.
+  #
+  # `cmd/seede2e` (which sets the ONE password `dev_seed.sql`'s owner@dev.local
+  # fixture never ships) runs HERE, in the SAME one-shot, immediately after
+  # `task db:reset` — not inside `core`'s command. `task db:reset` DROPS and
+  # recreates the schema (so it is NOT idempotent against an already-seeded
+  # DB: every re-run wipes any password seede2e previously set). `core`, once
+  # already running and healthy, is NOT recreated by a second `docker compose
+  # up` unless its own config changed — so if `migrate` re-runs (e.g. the S32
+  # kill-switch journey's `up`, then run_all.sh's own second `up` for
+  # scenarios 2-5) while `core` stays up from a prior boot, a seede2e step
+  # living inside `core`'s command would never re-fire, leaving the owner
+  # freshly-schema'd but password-less — the exact silent lifecycle race that
+  # produced a healthy stack with a 401 on every login. Folding db:reset and
+  # seede2e into ONE atomic one-shot means every schema reset is ALWAYS
+  # immediately followed by a password set, regardless of whether `core`
+  # itself gets recreated on that particular `up`.
   migrate:
     image: golang:1.25
     working_dir: /src
@@ -76,11 +92,19 @@ services:
         go install github.com/pressly/goose/v3/cmd/goose@v3.27.2 &&
         go install github.com/riverqueue/river/cmd/river@v0.40.0 &&
         curl -sSL https://taskfile.dev/install.sh | sh -s -- -b /tmp/gobin &&
-        task db:reset
+        task db:reset &&
+        (cd services/core && go run ./cmd/seede2e)
     environment:
       GOWORK: "off"
       GOFLAGS: "-mod=mod"
       DATABASE_URL: postgres://market_ops:market_ops@postgres:5432/market_ops?sslmode=disable
+      # Required (no in-YAML default) — same single-source-of-truth contract
+      # as before (task test:integration's seed-credential fix): the caller
+      # (run_all.sh / run_killswitch_journey.sh) is the ONE place a default
+      # is established; a propagation gap here must fail loud, not silently
+      # mint a mismatched/absent credential.
+      SEEDE2E_EMAIL: ${SEEDE2E_EMAIL:?SEEDE2E_EMAIL must be exported by the caller (see tools/integration/run_all.sh) before compose up}
+      SEEDE2E_PASSWORD: ${SEEDE2E_PASSWORD:?SEEDE2E_PASSWORD must be exported by the caller (see tools/integration/run_all.sh) before compose up}
     volumes:
       - ../:/src
     depends_on:
@@ -135,10 +159,11 @@ services:
     image: golang:1.25
     working_dir: /src/services/core
     entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        go run ./cmd/seede2e &&
-        go run ./cmd/core
+    # seede2e now runs inside `migrate` (see its comment above) — atomically
+    # with `task db:reset`, so it re-fires on EVERY schema reset regardless of
+    # whether this `core` container itself gets recreated on a given
+    # `docker compose up`. `core` only needs the gateway/domain process.
+    command: ["go", "run", "./cmd/core"]
     environment:
       GOWORK: "off"
       GOFLAGS: "-mod=mod"
@@ -151,20 +176,6 @@ services:
       # 32-byte key, base64 — test-only, never the production secret
       # (dk-p0-monorepo.md §8: secrets are environment-only, never defaulted).
       CONNECTOR_ENCRYPTION_KEY: mkvAIfG+QW29zMxw5iflub+g59dAj3Dh1KAAcoglQHM=
-      # SEEDE2E_EMAIL/SEEDE2E_PASSWORD are REQUIRED here (no in-YAML default):
-      # the caller (tools/integration/run_all.sh /
-      # run_killswitch_journey.sh) is the ONE place that establishes these
-      # values (its own `${VAR:-default}`) and is also what the host-side
-      # replay/Playwright login with — those two host consumers read the
-      # SAME exported variables, never a second, independently-defaulted
-      # copy. A second default HERE would silently diverge from the host's
-      # value if the export ever failed to reach `docker compose up` (e.g.
-      # a future refactor of the caller), producing exactly the confusing
-      # "seede2e succeeded, but every login gets 401" failure this fixes —
-      # `${VAR:?...}` instead fails compose interpolation loudly, up front,
-      # rather than silently minting a mismatched credential.
-      SEEDE2E_EMAIL: ${SEEDE2E_EMAIL:?SEEDE2E_EMAIL must be exported by the caller (see tools/integration/run_all.sh) before compose up}
-      SEEDE2E_PASSWORD: ${SEEDE2E_PASSWORD:?SEEDE2E_PASSWORD must be exported by the caller (see tools/integration/run_all.sh) before compose up}
     volumes:
       - ../:/src
     depends_on:

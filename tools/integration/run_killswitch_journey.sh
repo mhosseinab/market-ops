@@ -13,7 +13,7 @@
 # This script assumes docker compose is available (CI's integration job) and
 # is deliberately NOT part of `task ci:local` — it is the `task test:integration`
 # path, which per dk-p0-monorepo.md §7 runs on merges to dk-p0/main, not per-PR.
-set -euo pipefail
+set -uo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
@@ -23,46 +23,76 @@ export SEEDE2E_PASSWORD="${SEEDE2E_PASSWORD:-s32-integration-owner-password}"
 export SEEDE2E_EMAIL="${SEEDE2E_EMAIL:-owner@dev.local}"
 
 # Belt-and-suspenders second propagation path for the SAME owner credential
-# (see run_all.sh's matching comment): deploy/compose.test.yml's `core`
+# (see run_all.sh's matching comment): deploy/compose.test.yml's `migrate`
 # service REQUIRES SEEDE2E_EMAIL/SEEDE2E_PASSWORD — writing deploy/.env makes
 # Compose's own project-directory .env auto-load a second, independent path
 # to the exact same value this script's Playwright invocation below sends as
 # E2E_EMAIL/E2E_PASSWORD. Idempotent/safe to overwrite if run_all.sh already
 # wrote the same values.
 printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > deploy/.env
-# Only remove deploy/.env here when run standalone (not via run_all.sh, which
-# owns its own cleanup trap and would otherwise have this delete the file out
-# from under its later scenarios 2-5 `compose up`).
-if [ -z "${MARKET_OPS_RUN_ALL_ORCHESTRATED:-}" ]; then
-  trap 'rm -f deploy/.env' EXIT
-fi
+echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
+
+# Always tear the stack down on the way out (success OR failure) — a stack
+# left running after a failed journey here previously meant run_all.sh's
+# NEXT `compose up` (scenarios 2-5) reused an already-running `core` whose
+# `migrate` dependency was skipped on that second up, silently leaving the
+# owner without a freshly-set password (the S32 seed-lifecycle race). Tearing
+# down unconditionally means scenario 2 always starts from a clean,
+# freshly-migrated-and-seeded stack regardless of how scenario 1 ended.
+# deploy/.env is only removed here when run standalone — run_all.sh, when it
+# orchestrates this script, owns deploy/.env's lifecycle via its own trap and
+# still needs the file for its later `compose up`.
+cleanup() {
+  local exit_code=$?
+  if [ "$exit_code" -ne 0 ]; then
+    echo "== kill-switch journey failed (exit=$exit_code); dumping core/migrate logs for diagnosis =="
+    $COMPOSE logs core migrate || true
+    echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
+  fi
+  $COMPOSE down -v >/dev/null 2>&1 || true
+  if [ -z "${MARKET_OPS_RUN_ALL_ORCHESTRATED:-}" ]; then
+    rm -f deploy/.env
+  fi
+  return "$exit_code"
+}
+trap cleanup EXIT
 
 echo "== build the web bundle (default /api base — routes through the Caddy test ingress) =="
-(cd apps/web && pnpm run build)
+if ! (cd apps/web && pnpm run build); then
+  echo "== web bundle build failed =="
+  exit 1
+fi
 
 echo "== bring up the integration stack =="
 if ! $COMPOSE up -d --wait postgres mockdk llm core web caddy; then
-  echo "== compose up --wait failed; dumping llm/core/mockdk logs for diagnosis =="
-  $COMPOSE logs llm core mockdk || true
+  echo "== compose up --wait failed; dumping llm/core/mockdk/migrate logs for diagnosis =="
+  $COMPOSE logs llm core mockdk migrate || true
   exit 1
 fi
 
 echo "== STOP the LLM plane container (the actual kill-switch condition) =="
-$COMPOSE stop llm
+if ! $COMPOSE stop llm; then
+  echo "== compose stop llm failed =="
+  exit 1
+fi
 
 echo "== confirm /chat fails closed while screens stay up =="
-curl -sf http://localhost:8888/api/healthz >/dev/null
+if ! curl -sf http://localhost:8888/api/healthz >/dev/null; then
+  echo "== /api/healthz check failed =="
+  exit 1
+fi
 
 echo "== run the full Playwright journey set against the single Caddy origin =="
-(
+if ! (
   cd apps/web
   E2E_WEB_URL="http://localhost:8888" \
   VITE_GATEWAY_BASE_URL="http://localhost:8888/api" \
   E2E_EMAIL="$SEEDE2E_EMAIL" \
   E2E_PASSWORD="$SEEDE2E_PASSWORD" \
   pnpm exec playwright test
-)
+); then
+  echo "== Playwright journey run failed =="
+  exit 1
+fi
 
 echo "== kill-switch journey: ALL Playwright journeys passed with the LLM plane stopped =="
-
-$COMPOSE down -v

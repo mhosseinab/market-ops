@@ -63,8 +63,8 @@ fi
 # --- bring the stack back up (with the LLM plane LIVE) for scenarios 2-5 ---
 echo "### bringing the stack up (LLM plane live) for scenarios 2-5 ###"
 if ! $COMPOSE up -d --wait postgres mockdk llm core web caddy; then
-  echo "== compose up --wait failed; dumping llm/core/mockdk logs for diagnosis =="
-  $COMPOSE logs llm core mockdk || true
+  echo "== compose up --wait failed; dumping llm/core/mockdk/migrate logs for diagnosis =="
+  $COMPOSE logs llm core mockdk migrate || true
   report "2. adversarial containment replay (CHAT-041/045)" "FAIL"
   report "3. §16 edge-case fixtures" "FAIL"
   report "4. permission parity (CHAT-064)" "FAIL"
@@ -93,6 +93,9 @@ if uv run --group dev python3 tools/integration/replay_adversarial.py \
     --report /tmp/s32_adversarial_report.json; then
   report "2. adversarial containment replay (CHAT-041/045)" "PASS"
 else
+  echo "== adversarial replay failed; dumping core/migrate logs for diagnosis =="
+  $COMPOSE logs core migrate || true
+  echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
   report "2. adversarial containment replay (CHAT-041/045)" "FAIL"
 fi
 
