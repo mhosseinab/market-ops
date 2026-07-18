@@ -125,6 +125,15 @@ func WithNotify(n NotifyService) Option {
 	return func(s *gatewayServer) { s.notify = n }
 }
 
+// WithPairing injects the extension-pairing service backing the /ext/pairing/*
+// routes and the capture-credential authentication on /observation/capture (PRD
+// §14 EXT-001). Without it those routes fail closed with a structured error, and
+// no capture credential can authenticate — a capture upload then requires a human
+// session, so an unpaired/unwired plane never silently accepts extension traffic.
+func WithPairing(p PairingService) Option {
+	return func(s *gatewayServer) { s.pairing = p }
+}
+
 // WithGatewayToken sets the read/Draft-only machine credential (LLM_GATEWAY_TOKEN)
 // the middleware matches to authenticate the machine principal on the Draft-only
 // routes and the machine read envelope (perm.GatewayCan). Empty ⇒ no machine
@@ -152,7 +161,7 @@ func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option)
 	// configured, additionally authorizes the read/Draft-only machine principal
 	// through perm.GatewayCan — never an approve/execute action.
 	if gs.auth != nil {
-		handler = newAuthMiddleware(gs.auth, gs.gatewayToken).wrap(handler)
+		handler = newAuthMiddleware(gs.auth, gs.gatewayToken, gs.pairing).wrap(handler)
 	}
 
 	// RED/latency + trace-context extraction is the OUTERMOST layer so it times

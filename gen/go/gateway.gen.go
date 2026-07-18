@@ -1946,6 +1946,38 @@ type OutcomeView struct {
 	Result *OutcomeResultView `json:"result,omitempty"`
 }
 
+// PairingClaimRequest The pairing code the extension exchanges for a capture credential.
+type PairingClaimRequest struct {
+	Code string `json:"code"`
+}
+
+// PairingCode A short-lived, single-use extension pairing code (EXT-001), minted by a logged-in human and displayed for entry into the extension. It is bound to one marketplace account and expires quickly.
+type PairingCode struct {
+	// Code The one-time pairing code to enter in the extension.
+	Code string `json:"code"`
+
+	// ExpiresAt Absolute expiry; a code at/after this instant fails closed.
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// MarketplaceAccountId The marketplace account the resulting credential is scoped to.
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+}
+
+// PairingCredential A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY /observation/capture and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value.
+type PairingCredential struct {
+	// Credential The raw capture credential; presented as a Bearer on uploads.
+	Credential string `json:"credential"`
+
+	// CredentialId Stable id of the credential record (for revocation/audit).
+	CredentialId openapi_types.UUID `json:"credentialId"`
+
+	// ExpiresAt Absolute expiry; an upload at/after this instant fails closed.
+	ExpiresAt time.Time `json:"expiresAt"`
+
+	// MarketplaceAccountId The marketplace account this credential is scoped to.
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+}
+
 // PolicyBlocker One typed reason a policy stage prevented a proposal (in policy order).
 type PolicyBlocker struct {
 	// Code Stable, machine-readable reason a policy stage blocked. Free text lives only in a blocker's message and carries no authority (§8).
@@ -2336,6 +2368,9 @@ type EnterSingleCostJSONRequestBody = SingleCostEntryRequest
 // RecordEventRelevanceJSONRequestBody defines body for RecordEventRelevance for application/json ContentType.
 type RecordEventRelevanceJSONRequestBody = EventRelevanceRequest
 
+// ClaimPairingCodeJSONRequestBody defines body for ClaimPairingCode for application/json ContentType.
+type ClaimPairingCodeJSONRequestBody = PairingClaimRequest
+
 // ConfirmIdentityJSONRequestBody defines body for ConfirmIdentity for application/json ContentType.
 type ConfirmIdentityJSONRequestBody = IdentityDecisionRequest
 
@@ -2437,6 +2472,15 @@ type ServerInterface interface {
 	// RecordEventRelevance Record relevance feedback on a market event.
 	// (POST /events/relevance)
 	RecordEventRelevance(w http.ResponseWriter, r *http.Request)
+	// ClaimPairingCode Exchange a pairing code for a capture credential (EXT-001).
+	// (POST /ext/pairing/claim)
+	ClaimPairingCode(w http.ResponseWriter, r *http.Request)
+	// CreatePairingCode Mint a short-lived extension pairing code (EXT-001).
+	// (POST /ext/pairing/code)
+	CreatePairingCode(w http.ResponseWriter, r *http.Request)
+	// RevokePairing Revoke a paired extension's capture credential (EXT-001).
+	// (POST /ext/pairing/revoke)
+	RevokePairing(w http.ResponseWriter, r *http.Request)
 	// GetHealthz Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(w http.ResponseWriter, r *http.Request)
@@ -3065,6 +3109,48 @@ func (siw *ServerInterfaceWrapper) RecordEventRelevance(w http.ResponseWriter, r
 	handler.ServeHTTP(w, r)
 }
 
+// ClaimPairingCode operation middleware
+func (siw *ServerInterfaceWrapper) ClaimPairingCode(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ClaimPairingCode(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreatePairingCode operation middleware
+func (siw *ServerInterfaceWrapper) CreatePairingCode(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreatePairingCode(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// RevokePairing operation middleware
+func (siw *ServerInterfaceWrapper) RevokePairing(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.RevokePairing(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // GetHealthz operation middleware
 func (siw *ServerInterfaceWrapper) GetHealthz(w http.ResponseWriter, r *http.Request) {
 
@@ -3544,6 +3630,9 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/observed-offers", wrapper.ListObservedOffers)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/observations", wrapper.ListObservations)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/observation/capture", wrapper.UploadCapture)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ext/pairing/code", wrapper.CreatePairingCode)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ext/pairing/claim", wrapper.ClaimPairingCode)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ext/pairing/revoke", wrapper.RevokePairing)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/cost/import/preview", wrapper.PreviewCostImport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/import", wrapper.GetCostImportPreview)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/cost/import/commit", wrapper.CommitCostImport)
@@ -4688,6 +4777,129 @@ func (response RecordEventRelevancedefaultJSONResponse) VisitRecordEventRelevanc
 	return err
 }
 
+type ClaimPairingCodeRequestObject struct {
+	Body *ClaimPairingCodeJSONRequestBody
+}
+
+type ClaimPairingCodeResponseObject interface {
+	VisitClaimPairingCodeResponse(w http.ResponseWriter) error
+}
+
+type ClaimPairingCode200JSONResponse PairingCredential
+
+func (response ClaimPairingCode200JSONResponse) VisitClaimPairingCodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClaimPairingCode401JSONResponse ErrorEnvelope
+
+func (response ClaimPairingCode401JSONResponse) VisitClaimPairingCodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ClaimPairingCodedefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ClaimPairingCodedefaultJSONResponse) VisitClaimPairingCodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreatePairingCodeRequestObject struct {
+}
+
+type CreatePairingCodeResponseObject interface {
+	VisitCreatePairingCodeResponse(w http.ResponseWriter) error
+}
+
+type CreatePairingCode201JSONResponse PairingCode
+
+func (response CreatePairingCode201JSONResponse) VisitCreatePairingCodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(201)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreatePairingCodedefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response CreatePairingCodedefaultJSONResponse) VisitCreatePairingCodeResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type RevokePairingRequestObject struct {
+}
+
+type RevokePairingResponseObject interface {
+	VisitRevokePairingResponse(w http.ResponseWriter) error
+}
+
+type RevokePairing204Response struct {
+}
+
+func (response RevokePairing204Response) VisitRevokePairingResponse(w http.ResponseWriter) error {
+	w.WriteHeader(204)
+	return nil
+}
+
+type RevokePairingdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response RevokePairingdefaultJSONResponse) VisitRevokePairingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type GetHealthzRequestObject struct {
 }
 
@@ -5316,6 +5528,15 @@ type StrictServerInterface interface {
 	// RecordEventRelevance Record relevance feedback on a market event.
 	// (POST /events/relevance)
 	RecordEventRelevance(ctx context.Context, request RecordEventRelevanceRequestObject) (RecordEventRelevanceResponseObject, error)
+	// ClaimPairingCode Exchange a pairing code for a capture credential (EXT-001).
+	// (POST /ext/pairing/claim)
+	ClaimPairingCode(ctx context.Context, request ClaimPairingCodeRequestObject) (ClaimPairingCodeResponseObject, error)
+	// CreatePairingCode Mint a short-lived extension pairing code (EXT-001).
+	// (POST /ext/pairing/code)
+	CreatePairingCode(ctx context.Context, request CreatePairingCodeRequestObject) (CreatePairingCodeResponseObject, error)
+	// RevokePairing Revoke a paired extension's capture credential (EXT-001).
+	// (POST /ext/pairing/revoke)
+	RevokePairing(ctx context.Context, request RevokePairingRequestObject) (RevokePairingResponseObject, error)
 	// GetHealthz Liveness probe with build identity.
 	// (GET /healthz)
 	GetHealthz(ctx context.Context, request GetHealthzRequestObject) (GetHealthzResponseObject, error)
@@ -6170,6 +6391,85 @@ func (sh *strictHandler) RecordEventRelevance(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RecordEventRelevanceResponseObject); ok {
 		if err := validResponse.VisitRecordEventRelevanceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ClaimPairingCode operation middleware
+func (sh *strictHandler) ClaimPairingCode(w http.ResponseWriter, r *http.Request) {
+	var request ClaimPairingCodeRequestObject
+
+	var body ClaimPairingCodeJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ClaimPairingCode(ctx, request.(ClaimPairingCodeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ClaimPairingCode")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ClaimPairingCodeResponseObject); ok {
+		if err := validResponse.VisitClaimPairingCodeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreatePairingCode operation middleware
+func (sh *strictHandler) CreatePairingCode(w http.ResponseWriter, r *http.Request) {
+	var request CreatePairingCodeRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreatePairingCode(ctx, request.(CreatePairingCodeRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreatePairingCode")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreatePairingCodeResponseObject); ok {
+		if err := validResponse.VisitCreatePairingCodeResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// RevokePairing operation middleware
+func (sh *strictHandler) RevokePairing(w http.ResponseWriter, r *http.Request) {
+	var request RevokePairingRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.RevokePairing(ctx, request.(RevokePairingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "RevokePairing")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(RevokePairingResponseObject); ok {
+		if err := validResponse.VisitRevokePairingResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

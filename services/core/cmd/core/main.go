@@ -31,7 +31,9 @@ import (
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
 	"github.com/mhosseinab/market-ops/services/core/internal/notify"
 	"github.com/mhosseinab/market-ops/services/core/internal/obs"
+	"github.com/mhosseinab/market-ops/services/core/internal/observation"
 	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
+	"github.com/mhosseinab/market-ops/services/core/internal/pairing"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
@@ -179,6 +181,17 @@ func run() error {
 		serverOpts = append(serverOpts, httpapi.WithNotify(notifyStore))
 		analyticsEmitter = analytics.NewEmitter(pool)
 		logger.Info("notification store + analytics emitter wired")
+
+		// Wire the observation store (PRD §7.3 OBS-*) so the Route B capture-upload
+		// ingestion and the observed-offer/evidence reads are served. Ingestion is
+		// server-authoritative: the extension can never self-certify quality/route.
+		serverOpts = append(serverOpts, httpapi.WithObservation(observation.NewService(pool)))
+		// Wire the extension-pairing plane (PRD §14 EXT-001): short-lived pairing
+		// codes exchanged for SCOPED capture credentials, plus the capture-credential
+		// authentication on /observation/capture and the EXT-009 revocation path. The
+		// extension never receives a seller-API token.
+		serverOpts = append(serverOpts, httpapi.WithPairing(pairing.NewService(queries)))
+		logger.Info("observation store + extension pairing wired")
 
 		// The daily email digest (NOT-001) is wired ONLY when a From address is
 		// configured — the beta never sends mail without an explicit sender. It

@@ -158,7 +158,13 @@ const (
 	// ingestion contract (PRD §7.3 OBS-005/OBS-008, §10.1). It ingests corroborating
 	// observation evidence — a reversible data task within the L2 baseline
 	// {Owner, Operator}; the machine gateway/Internal principal is not an ingestor.
-	ActionUploadCapture       Action = "observation.upload_capture"
+	ActionUploadCapture Action = "observation.upload_capture"
+	// ActionPairExtension authorizes minting a short-lived extension pairing code
+	// and revoking capture credentials (PRD §14 EXT-001/EXT-009). Pairing a
+	// capture device and revoking it is reversible account configuration within
+	// the L2 baseline {Owner, Operator}; Internal is not a device-pairing actor,
+	// and the machine gateway principal never pairs a device.
+	ActionPairExtension       Action = "extension.pair"
 	ActionConnectorRefresh    Action = "connector.refresh"
 	ActionConnectorDisconnect Action = "connector.disconnect"
 	ActionSetNotificationTime Action = "config.notification_time"
@@ -263,6 +269,10 @@ var Matrix = []Rule{
 	// Extension capture upload is a reversible data-ingestion task within the L2
 	// baseline {Owner, Operator}; Internal is not an ingestor.
 	{ActionUploadCapture, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
+	// Extension pairing (mint code / revoke credential) is reversible account
+	// configuration within the L2 baseline {Owner, Operator}; Internal does not
+	// pair capture devices.
+	{ActionPairExtension, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 
 	// L3 commercial guardrail — Owner only. Operator and Internal are denied:
 	// this is the §2.2/§8.3 guardrail invariant (Operator cannot change floors,

@@ -61,6 +61,11 @@ type gatewayServer struct {
 	// notify backs the /notifications routes (NOT-001). Nil ⇒ those routes fail
 	// closed with a structured error when it is absent.
 	notify NotifyService
+	// pairing backs the /ext/pairing/* routes and authenticates the extension's
+	// scoped capture credential on /observation/capture (PRD §14 EXT-001). Nil ⇒
+	// those routes fail closed with a structured error, and a capture credential
+	// can never authenticate (only a human session can reach capture upload).
+	pairing PairingService
 	// gatewayToken is the read/Draft-only machine credential (LLM_GATEWAY_TOKEN).
 	// It is what the middleware matches to authorize the machine principal on the
 	// Draft-only routes and its read envelope (perm.GatewayCan). Empty ⇒ no machine

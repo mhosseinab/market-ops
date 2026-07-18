@@ -262,6 +262,18 @@ type EventRelevanceFeedback struct {
 	CreatedAt time.Time
 }
 
+type ExtensionPairing struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	CodeHash             pgtype.Text
+	CodeExpiresAt        time.Time
+	CredentialHash       pgtype.Text
+	CredentialExpiresAt  pgtype.Timestamptz
+	ClaimedAt            pgtype.Timestamptz
+	RevokedAt            pgtype.Timestamptz
+	CreatedAt            time.Time
+}
+
 type Level2Proposal struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID

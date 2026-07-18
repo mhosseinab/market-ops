@@ -102,6 +102,9 @@ from .outcome_result_view import OutcomeResultView
 from .outcome_result_view_confidence import OutcomeResultViewConfidence
 from .outcome_result_view_result import OutcomeResultViewResult
 from .outcome_view import OutcomeView
+from .pairing_claim_request import PairingClaimRequest
+from .pairing_code import PairingCode
+from .pairing_credential import PairingCredential
 from .policy_blocker import PolicyBlocker
 from .policy_blocker_code import PolicyBlockerCode
 from .policy_boundary import PolicyBoundary
@@ -230,6 +233,9 @@ __all__ = (
     "OutcomeResultViewConfidence",
     "OutcomeResultViewResult",
     "OutcomeView",
+    "PairingClaimRequest",
+    "PairingCode",
+    "PairingCredential",
     "PolicyBlocker",
     "PolicyBlockerCode",
     "PolicyBoundary",

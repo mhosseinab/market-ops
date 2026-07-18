@@ -21,6 +21,7 @@ type ctxKey int
 const (
 	principalKey ctxKey = iota
 	tokenKey
+	captureAccountKey
 )
 
 // principalFrom returns the authenticated principal injected by the middleware.
@@ -34,6 +35,14 @@ func principalFrom(ctx context.Context) (auth.Principal, bool) {
 func tokenFrom(ctx context.Context) (string, bool) {
 	t, ok := ctx.Value(tokenKey).(string)
 	return t, ok
+}
+
+// captureAccountFrom returns the marketplace account a capture-credential
+// (extension) request is scoped to, injected by the middleware on the capture
+// route. Absent when the request authenticated via a human session instead.
+func captureAccountFrom(ctx context.Context) (uuid.UUID, bool) {
+	a, ok := ctx.Value(captureAccountKey).(uuid.UUID)
+	return a, ok
 }
 
 // routeKind classifies how the middleware treats a route.
@@ -54,6 +63,13 @@ const (
 	// surface. GatewayCan grants ONLY read + Draft actions, so the machine
 	// principal can never reach an approve/execute action here.
 	kindGatewayDraft
+	// kindCapture: the extension capture-upload route. It authenticates EITHER a
+	// scoped capture credential (Bearer, resolved by the pairing service and bound
+	// to a marketplace account — EXT-001) OR a human session with the
+	// upload-capture permission (first-party tooling). A revoked/expired/unknown
+	// capture credential fails closed with 401. It never accepts the LLM machine
+	// gateway token.
+	kindCapture
 )
 
 // machinePrincipal is the identity injected for a gateway-token-authenticated
@@ -109,7 +125,13 @@ var routePolicies = []routePolicy{
 	{http.MethodGet, "/observation/targets", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/observation/observed-offers", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/observation/observations", kindProtected, perm.ActionReadObservations},
-	{http.MethodPost, "/observation/capture", kindProtected, perm.ActionUploadCapture},
+	{http.MethodPost, "/observation/capture", kindCapture, perm.ActionUploadCapture},
+	// Extension pairing (PRD §14 EXT-001). Mint code + revoke are human-session
+	// L2 config (extension.pair). Claim carries NO session — the extension is not
+	// logged in — so it is public and authenticated only by the single-use code.
+	{http.MethodPost, "/ext/pairing/code", kindProtected, perm.ActionPairExtension},
+	{http.MethodPost, "/ext/pairing/claim", kindPublic, ""},
+	{http.MethodPost, "/ext/pairing/revoke", kindProtected, perm.ActionPairExtension},
 	// Cost import is a reversible seller-data write (CST-001) — L2 cost.import.
 	{http.MethodPost, "/cost/import/preview", kindProtected, perm.ActionImportCosts},
 	{http.MethodGet, "/cost/import", kindProtected, perm.ActionImportCosts},
@@ -175,10 +197,14 @@ type authMiddleware struct {
 	// gatewayToken is the read/Draft-only machine credential. Empty ⇒ no machine
 	// principal can authenticate (the Draft routes and machine reads are closed).
 	gatewayToken string
+	// pairing resolves a presented capture credential to its scoped marketplace
+	// account on the capture route (EXT-001). Nil ⇒ no capture credential can
+	// authenticate; capture upload then requires a human session (fail closed).
+	pairing PairingService
 }
 
-func newAuthMiddleware(a AuthService, gatewayToken string) *authMiddleware {
-	return &authMiddleware{auth: a, gatewayToken: gatewayToken}
+func newAuthMiddleware(a AuthService, gatewayToken string, pairing PairingService) *authMiddleware {
+	return &authMiddleware{auth: a, gatewayToken: gatewayToken, pairing: pairing}
 }
 
 // bearerToken extracts a presented Bearer credential from the Authorization
@@ -248,6 +274,47 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 				return
 			}
 			ctx := context.WithValue(r.Context(), principalKey, machinePrincipal)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+
+		case kindCapture:
+			// Extension capture upload (EXT-001). A presented Bearer is a scoped
+			// capture credential — resolve it to its marketplace account; a
+			// revoked/expired/unknown credential fails closed with 401. With no
+			// Bearer, fall back to a human session with the upload-capture
+			// permission (first-party tooling). The LLM machine gateway token is
+			// never accepted here.
+			if bt := bearerToken(r); bt != "" {
+				if m.pairing == nil {
+					writeError(w, http.StatusUnauthorized, noSessionErr())
+					return
+				}
+				resolved, err := m.pairing.ResolveCredential(r.Context(), bt)
+				if err != nil {
+					// Revoked, expired, or unknown capture credential — fail closed.
+					writeError(w, http.StatusUnauthorized, noSessionErr())
+					return
+				}
+				ctx := context.WithValue(r.Context(), captureAccountKey, resolved.MarketplaceAccountID)
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
+			token := sessionToken(r)
+			p, err := m.auth.Resolve(r.Context(), token)
+			if err != nil {
+				if !errors.Is(err, auth.ErrNoSession) {
+					writeError(w, http.StatusInternalServerError, internalErr())
+					return
+				}
+				writeError(w, http.StatusUnauthorized, noSessionErr())
+				return
+			}
+			if !perm.Can(p.Role, policy.action) {
+				writeError(w, http.StatusForbidden, forbiddenErr())
+				return
+			}
+			ctx := context.WithValue(r.Context(), principalKey, p)
+			ctx = context.WithValue(ctx, tokenKey, token)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 

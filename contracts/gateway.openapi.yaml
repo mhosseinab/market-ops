@@ -612,7 +612,13 @@ paths:
         freshness — those are server-side determinations. Price is raw evidence
         only (money quarantine); a capture never carries a Money. An equivalent
         replay is deduplicated (OBS-008): it creates no duplicate current offer and
-        retains route provenance.
+        retains route provenance. Authenticated by the extension's scoped capture
+        credential (captureAuth) obtained through pairing (EXT-001); a human
+        session cookie is also accepted for first-party tooling. The capture
+        credential is NEVER a seller-API token.
+      security:
+        - captureAuth: []
+        - cookieAuth: []
       requestBody:
         required: true
         content:
@@ -626,6 +632,100 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CaptureAccepted'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /ext/pairing/code:
+    post:
+      operationId: createPairingCode
+      tags:
+        - extension
+      summary: Mint a short-lived extension pairing code (EXT-001).
+      description: >-
+        A logged-in human mints a short-lived, single-use pairing code for the
+        browser extension (PRD §14 EXT-001). The code is displayed to the user and
+        typed into the extension, which exchanges it via /ext/pairing/claim for a
+        capture/overlay credential. The extension NEVER receives a seller-API
+        token: the pairing flow only ever yields a scoped capture credential. The
+        code is bound to the caller's marketplace account and expires quickly.
+      security:
+        - cookieAuth: []
+      responses:
+        '201':
+          description: A fresh, short-lived, single-use pairing code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairingCode'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /ext/pairing/claim:
+    post:
+      operationId: claimPairingCode
+      tags:
+        - extension
+      summary: Exchange a pairing code for a capture credential (EXT-001).
+      description: >-
+        The extension exchanges a short-lived pairing code for a scoped
+        capture/overlay credential (PRD §14 EXT-001). This route carries NO human
+        session — the extension is not logged in — so it is authenticated only by
+        the single-use code itself. The response holds ONLY a capture credential
+        bound to a marketplace account; it never carries a seller-API token,
+        cookie, or session. An expired, unknown, revoked, or already-claimed code
+        fails closed with 401.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PairingClaimRequest'
+      responses:
+        '200':
+          description: The scoped capture credential minted for the code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PairingCredential'
+        '401':
+          description: Unknown, expired, revoked, or already-claimed pairing code.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /ext/pairing/revoke:
+    post:
+      operationId: revokePairing
+      tags:
+        - extension
+      summary: Revoke a paired extension's capture credential (EXT-001).
+      description: >-
+        A logged-in human revokes the capture credential(s) for their marketplace
+        account (PRD §14 EXT-001/EXT-009 kill switch). After revocation the
+        extension's next capture upload fails closed with 401 and the popup shows a
+        visibly disabled state — never a silent no-op. Idempotent: revoking an
+        already-revoked or absent credential succeeds.
+      security:
+        - cookieAuth: []
+      responses:
+        '204':
+          description: Capture credential(s) revoked; further uploads are refused.
         default:
           description: Unexpected error.
           content:
@@ -1479,6 +1579,16 @@ components:
       description: >-
         Gateway bearer token. The LLM plane carries a read/Draft-only token
         (PRD §8); scope enforcement is server-side, never inferred from shape.
+    captureAuth:
+      type: http
+      scheme: bearer
+      description: >-
+        Extension capture/overlay credential (PRD §14 EXT-001), obtained by
+        exchanging a short-lived pairing code. It is a SCOPED capture credential
+        bound to one marketplace account — never a seller-API token — and
+        authorizes ONLY /observation/capture. Revocation (or expiry) fails the
+        next upload closed with 401. The authoritative credential record lives in
+        the database; only its hash is stored, never the raw value.
 
   schemas:
     Health:
@@ -2347,6 +2457,73 @@ components:
           description: The append-only evidence row id; null when deduped.
         quality:
           $ref: '#/components/schemas/QualityState'
+      additionalProperties: false
+
+    PairingCode:
+      type: object
+      description: >-
+        A short-lived, single-use extension pairing code (EXT-001), minted by a
+        logged-in human and displayed for entry into the extension. It is bound to
+        one marketplace account and expires quickly.
+      required:
+        - code
+        - marketplaceAccountId
+        - expiresAt
+      properties:
+        code:
+          type: string
+          minLength: 1
+          description: The one-time pairing code to enter in the extension.
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: The marketplace account the resulting credential is scoped to.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absolute expiry; a code at/after this instant fails closed.
+      additionalProperties: false
+
+    PairingClaimRequest:
+      type: object
+      description: The pairing code the extension exchanges for a capture credential.
+      required:
+        - code
+      properties:
+        code:
+          type: string
+          minLength: 1
+      additionalProperties: false
+
+    PairingCredential:
+      type: object
+      description: >-
+        A scoped capture/overlay credential (EXT-001) issued for a claimed pairing
+        code. It authorizes ONLY /observation/capture and is bound to one
+        marketplace account. It is NEVER a seller-API token; the extension stores
+        only this value.
+      required:
+        - credential
+        - credentialId
+        - marketplaceAccountId
+        - expiresAt
+      properties:
+        credential:
+          type: string
+          minLength: 1
+          description: The raw capture credential; presented as a Bearer on uploads.
+        credentialId:
+          type: string
+          format: uuid
+          description: Stable id of the credential record (for revocation/audit).
+        marketplaceAccountId:
+          type: string
+          format: uuid
+          description: The marketplace account this credential is scoped to.
+        expiresAt:
+          type: string
+          format: date-time
+          description: Absolute expiry; an upload at/after this instant fails closed.
       additionalProperties: false
 
     CostComponent:

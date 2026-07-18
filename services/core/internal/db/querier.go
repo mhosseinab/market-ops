@@ -51,6 +51,11 @@ type Querier interface {
 	// carries the route, so a different route observing the same value is a distinct
 	// claim and is retained: route provenance is never collapsed away.
 	ClaimDedupKey(ctx context.Context, arg ClaimDedupKeyParams) ([]ObservationDedup, error)
+	// Atomically claim an unclaimed, unexpired, unrevoked pairing code, minting the
+	// scoped capture credential in the same statement. The code_hash is cleared so a
+	// code is strictly single-use; a second claim matches no row. Returns the row
+	// (with credential id + expiry) only when the claim succeeds.
+	ClaimPairingCode(ctx context.Context, arg ClaimPairingCodeParams) (ExtensionPairing, error)
 	// §16 offer disappearance: close the current offer with an END TIME. The last raw
 	// price is left intact — it is NEVER converted to a zero price. Availability
 	// becomes 'disappeared' and quality 'unavailable'.
@@ -105,6 +110,10 @@ type Querier interface {
 	// construction, and the trigger is a second guard. Idempotent via ON CONFLICT.
 	CreateObservationTargetsFromConfirmed(ctx context.Context, arg CreateObservationTargetsFromConfirmedParams) ([]ObservationTarget, error)
 	CreateOrganization(ctx context.Context, name string) (Organization, error)
+	// Mint a short-lived, single-use pairing code (EXT-001). code_hash is the
+	// SHA-256 of the raw code; the raw code is displayed to the user and never
+	// reaches the database.
+	CreatePairingCode(ctx context.Context, arg CreatePairingCodeParams) (ExtensionPairing, error)
 	// Open a server-side session. token_hash is the SHA-256 of the opaque cookie
 	// token; the raw token never reaches the database.
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
@@ -124,6 +133,8 @@ type Querier interface {
 	// version + updated_at so the defer is ordered in the append-only audit. It never
 	// promotes the mapping to an executable state.
 	DeferIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
+	// Sweep pairings whose code and credential are both expired (housekeeping).
+	DeleteExpiredPairings(ctx context.Context) error
 	// Sweep expired sessions.
 	DeleteExpiredSessions(ctx context.Context) error
 	// Close a single session (logout). Idempotent: deleting an absent row is a no-op.
@@ -478,6 +489,10 @@ type Querier interface {
 	// Return a capability to 'unknown' (disconnect). Clears last_verified_at so a
 	// stale verification can never read as current.
 	ResetConnectorCapability(ctx context.Context, marketplaceAccountID uuid.UUID) error
+	// Resolve a presented capture credential to its scoped account. Rows that are
+	// revoked or past credential expiry are excluded, so a revoked or stale
+	// credential fails closed (401).
+	ResolveCaptureCredential(ctx context.Context, credentialHash pgtype.Text) (ResolveCaptureCredentialRow, error)
 	// Lifecycle transition (§15.1): the triggering condition cleared, so the event is
 	// resolved. This leaves the partial-unique predicate, freeing the dedup_key so a
 	// genuinely new future occurrence can open a fresh event.
@@ -485,6 +500,9 @@ type Querier interface {
 	// Resolve a CSV SKU token to variants within an account. Zero rows ⇒ unknown SKU;
 	// more than one ⇒ ambiguous (both are preview rejects with a stated reason).
 	ResolveVariantsBySupplierCode(ctx context.Context, arg ResolveVariantsBySupplierCodeParams) ([]ResolveVariantsBySupplierCodeRow, error)
+	// Revoke every active capture credential for a marketplace account (EXT-001 kill
+	// switch). Idempotent: already-revoked rows are left unchanged.
+	RevokePairingsForAccount(ctx context.Context, marketplaceAccountID uuid.UUID) error
 	// Insert a capability at 'unknown' if absent; leave an existing row untouched so
 	// a prior probe result is not clobbered by a re-seed (capability-gating invariant).
 	SeedConnectorCapability(ctx context.Context, arg SeedConnectorCapabilityParams) error

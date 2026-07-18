@@ -335,9 +335,69 @@ export interface paths {
         put?: never;
         /**
          * Upload an extension (Route B) observation capture.
-         * @description The server-side ingestion contract the Chrome extension calls into (PRD §10.1 Route B — corroboration / opportunistic refresh only). The request schema is ALLOW-LISTED (additionalProperties false): the extension may submit only Route B captures with the permitted fields, and may NOT self-certify schema/identity validity, conflict, or forge Route C freshness — those are server-side determinations. Price is raw evidence only (money quarantine); a capture never carries a Money. An equivalent replay is deduplicated (OBS-008): it creates no duplicate current offer and retains route provenance.
+         * @description The server-side ingestion contract the Chrome extension calls into (PRD §10.1 Route B — corroboration / opportunistic refresh only). The request schema is ALLOW-LISTED (additionalProperties false): the extension may submit only Route B captures with the permitted fields, and may NOT self-certify schema/identity validity, conflict, or forge Route C freshness — those are server-side determinations. Price is raw evidence only (money quarantine); a capture never carries a Money. An equivalent replay is deduplicated (OBS-008): it creates no duplicate current offer and retains route provenance. Authenticated by the extension's scoped capture credential (captureAuth) obtained through pairing (EXT-001); a human session cookie is also accepted for first-party tooling. The capture credential is NEVER a seller-API token.
          */
         post: operations["uploadCapture"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ext/pairing/code": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mint a short-lived extension pairing code (EXT-001).
+         * @description A logged-in human mints a short-lived, single-use pairing code for the browser extension (PRD §14 EXT-001). The code is displayed to the user and typed into the extension, which exchanges it via /ext/pairing/claim for a capture/overlay credential. The extension NEVER receives a seller-API token: the pairing flow only ever yields a scoped capture credential. The code is bound to the caller's marketplace account and expires quickly.
+         */
+        post: operations["createPairingCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ext/pairing/claim": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange a pairing code for a capture credential (EXT-001).
+         * @description The extension exchanges a short-lived pairing code for a scoped capture/overlay credential (PRD §14 EXT-001). This route carries NO human session — the extension is not logged in — so it is authenticated only by the single-use code itself. The response holds ONLY a capture credential bound to a marketplace account; it never carries a seller-API token, cookie, or session. An expired, unknown, revoked, or already-claimed code fails closed with 401.
+         */
+        post: operations["claimPairingCode"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/ext/pairing/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke a paired extension's capture credential (EXT-001).
+         * @description A logged-in human revokes the capture credential(s) for their marketplace account (PRD §14 EXT-001/EXT-009 kill switch). After revocation the extension's next capture upload fails closed with 401 and the popup shows a visibly disabled state — never a silent no-op. Idempotent: revoking an already-revoked or absent credential succeeds.
+         */
+        post: operations["revokePairing"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1245,6 +1305,45 @@ export interface components {
              */
             observationId?: string | null;
             quality: components["schemas"]["QualityState"];
+        };
+        /** @description A short-lived, single-use extension pairing code (EXT-001), minted by a logged-in human and displayed for entry into the extension. It is bound to one marketplace account and expires quickly. */
+        PairingCode: {
+            /** @description The one-time pairing code to enter in the extension. */
+            code: string;
+            /**
+             * Format: uuid
+             * @description The marketplace account the resulting credential is scoped to.
+             */
+            marketplaceAccountId: string;
+            /**
+             * Format: date-time
+             * @description Absolute expiry; a code at/after this instant fails closed.
+             */
+            expiresAt: string;
+        };
+        /** @description The pairing code the extension exchanges for a capture credential. */
+        PairingClaimRequest: {
+            code: string;
+        };
+        /** @description A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY /observation/capture and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value. */
+        PairingCredential: {
+            /** @description The raw capture credential; presented as a Bearer on uploads. */
+            credential: string;
+            /**
+             * Format: uuid
+             * @description Stable id of the credential record (for revocation/audit).
+             */
+            credentialId: string;
+            /**
+             * Format: uuid
+             * @description The marketplace account this credential is scoped to.
+             */
+            marketplaceAccountId: string;
+            /**
+             * Format: date-time
+             * @description Absolute expiry; an upload at/after this instant fails closed.
+             */
+            expiresAt: string;
         };
         /**
          * @description A cost component of the §9.2 contribution model. The set is closed. COGS and commission are always required; fulfillment/shipping/promotion are required when applicable to the listing; packaging/ads/returns are optional in P0 (an account policy may still require them).
@@ -2549,6 +2648,104 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["CaptureAccepted"];
                 };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createPairingCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A fresh, short-lived, single-use pairing code. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairingCode"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    claimPairingCode: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PairingClaimRequest"];
+            };
+        };
+        responses: {
+            /** @description The scoped capture credential minted for the code. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairingCredential"];
+                };
+            };
+            /** @description Unknown, expired, revoked, or already-claimed pairing code. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    revokePairing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Capture credential(s) revoked; further uploads are refused. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             /** @description Unexpected error. */
             default: {
