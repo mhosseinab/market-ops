@@ -803,3 +803,193 @@
   gap: 16px;
   min-inline-size: 0;
 }
+
+/* ── S28: Market coverage bars ─────────────────────────────────────────── */
+.coverage {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.coverage__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-block-end: 4px;
+}
+
+.coverage__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.coverage__track {
+  block-size: 8px;
+  border-radius: 5px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.coverage__fill {
+  block-size: 100%;
+  border-radius: 5px;
+  background: var(--ink-3);
+}
+
+.coverage__fill[data-tone="pos"] {
+  background: var(--pos);
+}
+.coverage__fill[data-tone="warn"] {
+  background: var(--warn);
+}
+.coverage__fill[data-tone="risk"] {
+  background: var(--risk);
+}
+.coverage__fill[data-tone="info"] {
+  background: var(--info);
+}
+
+.badge__dot[data-tone="pos"] {
+  background: var(--pos);
+}
+.badge__dot[data-tone="warn"] {
+  background: var(--warn);
+}
+.badge__dot[data-tone="risk"] {
+  background: var(--risk);
+}
+.badge__dot[data-tone="info"] {
+  background: var(--info);
+}
+.badge__dot[data-tone="ink2"] {
+  background: var(--ink-2);
+}
+
+/* Quality distribution */
+.quality-dist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quality-dist__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.quality-dist__count {
+  font-weight: 600;
+}
+
+/* ── Operations queue grid ─────────────────────────────────────────────── */
+.queue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.queue-card {
+  border: 1px solid var(--line);
+  border-inline-start: 3px solid var(--ink-3);
+  border-radius: 10px;
+  padding: 14px 16px;
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.queue-card[data-accent="risk"] {
+  border-inline-start-color: var(--risk);
+}
+.queue-card[data-accent="warn"] {
+  border-inline-start-color: var(--warn);
+}
+.queue-card[data-accent="conflict"] {
+  border-inline-start-color: var(--conflict);
+}
+.queue-card[data-accent="info"] {
+  border-inline-start-color: var(--info);
+}
+
+.queue-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.queue-card__title {
+  font-size: 13px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.queue-card__count {
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.queue-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* ── Bulk toolbar ──────────────────────────────────────────────────────── */
+.bulk-toolbar__aggregate {
+  margin-block: 10px;
+}
+
+.bulk-toolbar__controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-block-start: 10px;
+}
+
+.bulk-status {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bulk-status__reason {
+  font-size: 11px;
+}
+
+/* ── Settings ──────────────────────────────────────────────────────────── */
+.level-tag {
+  display: inline-block;
+  border: 1px solid var(--line-2);
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--ink-2);
+  margin-block-end: 8px;
+}
+
+.user-chip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-block-end: 6px;
+}
+
+.l3-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-block-start: 10px;
+}
+
+.field--inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}

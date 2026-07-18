@@ -28,7 +28,10 @@ interface LocaleState {
   setLocale: (next: LocaleId) => void;
 }
 
-const LocaleContext = createContext<LocaleState | null>(null);
+// Exported so test harnesses (e.g. the pseudo-locale harness) can satisfy
+// `useLocale` for components that format counts/dates while a non-app i18next
+// instance serves the copy. Production always goes through I18nProvider.
+export const LocaleContext = createContext<LocaleState | null>(null);
 
 export function I18nProvider({
   children,

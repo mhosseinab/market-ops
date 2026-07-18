@@ -52,3 +52,18 @@ export type ApprovalConfirmResult = components["schemas"]["ApprovalConfirmResult
 export type ApprovalStateHistoryEntry = components["schemas"]["ApprovalStateHistoryEntry"];
 export type Contribution = components["schemas"]["Contribution"];
 export type ContributionDeduction = components["schemas"]["ContributionDeduction"];
+
+// ── S28: Actions/outcomes, bulk approval, settings, operations ──────────────
+export type SessionInfo = components["schemas"]["SessionInfo"];
+export type UserRole = components["schemas"]["UserRole"];
+
+export type ActionExecutionView = components["schemas"]["ActionExecutionView"];
+export type ExecutionMode = components["schemas"]["ExecutionMode"];
+export type ExecutionExternalState = components["schemas"]["ExecutionExternalState"];
+export type RecommendOnlyState = components["schemas"]["RecommendOnlyState"];
+export type RetryActionResult = components["schemas"]["RetryActionResult"];
+export type OutcomeView = components["schemas"]["OutcomeView"];
+export type OutcomeResultView = components["schemas"]["OutcomeResultView"];
+
+export type BulkApprovalConfirmRequest = components["schemas"]["BulkApprovalConfirmRequest"];
+export type BulkApprovalConfirmResult = components["schemas"]["BulkApprovalConfirmResult"];

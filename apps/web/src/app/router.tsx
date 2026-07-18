@@ -8,12 +8,17 @@ import {
 import type { ReactElement } from "react";
 import { AppShell } from "../components/AppShell";
 import { EmptyState } from "../components/EmptyState";
+import { Actions } from "../screens/Actions";
+import { BulkApproval } from "../screens/BulkApproval";
 import { CostImport } from "../screens/CostImport";
 import { EventDetail } from "../screens/EventDetail";
+import { Market } from "../screens/Market";
 import { Onboarding } from "../screens/Onboarding";
+import { Operations } from "../screens/Operations";
 import { ProductDetail } from "../screens/ProductDetail";
 import { Products } from "../screens/Products";
 import { Recommendation } from "../screens/Recommendation";
+import { Settings } from "../screens/Settings";
 import { Today } from "../screens/Today";
 import { ROUTES, type RouteKey } from "./navConfig";
 
@@ -44,6 +49,11 @@ const SCREENS: Partial<Record<RouteKey, () => ReactElement>> = {
   onboarding: Onboarding,
   event: EventDetail,
   recommendation: Recommendation,
+  market: Market,
+  actions: Actions,
+  bulk: BulkApproval,
+  settings: Settings,
+  operations: Operations,
 };
 
 /** Uniform, permissive search validation so typed deep-link keys stay typed. */
@@ -51,11 +61,13 @@ function validateSearch(search: Record<string, unknown>): {
   variantId?: string;
   eventId?: string;
   cardId?: string;
+  actionId?: string;
 } {
-  const out: { variantId?: string; eventId?: string; cardId?: string } = {};
+  const out: { variantId?: string; eventId?: string; cardId?: string; actionId?: string } = {};
   if (typeof search.variantId === "string") out.variantId = search.variantId;
   if (typeof search.eventId === "string") out.eventId = search.eventId;
   if (typeof search.cardId === "string") out.cardId = search.cardId;
+  if (typeof search.actionId === "string") out.actionId = search.actionId;
   return out;
 }
 

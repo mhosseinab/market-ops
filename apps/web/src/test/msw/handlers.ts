@@ -1,13 +1,17 @@
 import { HttpResponse, http } from "msw";
 import {
   approvalCardAwaiting,
+  bulkValid,
   confirmApproved,
   connectorUnknown,
+  execAccepted,
   marketEvent,
   needsReviewQueue,
   offer,
+  outcomeClosed,
   previewWithDuplicate,
   readinessMissing,
+  sessionOwner,
   target,
 } from "./fixtures";
 
@@ -74,6 +78,15 @@ export const handlers = [
 
   http.get(`${B}/approvals/card`, () => HttpResponse.json(approvalCardAwaiting)),
   http.post(`${B}/approvals/confirm`, () => HttpResponse.json(confirmApproved)),
+
+  // ── S28 defaults ──────────────────────────────────────────────────────────
+  http.get(`${B}/auth/me`, () => HttpResponse.json(sessionOwner)),
+  http.get(`${B}/actions/execution`, () => HttpResponse.json(execAccepted)),
+  http.get(`${B}/outcomes`, () => HttpResponse.json(outcomeClosed)),
+  http.post(`${B}/actions/retry`, () =>
+    HttpResponse.json({ actionId: execAccepted.actionId, eligible: true, state: "failed" }),
+  ),
+  http.post(`${B}/approvals/bulk/confirm`, () => HttpResponse.json(bulkValid)),
 
   http.post(`${B}/cost/value`, () =>
     HttpResponse.json({
