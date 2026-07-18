@@ -2,9 +2,13 @@ package httpapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
+
+	"github.com/google/uuid"
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
@@ -43,6 +47,31 @@ const (
 	// kindSessionOptional: no session required, but if a session cookie is
 	// present its raw token is injected for the handler (logout).
 	kindSessionOptional
+	// kindGatewayDraft: the machine-only Draft-create routes (/chat/cards/*). They
+	// authenticate the read/Draft-only machine credential (LLM_GATEWAY_TOKEN)
+	// presented as a bearer token and authorize via perm.GatewayCan(action). A
+	// human session presents no bearer and is refused — these are never a human
+	// surface. GatewayCan grants ONLY read + Draft actions, so the machine
+	// principal can never reach an approve/execute action here.
+	kindGatewayDraft
+)
+
+// machinePrincipal is the identity injected for a gateway-token-authenticated
+// request. It is NOT a human user: its role is a sentinel that authorizes nothing
+// through the human perm.Can matrix (the machine path uses perm.GatewayCan). It
+// carries a stable actor id/surface for the AUD-001 audit trail (e.g. the Level-2
+// proposal audit row).
+var machinePrincipal = auth.Principal{
+	UserID: uuid.Nil,
+	Email:  machineActorID,
+	Role:   perm.Role("machine"),
+}
+
+// machineActorID / machineSurface identify the LLM machine principal on audit
+// rows and structured logs (never a human user, never a free-text body).
+const (
+	machineActorID = "llm-gateway"
+	machineSurface = "chat"
 )
 
 // routePolicy binds a mounted route to its authorization treatment. The table
@@ -113,6 +142,15 @@ var routePolicies = []routePolicy{
 	// Execution + outcome reads (CHAT-073, OUT-001) — L1 read.approvals.
 	{http.MethodGet, "/actions/execution", kindProtected, perm.ActionReadApprovals},
 	{http.MethodGet, "/outcomes", kindProtected, perm.ActionReadApprovals},
+	// Draft-only machine routes (§8.2, §12.1). Machine credential + GatewayCan on
+	// the matching draft.* action ONLY — a human session (no bearer) is refused,
+	// and the machine can never reach approve/execute (GatewayCan denies those).
+	{http.MethodPost, "/chat/cards/recommendation-draft", kindGatewayDraft, perm.ActionDraftRecommendation},
+	{http.MethodPost, "/chat/cards/selection-set-draft", kindGatewayDraft, perm.ActionDraftSelectionSet},
+	{http.MethodPost, "/chat/cards/level2-proposal", kindGatewayDraft, perm.ActionDraftLevel2Proposal},
+	// Daily briefing read (CHAT-010) — L1 read.events. A human session reads it;
+	// the machine principal also reads it via the GatewayCan(read.events) fallback.
+	{http.MethodGet, "/briefing", kindProtected, perm.ActionReadEvents},
 }
 
 // lookupPolicy finds the policy for a method+path, if any.
@@ -130,9 +168,40 @@ func lookupPolicy(method, path string) (routePolicy, bool) {
 // before the request reaches a handler.
 type authMiddleware struct {
 	auth AuthService
+	// gatewayToken is the read/Draft-only machine credential. Empty ⇒ no machine
+	// principal can authenticate (the Draft routes and machine reads are closed).
+	gatewayToken string
 }
 
-func newAuthMiddleware(a AuthService) *authMiddleware { return &authMiddleware{auth: a} }
+func newAuthMiddleware(a AuthService, gatewayToken string) *authMiddleware {
+	return &authMiddleware{auth: a, gatewayToken: gatewayToken}
+}
+
+// bearerToken extracts a presented Bearer credential from the Authorization
+// header (empty when absent or malformed).
+func bearerToken(r *http.Request) string {
+	h := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(h) <= len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return ""
+	}
+	return strings.TrimSpace(h[len(prefix):])
+}
+
+// gatewayAuthenticated reports whether the request presents the exact configured
+// machine credential (constant-time compare). It is false when no token is
+// configured, so the machine principal cannot authenticate on a plane that never
+// minted a credential (fail closed).
+func (m *authMiddleware) gatewayAuthenticated(r *http.Request) bool {
+	if m.gatewayToken == "" {
+		return false
+	}
+	bt := bearerToken(r)
+	if bt == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(bt), []byte(m.gatewayToken)) == 1
+}
 
 // wrap returns next wrapped with the enforcement middleware.
 func (m *authMiddleware) wrap(next http.Handler) http.Handler {
@@ -161,15 +230,46 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 
+		case kindGatewayDraft:
+			// Machine-only Draft-create route. A human session presents no bearer
+			// and is refused (401) — these routes are never a human surface.
+			if !m.gatewayAuthenticated(r) {
+				writeError(w, http.StatusUnauthorized, noSessionErr())
+				return
+			}
+			// The machine envelope is read + Draft only; a route action outside it
+			// (never, by construction, for these routes) is denied.
+			if !perm.GatewayCan(policy.action) {
+				writeError(w, http.StatusForbidden, forbiddenErr())
+				return
+			}
+			ctx := context.WithValue(r.Context(), principalKey, machinePrincipal)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+
 		case kindProtected:
 			token := sessionToken(r)
 			p, err := m.auth.Resolve(r.Context(), token)
 			if err != nil {
-				if errors.Is(err, auth.ErrNoSession) {
-					writeError(w, http.StatusUnauthorized, noSessionErr())
+				if !errors.Is(err, auth.ErrNoSession) {
+					writeError(w, http.StatusInternalServerError, internalErr())
 					return
 				}
-				writeError(w, http.StatusInternalServerError, internalErr())
+				// No human session. The read/Draft-only machine principal may
+				// still authorize a route within its GatewayCan envelope (reads +
+				// Draft). It can NEVER reach an approve/execute action: GatewayCan
+				// denies those, so a machine token on /actions/execute or
+				// /approvals/confirm falls through to 403.
+				if m.gatewayAuthenticated(r) {
+					if !perm.GatewayCan(policy.action) {
+						writeError(w, http.StatusForbidden, forbiddenErr())
+						return
+					}
+					ctx := context.WithValue(r.Context(), principalKey, machinePrincipal)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				writeError(w, http.StatusUnauthorized, noSessionErr())
 				return
 			}
 			if !perm.Can(p.Role, policy.action) {

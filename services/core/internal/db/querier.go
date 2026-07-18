@@ -166,6 +166,7 @@ type Querier interface {
 	// no row, so no executable recommendation can be built on an unconfirmed identity.
 	GetActiveConfirmedIdentityForVariant(ctx context.Context, variantID uuid.UUID) (MarketProductIdentity, error)
 	GetApprovalCard(ctx context.Context, id uuid.UUID) (ApprovalCard, error)
+	GetBriefingByAccountDay(ctx context.Context, arg GetBriefingByAccountDayParams) (Briefing, error)
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
 	GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
@@ -184,6 +185,7 @@ type Querier interface {
 	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
 	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (CatalogSyncRun, error)
+	GetLevel2Proposal(ctx context.Context, id uuid.UUID) (Level2Proposal, error)
 	GetMarginReadiness(ctx context.Context, variantID uuid.UUID) (MarginReadiness, error)
 	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (MarketplaceAccount, error)
 	GetMarketplaceAccountByNativeID(ctx context.Context, nativeAccountID string) (MarketplaceAccount, error)
@@ -223,6 +225,16 @@ type Querier interface {
 	//   * approval_card_states is STRICTLY APPEND-ONLY: INSERT only, no UPDATE/DELETE.
 	//     It is the authoritative lifecycle history reconstructable for audit (AUD-001).
 	InsertApprovalCard(ctx context.Context, arg InsertApprovalCardParams) (ApprovalCard, error)
+	// Daily briefing queries (PRD §6.8 CHAT-010). briefings + briefing_events are
+	// APPEND-ONLY: INSERT/SELECT only. Generation is idempotent per business day via
+	// the (marketplace_account_id, business_day) unique constraint — ON CONFLICT DO
+	// NOTHING makes a same-day retry a no-op (no duplicate briefing).
+	// Opens the once-per-business-day briefing. On a same-day conflict it inserts
+	// nothing and returns no row (the caller treats pgx.ErrNoRows as "already
+	// generated" — idempotent).
+	InsertBriefing(ctx context.Context, arg InsertBriefingParams) (Briefing, error)
+	// Appends one ranked event snapshot to a briefing, preserving the Today order.
+	InsertBriefingEvent(ctx context.Context, arg InsertBriefingEventParams) (BriefingEvent, error)
 	// APPEND-ONLY: the only write path to this table is INSERT. Raw item JSON kept
 	// verbatim as evidence (plan §4.7). No UPDATE/DELETE query exists by design.
 	InsertCatalogPayloadSnapshot(ctx context.Context, arg InsertCatalogPayloadSnapshotParams) error
@@ -234,6 +246,11 @@ type Querier interface {
 	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
 	// INSERT; there is deliberately no UPDATE/DELETE query.
 	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)
+	// Level-2 reversible-config proposal queries (PRD §8.3 CHAT-061/062).
+	// level2_proposals is APPEND-ONLY: INSERT/SELECT only. The proposal write and its
+	// AUD-001 audit row are committed in ONE transaction by the service (fail-closed
+	// on audit error). TERMINAL AT DRAFT — no state advance, no approval control.
+	InsertLevel2Proposal(ctx context.Context, arg InsertLevel2ProposalParams) (Level2Proposal, error)
 	// Event engine queries (PRD §7.4 EVT-001..005, §15.1, §16). Write disciplines:
 	//   * materiality_thresholds and event_relevance_feedback are APPEND-ONLY — there
 	//     is deliberately NO UPDATE or DELETE query here (versioned config / history).
@@ -301,6 +318,8 @@ type Querier interface {
 	// Awaiting recommend-only actions for a variant (the recommend-only matcher runs
 	// these against fresh owned-price observations).
 	ListAwaitingRecommendOnlyForVariant(ctx context.Context, variantID uuid.UUID) ([]RecommendOnlyAction, error)
+	// The ranked events of a briefing, in Today order (rank asc).
+	ListBriefingEvents(ctx context.Context, briefingID uuid.UUID) ([]BriefingEvent, error)
 	// Windows whose seven days have elapsed and that have no computed result yet.
 	ListClosableOutcomeWindows(ctx context.Context, closesAt time.Time) ([]OutcomeWindow, error)
 	// EXECUTABLE-PATH query (OBS-001): the observation targets an account may create
@@ -330,6 +349,9 @@ type Querier interface {
 	// mapping invalidates any card whose control could still authorize a write.
 	ListLiveCardsForVariant(ctx context.Context, variantID uuid.UUID) ([]ApprovalCard, error)
 	ListMarginReadinessByAccount(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarginReadiness, error)
+	// Every marketplace account id, in a stable order — the per-account fan-out for
+	// platform passes (e.g. the daily briefing job, CHAT-010).
+	ListMarketplaceAccountIDs(ctx context.Context) ([]uuid.UUID, error)
 	ListMaterialityThresholds(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MaterialityThreshold, error)
 	// The Needs Review queue (journey 4): each pending candidate joined to its
 	// variant/product so the row carries SKU (supplier_code), variant + product title,

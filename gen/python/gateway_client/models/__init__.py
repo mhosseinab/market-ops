@@ -9,6 +9,7 @@ from .approval_invalidation_reason import ApprovalInvalidationReason
 from .approval_state import ApprovalState
 from .approval_state_history_entry import ApprovalStateHistoryEntry
 from .availability_status import AvailabilityStatus
+from .briefing_event import BriefingEvent
 from .build_info import BuildInfo
 from .bulk_approval_confirm_request import BulkApprovalConfirmRequest
 from .bulk_approval_confirm_result import BulkApprovalConfirmResult
@@ -50,6 +51,7 @@ from .cost_import_row import CostImportRow
 from .cost_profile_list import CostProfileList
 from .cost_profile_version import CostProfileVersion
 from .cost_profile_version_source import CostProfileVersionSource
+from .daily_briefing import DailyBriefing
 from .detected_mapping import DetectedMapping
 from .error_envelope import ErrorEnvelope
 from .event_exposure import EventExposure
@@ -69,6 +71,8 @@ from .execution_mode import ExecutionMode
 from .health import Health
 from .health_status import HealthStatus
 from .identity_decision_request import IdentityDecisionRequest
+from .level_2_proposal_request import Level2ProposalRequest
+from .level_2_proposal_result import Level2ProposalResult
 from .login_request import LoginRequest
 from .margin_readiness import MarginReadiness
 from .margin_readiness_state import MarginReadinessState
@@ -105,8 +109,12 @@ from .quality_state import QualityState
 from .ranked_event import RankedEvent
 from .raw_amount import RawAmount
 from .recommend_only_state import RecommendOnlyState
+from .recommendation_draft_request import RecommendationDraftRequest
+from .recommendation_draft_result import RecommendationDraftResult
 from .retry_action_request import RetryActionRequest
 from .retry_action_result import RetryActionResult
+from .selection_set_draft_request import SelectionSetDraftRequest
+from .selection_set_draft_result import SelectionSetDraftResult
 from .session_info import SessionInfo
 from .single_cost_entry_request import SingleCostEntryRequest
 from .today_feed import TodayFeed
@@ -122,6 +130,7 @@ __all__ = (
     "ApprovalState",
     "ApprovalStateHistoryEntry",
     "AvailabilityStatus",
+    "BriefingEvent",
     "BuildInfo",
     "BulkApprovalConfirmRequest",
     "BulkApprovalConfirmResult",
@@ -163,6 +172,7 @@ __all__ = (
     "CostProfileList",
     "CostProfileVersion",
     "CostProfileVersionSource",
+    "DailyBriefing",
     "DetectedMapping",
     "ErrorEnvelope",
     "EventExposure",
@@ -182,6 +192,8 @@ __all__ = (
     "Health",
     "HealthStatus",
     "IdentityDecisionRequest",
+    "Level2ProposalRequest",
+    "Level2ProposalResult",
     "LoginRequest",
     "MarginReadiness",
     "MarginReadinessState",
@@ -217,9 +229,13 @@ __all__ = (
     "QualityState",
     "RankedEvent",
     "RawAmount",
+    "RecommendationDraftRequest",
+    "RecommendationDraftResult",
     "RecommendOnlyState",
     "RetryActionRequest",
     "RetryActionResult",
+    "SelectionSetDraftRequest",
+    "SelectionSetDraftResult",
     "SessionInfo",
     "SingleCostEntryRequest",
     "TodayFeed",

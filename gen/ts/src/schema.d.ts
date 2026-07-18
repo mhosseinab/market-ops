@@ -704,6 +704,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/chat/cards/recommendation-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create an individual-approval Draft from a recommendation (CHAT-041).
+         * @description The Draft-only write the LLM/machine plane originates for a PrepareAction turn (PRD §8.2, §12.1, CHAT-041). It authorizes against the read/Draft-only gateway credential (perm.GatewayCan(draft.recommendation)) — a human session or any principal without the Draft capability is refused. It mints the initial §8.4 Draft approval card from the persisted, approvable recommendation and returns its bound versions + expiry so the gateway can render the card. The write is TERMINAL AT DRAFT: it never advances the state machine and never mints an approval control (confirmation happens through the same structured control endpoint as screens — chat never owns a confirm path). Fails closed (404) on an unknown/foreign/non-executable recommendation — never a fabricated Draft.
+         */
+        post: operations["createRecommendationDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/cards/selection-set-draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a named, versioned bulk selection-set Draft (CHAT-050/051).
+         * @description The Draft-only write for a bulk hand-off (PRD §12.1, CHAT-050/051). It authorizes against perm.GatewayCan(draft.selection_set). It compiles the conversational query into deterministic criteria and appends a NEW selection-set version, returning its bound versions + expiry. There is NO chat bulk approval — the confirmation binds ONE version through the screens' structured control. TERMINAL AT DRAFT.
+         */
+        post: operations["createSelectionSetDraft"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/chat/cards/level2-proposal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a Level-2 reversible-config before/after proposal (CHAT-061/062).
+         * @description The Draft-only write for a Level-2 (reversible configuration) proposal (PRD §8.3, CHAT-061/062). It authorizes against perm.GatewayCan(draft.level2_proposal). It writes the before/after/scope/consequence proposal AND an append-only audit row in ONE transaction (fail-closed on audit error) so the governance change is transcript-independently reproducible (AUD-001). NO Level-3 write path exists. TERMINAL AT DRAFT — confirmation is the screens' structured control.
+         */
+        post: operations["createLevel2Proposal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/briefing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the stored daily briefing for a business day (CHAT-010).
+         * @description Returns the stored once-per-business-day briefing for an account (PRD §6.8, CHAT-010). The briefing is generated from the SAME Today ranking the feed uses, so its event ids and ORDER EQUAL the Today feed — a divergence is a traceability breach. This is a read; it never generates a briefing.
+         */
+        get: operations["getBriefing"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1733,6 +1813,90 @@ export interface components {
             /** Format: date-time */
             closesAt: string;
             result?: components["schemas"]["OutcomeResultView"];
+        };
+        /** @description A PrepareAction hand-off (CHAT-041): create the individual-approval Draft for one persisted, approvable recommendation. All identifiers are snake_case to match the LLM plane's Draft-only transport contract. */
+        RecommendationDraftRequest: {
+            /** Format: uuid */
+            marketplace_account_id: string;
+            /**
+             * Format: uuid
+             * @description The variant (entity) the recommendation targets.
+             */
+            entity_id: string;
+            /** Format: uuid */
+            recommendation_id: string;
+        };
+        /** @description The created Draft's identifiers, APR-001 bound versions, and expiry. Version values are opaque strings (the transport treats them as identifiers, never numbers). The card is in §8.4 Draft — no approval control is minted. */
+        RecommendationDraftResult: {
+            /** Format: uuid */
+            draft_id: string;
+            /** Format: uuid */
+            action_id: string;
+            context_version: string;
+            recommendation_version: string;
+            parameter_version: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        /** @description A bulk hand-off (CHAT-050/051): compile the conversational query into a named, versioned selection set. There is NO chat bulk approval. */
+        SelectionSetDraftRequest: {
+            /** Format: uuid */
+            marketplace_account_id: string;
+            /** @description The deterministic selection query (compiled to criteria). */
+            query: string;
+        };
+        /** @description The created selection-set Draft's identifiers, bound version, and expiry. Version values are opaque strings. TERMINAL AT DRAFT. */
+        SelectionSetDraftResult: {
+            /** Format: uuid */
+            draft_id: string;
+            /** Format: uuid */
+            action_id: string;
+            context_version: string;
+            parameter_version: string;
+            /** Format: date-time */
+            expires_at: string;
+        };
+        /** @description A Level-2 reversible-config proposal (CHAT-061/062): before/after catalog keys plus the setting being changed. Keys are locale-neutral catalog keys (LOC-001) — no copy in the core. */
+        Level2ProposalRequest: {
+            /** Format: uuid */
+            marketplace_account_id: string;
+            setting_key: string;
+            before_key: string;
+            after_key: string;
+        };
+        /** @description The proposal's identifiers, bound versions, scope/consequence catalog keys, and expiry. The proposal + its append-only audit row are written in one transaction (AUD-001). Version values are opaque strings. TERMINAL AT DRAFT. */
+        Level2ProposalResult: {
+            /** Format: uuid */
+            draft_id: string;
+            /** Format: uuid */
+            action_id: string;
+            context_version: string;
+            parameter_version: string;
+            /** Format: date-time */
+            expires_at: string;
+            /** @description The catalog key naming what the change affects. */
+            scope_key: string;
+            /** @description The catalog key naming the reversible consequence. */
+            consequence_key: string;
+        };
+        /** @description The stored once-per-business-day briefing (CHAT-010). Its events carry the SAME ids and ORDER as the Today feed for the account/day (generated from the one ranking, never a re-computation). */
+        DailyBriefing: {
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /** Format: date */
+            businessDay: string;
+            /** Format: date-time */
+            generatedAt: string;
+            events: components["schemas"]["BriefingEvent"][];
+        };
+        /** @description One ranked event in a daily briefing. `rank` is 1-based and matches the Today feed position; `eventId` matches the Today feed event id. */
+        BriefingEvent: {
+            /** Format: int32 */
+            rank: number;
+            /** Format: uuid */
+            eventId: string;
+            eventType: string;
+            severity: string;
         };
     };
     responses: never;
@@ -2890,6 +3054,138 @@ export interface operations {
                 };
             };
             /** @description Unexpected error (including no outcome window). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createRecommendationDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RecommendationDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description The created Draft's identifiers, bound versions, and expiry. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecommendationDraftResult"];
+                };
+            };
+            /** @description Unexpected error (including an unknown/non-executable recommendation). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createSelectionSetDraft: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SelectionSetDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description The created selection-set Draft's identifiers, bound version, and expiry. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelectionSetDraftResult"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    createLevel2Proposal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Level2ProposalRequest"];
+            };
+        };
+        responses: {
+            /** @description The proposal's identifiers, bound versions, scope/consequence keys, and expiry. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Level2ProposalResult"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getBriefing: {
+        parameters: {
+            query: {
+                marketplaceAccountId: string;
+                /** @description The business day (UTC calendar date) of the briefing. */
+                businessDay: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored daily briefing with its ranked events. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DailyBriefing"];
+                };
+            };
+            /** @description Unexpected error (including no briefing for that day). */
             default: {
                 headers: {
                     [name: string]: unknown;

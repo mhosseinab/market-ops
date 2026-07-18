@@ -47,6 +47,17 @@ func (s *Service) CreateCard(ctx context.Context, recID, lineage uuid.UUID, acco
 	if !ok {
 		return db.ApprovalCard{}, ErrRejectedTransition
 	}
+	return s.mintDraftCard(ctx, recID, lineage, account, binding, price)
+}
+
+// mintDraftCard is the SINGLE Draft-minting path (§8.4 [*] → Draft): it inserts
+// the initial approval card in state Draft and appends its first append-only
+// history row, in ONE transaction. It is TERMINAL AT DRAFT — it never advances
+// the state machine and never mints an approval control. Both CreateCard (from a
+// live domain recommendation) and the chat Draft-only handlers (from a persisted
+// recommendation, chat_drafts.go) go through here, so the machine plane cannot
+// reach a different, weaker Draft-creation path.
+func (s *Service) mintDraftCard(ctx context.Context, recID, lineage, account uuid.UUID, binding approval.Binding, price money.Money) (db.ApprovalCard, error) {
 	evJSON, err := marshalEvidenceVersions(binding.EvidenceVersions)
 	if err != nil {
 		return db.ApprovalCard{}, err

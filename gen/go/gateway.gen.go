@@ -1061,6 +1061,14 @@ type ApprovalStateHistoryEntry struct {
 // AvailabilityStatus Normalized availability (docs/11, §16). `unavailable` is the DISTINCT temporary-out state; `disappeared` is the permanent close (offer gone, closed with an end time, never a zero price).
 type AvailabilityStatus string
 
+// BriefingEvent One ranked event in a daily briefing. `rank` is 1-based and matches the Today feed position; `eventId` matches the Today feed event id.
+type BriefingEvent struct {
+	EventId   openapi_types.UUID `json:"eventId"`
+	EventType string             `json:"eventType"`
+	Rank      int32              `json:"rank"`
+	Severity  string             `json:"severity"`
+}
+
 // BuildInfo Identity of the running binary.
 type BuildInfo struct {
 	// BuildTime Build timestamp (RFC 3339, UTC).
@@ -1414,6 +1422,14 @@ type CostProfileVersion struct {
 // CostProfileVersionSource defines model for CostProfileVersion.Source.
 type CostProfileVersionSource string
 
+// DailyBriefing The stored once-per-business-day briefing (CHAT-010). Its events carry the SAME ids and ORDER as the Today feed for the account/day (generated from the one ranking, never a re-computation).
+type DailyBriefing struct {
+	BusinessDay          openapi_types.Date `json:"businessDay"`
+	Events               []BriefingEvent    `json:"events"`
+	GeneratedAt          time.Time          `json:"generatedAt"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
+}
+
 // DetectedMapping How the import interpreted the CSV columns, echoed for the seller to confirm the mapping (CST-001 mapping preview).
 type DetectedMapping struct {
 	ComponentColumns []ColumnComponentMapping `json:"componentColumns"`
@@ -1552,6 +1568,29 @@ type IdentityDecisionRequest struct {
 
 	// Note Optional reviewer note stored as append-only audit evidence.
 	Note *string `json:"note,omitempty"`
+}
+
+// Level2ProposalRequest A Level-2 reversible-config proposal (CHAT-061/062): before/after catalog keys plus the setting being changed. Keys are locale-neutral catalog keys (LOC-001) — no copy in the core.
+type Level2ProposalRequest struct {
+	AfterKey             string             `json:"after_key"`
+	BeforeKey            string             `json:"before_key"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplace_account_id"`
+	SettingKey           string             `json:"setting_key"`
+}
+
+// Level2ProposalResult The proposal's identifiers, bound versions, scope/consequence catalog keys, and expiry. The proposal + its append-only audit row are written in one transaction (AUD-001). Version values are opaque strings. TERMINAL AT DRAFT.
+type Level2ProposalResult struct {
+	ActionId openapi_types.UUID `json:"action_id"`
+
+	// ConsequenceKey The catalog key naming the reversible consequence.
+	ConsequenceKey   string             `json:"consequence_key"`
+	ContextVersion   string             `json:"context_version"`
+	DraftId          openapi_types.UUID `json:"draft_id"`
+	ExpiresAt        time.Time          `json:"expires_at"`
+	ParameterVersion string             `json:"parameter_version"`
+
+	// ScopeKey The catalog key naming what the change affects.
+	ScopeKey string `json:"scope_key"`
 }
 
 // LoginRequest Email/password credential presented to open a session.
@@ -1968,6 +2007,24 @@ type RawAmount struct {
 // RecommendOnlyState The EXE-005 recommend-only tracking state.
 type RecommendOnlyState string
 
+// RecommendationDraftRequest A PrepareAction hand-off (CHAT-041): create the individual-approval Draft for one persisted, approvable recommendation. All identifiers are snake_case to match the LLM plane's Draft-only transport contract.
+type RecommendationDraftRequest struct {
+	// EntityId The variant (entity) the recommendation targets.
+	EntityId             openapi_types.UUID `json:"entity_id"`
+	MarketplaceAccountId openapi_types.UUID `json:"marketplace_account_id"`
+	RecommendationId     openapi_types.UUID `json:"recommendation_id"`
+}
+
+// RecommendationDraftResult The created Draft's identifiers, APR-001 bound versions, and expiry. Version values are opaque strings (the transport treats them as identifiers, never numbers). The card is in §8.4 Draft — no approval control is minted.
+type RecommendationDraftResult struct {
+	ActionId              openapi_types.UUID `json:"action_id"`
+	ContextVersion        string             `json:"context_version"`
+	DraftId               openapi_types.UUID `json:"draft_id"`
+	ExpiresAt             time.Time          `json:"expires_at"`
+	ParameterVersion      string             `json:"parameter_version"`
+	RecommendationVersion string             `json:"recommendation_version"`
+}
+
 // RetryActionRequest Request to retry an eligible failed action (EXE-003 / CHAT-074).
 type RetryActionRequest struct {
 	ActionId openapi_types.UUID `json:"actionId"`
@@ -1980,6 +2037,23 @@ type RetryActionResult struct {
 
 	// State The EXE-003 external result of a write. `pending_reconciliation` is the fail-closed state for an UNKNOWN result — never inferred as success/failure.
 	State *ExecutionExternalState `json:"state,omitempty"`
+}
+
+// SelectionSetDraftRequest A bulk hand-off (CHAT-050/051): compile the conversational query into a named, versioned selection set. There is NO chat bulk approval.
+type SelectionSetDraftRequest struct {
+	MarketplaceAccountId openapi_types.UUID `json:"marketplace_account_id"`
+
+	// Query The deterministic selection query (compiled to criteria).
+	Query string `json:"query"`
+}
+
+// SelectionSetDraftResult The created selection-set Draft's identifiers, bound version, and expiry. Version values are opaque strings. TERMINAL AT DRAFT.
+type SelectionSetDraftResult struct {
+	ActionId         openapi_types.UUID `json:"action_id"`
+	ContextVersion   string             `json:"context_version"`
+	DraftId          openapi_types.UUID `json:"draft_id"`
+	ExpiresAt        time.Time          `json:"expires_at"`
+	ParameterVersion string             `json:"parameter_version"`
 }
 
 // SessionInfo Identity of the authenticated session. This is the single shape both chat and screens read the current principal from; role drives the shared permission matrix (ACC-002).
@@ -2038,6 +2112,14 @@ type GetActionExecutionParams struct {
 type GetApprovalCardParams struct {
 	// CardId The approval card id.
 	CardId openapi_types.UUID `form:"cardId" json:"cardId"`
+}
+
+// GetBriefingParams defines parameters for GetBriefing.
+type GetBriefingParams struct {
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+
+	// BusinessDay The business day (UTC calendar date) of the briefing.
+	BusinessDay openapi_types.Date `form:"businessDay" json:"businessDay"`
 }
 
 // GetConnectorStatusParams defines parameters for GetConnectorStatus.
@@ -2135,6 +2217,15 @@ type LoginJSONRequestBody = LoginRequest
 // ChatJSONRequestBody defines body for Chat for application/json ContentType.
 type ChatJSONRequestBody = ChatTurnRequest
 
+// CreateLevel2ProposalJSONRequestBody defines body for CreateLevel2Proposal for application/json ContentType.
+type CreateLevel2ProposalJSONRequestBody = Level2ProposalRequest
+
+// CreateRecommendationDraftJSONRequestBody defines body for CreateRecommendationDraft for application/json ContentType.
+type CreateRecommendationDraftJSONRequestBody = RecommendationDraftRequest
+
+// CreateSelectionSetDraftJSONRequestBody defines body for CreateSelectionSetDraft for application/json ContentType.
+type CreateSelectionSetDraftJSONRequestBody = SelectionSetDraftRequest
+
 // ConnectConnectorJSONRequestBody defines body for ConnectConnector for application/json ContentType.
 type ConnectConnectorJSONRequestBody = ConnectorConnectRequest
 
@@ -2200,9 +2291,21 @@ type ServerInterface interface {
 	// GetCurrentSession Return the identity of the current session.
 	// (GET /auth/me)
 	GetCurrentSession(w http.ResponseWriter, r *http.Request)
+	// GetBriefing Get the stored daily briefing for a business day (CHAT-010).
+	// (GET /briefing)
+	GetBriefing(w http.ResponseWriter, r *http.Request, params GetBriefingParams)
 	// Chat Converse with the LLM plane over a Server-Sent Events stream.
 	// (POST /chat)
 	Chat(w http.ResponseWriter, r *http.Request)
+	// CreateLevel2Proposal Create a Level-2 reversible-config before/after proposal (CHAT-061/062).
+	// (POST /chat/cards/level2-proposal)
+	CreateLevel2Proposal(w http.ResponseWriter, r *http.Request)
+	// CreateRecommendationDraft Create an individual-approval Draft from a recommendation (CHAT-041).
+	// (POST /chat/cards/recommendation-draft)
+	CreateRecommendationDraft(w http.ResponseWriter, r *http.Request)
+	// CreateSelectionSetDraft Create a named, versioned bulk selection-set Draft (CHAT-050/051).
+	// (POST /chat/cards/selection-set-draft)
+	CreateSelectionSetDraft(w http.ResponseWriter, r *http.Request)
 	// ConnectConnector Connect the DK account for a marketplace account.
 	// (POST /connector/connect)
 	ConnectConnector(w http.ResponseWriter, r *http.Request)
@@ -2453,11 +2556,99 @@ func (siw *ServerInterfaceWrapper) GetCurrentSession(w http.ResponseWriter, r *h
 	handler.ServeHTTP(w, r)
 }
 
+// GetBriefing operation middleware
+func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetBriefingParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "businessDay" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "businessDay", r.URL.Query(), &params.BusinessDay, runtime.BindQueryParameterOptions{Type: "string", Format: "date"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "businessDay"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "businessDay", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetBriefing(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
 // Chat operation middleware
 func (siw *ServerInterfaceWrapper) Chat(w http.ResponseWriter, r *http.Request) {
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.Chat(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateLevel2Proposal operation middleware
+func (siw *ServerInterfaceWrapper) CreateLevel2Proposal(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateLevel2Proposal(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateRecommendationDraft operation middleware
+func (siw *ServerInterfaceWrapper) CreateRecommendationDraft(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateRecommendationDraft(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// CreateSelectionSetDraft operation middleware
+func (siw *ServerInterfaceWrapper) CreateSelectionSetDraft(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.CreateSelectionSetDraft(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -3226,6 +3417,10 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/actions/retry", wrapper.RetryAction)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/actions/execution", wrapper.GetActionExecution)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/outcomes", wrapper.GetOutcome)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/chat/cards/recommendation-draft", wrapper.CreateRecommendationDraft)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/chat/cards/selection-set-draft", wrapper.CreateSelectionSetDraft)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/chat/cards/level2-proposal", wrapper.CreateLevel2Proposal)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/briefing", wrapper.GetBriefing)
 
 	return m
 }
@@ -3601,6 +3796,45 @@ func (response GetCurrentSessiondefaultJSONResponse) VisitGetCurrentSessionRespo
 	return err
 }
 
+type GetBriefingRequestObject struct {
+	Params GetBriefingParams
+}
+
+type GetBriefingResponseObject interface {
+	VisitGetBriefingResponse(w http.ResponseWriter) error
+}
+
+type GetBriefing200JSONResponse DailyBriefing
+
+func (response GetBriefing200JSONResponse) VisitGetBriefingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetBriefingdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetBriefingdefaultJSONResponse) VisitGetBriefingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ChatRequestObject struct {
 	Body *ChatJSONRequestBody
 }
@@ -3672,6 +3906,123 @@ type ChatdefaultJSONResponse struct {
 }
 
 func (response ChatdefaultJSONResponse) VisitChatResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateLevel2ProposalRequestObject struct {
+	Body *CreateLevel2ProposalJSONRequestBody
+}
+
+type CreateLevel2ProposalResponseObject interface {
+	VisitCreateLevel2ProposalResponse(w http.ResponseWriter) error
+}
+
+type CreateLevel2Proposal200JSONResponse Level2ProposalResult
+
+func (response CreateLevel2Proposal200JSONResponse) VisitCreateLevel2ProposalResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateLevel2ProposaldefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response CreateLevel2ProposaldefaultJSONResponse) VisitCreateLevel2ProposalResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRecommendationDraftRequestObject struct {
+	Body *CreateRecommendationDraftJSONRequestBody
+}
+
+type CreateRecommendationDraftResponseObject interface {
+	VisitCreateRecommendationDraftResponse(w http.ResponseWriter) error
+}
+
+type CreateRecommendationDraft200JSONResponse RecommendationDraftResult
+
+func (response CreateRecommendationDraft200JSONResponse) VisitCreateRecommendationDraftResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateRecommendationDraftdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response CreateRecommendationDraftdefaultJSONResponse) VisitCreateRecommendationDraftResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateSelectionSetDraftRequestObject struct {
+	Body *CreateSelectionSetDraftJSONRequestBody
+}
+
+type CreateSelectionSetDraftResponseObject interface {
+	VisitCreateSelectionSetDraftResponse(w http.ResponseWriter) error
+}
+
+type CreateSelectionSetDraft200JSONResponse SelectionSetDraftResult
+
+func (response CreateSelectionSetDraft200JSONResponse) VisitCreateSelectionSetDraftResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type CreateSelectionSetDraftdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response CreateSelectionSetDraftdefaultJSONResponse) VisitCreateSelectionSetDraftResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -4686,9 +5037,21 @@ type StrictServerInterface interface {
 	// GetCurrentSession Return the identity of the current session.
 	// (GET /auth/me)
 	GetCurrentSession(ctx context.Context, request GetCurrentSessionRequestObject) (GetCurrentSessionResponseObject, error)
+	// GetBriefing Get the stored daily briefing for a business day (CHAT-010).
+	// (GET /briefing)
+	GetBriefing(ctx context.Context, request GetBriefingRequestObject) (GetBriefingResponseObject, error)
 	// Chat Converse with the LLM plane over a Server-Sent Events stream.
 	// (POST /chat)
 	Chat(ctx context.Context, request ChatRequestObject) (ChatResponseObject, error)
+	// CreateLevel2Proposal Create a Level-2 reversible-config before/after proposal (CHAT-061/062).
+	// (POST /chat/cards/level2-proposal)
+	CreateLevel2Proposal(ctx context.Context, request CreateLevel2ProposalRequestObject) (CreateLevel2ProposalResponseObject, error)
+	// CreateRecommendationDraft Create an individual-approval Draft from a recommendation (CHAT-041).
+	// (POST /chat/cards/recommendation-draft)
+	CreateRecommendationDraft(ctx context.Context, request CreateRecommendationDraftRequestObject) (CreateRecommendationDraftResponseObject, error)
+	// CreateSelectionSetDraft Create a named, versioned bulk selection-set Draft (CHAT-050/051).
+	// (POST /chat/cards/selection-set-draft)
+	CreateSelectionSetDraft(ctx context.Context, request CreateSelectionSetDraftRequestObject) (CreateSelectionSetDraftResponseObject, error)
 	// ConnectConnector Connect the DK account for a marketplace account.
 	// (POST /connector/connect)
 	ConnectConnector(ctx context.Context, request ConnectConnectorRequestObject) (ConnectConnectorResponseObject, error)
@@ -5060,6 +5423,32 @@ func (sh *strictHandler) GetCurrentSession(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// GetBriefing operation middleware
+func (sh *strictHandler) GetBriefing(w http.ResponseWriter, r *http.Request, params GetBriefingParams) {
+	var request GetBriefingRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetBriefing(ctx, request.(GetBriefingRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetBriefing")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetBriefingResponseObject); ok {
+		if err := validResponse.VisitGetBriefingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
 // Chat operation middleware
 func (sh *strictHandler) Chat(w http.ResponseWriter, r *http.Request) {
 	var request ChatRequestObject
@@ -5084,6 +5473,99 @@ func (sh *strictHandler) Chat(w http.ResponseWriter, r *http.Request) {
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(ChatResponseObject); ok {
 		if err := validResponse.VisitChatResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateLevel2Proposal operation middleware
+func (sh *strictHandler) CreateLevel2Proposal(w http.ResponseWriter, r *http.Request) {
+	var request CreateLevel2ProposalRequestObject
+
+	var body CreateLevel2ProposalJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateLevel2Proposal(ctx, request.(CreateLevel2ProposalRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateLevel2Proposal")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateLevel2ProposalResponseObject); ok {
+		if err := validResponse.VisitCreateLevel2ProposalResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateRecommendationDraft operation middleware
+func (sh *strictHandler) CreateRecommendationDraft(w http.ResponseWriter, r *http.Request) {
+	var request CreateRecommendationDraftRequestObject
+
+	var body CreateRecommendationDraftJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateRecommendationDraft(ctx, request.(CreateRecommendationDraftRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateRecommendationDraft")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateRecommendationDraftResponseObject); ok {
+		if err := validResponse.VisitCreateRecommendationDraftResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// CreateSelectionSetDraft operation middleware
+func (sh *strictHandler) CreateSelectionSetDraft(w http.ResponseWriter, r *http.Request) {
+	var request CreateSelectionSetDraftRequestObject
+
+	var body CreateSelectionSetDraftJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.CreateSelectionSetDraft(ctx, request.(CreateSelectionSetDraftRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "CreateSelectionSetDraft")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(CreateSelectionSetDraftResponseObject); ok {
+		if err := validResponse.VisitCreateSelectionSetDraftResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

@@ -105,12 +105,33 @@ func WithCookieSecure(secure bool) Option {
 	return func(s *gatewayServer) { s.cookieSecure = CookieSecure(secure) }
 }
 
+// WithDraft injects the Draft-only service backing the /chat/cards/* routes
+// (CHAT-041/050/061). Without it those routes fail closed with a structured error,
+// so no Draft, selection set, or Level-2 proposal is minted on an unwired plane.
+func WithDraft(d DraftService) Option {
+	return func(s *gatewayServer) { s.draft = d }
+}
+
+// WithBriefing injects the daily-briefing service backing GET /briefing
+// (CHAT-010). Without it the route fails closed with a structured error.
+func WithBriefing(b BriefingService) Option {
+	return func(s *gatewayServer) { s.briefing = b }
+}
+
+// WithGatewayToken sets the read/Draft-only machine credential (LLM_GATEWAY_TOKEN)
+// the middleware matches to authenticate the machine principal on the Draft-only
+// routes and the machine read envelope (perm.GatewayCan). Empty ⇒ no machine
+// principal can authenticate; the Draft routes stay unreachable (fail closed).
+func WithGatewayToken(token string) Option {
+	return func(s *gatewayServer) { s.gatewayToken = token }
+}
+
 // NewServer builds the core HTTP server bound to addr with the generated gateway
 // routes and safe timeouts. It does not start listening; the caller runs
 // ListenAndServe and drives graceful shutdown.
 func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option) *http.Server {
 	mux := http.NewServeMux()
-	gs := &gatewayServer{build: info}
+	gs := &gatewayServer{build: info, logger: logger}
 	for _, opt := range opts {
 		opt(gs)
 	}
@@ -120,9 +141,11 @@ func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option)
 	// Arm the permission middleware whenever auth is wired. It enforces the
 	// shared perm matrix on every non-public route and fails closed. When auth
 	// is not wired, only public routes are reachable, so no protected resource
-	// is ever served without authorization.
+	// is ever served without authorization. The gateway (machine) token, when
+	// configured, additionally authorizes the read/Draft-only machine principal
+	// through perm.GatewayCan — never an approve/execute action.
 	if gs.auth != nil {
-		handler = newAuthMiddleware(gs.auth).wrap(handler)
+		handler = newAuthMiddleware(gs.auth, gs.gatewayToken).wrap(handler)
 	}
 
 	return &http.Server{

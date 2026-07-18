@@ -96,6 +96,22 @@ type AuditRecord struct {
 	OccurredAt           time.Time
 }
 
+type Briefing struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	BusinessDay          pgtype.Date
+	GeneratedAt          time.Time
+}
+
+type BriefingEvent struct {
+	ID         uuid.UUID
+	BriefingID uuid.UUID
+	Rank       int32
+	EventID    uuid.UUID
+	EventType  string
+	Severity   string
+}
+
 type CatalogPayloadSnapshot struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -228,6 +244,24 @@ type EventRelevanceFeedback struct {
 	Relevance string
 	Note      string
 	CreatedAt time.Time
+}
+
+type Level2Proposal struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	ActionID             uuid.UUID
+	SettingKey           string
+	BeforeKey            string
+	AfterKey             string
+	ScopeKey             string
+	ConsequenceKey       string
+	ContextVersion       int64
+	ParameterVersion     int64
+	ExpiresAt            time.Time
+	Actor                string
+	ActorRole            string
+	Surface              string
+	CreatedAt            time.Time
 }
 
 type Listing struct {
