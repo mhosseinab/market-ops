@@ -67,7 +67,10 @@ echo "== build the web bundle (default /api base — routes through the Caddy te
 (cd apps/web && pnpm run build)
 
 echo "== bring up the integration stack =="
-$COMPOSE up -d --wait postgres mockdk llm core web caddy
+# No separate `web` service: Caddy serves the built apps/web/dist directly with
+# an SPA history fallback (deploy/compose.test.yml / Caddyfile.integration),
+# mirroring compose.prod.yml. The `pnpm run build` above produced that dist.
+$COMPOSE up -d --wait postgres mockdk llm core caddy
 
 echo "== STOP the LLM plane container (the actual kill-switch condition) =="
 $COMPOSE stop llm
