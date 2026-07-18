@@ -93,3 +93,30 @@ func (q *Queries) GetMarketplaceAccountByOrganization(ctx context.Context, organ
 	)
 	return i, err
 }
+
+const listMarketplaceAccountIDs = `-- name: ListMarketplaceAccountIDs :many
+SELECT id FROM marketplace_accounts
+ORDER BY created_at, id
+`
+
+// Every marketplace account id, in a stable order — the per-account fan-out for
+// platform passes (e.g. the daily briefing job, CHAT-010).
+func (q *Queries) ListMarketplaceAccountIDs(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := q.db.Query(ctx, listMarketplaceAccountIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

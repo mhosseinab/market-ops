@@ -42,6 +42,10 @@ const (
 	EventRecommendOnly EventType = "recommend_only"
 	// EventTerminal — the action reached a terminal state.
 	EventTerminal EventType = "terminal"
+	// EventLevel2Proposal — a §8.3 Level-2 reversible-config proposal was written
+	// (CHAT-061/062). It is a Draft-only governance write; recording it in the one
+	// AUD-001 trail keeps the proposal transcript-independently reproducible.
+	EventLevel2Proposal EventType = "level2_proposal"
 )
 
 // Actor is the AUD-001 actor + surface. It is identity, never free-text

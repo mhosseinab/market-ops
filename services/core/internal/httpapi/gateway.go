@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"log/slog"
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 )
@@ -51,6 +52,19 @@ type gatewayServer struct {
 	// llmChat is the internal Python LLM plane seam (§19.3). Nil ⇒ /chat returns
 	// a structured provider_unavailable state; screens are unaffected.
 	llmChat LLMChatService
+	// draft backs the /chat/cards/* Draft-only routes (CHAT-041/050/061). Nil ⇒
+	// those routes fail closed with a structured error; no Draft is ever minted on
+	// an unwired plane.
+	draft DraftService
+	// briefing backs GET /briefing (CHAT-010). Nil ⇒ the route fails closed.
+	briefing BriefingService
+	// gatewayToken is the read/Draft-only machine credential (LLM_GATEWAY_TOKEN).
+	// It is what the middleware matches to authorize the machine principal on the
+	// Draft-only routes and its read envelope (perm.GatewayCan). Empty ⇒ no machine
+	// principal can authenticate (the Draft routes are unreachable, fail closed).
+	gatewayToken string
+	// logger emits the structured boundary logs for the S23 handlers/job. Nil-safe.
+	logger *slog.Logger
 }
 
 // Compile-time assertion that we implement the full generated interface.

@@ -27,12 +27,16 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from llm.config import Settings, load_settings
+from llm.config import ProviderKind, Settings, load_settings
 from llm.envelope.models import ChatStreamEvent, StreamEventKind
+from llm.intents.classifier import IntentClassifier
+from llm.intents.keyword_mock import default_keyword_intent
+from llm.metrics import ContainmentMetrics
 from llm.observability import configure_observability
 from llm.orchestrator.agent import build_agent
 from llm.orchestrator.graph import TurnGraph, TurnState, build_turn_graph
 from llm.providers.base import build_chat_model
+from llm.providers.mock import MockScript
 from llm.tools.registry import ToolRegistry, build_registry
 
 
@@ -55,9 +59,38 @@ class AppState:
         self.settings = settings
         self.observability = configure_observability(settings)
         self.registry: ToolRegistry = build_registry()
-        model = build_chat_model(settings)
-        self.agent = build_agent(model, self.registry, settings)
-        self.turn_graph: TurnGraph = build_turn_graph(self.agent, settings)
+        self.metrics = ContainmentMetrics()
+        # The agent model (answers) and the classifier model are separate roles.
+        # In production both resolve to the SAME configured OpenAI-compatible
+        # endpoint; with the mock they carry different deterministic scripts so a
+        # turn can classify AND answer. The classifier's mock is content-sensitive
+        # (keyword stand-in) so the LIVE turn routes by the message text, not a
+        # fixed label — the real endpoint classifies for real (§12.5).
+        agent_model = build_chat_model(settings)
+        self.agent = build_agent(agent_model, self.registry, settings)
+        classifier_model = build_chat_model(
+            settings, mock_script=_classifier_mock_script(settings)
+        )
+        self.classifier = IntentClassifier(classifier_model)
+        self.turn_graph: TurnGraph = build_turn_graph(
+            self.agent, settings, self.classifier, self.metrics
+        )
+
+
+def _classifier_mock_script(settings: Settings) -> MockScript | None:
+    """The classifier's mock script (mock provider only; ignored otherwise).
+
+    Content-sensitive intent classification via the deterministic keyword
+    stand-in, so a live mock turn routes by the actual message text. The real
+    OpenAI-compatible endpoint ignores this and classifies with the model.
+    """
+    if settings.provider_kind is not ProviderKind.MOCK:
+        return None
+    return MockScript(
+        mode="answer",
+        response_tool_name="IntentClassification",
+        intent_classifier=default_keyword_intent,
+    )
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

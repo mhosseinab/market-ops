@@ -1,0 +1,133 @@
+"""Execution monitoring (Journey 10, PRD §6.11, CHAT-073/074). Deterministic.
+
+Chat groups in-flight and completed actions by their terminal state, reading the
+append-only action state history (never mutating it). Retry is BLOCKED while an
+action is unreconciled (CHAT-074) — the same EXE-003 rule the execution engine
+enforces; chat cannot bypass it. A retry request for a still-reconciling action
+is answered with a deep link to the structured screen, never a re-execution
+(there is no execute path in the model plane at all).
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class ActionState(StrEnum):
+    """Action lifecycle states (canonical glossary keys map 1:1, §11.4).
+
+    Terminal states are accepted / rejected / failed / expired.
+    ``pending_reconciliation`` is NOT terminal: the marketplace outcome is not yet
+    reconciled, so a retry is blocked (EXE-003 / CHAT-074).
+    """
+
+    AWAITING_CONFIRMATION = "awaiting_confirmation"
+    EXECUTING = "executing"
+    PENDING_RECONCILIATION = "pending_reconciliation"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    FAILED = "failed"
+    EXPIRED = "expired"
+
+
+TERMINAL_STATES: frozenset[ActionState] = frozenset(
+    {
+        ActionState.ACCEPTED,
+        ActionState.REJECTED,
+        ActionState.FAILED,
+        ActionState.EXPIRED,
+    }
+)
+
+# States from which a retry is BLOCKED because the outcome is not yet reconciled
+# (CHAT-074, mirrors EXE-003). An action mid-flight or awaiting reconciliation
+# must never be retried; only a terminal *failure/rejection* is retry-eligible.
+UNRECONCILED_STATES: frozenset[ActionState] = frozenset(
+    {
+        ActionState.AWAITING_CONFIRMATION,
+        ActionState.EXECUTING,
+        ActionState.PENDING_RECONCILIATION,
+    }
+)
+
+# Canonical state key per action state (CHAT-022 glossary keys).
+_STATE_KEY: dict[ActionState, str] = {
+    ActionState.AWAITING_CONFIRMATION: "state.awaitingConfirmation",
+    ActionState.EXECUTING: "state.executing",
+    ActionState.PENDING_RECONCILIATION: "state.pendingReconciliation",
+    ActionState.ACCEPTED: "state.accepted",
+    ActionState.REJECTED: "state.rejected",
+    ActionState.FAILED: "state.failed",
+    ActionState.EXPIRED: "state.expired",
+}
+
+
+class ActionRecord(BaseModel):
+    """A read-only projection of the append-only action state history."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action_id: str
+    state: ActionState
+    entity_id: str | None = None
+
+    def state_key(self) -> str:
+        return _STATE_KEY[self.state]
+
+
+class MonitoringView(BaseModel):
+    """Actions grouped by state, segregated terminal vs in-flight (CHAT-073).
+
+    ``groups`` holds every state's action ids; ``terminal`` and ``in_flight`` are
+    the two top-level buckets the surface renders separately — a settled action
+    (accepted/rejected/failed/expired) is shown apart from one still moving
+    (awaiting/executing/pending reconciliation), so "done" never reads as "live".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    groups: dict[str, list[str]] = Field(default_factory=dict)
+    terminal: dict[str, list[str]] = Field(default_factory=dict)
+    in_flight: dict[str, list[str]] = Field(default_factory=dict)
+
+    def action_ids_in(self, state: ActionState) -> list[str]:
+        return self.groups.get(state.value, [])
+
+    def terminal_action_ids(self) -> list[str]:
+        return [aid for ids in self.terminal.values() for aid in ids]
+
+    def in_flight_action_ids(self) -> list[str]:
+        return [aid for ids in self.in_flight.values() for aid in ids]
+
+
+def group_by_state(actions: list[ActionRecord]) -> MonitoringView:
+    """Group action ids by state and segregate terminal vs in-flight (CHAT-073).
+
+    Within a group, action ids preserve the order they arrived from the
+    append-only history — the surface never re-sorts across the state boundary.
+    Terminal states (:data:`TERMINAL_STATES`) bucket into ``terminal``; every
+    other state buckets into ``in_flight``.
+    """
+    groups: dict[str, list[str]] = {}
+    terminal: dict[str, list[str]] = {}
+    in_flight: dict[str, list[str]] = {}
+    for record in actions:
+        groups.setdefault(record.state.value, []).append(record.action_id)
+        bucket = terminal if record.state in TERMINAL_STATES else in_flight
+        bucket.setdefault(record.state.value, []).append(record.action_id)
+    return MonitoringView(groups=groups, terminal=terminal, in_flight=in_flight)
+
+
+def can_retry(record: ActionRecord) -> bool:
+    """Whether a retry may be *offered* for an action (CHAT-074 / EXE-003).
+
+    Retry is blocked while the action is unreconciled (mid-flight or awaiting
+    reconciliation). Only a terminal failure/rejection/expiry is retry-eligible;
+    an accepted action needs no retry. This gates whether chat SHOWS a retry
+    deep link — chat never executes a retry itself (no execute path exists).
+    """
+    if record.state in UNRECONCILED_STATES:
+        return False
+    return record.state in {ActionState.FAILED, ActionState.REJECTED, ActionState.EXPIRED}

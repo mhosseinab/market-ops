@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
+	"github.com/mhosseinab/market-ops/services/core/internal/briefing"
 	"github.com/mhosseinab/market-ops/services/core/internal/config"
 	"github.com/mhosseinab/market-ops/services/core/internal/connector"
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
@@ -143,14 +144,26 @@ func run() error {
 
 		// Wire the event engine (EVT-001..005): five detectors, versioned
 		// materiality, type-specific dedup, and the deterministic Today ranking.
-		serverOpts = append(serverOpts, httpapi.WithEvent(event.NewService(pool)))
+		eventSvc := event.NewService(pool)
+		serverOpts = append(serverOpts, httpapi.WithEvent(eventSvc))
 		logger.Info("event service wired")
 
 		// Wire the recommendation/approval plane (PRC-001/002, APR-001, §8.4): the
-		// version-bound approval control and the append-only state machine.
+		// version-bound approval control and the append-only state machine. The
+		// same service backs the /chat/cards/* Draft-only routes (CHAT-041/050/061),
+		// authorized ONLY for the read/Draft-only machine credential; the write is
+		// terminal at Draft (never approve/execute).
 		recSvc := recommendation.NewService(pool)
 		serverOpts = append(serverOpts, httpapi.WithApproval(recSvc))
-		logger.Info("approval service wired")
+		serverOpts = append(serverOpts, httpapi.WithDraft(recSvc))
+		serverOpts = append(serverOpts, httpapi.WithGatewayToken(cfg.LLMGatewayToken))
+		logger.Info("approval + Draft-only service wired")
+
+		// Wire the daily briefing (CHAT-010): stored once-per-business-day, served
+		// from the SAME Today ranking so its event ids/order equal the feed.
+		briefingSvc := briefing.NewService(pool, eventSvc)
+		serverOpts = append(serverOpts, httpapi.WithBriefing(briefingSvc))
+		logger.Info("briefing service wired")
 
 		// Wire the execution/reconciliation/outcome plane (EXE-001..005, AUD-001,
 		// OUT-001). Execution ships DARK: the DefaultResolver reports write
@@ -179,13 +192,14 @@ func run() error {
 				s, err := matcher.RunOnce(c)
 				return s.ExternallyExecuted + s.Lapsed, err
 			},
-			OutcomeClose: closer.RunOnce,
+			OutcomeClose:     closer.RunOnce,
+			BriefingGenerate: briefingSvc.GenerateAll,
 		})
 		if jobsErr != nil {
 			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)
 		} else {
 			defer stopJobs()
-			logger.Info("job pipeline started (recommend-only matcher, outcome close)")
+			logger.Info("job pipeline started (recommend-only matcher, outcome close, daily briefing)")
 		}
 	} else {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")

@@ -13,8 +13,23 @@ from typing import Any
 
 from llm.config import Settings
 from llm.envelope.models import AssistantAnswer
+from llm.intents.classifier import IntentClassifier
 from llm.orchestrator.agent import AgentHandle
 from llm.orchestrator.graph import TransientTurnError, build_turn_graph
+from llm.providers.mock import MockChatModel, MockScript
+
+
+def _question_classifier() -> IntentClassifier:
+    """A classifier fixed to a tool-capable intent so the agent path runs."""
+    return IntentClassifier(
+        MockChatModel(
+            script=MockScript(
+                mode="answer",
+                response_tool_name="IntentClassification",
+                response_args={"intent": "Question", "rationale": "test"},
+            )
+        )
+    )
 
 
 class _FlakyGraph:
@@ -35,7 +50,7 @@ def _graph_with(fail_times: int) -> tuple[_FlakyGraph, Any]:
     settings = Settings(node_transient_retries=1)
     flaky = _FlakyGraph(fail_times=fail_times)
     agent = AgentHandle(graph=flaky, bound_tool_names=frozenset())  # type: ignore[arg-type]
-    return flaky, build_turn_graph(agent, settings)
+    return flaky, build_turn_graph(agent, settings, _question_classifier())
 
 
 def test_one_transient_failure_then_success_recovers_in_two_attempts() -> None:

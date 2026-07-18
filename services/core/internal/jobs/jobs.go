@@ -40,6 +40,10 @@ type Client = river.Client[pgx.Tx]
 type ExecutionRunners struct {
 	RecommendOnlyMatch RunOnceFunc
 	OutcomeClose       RunOnceFunc
+	// BriefingGenerate is the CHAT-010 daily-briefing fan-out (once per business
+	// day per account, generated from the Today ranking). A nil runner registers a
+	// no-op worker (fail closed).
+	BriefingGenerate RunOnceFunc
 }
 
 // NewWorkers builds the worker registry for the core binary. Every worker the
@@ -55,6 +59,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewOutcomeCloseWorker(runners.OutcomeClose, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register outcome-close worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewBriefingWorker(runners.BriefingGenerate, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register briefing worker: %w", err)
 	}
 	return workers, nil
 }
@@ -72,6 +79,15 @@ func periodicJobs() []*river.PeriodicJob {
 		river.NewPeriodicJob(
 			river.PeriodicInterval(time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return OutcomeCloseArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// Daily briefing (CHAT-010). Runs hourly with RunOnStart; generation is
+		// idempotent per business day (unique account+business_day), so the first
+		// run each UTC day creates the briefing and later runs are no-ops — "once
+		// per business day per account" without depending on a precise wake time.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(time.Hour),
+			func() (river.JobArgs, *river.InsertOpts) { return BriefingGenerateArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
 	}

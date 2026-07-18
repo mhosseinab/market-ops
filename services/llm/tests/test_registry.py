@@ -111,3 +111,46 @@ def test_agent_cannot_bind_a_tool_outside_the_registry() -> None:
     model = build_chat_model(settings, mock_script=MockScript(mode="say"))
     with pytest.raises(ValueError):
         build_agent(model, registry, settings, bind=frozenset({"approve_everything"}))
+
+
+# --- S23 extension: no bulk-approve, no Level-3-write tool -------------------
+# The S23 chat flows add prepare/bulk/admin journeys. This re-asserts the
+# registry still holds NO bulk-approve tool (CHAT-051) and NO Level-3
+# commercial-guardrail write tool (CHAT-062): the only Draft tools are the
+# individual recommendation Draft, the reversible Level-2 proposal Draft, and the
+# versioned selection-set Draft — none of which can approve or write a guardrail.
+
+
+def test_no_bulk_approve_tool_exists() -> None:
+    """Bulk creates a versioned selection-set Draft only — never a bulk approve."""
+    manifest = build_registry().manifest()
+    for tool in manifest["tools"]:
+        name = tool["name"].lower()
+        assert "bulk_approve" not in name
+        assert not ("bulk" in name and "approve" in name)
+        assert tool["perm_action"] != "bulk.approve"
+
+
+def test_no_level3_guardrail_write_tool_exists() -> None:
+    """Level-3 (commercial guardrails) has NO chat write tool in P0 (CHAT-062)."""
+    manifest = build_registry().manifest()
+    for tool in manifest["tools"]:
+        action = tool["perm_action"]
+        # No Draft (or any) tool targets a guardrail / level-3 write action.
+        assert not action.startswith("guardrail.")
+        assert "level3" not in action.lower()
+        assert action not in {"draft.level3_proposal", "draft.guardrail"}
+
+
+def test_only_reversible_level2_config_draft_exists() -> None:
+    """The only config-change Draft is the reversible Level-2 proposal (CHAT-061)."""
+    manifest = build_registry().manifest()
+    draft_actions = {t["perm_action"] for t in manifest["tools"] if t["kind"] == "draft"}
+    assert "draft.level2_proposal" in draft_actions
+    assert "draft.level3_proposal" not in draft_actions
+    # The three Draft tools and nothing more.
+    assert draft_actions == {
+        "draft.recommendation",
+        "draft.level2_proposal",
+        "draft.selection_set",
+    }

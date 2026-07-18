@@ -35,6 +35,9 @@ from langgraph.graph import END, START, StateGraph
 
 from llm.config import Settings
 from llm.envelope.models import TurnFailure
+from llm.flows.dispatch import contain
+from llm.intents.classifier import IntentClassifier
+from llm.metrics import ContainmentMetrics
 from llm.orchestrator.agent import AgentHandle, TokenCeilingError, ToolTimeoutError
 
 
@@ -75,9 +78,12 @@ def _failure(code: str, message: str) -> dict[str, Any]:
 class TurnGraph:
     """A compiled turn graph plus the settings that bound each run."""
 
-    def __init__(self, compiled: Any, settings: Settings) -> None:
+    def __init__(
+        self, compiled: Any, settings: Settings, metrics: ContainmentMetrics
+    ) -> None:
         self._compiled = compiled
         self._settings = settings
+        self.metrics = metrics
 
     def run(self, state: TurnState) -> TurnResult:
         out: TurnState = self._compiled.invoke(dict(state))
@@ -90,72 +96,109 @@ def _as_failure(raw: dict[str, Any] | None) -> TurnFailure | None:
     return TurnFailure.model_validate(raw)
 
 
-def build_turn_graph(agent: AgentHandle, settings: Settings) -> TurnGraph:
-    """Build the single-node P0 turn graph around a leaf agent."""
+def build_turn_graph(
+    agent: AgentHandle,
+    settings: Settings,
+    classifier: IntentClassifier,
+    metrics: ContainmentMetrics | None = None,
+) -> TurnGraph:
+    """Build the P0 turn graph: classify → CONTAIN → (guidance | agent).
 
-    def agent_node(state: TurnState) -> TurnState:
-        attempts = settings.node_transient_retries + 1  # one retry ⇒ two attempts
-        last_transient: TransientTurnError | None = None
-        for _ in range(attempts):
-            try:
-                inner = agent.graph.invoke(
-                    {"messages": [("user", state["message"])]},
-                    {"recursion_limit": settings.graph_recursion_limit},
-                )
-            except GraphRecursionError:
-                # Unbounded loop hit the per-turn recursion ceiling.
-                return {
-                    "answer": None,
-                    "failure": _failure(
-                        "TURN_RECURSION_LIMIT",
-                        "the request exceeded the per-turn step limit; use the structured screen",
-                    ),
-                }
-            except ToolCallLimitExceededError:
-                return {
-                    "answer": None,
-                    "failure": _failure(
-                        "TOOL_CALL_LIMIT",
-                        "the request exceeded the tool-call limit; use the structured screen",
-                    ),
-                }
-            except ToolTimeoutError:
-                # A single tool ran past the per-tool timeout (§12.4 hard bound).
-                return {
-                    "answer": None,
-                    "failure": _failure(
-                        "TOOL_TIMEOUT",
-                        "a data lookup took too long; use the structured screen",
-                    ),
-                }
-            except TokenCeilingError:
-                # The completion was truncated at the token ceiling — fail closed
-                # rather than relay a silently-truncated answer (§12.4).
-                return {
-                    "answer": None,
-                    "failure": _failure(
-                        "TOKEN_CEILING",
-                        "the response exceeded the length limit; use the structured screen",
-                    ),
-                }
-            except TransientTurnError as exc:  # noqa: PERF203
-                last_transient = exc
-                continue
+    Every turn passes through :func:`llm.flows.dispatch.contain` BEFORE any tool
+    or agent runs. ApproveAction/ConfirmResult are answered with guidance to the
+    external structured control and a free-text-containment metric — never a
+    transition (§12.3, CHAT-041). Only a tool-capable intent reaches the agent,
+    whose terminal write is at most a Draft.
+    """
+    containment_metrics = metrics if metrics is not None else ContainmentMetrics()
 
-            structured = inner.get("structured_response")
-            answer = structured.model_dump() if structured is not None else None
-            return {"answer": answer, "failure": None}
-
-        # Both attempts hit a transient failure (§12.4: concise message + deep link).
-        message = "the assistant is temporarily unavailable; use the structured screen"
-        if last_transient is not None and str(last_transient):
-            message = f"{message} ({last_transient})"
-        return {"answer": None, "failure": _failure("MODEL_TRANSIENT_FAILURE", message)}
+    def containment_node(state: TurnState) -> TurnState:
+        """Classify the turn and contain approve/confirm attempts (live path)."""
+        try:
+            decision = classifier.classify(state["message"])
+        except ValueError:
+            # The classifier would not converge on a structured intent — fail
+            # closed to the structured screen, never guess an intent (§12.4).
+            return {
+                "answer": None,
+                "failure": _failure(
+                    "INTENT_UNCLASSIFIED",
+                    "the assistant could not interpret the request; use the structured screen",
+                ),
+            }
+        guidance = contain(decision.intent)
+        if guidance is not None:
+            # Free text never approves: record the containment and return guidance.
+            containment_metrics.record_containment(decision.intent.value)
+            return {"answer": {"guidance": guidance.model_dump()}, "failure": None}
+        # Tool-capable: proceed to the agent (terminal write is at most a Draft).
+        return _run_agent(agent, settings, state)
 
     builder = StateGraph(TurnState)
-    builder.add_node("agent_turn", agent_node)
-    builder.add_edge(START, "agent_turn")
-    builder.add_edge("agent_turn", END)
+    builder.add_node("turn", containment_node)
+    builder.add_edge(START, "turn")
+    builder.add_edge("turn", END)
     # No checkpointer: per-request, in-process state (§19.3).
     compiled = builder.compile()
-    return TurnGraph(compiled, settings)
+    return TurnGraph(compiled, settings, containment_metrics)
+
+
+def _run_agent(agent: AgentHandle, settings: Settings, state: TurnState) -> TurnState:
+    """Run the leaf agent with the §12.4 hard bounds and single transient retry."""
+    attempts = settings.node_transient_retries + 1  # one retry ⇒ two attempts
+    last_transient: TransientTurnError | None = None
+    for _ in range(attempts):
+        try:
+            inner = agent.graph.invoke(
+                {"messages": [("user", state["message"])]},
+                {"recursion_limit": settings.graph_recursion_limit},
+            )
+        except GraphRecursionError:
+            # Unbounded loop hit the per-turn recursion ceiling.
+            return {
+                "answer": None,
+                "failure": _failure(
+                    "TURN_RECURSION_LIMIT",
+                    "the request exceeded the per-turn step limit; use the structured screen",
+                ),
+            }
+        except ToolCallLimitExceededError:
+            return {
+                "answer": None,
+                "failure": _failure(
+                    "TOOL_CALL_LIMIT",
+                    "the request exceeded the tool-call limit; use the structured screen",
+                ),
+            }
+        except ToolTimeoutError:
+            # A single tool ran past the per-tool timeout (§12.4 hard bound).
+            return {
+                "answer": None,
+                "failure": _failure(
+                    "TOOL_TIMEOUT",
+                    "a data lookup took too long; use the structured screen",
+                ),
+            }
+        except TokenCeilingError:
+            # The completion was truncated at the token ceiling — fail closed
+            # rather than relay a silently-truncated answer (§12.4).
+            return {
+                "answer": None,
+                "failure": _failure(
+                    "TOKEN_CEILING",
+                    "the response exceeded the length limit; use the structured screen",
+                ),
+            }
+        except TransientTurnError as exc:  # noqa: PERF203
+            last_transient = exc
+            continue
+
+        structured = inner.get("structured_response")
+        answer = structured.model_dump() if structured is not None else None
+        return {"answer": answer, "failure": None}
+
+    # Both attempts hit a transient failure (§12.4: concise message + deep link).
+    message = "the assistant is temporarily unavailable; use the structured screen"
+    if last_transient is not None and str(last_transient):
+        message = f"{message} ({last_transient})"
+    return {"answer": None, "failure": _failure("MODEL_TRANSIENT_FAILURE", message)}

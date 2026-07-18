@@ -1244,6 +1244,156 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /chat/cards/recommendation-draft:
+    post:
+      operationId: createRecommendationDraft
+      tags:
+        - recommendation
+      summary: Create an individual-approval Draft from a recommendation (CHAT-041).
+      description: >-
+        The Draft-only write the LLM/machine plane originates for a PrepareAction
+        turn (PRD §8.2, §12.1, CHAT-041). It authorizes against the read/Draft-only
+        gateway credential (perm.GatewayCan(draft.recommendation)) — a human session
+        or any principal without the Draft capability is refused. It mints the
+        initial §8.4 Draft approval card from the persisted, approvable
+        recommendation and returns its bound versions + expiry so the gateway can
+        render the card. The write is TERMINAL AT DRAFT: it never advances the
+        state machine and never mints an approval control (confirmation happens
+        through the same structured control endpoint as screens — chat never owns a
+        confirm path). Fails closed (404) on an unknown/foreign/non-executable
+        recommendation — never a fabricated Draft.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecommendationDraftRequest'
+      responses:
+        '200':
+          description: The created Draft's identifiers, bound versions, and expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecommendationDraftResult'
+        default:
+          description: Unexpected error (including an unknown/non-executable recommendation).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /chat/cards/selection-set-draft:
+    post:
+      operationId: createSelectionSetDraft
+      tags:
+        - recommendation
+      summary: Create a named, versioned bulk selection-set Draft (CHAT-050/051).
+      description: >-
+        The Draft-only write for a bulk hand-off (PRD §12.1, CHAT-050/051). It
+        authorizes against perm.GatewayCan(draft.selection_set). It compiles the
+        conversational query into deterministic criteria and appends a NEW
+        selection-set version, returning its bound versions + expiry. There is NO
+        chat bulk approval — the confirmation binds ONE version through the screens'
+        structured control. TERMINAL AT DRAFT.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SelectionSetDraftRequest'
+      responses:
+        '200':
+          description: The created selection-set Draft's identifiers, bound version, and expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SelectionSetDraftResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /chat/cards/level2-proposal:
+    post:
+      operationId: createLevel2Proposal
+      tags:
+        - recommendation
+      summary: Create a Level-2 reversible-config before/after proposal (CHAT-061/062).
+      description: >-
+        The Draft-only write for a Level-2 (reversible configuration) proposal
+        (PRD §8.3, CHAT-061/062). It authorizes against
+        perm.GatewayCan(draft.level2_proposal). It writes the
+        before/after/scope/consequence proposal AND an append-only audit row in ONE
+        transaction (fail-closed on audit error) so the governance change is
+        transcript-independently reproducible (AUD-001). NO Level-3 write path
+        exists. TERMINAL AT DRAFT — confirmation is the screens' structured control.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Level2ProposalRequest'
+      responses:
+        '200':
+          description: The proposal's identifiers, bound versions, scope/consequence keys, and expiry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Level2ProposalResult'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /briefing:
+    get:
+      operationId: getBriefing
+      tags:
+        - event
+      summary: Get the stored daily briefing for a business day (CHAT-010).
+      description: >-
+        Returns the stored once-per-business-day briefing for an account (PRD
+        §6.8, CHAT-010). The briefing is generated from the SAME Today ranking the
+        feed uses, so its event ids and ORDER EQUAL the Today feed — a divergence
+        is a traceability breach. This is a read; it never generates a briefing.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: businessDay
+          in: query
+          required: true
+          description: The business day (UTC calendar date) of the briefing.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: The stored daily briefing with its ranked events.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DailyBriefing'
+        default:
+          description: Unexpected error (including no briefing for that day).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
 components:
   securitySchemes:
     cookieAuth:
@@ -3520,4 +3670,211 @@ components:
           format: date-time
         result:
           $ref: '#/components/schemas/OutcomeResultView'
+      additionalProperties: false
+
+    RecommendationDraftRequest:
+      type: object
+      description: >-
+        A PrepareAction hand-off (CHAT-041): create the individual-approval Draft
+        for one persisted, approvable recommendation. All identifiers are snake_case
+        to match the LLM plane's Draft-only transport contract.
+      required:
+        - marketplace_account_id
+        - entity_id
+        - recommendation_id
+      properties:
+        marketplace_account_id:
+          type: string
+          format: uuid
+        entity_id:
+          type: string
+          format: uuid
+          description: The variant (entity) the recommendation targets.
+        recommendation_id:
+          type: string
+          format: uuid
+      additionalProperties: false
+
+    RecommendationDraftResult:
+      type: object
+      description: >-
+        The created Draft's identifiers, APR-001 bound versions, and expiry. Version
+        values are opaque strings (the transport treats them as identifiers, never
+        numbers). The card is in §8.4 Draft — no approval control is minted.
+      required:
+        - draft_id
+        - action_id
+        - context_version
+        - recommendation_version
+        - parameter_version
+        - expires_at
+      properties:
+        draft_id:
+          type: string
+          format: uuid
+        action_id:
+          type: string
+          format: uuid
+        context_version:
+          type: string
+        recommendation_version:
+          type: string
+        parameter_version:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    SelectionSetDraftRequest:
+      type: object
+      description: >-
+        A bulk hand-off (CHAT-050/051): compile the conversational query into a
+        named, versioned selection set. There is NO chat bulk approval.
+      required:
+        - marketplace_account_id
+        - query
+      properties:
+        marketplace_account_id:
+          type: string
+          format: uuid
+        query:
+          type: string
+          description: The deterministic selection query (compiled to criteria).
+      additionalProperties: false
+
+    SelectionSetDraftResult:
+      type: object
+      description: >-
+        The created selection-set Draft's identifiers, bound version, and expiry.
+        Version values are opaque strings. TERMINAL AT DRAFT.
+      required:
+        - draft_id
+        - action_id
+        - context_version
+        - parameter_version
+        - expires_at
+      properties:
+        draft_id:
+          type: string
+          format: uuid
+        action_id:
+          type: string
+          format: uuid
+        context_version:
+          type: string
+        parameter_version:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+      additionalProperties: false
+
+    Level2ProposalRequest:
+      type: object
+      description: >-
+        A Level-2 reversible-config proposal (CHAT-061/062): before/after catalog
+        keys plus the setting being changed. Keys are locale-neutral catalog keys
+        (LOC-001) — no copy in the core.
+      required:
+        - marketplace_account_id
+        - setting_key
+        - before_key
+        - after_key
+      properties:
+        marketplace_account_id:
+          type: string
+          format: uuid
+        setting_key:
+          type: string
+        before_key:
+          type: string
+        after_key:
+          type: string
+      additionalProperties: false
+
+    Level2ProposalResult:
+      type: object
+      description: >-
+        The proposal's identifiers, bound versions, scope/consequence catalog keys,
+        and expiry. The proposal + its append-only audit row are written in one
+        transaction (AUD-001). Version values are opaque strings. TERMINAL AT DRAFT.
+      required:
+        - draft_id
+        - action_id
+        - context_version
+        - parameter_version
+        - expires_at
+        - scope_key
+        - consequence_key
+      properties:
+        draft_id:
+          type: string
+          format: uuid
+        action_id:
+          type: string
+          format: uuid
+        context_version:
+          type: string
+        parameter_version:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        scope_key:
+          type: string
+          description: The catalog key naming what the change affects.
+        consequence_key:
+          type: string
+          description: The catalog key naming the reversible consequence.
+      additionalProperties: false
+
+    DailyBriefing:
+      type: object
+      description: >-
+        The stored once-per-business-day briefing (CHAT-010). Its events carry the
+        SAME ids and ORDER as the Today feed for the account/day (generated from the
+        one ranking, never a re-computation).
+      required:
+        - marketplaceAccountId
+        - businessDay
+        - generatedAt
+        - events
+      properties:
+        marketplaceAccountId:
+          type: string
+          format: uuid
+        businessDay:
+          type: string
+          format: date
+        generatedAt:
+          type: string
+          format: date-time
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/BriefingEvent'
+      additionalProperties: false
+
+    BriefingEvent:
+      type: object
+      description: >-
+        One ranked event in a daily briefing. `rank` is 1-based and matches the
+        Today feed position; `eventId` matches the Today feed event id.
+      required:
+        - rank
+        - eventId
+        - eventType
+        - severity
+      properties:
+        rank:
+          type: integer
+          format: int32
+        eventId:
+          type: string
+          format: uuid
+        eventType:
+          type: string
+        severity:
+          type: string
       additionalProperties: false
