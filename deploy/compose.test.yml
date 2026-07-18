@@ -104,8 +104,25 @@ services:
       # every other offline suite in this repo (§12.5 — paid provider calls are a
       # gated, human-authorized S35 operation, never CI).
       HOME: /tmp
+      # The mounted repo (../:/src) is the SAME checkout the CI job already ran
+      # a host-side `uv sync --frozen --group dev` against (Python 3.12,
+      # ci.yml's integration job) before `docker compose up`. Without this,
+      # `uv sync`/`uv run` inside this python:3.13-slim container resolve the
+      # uv workspace root at /src (repo root pyproject.toml) and reuse the
+      # HOST's /src/.venv — whose interpreter symlink points at the host's
+      # Python 3.12, which does not exist in this image, so `uv run uvicorn`
+      # fails and the container exits(2), and the host's later `uv run` steps
+      # then trip on container-touched/root-owned venv files. Pointing uv at a
+      # container-local, non-mounted path keeps the two `uv` environments
+      # (host CI runner, this container) fully isolated so neither observes or
+      # mutates the other's virtualenv.
+      UV_PROJECT_ENVIRONMENT: /opt/llm-venv
     volumes:
       - ../:/src
+      # Belt-and-suspenders: even if some tool ignores UV_PROJECT_ENVIRONMENT,
+      # this anonymous volume shadows the mounted host .venv inside the
+      # container so it can never be read or written from here.
+      - /src/.venv
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/healthz')"]
       interval: 5s
