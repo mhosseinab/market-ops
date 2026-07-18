@@ -23,6 +23,8 @@ console.log("extension build: bundling service worker + popup…");
 vite(["build"]);
 console.log("extension build: bundling content script (IIFE)…");
 vite(["build", "--config", "vite.content.config.ts"]);
+console.log("extension build: bundling MAIN-world nav shim (IIFE)…");
+vite(["build", "--config", "vite.navshim.config.ts"]);
 
 if (!existsSync(join(dist, "manifest.json"))) {
   console.error("extension build: dist/manifest.json missing — the zip would not load.");

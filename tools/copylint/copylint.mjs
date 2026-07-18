@@ -17,6 +17,17 @@ const PERSIAN = /[؀-ۿ]/;
 // no code punctuation — i.e. real display copy, not a generic type or expression.
 const JSX_TEXT = />\s*([A-Za-z؀-ۿ][^<>{}=;:]*?)\s*</g;
 
+// Vanilla-DOM UI surfaces (the extension popup/overlay: no JSX) carry copy via
+// direct property assignment instead of a JSX text node. A LITERAL string
+// assigned to one of these display properties is the non-JSX equivalent of an
+// inline JSX literal — copy belongs in the locale pack, rendered via t(key).
+// A call expression (e.g. `.textContent = t("x")`) does NOT match; template
+// literals are exempt from this specific check (they legitimately interpolate
+// already-translated values, e.g. `${label}: ${value}`) — a bare single/double
+// quoted literal is the only pattern flagged here.
+const DOM_PROP_LITERAL =
+  /\.(textContent|placeholder|title|alt|ariaLabel)\s*=\s*(["'])([^"']*[A-Za-z][^"']*)\2/g;
+
 const EXEMPT = /(\.test\.[tj]sx?$)|(\.stories\.)|([\\/]test[\\/])/;
 
 function collect(dir, out) {
@@ -64,6 +75,15 @@ for (const file of files) {
           `${file}:${lineOf(text, m.index)}  inline JSX literal ${JSON.stringify(literal)} (use a catalog key)`,
         );
       }
+    }
+  }
+
+  for (const m of text.matchAll(DOM_PROP_LITERAL)) {
+    const literal = m[3].trim();
+    if (literal.length > 0) {
+      violations.push(
+        `${file}:${lineOf(text, m.index)}  inline DOM property literal ${JSON.stringify(literal)} (use a catalog key via t())`,
+      );
     }
   }
 }

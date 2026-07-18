@@ -1,4 +1,4 @@
-import { buildCapture } from "./build-capture";
+import { buildCapture, type CaptureSubRoute } from "./build-capture";
 import { type Capability, captureEnabled } from "./capability";
 import type { OwnedTargetIndex } from "./owned-targets";
 import type { CaptureUpload, ParsedProduct } from "./types";
@@ -20,6 +20,7 @@ export function prepareCapture(
   index: OwnedTargetIndex,
   capability: Capability,
   capturedAt: string,
+  subRoute: CaptureSubRoute = "passive",
 ): CaptureDecision {
   // Gate 1 — capability. Unknown (never paired), revoked, or disabled: no-op.
   if (!captureEnabled(capability)) {
@@ -31,7 +32,7 @@ export function prepareCapture(
   if (target === null) {
     return { action: "skip", reason: "not_confirmed_owned" };
   }
-  const capture = buildCapture(product, target, capturedAt);
+  const capture = buildCapture(product, target, capturedAt, subRoute);
   if (capture === null) {
     return { action: "skip", reason: "no_offer" };
   }

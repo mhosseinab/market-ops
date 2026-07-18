@@ -1,4 +1,8 @@
-import type { MessageKey } from "@market-ops/locale";
+import {
+  FRESHNESS_AGING_MAX_MINUTES,
+  FRESHNESS_FRESH_MAX_MINUTES,
+  type MessageKey,
+} from "@market-ops/locale";
 import { useT } from "../app/i18n";
 
 // Badge/pill primitives (design/IA_AND_COMPONENTS.md component inventory). Every
@@ -179,12 +183,14 @@ export function DispositionBadge({ state }: { state: DispositionState }) {
 }
 
 // ── Freshness pill (fresh ≤60m / aging 1–6h / stale >6h) ───────────────────
+// Thresholds are the SHARED constants (packages/locale) the extension overlay
+// also reads (EXT-005 parity) — never a locally-duplicated magic number.
 export function FreshnessPill({ ageMinutes }: { ageMinutes: number }) {
   const t = useT();
   const band: { tone: Tone; key: MessageKey } =
-    ageMinutes <= 60
+    ageMinutes <= FRESHNESS_FRESH_MAX_MINUTES
       ? { tone: "tone-pos", key: "freshness.fresh" }
-      : ageMinutes <= 360
+      : ageMinutes <= FRESHNESS_AGING_MAX_MINUTES
         ? { tone: "tone-warn", key: "freshness.aging" }
         : { tone: "tone-risk", key: "freshness.stale" };
   return <Badge tone={band.tone} label={t(band.key)} />;

@@ -1,10 +1,13 @@
+import type { Capability } from "../lib/capability";
 import { productApiUrl } from "../lib/constants";
 import { validateAgainstDom } from "../lib/dom-validate";
-import type { ExtMessage } from "../lib/messages";
+import type { ExtMessage, ExtResponse } from "../lib/messages";
 import { productIdFromPath } from "../lib/normalize";
 import { incr, log } from "../lib/observability";
 import { parseProductResponse } from "../lib/parse";
 import { initDevErrorReporting } from "../lib/spotlight";
+import type { ParsedProduct } from "../lib/types";
+import { mountOverlay, type OverlayState, renderOverlay, unmountOverlay } from "./overlay";
 
 // Content script (docs/09). It runs ONLY on Digikala product pages, and captures
 // ONLY during explicit product browsing (EXT-002, §12): it classifies the page,
@@ -12,11 +15,18 @@ import { initDevErrorReporting } from "../lib/spotlight";
 // actively viewing, parses + redacts, cross-checks the DOM for drift, and hands a
 // normalized, allow-listed product to the service worker. It NEVER navigates,
 // clicks, submits, enumerates ids, or crawls other pages. SPA route changes are
-// detected via history events + popstate.
+// detected via the MAIN-world nav shim's CustomEvent (S31 fix — see nav-shim.ts)
+// plus `popstate`. The overlay (EXT-005/EXT-010) is the ONLY additional DOM
+// effect: one host element, read-only otherwise.
 
 void initDevErrorReporting("content-script");
 
 let lastCapturedPath = "";
+let currentProduct: ParsedProduct | null = null;
+
+function send(msg: ExtMessage): Promise<ExtResponse> {
+  return chrome.runtime.sendMessage(msg) as Promise<ExtResponse>;
+}
 
 async function captureCurrentProduct(): Promise<void> {
   const path = location.pathname;
@@ -62,29 +72,61 @@ async function captureCurrentProduct(): Promise<void> {
     });
   }
 
+  currentProduct = result.product;
   const msg: ExtMessage = { kind: "capture", product: result.product };
-  chrome.runtime.sendMessage(msg);
+  void send(msg);
+  void refreshOverlay();
 }
 
-// SPA navigation: Digikala is a single-page app, so a product view can change
-// without a full reload. Detect it via history pushState/replaceState + popstate,
-// and re-capture the NEW product only (docs/09).
+// refreshOverlay mounts/updates the overlay for the currently-captured product
+// (EXT-005/EXT-010). Never renders a fabricated value: it shows the honest
+// pending/unavailable state whenever the read seam isn't available. The
+// action buttons are gated on the REAL current capability (read fresh via
+// getState, never assumed) — Unknown/disabled/revoked renders neither.
+async function refreshOverlay(): Promise<void> {
+  const product = currentProduct;
+  if (!product) return;
+  const root = mountOverlay();
+  const stateResp = await send({ kind: "getState" });
+  const capability: Capability =
+    stateResp.ok && "state" in stateResp ? stateResp.state.capability : "unknown";
+  const context = { capability };
+  renderOverlay(root, { kind: "pending" }, overlayActions(product), context);
+  const resp = await send({ kind: "getOverlayView", product });
+  const state: OverlayState = resp.ok && "overlay" in resp ? resp.overlay : { kind: "unavailable" };
+  renderOverlay(root, state, overlayActions(product), context);
+}
+
+function overlayActions(product: ParsedProduct) {
+  return {
+    // A REAL user click on the overlay's refresh button — never an automated
+    // trigger (EXT-010).
+    onRefresh: () => {
+      void send({ kind: "onDemandCapture", product }).then(() => void refreshOverlay());
+    },
+    onAddToWatchlist: () => {
+      void send({ kind: "addToWatchlist", product });
+    },
+  };
+}
+
+// SPA navigation (S31 fix): a Digikala route change fires from the PAGE's own
+// JS in the MAIN world, so it is observed via the MAIN-world nav shim's
+// CustomEvent (nav-shim.ts) rather than an isolated-world pushState patch
+// (which never sees the page's own calls — see nav-shim.ts's header comment).
+// `popstate` is a native browser event and is observed directly either way.
 function installSpaNavigationHooks(): void {
   const fire = () => void captureCurrentProduct();
-  const origPush = history.pushState.bind(history);
-  const origReplace = history.replaceState.bind(history);
-  history.pushState = ((...args: Parameters<typeof history.pushState>) => {
-    const r = origPush(...args);
-    fire();
-    return r;
-  }) as typeof history.pushState;
-  history.replaceState = ((...args: Parameters<typeof history.replaceState>) => {
-    const r = origReplace(...args);
-    fire();
-    return r;
-  }) as typeof history.replaceState;
+  window.addEventListener("market-ops:navigation", fire);
   window.addEventListener("popstate", fire);
+  // Diagnostic-only injection (docs/09) — asks the service worker to install
+  // the MAIN-world shim into THIS tab only.
+  void send({ kind: "injectNavShim" });
 }
+
+window.addEventListener("beforeunload", () => {
+  unmountOverlay();
+});
 
 installSpaNavigationHooks();
 void captureCurrentProduct();

@@ -134,4 +134,6 @@ export interface PopupState {
   lastUploadAt: string | null;
   queuedCount: number;
   degradation: string | null;
+  // EXT-012 opt-in toggle for bounded scheduled refresh (server-allocated).
+  scheduleEnabled: boolean;
 }
