@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
@@ -20,6 +21,24 @@ func persistRecommendation(t *testing.T, svc *recommendation.Service, account, v
 	in.AccountID = account
 	in.VariantID = variant
 	in.EventID = uuid.Nil
+	rec := recommendation.Assemble(in)
+	row, err := svc.Persist(context.Background(), uuid.New(), rec)
+	if err != nil {
+		t.Fatalf("persist recommendation: %v", err)
+	}
+	return row.ID
+}
+
+// persistRecommendationWithContribution is persistRecommendation but with a
+// caller-chosen proposed contribution — used to construct a cross-currency
+// aggregate-impact mismatch across two members of one bulk preview.
+func persistRecommendationWithContribution(t *testing.T, svc *recommendation.Service, account, variant uuid.UUID, contribution money.Money) uuid.UUID {
+	t.Helper()
+	in := baseValidInput(t)
+	in.AccountID = account
+	in.VariantID = variant
+	in.EventID = uuid.Nil
+	in.Policy.Proposed.Contribution = contribution
 	rec := recommendation.Assemble(in)
 	row, err := svc.Persist(context.Background(), uuid.New(), rec)
 	if err != nil {
@@ -107,6 +126,74 @@ func TestPreviewBulkSelectionResolvesDispositionServerSide(t *testing.T) {
 	}
 	if result.AggregateImpact == nil {
 		t.Fatal("aggregate impact should be known (the recommendation has a proposed contribution)")
+	}
+}
+
+// seedSecondVariant adds another variant to an EXISTING account (seedVariant in
+// service_db_test.go always mints a fresh account too; this lets a test build
+// a multi-member bulk preview within one account).
+func seedSecondVariant(t *testing.T, q *db.Queries, account uuid.UUID) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	nativeProduct := int64(uuid.New().ID())
+	nativeVariant := int64(uuid.New().ID())
+	prod, err := q.UpsertProduct(ctx, db.UpsertProductParams{
+		MarketplaceAccountID: account,
+		NativeProductID:      nativeProduct,
+		Title:                "Widget 2",
+	})
+	if err != nil {
+		t.Fatalf("upsert product: %v", err)
+	}
+	v, err := q.UpsertVariant(ctx, db.UpsertVariantParams{
+		MarketplaceAccountID: account,
+		ProductID:            prod.ID,
+		NativeVariantID:      nativeVariant,
+		NativeProductID:      nativeProduct,
+		SupplierCode:         "SKU-" + uuid.NewString()[:8],
+		Title:                "Widget 2 - Blue",
+	})
+	if err != nil {
+		t.Fatalf("upsert variant: %v", err)
+	}
+	return v.ID
+}
+
+// TestPreviewBulkSelection_AggregateImpactUnknownOnCurrencyMismatch is the
+// money-correctness / quarantine-over-inference fix: when two members'
+// proposed contributions cannot be summed (a currency mismatch), the WHOLE
+// aggregate must flip to unknown/unavailable — NEVER an understated partial
+// sum silently presented as complete to a bulk-approving Owner/Operator.
+func TestPreviewBulkSelectionAggregateImpactUnknownOnCurrencyMismatch(t *testing.T) {
+	pool, q := newPool(t)
+	account, variantA := seedVariant(t, q)
+	variantB := seedSecondVariant(t, q, account)
+	svc := recommendation.NewService(pool)
+
+	irrContribution, err := money.New(300, "IRR", 0)
+	if err != nil {
+		t.Fatalf("money.New(IRR): %v", err)
+	}
+	usdContribution, err := money.New(300, "USD", 0)
+	if err != nil {
+		t.Fatalf("money.New(USD): %v", err)
+	}
+	recA := persistRecommendationWithContribution(t, svc, account, variantA, irrContribution)
+	recB := persistRecommendationWithContribution(t, svc, account, variantB, usdContribution)
+
+	result, err := svc.PreviewBulkSelection(context.Background(), account, uuid.Nil, "bulk-mismatch",
+		nil, []recommendation.PreviewMemberInput{
+			{VariantID: variantA, RecommendationID: recA},
+			{VariantID: variantB, RecommendationID: recB},
+		})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if len(result.Members) != 2 {
+		t.Fatalf("members = %d, want 2 (the mismatch must not drop a member from the SET, only the aggregate)", len(result.Members))
+	}
+	if result.AggregateImpact != nil {
+		t.Fatalf("AggregateImpact = %+v, want nil/unknown — a currency mismatch must never yield a silent partial sum", *result.AggregateImpact)
 	}
 }
 

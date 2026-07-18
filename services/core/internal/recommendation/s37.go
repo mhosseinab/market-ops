@@ -122,6 +122,7 @@ func (s *Service) PreviewBulkSelection(ctx context.Context, account, lineage uui
 	views := make([]PreviewMemberView, 0, len(members))
 	var impact money.Money
 	haveImpact := false
+	impactUnavailable := false
 	q := db.New(s.pool)
 	for _, m := range members {
 		row, err := q.GetRecommendation(ctx, m.RecommendationID)
@@ -137,7 +138,7 @@ func (s *Service) PreviewBulkSelection(ctx context.Context, account, lineage uui
 		disp := dispositionOf(row)
 		views = append(views, PreviewMemberView{VariantID: m.VariantID, RecommendationID: m.RecommendationID, Disposition: disp})
 
-		if row.ProposedContributionAvailable {
+		if row.ProposedContributionAvailable && !impactUnavailable {
 			contrib, err := money.New(row.ProposedContributionMantissa.Int64, row.ProposedContributionCurrency, int8(row.ProposedContributionExponent))
 			if err != nil {
 				return PreviewResult{}, err
@@ -145,11 +146,22 @@ func (s *Service) PreviewBulkSelection(ctx context.Context, account, lineage uui
 			if !haveImpact {
 				impact = contrib
 				haveImpact = true
-			} else if summed, err := impact.Add(contrib); err == nil {
-				impact = summed
+				continue
 			}
-			// A cross-currency/exponent mismatch leaves the running total as-is
-			// rather than fabricating a coerced sum — quarantine over inference.
+			summed, err := impact.Add(contrib)
+			if err != nil {
+				// A cross-currency/exponent mismatch means the aggregate can no
+				// longer be trusted as a complete sum. Quarantine-over-inference:
+				// NEVER present a partial/understated total as if it were the
+				// whole picture — flip the WHOLE aggregate to unknown rather than
+				// silently dropping this member's contribution from the running
+				// total (§9.1, "no swallowed error returning a default downstream
+				// treats as success").
+				haveImpact = false
+				impactUnavailable = true
+				continue
+			}
+			impact = summed
 		}
 	}
 

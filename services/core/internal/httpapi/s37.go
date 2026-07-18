@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -467,32 +468,40 @@ func toRecommendationDetail(row db.Recommendation) (gateway.RecommendationDetail
 	}
 	if len(row.Assumptions) > 0 {
 		var a []string
-		if err := json.Unmarshal(row.Assumptions, &a); err == nil {
-			out.Assumptions = a
+		if err := json.Unmarshal(row.Assumptions, &a); err != nil {
+			// Errors are actionable: corrupt persisted JSON must not silently
+			// degrade to an empty (but "present") list — that would report an
+			// incomplete PRC-001 record as complete. Propagate to the caller's
+			// existing 500 path, exactly as recommendation.DecodeEvidenceVersions
+			// (unmarshalEvidenceVersions) already does for evidence versions.
+			return gateway.RecommendationDetail{}, fmt.Errorf("recommendation %s: decode assumptions: %w", row.ID, err)
 		}
+		out.Assumptions = a
 	}
 	if len(row.Blockers) > 0 {
 		var raw []struct {
 			Code    string `json:"Code"`
 			Message string `json:"Message"`
 		}
-		if err := json.Unmarshal(row.Blockers, &raw); err == nil {
-			for _, b := range raw {
-				out.Blockers = append(out.Blockers, gateway.RecommendationBlocker{Code: b.Code, Message: b.Message})
-			}
+		if err := json.Unmarshal(row.Blockers, &raw); err != nil {
+			return gateway.RecommendationDetail{}, fmt.Errorf("recommendation %s: decode blockers: %w", row.ID, err)
+		}
+		for _, b := range raw {
+			out.Blockers = append(out.Blockers, gateway.RecommendationBlocker{Code: b.Code, Message: b.Message})
 		}
 	}
 	if len(row.Inputs) > 0 {
 		var deductions []margin.Deduction
-		if err := json.Unmarshal(row.Inputs, &deductions); err == nil {
-			for _, d := range deductions {
-				out.ContributionDeductions = append(out.ContributionDeductions, gateway.ContributionDeduction{
-					Component: gateway.CostComponent(d.Component),
-					Amount:    toMoneyAmount(d.Amount),
-					Kind:      kindToGateway(d.Kind),
-					Version:   d.Version,
-				})
-			}
+		if err := json.Unmarshal(row.Inputs, &deductions); err != nil {
+			return gateway.RecommendationDetail{}, fmt.Errorf("recommendation %s: decode contribution deductions: %w", row.ID, err)
+		}
+		for _, d := range deductions {
+			out.ContributionDeductions = append(out.ContributionDeductions, gateway.ContributionDeduction{
+				Component: gateway.CostComponent(d.Component),
+				Amount:    toMoneyAmount(d.Amount),
+				Kind:      kindToGateway(d.Kind),
+				Version:   d.Version,
+			})
 		}
 	}
 	return out, nil
