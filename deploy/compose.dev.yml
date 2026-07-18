@@ -24,7 +24,10 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # PostgreSQL 18+ stores PGDATA under a major-version directory
+      # (/var/lib/postgresql/18/docker). Mount the parent so pg_upgrade can
+      # operate across version directories without crossing mount boundaries.
+      - pgdata:/var/lib/postgresql
     healthcheck:
       # `task dev` and `task db:reset` gate on this becoming healthy.
       test: ["CMD-SHELL", "pg_isready -U market_ops -d market_ops -h 127.0.0.1"]
