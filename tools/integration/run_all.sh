@@ -62,7 +62,10 @@ fi
 
 # --- bring the stack back up (with the LLM plane LIVE) for scenarios 2-5 ---
 echo "### bringing the stack up (LLM plane live) for scenarios 2-5 ###"
-if ! $COMPOSE up -d --wait postgres mockdk llm core web caddy; then
+# No separate `web` service — Caddy serves apps/web/dist directly (see
+# deploy/compose.test.yml). Scenarios 2-5 drive only /api, so the web bundle
+# is irrelevant here; scenario 1 (run_killswitch_journey.sh) is what builds it.
+if ! $COMPOSE up -d --wait postgres mockdk llm core caddy; then
   echo "== compose up --wait failed; dumping llm/core/mockdk/migrate logs for diagnosis =="
   $COMPOSE logs llm core mockdk migrate || true
   report "2. adversarial containment replay (CHAT-041/045)" "FAIL"
