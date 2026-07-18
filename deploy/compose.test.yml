@@ -158,11 +158,24 @@ services:
   core:
     image: golang:1.25
     working_dir: /src/services/core
-    entrypoint: ["/bin/sh", "-c"]
     # seede2e now runs inside `migrate` (see its comment above) — atomically
     # with `task db:reset`, so it re-fires on EVERY schema reset regardless of
     # whether this `core` container itself gets recreated on a given
-    # `docker compose up`. `core` only needs the gateway/domain process.
+    # `docker compose up`. `core` only needs the gateway/domain process, so
+    # this is a plain exec-form command (list) — same pattern as `mockdk`
+    # below, deliberately WITHOUT an `entrypoint: ["/bin/sh", "-c"]`
+    # override. `/bin/sh -c` treats ONLY its first argument as the command
+    # string to execute and passes any further array elements as positional
+    # parameters ($0, $1, ...) to THAT string, not as additional argv to
+    # exec — so `entrypoint: ["/bin/sh", "-c"]` + `command: ["go", "run",
+    # "./cmd/core"]` actually ran bare `go` (with "run" as $0 and
+    # "./cmd/core" as $1, both ignored), which just printed Go's generic
+    # usage help and exited(2) — the exact S32 integration regression this
+    # fixes (core never started, so `up --wait` never succeeded, so every
+    # scenario failed). `entrypoint`+`command: ["/bin/sh","-c","<string>"]`
+    # (a single joined string) is only needed for the OTHER services here
+    # (`migrate`, `llm`) because their commands are actual multi-step shell
+    # scripts (`&&`-chained pipelines) that need a real shell to interpret.
     command: ["go", "run", "./cmd/core"]
     environment:
       GOWORK: "off"
