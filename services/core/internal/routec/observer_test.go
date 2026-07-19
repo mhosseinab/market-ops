@@ -140,6 +140,47 @@ func TestObserveTargetHappyPath(t *testing.T) {
 	}
 }
 
+// TestObserveTargetRejectsWrongProductID asserts that a well-formed product
+// response whose data.product.id differs from the scheduled target's native
+// product id is REJECTED before any capture is built: no observation is ingested
+// (the target is left unchanged), the identity-mismatch skip reason is returned,
+// quality is downgraded (never relabeling an old value current), and the drift
+// guard is paused (a wrong-product response is upstream drift — redirect /
+// challenge / mismatch). This is identity quarantine: another product's price /
+// availability must never be attributed to this target (CLAUDE.md §4.6).
+func TestObserveTargetRejectsWrongProductID(t *testing.T) {
+	f := &fakeFetcher{result: routec.FetchResult{
+		StatusCode: 200,
+		Body:       golden(t, "product_wrong_id.json"),
+		Bytes:      1024,
+		Signal:     routec.SignalOK,
+	}}
+	ing := &fakeIngestor{}
+	guard := routec.NewDriftGuard()
+	obs := newTestObserver(t, f, ing, routec.NewMemKillSwitchStore(), guard)
+
+	ref := testTarget() // NativeProductID 900100; fixture reports 900999
+	out, err := obs.ObserveTarget(context.Background(), routec.Snapshot{}, ref)
+	if err != nil {
+		t.Fatalf("observe: %v", err)
+	}
+	if out.Skipped != routec.SkipIdentityMismatch {
+		t.Fatalf("skip reason: got %q want identity_mismatch", out.Skipped)
+	}
+	if out.Ingested != 0 {
+		t.Fatalf("ingested: got %d want 0 (wrong-product response must not be stored)", out.Ingested)
+	}
+	if len(ing.captures) != 0 {
+		t.Fatal("wrong-product response must not write any observation — target left unchanged (identity quarantine)")
+	}
+	if out.DowngradedQuality != observation.Stale {
+		t.Fatalf("downgraded quality: got %q want stale", out.DowngradedQuality)
+	}
+	if guard.Extracting() {
+		t.Fatal("a wrong-product (upstream drift) response must pause extraction")
+	}
+}
+
 // TestObserveTargetKillSwitchSkips asserts a target under a kill switch is
 // skipped WITHOUT any ingest — OBS-007: no old value is relabeled current.
 func TestObserveTargetKillSwitchSkips(t *testing.T) {

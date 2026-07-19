@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "data": {
+    "product": {
+      "id": 900999,
+      "title_fa": "کالای دیگر",
+      "status": "marketable",
+      "variants": [
+        {
+          "id": 777001,
+          "status": "marketable",
+          "seller": { "id": 72001, "code": "OTHER" },
+          "price": {
+            "selling_price": 999000000,
+            "rrp_price": 1000000000,
+            "marketable_stock": 5
+          }
+        }
+      ]
+    }
+  }
+}
