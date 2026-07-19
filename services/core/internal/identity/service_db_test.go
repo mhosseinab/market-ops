@@ -6,6 +6,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -170,10 +171,130 @@ func TestOneActiveConfirmedPerVariant(t *testing.T) {
 	if err == nil {
 		t.Fatal("second confirm succeeded; partial unique index did not enforce one active Confirmed per variant")
 	}
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != "23505" {
-		t.Fatalf("expected unique_violation (23505), got %v", err)
+	// The conflict is the typed domain conflict, not a leaked pg unique_violation
+	// (issue #35): the first candidate already owns the variant, so the pre-write
+	// ownership check rejects the second confirm before it reaches the constraint.
+	if !errors.Is(err, identity.ErrIdentityConflict) {
+		t.Fatalf("second confirm err = %v, want ErrIdentityConflict", err)
 	}
+	// The raw Postgres error must never escape the domain boundary.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		t.Fatalf("raw pg error leaked to caller: %v", err)
+	}
+	// The second candidate was rolled back — it stays NeedsReview, unmutated.
+	after, err := q.GetIdentity(ctx, second.ID)
+	if err != nil {
+		t.Fatalf("reload second candidate: %v", err)
+	}
+	if after.State != string(identity.StateNeedsReview) {
+		t.Fatalf("second candidate state = %q after rejected confirm, want needs_review", after.State)
+	}
+}
+
+// TestSecondConfirmConstraintRaceMapsToConflict is the deterministic race fixture
+// for issue #35: it forces the partial-unique-index violation to fire AFTER the
+// pre-write ownership check has already passed, and proves that constraint-race
+// path returns the SAME typed ErrIdentityConflict (→ HTTP 409) and rolls the
+// losing confirm back with neither mapping partially mutated.
+func TestSecondConfirmConstraintRaceMapsToConflict(t *testing.T) {
+	pool, q := newPool(t)
+	svc := identity.NewService(pool, nil)
+	ctx := context.Background()
+	account, variant, nativeVariant, nativeProduct := seedVariant(t, q)
+
+	a := candidateFor(t, svc, account, variant)
+	b, err := q.CreateIdentityCandidate(ctx, db.CreateIdentityCandidateParams{
+		MarketplaceAccountID: account,
+		VariantID:            variant,
+		NativeVariantID:      nativeVariant,
+		NativeProductID:      nativeProduct,
+	})
+	if err != nil {
+		t.Fatalf("create second candidate: %v", err)
+	}
+
+	// Confirm A in a transaction we hold open: it takes the variant's active
+	// Confirmed index entry but does not commit, so B's pre-write check (a plain
+	// READ COMMITTED SELECT) cannot see it and passes.
+	txa, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin holder tx: %v", err)
+	}
+	defer func() { _ = txa.Rollback(ctx) }()
+	if _, err := db.New(txa).ConfirmIdentity(ctx, a.ID); err != nil {
+		t.Fatalf("confirm A in holder tx: %v", err)
+	}
+
+	// Confirm B concurrently. Its pre-check passes, then its guarded UPDATE blocks
+	// on A's uncommitted index entry — the classic constraint race.
+	type result struct {
+		mapping db.MarketProductIdentity
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		m, err := svc.Confirm(ctx, b.ID, identity.Actor(uuid.New()))
+		done <- result{m, err}
+	}()
+
+	// Wait until B's backend is actually blocked on a lock before releasing A, so
+	// the ordering is deterministic rather than timing-dependent.
+	waitForBlockedBackend(t, pool)
+
+	// Commit A: its index entry becomes visible, B's blocked UPDATE resumes and
+	// fails the partial unique index — the constraint-race path under test.
+	if err := txa.Commit(ctx); err != nil {
+		t.Fatalf("commit holder tx: %v", err)
+	}
+
+	got := <-done
+	if !errors.Is(got.err, identity.ErrIdentityConflict) {
+		t.Fatalf("constraint-race confirm err = %v, want ErrIdentityConflict", got.err)
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(got.err, &pgErr) {
+		t.Fatalf("raw pg error leaked from constraint race: %v", got.err)
+	}
+
+	// A won and is Confirmed; B lost and was rolled back to NeedsReview — neither
+	// mapping is partially mutated.
+	aAfter, err := q.GetIdentity(ctx, a.ID)
+	if err != nil {
+		t.Fatalf("reload A: %v", err)
+	}
+	if aAfter.State != string(identity.StateConfirmed) || !aAfter.Active {
+		t.Fatalf("A state=%q active=%v, want confirmed/active", aAfter.State, aAfter.Active)
+	}
+	bAfter, err := q.GetIdentity(ctx, b.ID)
+	if err != nil {
+		t.Fatalf("reload B: %v", err)
+	}
+	if bAfter.State != string(identity.StateNeedsReview) || bAfter.Version != b.Version {
+		t.Fatalf("B state=%q version=%d, want needs_review/version=%d (rolled back)", bAfter.State, bAfter.Version, b.Version)
+	}
+}
+
+// waitForBlockedBackend blocks until at least one backend on this database is
+// waiting on a Lock, i.e. B's confirm has reached its blocking UPDATE. It gives
+// the constraint-race test a deterministic ordering without a fixed sleep.
+func waitForBlockedBackend(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	ctx := context.Background()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		var n int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`,
+		).Scan(&n); err != nil {
+			t.Fatalf("poll blocked backends: %v", err)
+		}
+		if n > 0 {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the second confirm to block on the unique index")
 }
 
 // TestUnconfirmedNeverFeedsExecutablePath is the query-layer negative test for

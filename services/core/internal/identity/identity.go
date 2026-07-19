@@ -53,6 +53,14 @@ var (
 	ErrNotPending = errors.New("identity: mapping is not in needs_review")
 	// ErrNotFound is returned when an identity id does not exist.
 	ErrNotFound = errors.New("identity: mapping not found")
+	// ErrIdentityConflict is the single, stable domain conflict for the CAT-002
+	// "one active Confirmed mapping per variant" invariant: another active
+	// Confirmed mapping already owns the variant. Confirm is an optimistic,
+	// conflict-aware operation, so this SAME error is returned whether the
+	// conflict is caught by the pre-write ownership check or by the partial
+	// unique index at write time (issue #35). It maps to HTTP 409, never 500,
+	// and never exposes the underlying database constraint.
+	ErrIdentityConflict = errors.New("identity: variant already has an active confirmed mapping")
 )
 
 // Actor identifies who made a decision. A zero UUID means a system actor

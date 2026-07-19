@@ -138,7 +138,8 @@ func identityErrStatus(err error) int {
 	switch {
 	case errors.Is(err, identity.ErrNotFound):
 		return 404
-	case errors.Is(err, identity.ErrNotPending), errors.Is(err, identity.ErrNotReopenable):
+	case errors.Is(err, identity.ErrNotPending), errors.Is(err, identity.ErrNotReopenable),
+		errors.Is(err, identity.ErrIdentityConflict):
 		return 409
 	case errors.Is(err, identity.ErrInvalidReason):
 		return 400
@@ -154,6 +155,8 @@ func identityErr(err error) gateway.ErrorEnvelope {
 		code = "NOT_FOUND"
 	case errors.Is(err, identity.ErrNotPending):
 		code = "NOT_PENDING"
+	case errors.Is(err, identity.ErrIdentityConflict):
+		code = "IDENTITY_CONFLICT"
 	case errors.Is(err, identity.ErrNotReopenable):
 		code = "NOT_REOPENABLE"
 	case errors.Is(err, identity.ErrInvalidReason):

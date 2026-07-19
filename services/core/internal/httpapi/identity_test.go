@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -98,6 +99,51 @@ func TestNeedsReviewQueueRoundTrips(t *testing.T) {
 	}
 	if len(got.Items) != 1 || got.Items[0].SupplierCode != "SKU-1" || got.Items[0].NativeProductId != 7 {
 		t.Fatalf("unexpected queue payload: %s", rec.Body.String())
+	}
+}
+
+// TestConfirmErrorStatusMapping pins the identity confirm error → HTTP contract
+// (issue #35). An ownership conflict — whether detected by the pre-write check or
+// by the partial-unique-index race — is a deterministic 409 with the stable
+// IDENTITY_CONFLICT machine code, NOT a 500. Not-found stays 404, not-pending
+// stays 409/NOT_PENDING, and any other (infrastructure) failure stays 500 so a
+// real fault is never masked as a client conflict.
+func TestConfirmErrorStatusMapping(t *testing.T) {
+	cases := []struct {
+		name     string
+		err      error
+		wantCode int
+		wantMach string
+	}{
+		{"ownership conflict", identity.ErrIdentityConflict, http.StatusConflict, "IDENTITY_CONFLICT"},
+		{"not pending", identity.ErrNotPending, http.StatusConflict, "NOT_PENDING"},
+		{"not found", identity.ErrNotFound, http.StatusNotFound, "NOT_FOUND"},
+		{"internal failure", errors.New("connection reset"), http.StatusInternalServerError, "IDENTITY_ERROR"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			id := uuid.New()
+			fake := &fakeIdentity{err: c.err}
+			srv := NewServer(":0", BuildInfo{}, testLogger(), WithIdentity(fake))
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/identity/confirm", strings.NewReader(`{"identityId":"`+id.String()+`"}`))
+			req.Header.Set("Content-Type", "application/json")
+			srv.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != c.wantCode {
+				t.Fatalf("status = %d, want %d, body=%s", rec.Code, c.wantCode, rec.Body.String())
+			}
+			var got struct {
+				Code string `json:"code"`
+			}
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if got.Code != c.wantMach {
+				t.Fatalf("machine code = %q, want %q", got.Code, c.wantMach)
+			}
+		})
 	}
 }
 
