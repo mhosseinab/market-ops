@@ -86,6 +86,68 @@ func (e *VariantsPayloadError) Error() string {
 	return fmt.Sprintf("connector: invalid variants payload on page %d: %s", e.Page, e.Reason)
 }
 
+// expectedTotalPages is the DK pager contract total_pages == ceil(total_rows/size),
+// with the explicit zero-row representation total_rows=0 => exactly one page (DK
+// echoes total_pages=1, empty items — never total_pages=0). size is guaranteed
+// >= 1 by the FetchVariantsPage size guard.
+func expectedTotalPages(totalRows, size int) int {
+	if totalRows <= 0 {
+		return 1
+	}
+	return (totalRows + size - 1) / size
+}
+
+// expectedItemCount is how many items a coherent page must carry for the given
+// requested page and size: zero for the zero-row catalog, exactly `size` for a
+// full non-final page, and the exact remainder on the final page. The caller has
+// already established page == echoedPage and total_pages consistency, so the
+// final page is the one equal to total_pages.
+func expectedItemCount(page, size, totalRows, totalPages int) int {
+	if totalRows <= 0 {
+		return 0
+	}
+	if page < totalPages {
+		return size
+	}
+	return totalRows - (page-1)*size
+}
+
+// validatePagerCardinality enforces the coherent-contract check for one variants
+// page: structural bounds, echoed-page == requested-page, total_pages ==
+// ceil(total_rows/size), and item count == the expected count for that page. Any
+// mismatch is quarantined as a typed *VariantsPayloadError (fail closed) with a
+// distinct reason per mismatch class, so the catalog records evidence and leaves
+// its cursor unchanged rather than coercing a replayed/truncated 200 into
+// progress (issue #197). Never coerces or infers a partial page.
+func validatePagerCardinality(reqPage, reqSize, echoedPage, totalPages, totalRows, itemCount int) *VariantsPayloadError {
+	fail := func(reason string) *VariantsPayloadError {
+		return &VariantsPayloadError{Page: reqPage, Reason: reason}
+	}
+	switch {
+	case echoedPage < 1:
+		return fail(fmt.Sprintf("non-positive pager page %d", echoedPage))
+	case totalPages < 1:
+		return fail(fmt.Sprintf("non-positive pager total_pages %d", totalPages))
+	case totalRows < 0:
+		return fail(fmt.Sprintf("negative pager total_rows %d", totalRows))
+	case echoedPage != reqPage:
+		// Replayed/cached page: the body echoes a different page than requested and
+		// must never advance the cursor under the requested page (issue #197 case 1).
+		return fail(fmt.Sprintf("pager page %d does not match requested page %d", echoedPage, reqPage))
+	case echoedPage > totalPages:
+		return fail(fmt.Sprintf("pager page %d exceeds total_pages %d", echoedPage, totalPages))
+	}
+	if want := expectedTotalPages(totalRows, reqSize); totalPages != want {
+		return fail(fmt.Sprintf("pager total_pages %d inconsistent with total_rows %d at size %d (want %d)", totalPages, totalRows, reqSize, want))
+	}
+	if want := expectedItemCount(reqPage, reqSize, totalRows, totalPages); itemCount != want {
+		// Truncated/over-full page: the item count contradicts total_rows/total_pages/
+		// size, so the 200 is not authoritative (issue #197 case 2).
+		return fail(fmt.Sprintf("item count %d inconsistent with total_rows %d, total_pages %d, page %d at size %d (want %d)", itemCount, totalRows, totalPages, reqPage, reqSize, want))
+	}
+	return nil
+}
+
 // variantItemDTO decodes the DK variant fields the catalog needs. price_sale is
 // json.Number so the price token is preserved verbatim (no float conversion,
 // honouring the no-float-on-money-path rule even for raw evidence).
@@ -109,6 +171,15 @@ type variantItemDTO struct {
 // benign shape difference from the frozen spec is a parser event, not a hard
 // transport error, and the fields we depend on stay stable.
 func (c *DKClient) FetchVariantsPage(ctx context.Context, accessToken string, page, size int) (VariantPage, error) {
+	// Fail closed on a nonsensical request BEFORE any DK contact: page/size drive
+	// the coherent-contract cardinality check, so a non-positive size (which would
+	// make ceil(total_rows/size) meaningless) is a caller bug, not a payload event.
+	if page < 1 {
+		return VariantPage{}, fmt.Errorf("connector: fetch variants: page %d must be >= 1", page)
+	}
+	if size < 1 {
+		return VariantPage{}, fmt.Errorf("connector: fetch variants: size %d must be >= 1", size)
+	}
 	p := page
 	s := size
 	// The generated client serializes every interface{} query param
@@ -159,20 +230,17 @@ func (c *DKClient) FetchVariantsPage(ctx context.Context, accessToken string, pa
 		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: "incomplete pager (page, total_pages, total_rows all required)"}
 	}
 	items := *env.Data.Items
-	switch {
-	case *pg.Page < 1:
-		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("non-positive pager page %d", *pg.Page)}
-	case *pg.TotalPages < 1:
-		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("non-positive pager total_pages %d", *pg.TotalPages)}
-	case *pg.TotalRows < 0:
-		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("negative pager total_rows %d", *pg.TotalRows)}
-	case *pg.Page > *pg.TotalPages:
-		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("pager page %d exceeds total_pages %d", *pg.Page, *pg.TotalPages)}
-	case len(items) == 0 && *pg.TotalRows > 0:
-		// DK's total_pages = ceil(total_rows/page_size), so every page in range
-		// carries at least one item when rows exist; an empty page that still
-		// claims rows is an inconsistent/truncated payload.
-		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("empty items with total_rows %d", *pg.TotalRows)}
+	// Validate the pager + item cardinality as ONE coherent contract BEFORE
+	// building a VariantPage (issue #197). A response is authoritative only when
+	// its echoed page and its item count agree with the REQUESTED page/size and
+	// with total_rows/total_pages. A replayed (echoed page != requested) or
+	// truncated (item count != expected) HTTP 200 is quarantined as parser drift
+	// (§10.4), never accepted as progress. The DK pager contract (frozen Seller
+	// spec: pager.{page,item_per_page,total_pages,total_rows}) is
+	// total_pages == ceil(total_rows/size), with the explicit zero-row
+	// representation total_rows=0 => total_pages=1, empty items.
+	if err := validatePagerCardinality(page, size, *pg.Page, *pg.TotalPages, *pg.TotalRows, len(items)); err != nil {
+		return VariantPage{}, err
 	}
 
 	out := VariantPage{
