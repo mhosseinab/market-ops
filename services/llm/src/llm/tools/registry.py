@@ -248,19 +248,54 @@ class ToolRegistry:
     :meth:`names` (asserted by the agent-binding test).
     """
 
-    def __init__(self, specs: tuple[ToolSpec, ...]) -> None:
+    def __init__(
+        self,
+        specs: tuple[ToolSpec, ...],
+        *,
+        read_runner_overrides: dict[str, Callable[..., dict[str, Any]]] | None = None,
+    ) -> None:
         self._assert_contained(specs)
         self._specs = specs
         self._by_name = {s.name: s for s in specs}
+        overrides = read_runner_overrides or {}
+        self._assert_overrides_are_reads(overrides, self._by_name)
         self._tools: dict[str, BaseTool] = {
             s.name: StructuredTool.from_function(
-                func=_stub_runner(s, wired_in="S21/S23"),
+                func=overrides.get(s.name, _stub_runner(s, wired_in="S21/S23")),
                 name=s.name,
                 description=s.description,
                 args_schema=s.args_schema,
             )
             for s in specs
         }
+
+    @staticmethod
+    def _assert_overrides_are_reads(
+        overrides: dict[str, Callable[..., dict[str, Any]]],
+        by_name: dict[str, ToolSpec],
+    ) -> None:
+        """Fail closed: a runner override may only substitute a READ tool's DATA.
+
+        The §12.5 data-channel injection suite (issue #112) needs a READ tool to
+        return a *fake authoritative* marketplace read (hostile evidence in a typed
+        field) instead of the fail-closed stub, so the injected text traverses the
+        real read-tool/provider/agent boundary as untrusted DATA. Only the returned
+        DATA changes — the tool's name, KIND, args schema, and the name/kind guards
+        are untouched — so a Draft/forbidden tool can never be introduced this way.
+        An override that names an unknown tool or a non-READ tool is rejected.
+        """
+        for name in overrides:
+            spec = by_name.get(name)
+            if spec is None:
+                raise ValueError(
+                    f"read_runner_overrides names unknown tool {name!r}; "
+                    "an override may only substitute an existing READ tool"
+                )
+            if spec.kind is not ToolKind.READ:
+                raise ValueError(
+                    f"read_runner_overrides may only substitute READ tools; "
+                    f"{name!r} is {spec.kind.value!r} (§12.3)"
+                )
 
     @staticmethod
     def _assert_contained(specs: tuple[ToolSpec, ...]) -> None:
@@ -312,6 +347,17 @@ class ToolRegistry:
         }
 
 
-def build_registry() -> ToolRegistry:
-    """Build the canonical P0 registry (read tools + Draft-only tools)."""
-    return ToolRegistry(_READ_TOOLS + _DRAFT_TOOLS)
+def build_registry(
+    *, read_runner_overrides: dict[str, Callable[..., dict[str, Any]]] | None = None
+) -> ToolRegistry:
+    """Build the canonical P0 registry (read tools + Draft-only tools).
+
+    ``read_runner_overrides`` is an EVAL-ONLY seam (issue #112): it substitutes the
+    DATA a named READ tool returns with a fake authoritative marketplace read, so
+    the §12.5 data-channel injection suite can drive hostile evidence through the
+    real read-tool/provider/agent boundary. It changes only the returned payload;
+    every structural guard (kind check, forbidden-name guard) still applies.
+    """
+    return ToolRegistry(
+        _READ_TOOLS + _DRAFT_TOOLS, read_runner_overrides=read_runner_overrides
+    )
