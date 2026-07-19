@@ -1,13 +1,16 @@
 ---
-description: Full loop for one GitHub issue from the mhosseinab/market-ops backlog (tracked on Project #4, "MarketOps Engineering") — pick the highest-priority open issue not labeled blocked-step (or take issue number args) → assignment packet → TDD-implement in a fresh worktree → fresh area/safety review cycles (max 3) → open a PR against main → auto-merge (squash) once every required review verdict is PASS on the exact pushed SHA and the PR's CI checks are green. Never merges past a failing/pending check or a missing verdict, never runs live/paid ops, never mutates the Project board's fields.
+description: Continuous burn-down loop over the mhosseinab/market-ops issue backlog (tracked on Project #4, "MarketOps Engineering") — a planner subagent orders the whole eligible backlog (or the issue numbers given as args) into an implementation path persisted to disk (survives context compaction), then the LEAD keeps fresh per-issue conductor subagents running in 6 always-full parallel slots — each: assignment packet → TDD-implement in a fresh worktree → fresh area/safety review cycles (max 3) → PR against main → auto-merge (squash) once every required review verdict is PASS on the exact pushed SHA and CI is green — refilling the next issue the moment one finishes, until the path is drained. Never merges past a failing/pending check or a missing verdict, never runs live/paid ops, never mutates the Project board's fields.
 argument-hint: "[issue number(s); optional; omit to auto-pick]"
 ---
 
-You are the LEAD orchestrator for a FULL ISSUE LOOP on market-ops (DK
-Marketplace Intelligence): take one open GitHub issue from
-`mhosseinab/market-ops` (tracked on Project #4) all the way from eligible to
-a merged PR against `main` in a single run — packet, TDD implementation,
-independent review cycles, PR, auto-merge, issue bookkeeping. This command
+You are the LEAD orchestrator for a CONTINUOUS BACKLOG BURN-DOWN on
+market-ops (DK Marketplace Intelligence): take open GitHub issues from
+`mhosseinab/market-ops` (tracked on Project #4), in planner-built order,
+each from eligible to a merged PR against `main` — packet, TDD
+implementation, independent review cycles, PR, auto-merge, issue
+bookkeeping — and KEEP GOING: the moment an issue reaches a terminal
+state, the next path entry starts. Only a drained path, an all-blocked
+remainder, or the user ends this run. This command
 authorizes two-tier multi-agent delegation (fresh per-issue CONDUCTOR
 subagents that themselves fan out implementer/reviewer/fix subagents — see
 ORCHESTRATION TOPOLOGY), worktree isolation, branching, pushing a fix
@@ -23,14 +26,18 @@ The dk-p0 implementation-step run this repo used to track in
 `docs/implementation/dk-p0-progress.md` is complete (S1–S33, S37 all
 `passed`; only human-gated S34–S36 remain, and this command never touches
 those). What's left is the open-issue backlog — mostly review findings filed
-during that run. This command burns that backlog down one issue at a time.
+during that run. This command burns that backlog down continuously —
+several issues in flight at once, the next starting the moment a slot
+frees, until the path is drained.
 
-The issue leaves this run in exactly one of three states: MERGED (PR
-squash-merged after all required review verdicts PASSed the exact head SHA
-and CI went green; issue auto-closed via "Closes #N"), OPEN-PR (merge
-withheld — CI timeout, branch protection, or post-review SHA drift — with
-the reason commented on the PR for the human), or ESCALATED (`blocked-step`
-label + findings comment) — never a silent half-state.
+Every issue the scheduler reaches leaves this run in exactly one of three
+states: MERGED (PR squash-merged after all required review verdicts PASSed
+the exact head SHA and CI went green; issue auto-closed via "Closes #N"),
+OPEN-PR (merge withheld — CI timeout, branch protection, or post-review
+SHA drift — with the reason commented on the PR for the human), or
+ESCALATED (`blocked-step` label + findings comment) — never a silent
+half-state. Issues the run stops before reaching are reported as REMAINING
+with their path position — never silently dropped.
 
 ═══ BINDING SOURCES (read order = guidelines §2; the loop below adds mechanics,
 never overrides them) ═══
@@ -48,13 +55,17 @@ never overrides them) ═══
 
 ═══ EVERY SUBAGENT'S WORKING METHOD (put this verbatim in each packet) ═══
 Before any implementation or review work, the subagent MUST, in order:
-  1. VERIFY BASE — confirm its worktree is based on current `main`, AND that
-     the issue's own referenced commit is an ancestor of `main` (check the
-     `## Origin` section's `Step:`/`Reviewed target HEAD` field when present,
-     else a "Pinned reviewed HEAD" line some issues carry;
-     `git merge-base --is-ancestor <that SHA> main`). Not an ancestor → STOP
-     and report "main hasn't caught up to this issue's code yet" — don't
-     build on sand, don't substitute a guess for the missing commit.
+  1. VERIFY BASE — `git fetch origin` FIRST (a stale local ref once
+     spuriously failed this check for the entire backlog), then confirm the
+     worktree is based on current `origin/main` AND that the code the issue
+     references is PRESENT on `main`: the files/paths named in its
+     Evidence/Origin sections exist there. Code presence is the check —
+     NOT SHA ancestry: this repo squash-merges (this loop itself merges via
+     squash), so an issue's pinned `Reviewed target HEAD` usually exists on
+     no surviving branch and its absence proves nothing. Only when the
+     Evidence files are missing from `main` → STOP and report "main hasn't
+     caught up to this issue's code yet" — don't build on sand, don't
+     substitute a guess.
   2. PLAN — short explicit plan: files/areas to touch, the test-first order
      (which failing test comes first), risks, and the exact Verify commands
      derived from the issue's Reproduction/Acceptance-criteria/Suggested-
@@ -69,38 +80,92 @@ Before any implementation or review work, the subagent MUST, in order:
   5. ACT — implement/review per the revised plan; call `advisor` again before
      declaring the work done. Fresh evidence only: run the command, read the
      exit code. "Should pass" is a violation.
-The LEAD follows the same method: after selecting the issue and drafting the
-loop plan (Phase 0 step 3), call `advisor` on it yourself before spawning
-anything.
+The LEAD follows the same method: after receiving the planner's path and
+drafting the run plan (Phase 0 step 3), call `advisor` on it yourself before
+spawning anything.
 
-═══ ISSUE SELECTION ═══
-OVERRIDE: $ARGUMENTS — if issue number(s) are given, run exactly those
-(eligibility still applies; GUARDIAN is absolute). An issue already labeled
-`blocked-step` means: re-run it with its escalation comment's findings as
-cycle-0 input; close the loop by commenting the resolution on the issue. If
-empty, AUTO-PICK from open issues in `mhosseinab/market-ops` not labeled
-`blocked-step` (those need human re-triage first):
+═══ THE IMPLEMENTATION PATH (planner-built — the whole backlog, ordered) ═══
+SCOPE: $ARGUMENTS — if issue number(s) are given, the path contains exactly
+those (eligibility still applies; GUARDIAN is absolute). An issue already
+labeled `blocked-step` means: re-run it with its escalation comment's
+findings as cycle-0 input; close the loop by commenting the resolution on
+the issue. If empty, the path is EVERY eligible open issue in
+`mhosseinab/market-ops` not labeled `blocked-step` (those need human
+re-triage first) — the WHOLE backlog, ordered, not a hand-picked batch.
+BUILT BY A PLANNER SUBAGENT, never the LEAD: spawn one fresh
+`general-purpose` PLANNER whose packet is this section. It fetches every
+open issue (number, title, labels, body), applies ELIGIBLE/GUARDIAN,
+extracts each issue's Evidence-section file paths, orders per ORDER, and
+returns ONLY a compact table — issue# · title (one line) · severity ·
+step/area label · condensed evidence paths · conflicts-with (issue#s with
+overlapping paths) · touches-contracts y/n. Reading 160+ issue bodies in
+the main thread is the exact context bomb that has killed an orchestrator
+before — bodies never enter the LEAD's context; the LEAD writes the table
+straight to the DURABLE QUEUE file and schedules from that file, never
+from memory.
   ELIGIBLE = issue is open, not `blocked-step`, and its base-currency check
   (VERIFY BASE step 1 above) passes.
-  GUARDIAN — NEVER pick, even if listed in $ARGUMENTS without an explicit
-  override acknowledgment:
+  GUARDIAN — NEVER enters the path, even if listed in $ARGUMENTS without an
+  explicit override acknowledgment:
     • An issue whose Impact/Suggested-verification text names live/paid/
       production DK probes, secret rotation, or an S34–S36-style human gate.
     • A `blocked-step` issue with no new decision recorded since escalation.
     • An issue whose base-currency check fails — report the gap, don't
       silently substitute a different issue.
-  PICK ORDER: `severity:high` > `severity:medium` > `severity:low` >
-  unscored, tie-break ascending issue number. SHOW the pick + one-line why.
-MULTIPLE ISSUES: spawn conductors in PARALLEL — every eligible,
-non-conflicting issue at once, in one message, in the background; never
-drip-feed one loop at a time. Non-conflicting = Evidence-section file paths
-don't overlap and at most one touches `contracts/`+`gen/` (mirrors the old
-`[C]`-step exclusivity, sourced from issue bodies instead of a phase flag).
-Serialize the rest behind them. MERGES always serialize regardless of loop
-parallelism: one PR merges at a time, and after each merge refresh local
-`main` (step 8) before the next PR is created or merged — a sibling branch
-that falls behind or conflicts goes through step 8's UNMERGEABLE path
-(rebase + re-review), never merged stale.
+  ORDER: `severity:high` > `severity:medium` > `severity:low` > unscored,
+  tie-break ascending issue number — then adjusted so conflicting entries
+  (overlapping evidence paths; a second `contracts/`+`gen/` toucher) never
+  land in concurrent slots. SHOW the path summary (total, count by
+  severity, first ~10 rows) before starting the scheduler.
+CONCURRENCY: non-conflicting = Evidence-section file paths don't overlap
+and at most one in-flight issue touches `contracts/`+`gen/` (mirrors the
+old `[C]`-step exclusivity, sourced from the planner's table — never from
+bodies the LEAD read). A conflicting entry waits for its conflict to leave
+flight; it never blocks the rest of the path. MERGES always serialize
+regardless of conductor parallelism: one PR merges at a time, and after
+each merge refresh local `main` (step 8) before the next merge — a sibling
+branch that falls behind or conflicts goes through step 8's UNMERGEABLE
+path (rebase + re-review), never merged stale.
+
+═══ DURABLE QUEUE (the path and priorities survive context compaction) ═══
+The queue lives in a FILE, never only in the LEAD's context:
+`.git/work-issue-run.json` in the primary checkout — inside `.git/`, so it
+is never tracked, never dirties the tree, and survives compaction, session
+restarts, and crashes.
+• The moment the PLANNER returns, write the full ordered table:
+  {run_started, path: [{n, title, severity, area, evidence_paths,
+  conflicts_with, touches_contracts, status, detail}]} with status ∈
+  queued | in-flight(agent id) | MERGED(sha) | OPEN-PR(reason) |
+  ESCALATED | remaining.
+• Write-through on EVERY transition, in the same turn as the event:
+  conductor spawned, terminal state reached, merge completed.
+• The file is the source of truth, not the LEAD's memory. After any
+  context compaction — and whenever memory and file could disagree —
+  re-read it before scheduling. Order and priorities are never re-derived
+  from a summarized context.
+• RESUME: Phase 0 finding an existing file means an interrupted run.
+  Reconcile against GitHub reality first (issue closed since → MERGED; an
+  open `fix/<N>` PR → resume that issue at the merge lock; an in-flight
+  agent id that no longer answers → FLAKES rule), then continue the
+  queue. Never replan from scratch, never redo finished work.
+• Delete the file only in the final-report turn, after the burn-down
+  tally has been emitted from it.
+
+═══ ENVIRONMENT FALLBACKS (observed in cloud runs — adapt, never skip) ═══
+• `gh` unavailable → use the GitHub MCP tools with identical semantics
+  (issue read/comment/label, PR create/checks/merge). The step is the
+  contract, not the binary.
+• `advisor` unavailable → substitute a rigorous written self-review of the
+  plan; note the substitution in the report.
+• `task` unavailable → install go-task, or run the underlying per-plane
+  commands the Taskfile target wraps. A Verify gate is NEVER silently
+  skipped: if it truly cannot run locally, say so in the handoff and name
+  the PR's CI as the deferred gate — the merge lock enforces it anyway.
+• Fix cycles run the FULL gate the failing CI job runs (`task ci:local`,
+  or the complete per-plane target such as `task ts:lint`), never a
+  subset — partial local gates cause CI ping-pong (observed: local
+  typecheck passed while the full lint gate kept failing CI; two fix
+  cycles burned on what one full run would have caught).
 
 ═══ PHASE 0 — PRE-FLIGHT (LEAD, once) ═══
 1. In parallel — none of these depend on another:
@@ -112,31 +177,51 @@ that falls behind or conflicts goes through step 8's UNMERGEABLE path
    full current escalation queue — the Project board carries no Status signal
    for these, so this label is the only place it's visible; show the count
    in the report even when this run escalates nothing new).
-2. Verify: `git branch --show-current` prints `main`; working tree clean;
-   `git worktree list` has no leftovers from a prior run.
+2. `git fetch origin` first — every base-currency judgment in this run is
+   made against FRESH `origin/main`. If the session started on a scratch
+   branch (cloud sessions launch on `claude/...`), check out `main` and
+   fast-forward it now — that is setup, not HEAD drift. Then verify:
+   `git branch --show-current` prints `main`; working tree clean.
+   SWEEP leftovers, don't just observe them: stale prior-run worktrees
+   under `.claude/worktrees/` → `git worktree remove --force` + `git
+   worktree prune`; local `fix/*` branches already merged into `main` →
+   delete. Report what was swept.
    PREFLIGHT — base currency: spot-check that `main` actually contains the
-   commits recent issues reference (pick 1–2 open issues, check their Origin/
-   Pinned-reviewed-HEAD SHA is an ancestor of `main` per VERIFY BASE step 1).
+   code recent issues reference (pick 1–2 open issues, check the files their
+   Evidence/Origin sections name exist on `main` per VERIFY BASE step 1 —
+   code presence, never SHA ancestry: squash merges erase the pinned SHAs).
    If `main` is stale relative to the issues' referenced code, STOP the
    entire run and report it — this needs a human to bring `main` current
    (e.g. merging the latest integration work into it) before any issue in
    the backlog can be fixed against it. Don't partially proceed.
-3. Select per ISSUE SELECTION. Draft the loop plan — the conductor fan-out
-   (which issues run concurrently per MULTIPLE ISSUES) plus, per issue:
-   implementer role, reviewer role(s), Verify commands, PR target —
-   self-check it against the sources, call `advisor` on it, revise, then
-   show selection + plan and spawn the conductors.
+3. RESUME check: if `.git/work-issue-run.json` exists, a prior run was
+   interrupted — reconcile it against GitHub reality per DURABLE QUEUE and
+   continue that queue; do NOT replan. Otherwise spawn the PLANNER (THE
+   IMPLEMENTATION PATH), receive the ordered table, and write it to the
+   durable queue file. Draft the run plan — assignments for all 6 slots,
+   per-area implementer/reviewer roles — self-check it against the
+   sources, call `advisor` on it, revise, then show the path summary +
+   plan and start THE SCHEDULER.
 
 ═══ ORCHESTRATION TOPOLOGY (two tiers — keep the LEAD's context clean,
 fan out for wall-clock speed) ═══
-• LEAD (this session) does ONLY: Phase 0, selection + the fan-out plan,
-  spawning one fresh ISSUE CONDUCTOR per selected issue, the serial merge
-  lock (step 8), teardown (step 9), and the final report. Per-issue working
-  state never enters its context.
+• LEAD (this session) does ONLY: Phase 0, spawning the PLANNER and
+  maintaining the DURABLE QUEUE file (the path table lives on disk, not
+  in context), running THE SCHEDULER (spawning/refilling fresh ISSUE
+  CONDUCTORs), the serial merge lock (step 8), teardown (step 9),
+  progress lines, and the final report. Per-issue working state never
+  enters its context. TRIPWIRE: about to Read source files or diffs, fetch
+  an issue body, edit code, or run a Verify/test/lint command in the main
+  thread? That is a topology violation — stop and delegate. The LEAD's
+  hands touch only gh/git bookkeeping, Agent, and SendMessage.
 • ISSUE CONDUCTOR — one FRESH `general-purpose` subagent PER ISSUE, never
   reused across issues. It runs steps 1–7 in its own context: spawns the
   implementer (isolation:"worktree"), fresh reviewer(s) every cycle, and
-  fix workers; owns the FINDINGS LEDGER and arbitration (a genuine PRD gap
+  fix workers — all SYNCHRONOUSLY (run_in_background: false): a conductor
+  that backgrounds a sub-agent and then ends its turn stalls the whole
+  issue until someone re-wakes it (observed failure mode). Only the
+  conductor itself runs in the background from the LEAD's side. It owns
+  the FINDINGS LEDGER and arbitration (a genuine PRD gap
   still escalates — never arbitrated); follows the same working method as
   every subagent (plan → advisor → revise → act). Its packet: the issue
   (number/title/labels/body verbatim), the working-method block, THE LOOP
@@ -147,11 +232,14 @@ fan out for wall-clock speed) ═══
   codes), worktree path — no narrative, no diffs, no handoff bodies.
   If the harness rejects the conductor's own Agent calls (nested
   delegation unavailable), it reports that immediately and the LEAD runs
-  steps 1–7 flat for that issue instead — the conductor never implements
-  or reviews inside its own context (independence is structural).
+  steps 1–7 flat for that issue instead — where "flat" still means every
+  piece of work (implementer, each reviewer, each fix worker) is its own
+  subagent and the LEAD only relays packets and reports. Inline
+  implementation or review in the main thread is forbidden in EVERY mode
+  (independence and context hygiene are structural).
 • FAN OUT everything independent; serialize only what correctness demands:
-  — spawn ALL eligible non-conflicting conductors at once (one message,
-    background) per MULTIPLE ISSUES — never drip-feed;
+  — keep the scheduler's slots full (THE SCHEDULER): spawn refills in one
+    message, in the background — never drip-feed, never idle;
   — area + safety reviewers of the same cycle spawn CONCURRENTLY in one
     message (independent by design; their findings union into the ledger);
   — Phase 0's gh/git checks run in parallel.
@@ -162,6 +250,46 @@ fan out for wall-clock speed) ═══
   via SendMessage — its context still holds the issue; a fresh agent would
   re-learn it from scratch. Only reviewers are always fresh, never the
   conductor.
+
+═══ THE SCHEDULER (this is what makes it a LOOP) ═══
+The LEAD is a slot-filling scheduler over the implementation path — not a
+one-batch dispatcher:
+• SLOTS: keep 6 conductor slots filled at ALL times while the path has
+  eligible entries — the moment an issue reaches a terminal state, its
+  freed slot takes the next entry from the priority queue. Refills spawn
+  in the background, batched in one message. A free slot + an eligible
+  path entry + no stop condition ⇒ refill NOW, in the same turn — never
+  wait idle, never end the turn "for now". Fewer than 6 in flight is
+  legitimate ONLY when conflicts, contracts-exclusivity, or path
+  exhaustion make more impossible — say which, in the progress line.
+• ON EVERY CONDUCTOR RETURN, in the same turn: process its ISSUE REPORT
+  (READY-TO-MERGE → step 8 merge lock; ESCALATED / OPEN-PR → bookkeeping),
+  write the transition to the durable queue file, TEAR DOWN its worktree
+  (step 9), emit the progress line, and REFILL the freed slot with the
+  next non-conflicting path entry. Finishing an issue is never a stopping
+  point — it IS the trigger for the next one.
+• RUN ENDS ONLY WHEN: the path is drained and every conductor has
+  returned; or every remaining entry is blocked/escalated/conflict-starved
+  with nothing in flight; or the user stops the run. "Finished a batch" is
+  not a state this loop has.
+• HYGIENE each scheduling round: worktrees of terminal issues are removed
+  NOW (not at run end); merged `fix/*` local branches get pruned;
+  `git branch --show-current` still prints `main`.
+• HEARTBEAT: while anything is in flight, keep a fallback wake-up armed
+  (~5 min; send_later / scheduled wake — whatever the environment offers)
+  so a quiet window — CI still running, a conductor mid-turn — can't
+  stall the run. Heartbeat actions are idempotent: if the state already
+  advanced when one fires, it's a no-op, never a duplicate merge or nudge.
+• FLAKES: a conductor that returns within seconds with no tool use did no
+  work — respawn it once with the same packet; a second flake → the LEAD
+  drives that issue flat (every piece of work still its own subagent). A
+  conductor stalled mid-loop gets one SendMessage nudge before being
+  treated as flaked.
+• OUTPUT DISCIPLINE: between events, silence. Per event, ONE progress
+  line — no recap tables, no restated plans, no "holding/waiting" filler,
+  no per-event prose paragraphs. The queue lives in the file, not in
+  chat; repeating it wastes the very context this topology protects.
+  Exceptions: a decision only the human can make, and the final report.
 
 ═══ THE LOOP (per issue #N — steps 1–7 run INSIDE that issue's fresh
 CONDUCTOR: one fresh worktree, one branch fix/<N>-<slug>, max 3 fix
@@ -318,7 +446,9 @@ cycles; steps 8–9 belong to the LEAD) ═══
     • Green → `gh pr merge <PR#> --repo mhosseinab/market-ops --squash
       --delete-branch` (squash subject = the PR title, keeping `main`
       history Conventional-Commits-clean). "Closes #<N>" auto-closes the
-      issue; comment the merge SHA on it.
+      issue; comment the merge SHA on it. If the environment refuses the
+      branch deletion (git proxies do), flag the merged branch for the
+      human instead of burning retries — cosmetic once the PR is merged.
     • CI FAILS → a blocking finding CI caught after local Verify passed.
       Fix cycles remaining → SendMessage the issue's conductor with the
       failing check output; it runs step 5 (fix worker in the SAME
@@ -386,12 +516,28 @@ cycles; steps 8–9 belong to the LEAD) ═══
   blocks, review transcripts, diffs, logs) lives inside that conductor and
   dies with it. The LEAD reads no diffs/logs/handoffs — it sees only
   compact ISSUE REPORTs, holds the merge lock, and spends its own context
-  solely on selection, scheduling, merging, and the final report.
+  solely on scheduling, merging, and the final report — never fetching
+  issue bodies or source files (that is PLANNER/conductor work).
+• Stopping early is a failure mode, not a judgment call: this loop has no
+  batches — while the path holds an eligible entry, a slot is free, and no
+  stop condition (THE SCHEDULER) is met, the slot MUST be refilled in the
+  same turn. Ending the run with eligible issues untouched and no stop
+  condition met is a violation.
+• After any context compaction — or whenever memory could disagree with
+  the file — the durable queue file is the truth: re-read it before the
+  next scheduling or merge decision. Scheduling from a summarized memory
+  of the queue is a violation; the file exists precisely so priorities
+  and order survive compaction.
 • NO LEFTOVER WORKTREES: before the final report, `git worktree list` must
   account for every entry — escalated (flagged) or removed, never an orphan.
 
 ═══ REPORT ═══
-Start by showing: selected issue(s) + why, and the loop plan — then proceed.
+Start by showing: the path summary + the run plan (once, compact) — then
+start the scheduler. DURING the run the ONLY output is one progress line
+per terminal issue ("#N MERGED — 12 done / 6 in flight / 145 remaining"),
+plus the one-line reason whenever a slot can't fill. No status tables, no
+recaps, no "holding" notes between events — the queue file and the final
+report carry everything else.
 End with, per issue (assembled from its conductor's ISSUE REPORT, never
 from raw logs): #N · title · branch · outcome — MERGED (PR URL + merge
 SHA) / OPEN-PR (URL + reason: CI timeout, branch protection, SHA drift) /
@@ -400,8 +546,11 @@ findings fixed / no-op / overruled / open · verdicts (area / safety if run) ·
 CI checks result (green / failed / timed out / none reported) · worktree
 (removed / kept-with-reason) · Verify summary (actual exit codes).
 Finish with `git worktree list` proving no orphans, `git branch --show-current`
-proving `main` (ff-pulled past this run's merges, step 8), then everything
-needing the human: OPEN-PRs with their reasons and CI status, escalations
+proving `main` (ff-pulled past this run's merges, step 8), the burn-down
+tally (merged / open-PR / escalated / REMAINING against the path total —
+remaining issues listed with their path position, never silently dropped),
+then everything needing the human: OPEN-PRs with their reasons and CI
+status, escalations
 with the decision required, overruled findings worth a second look, any
 deferred live/paid gates surfaced, and the total open `blocked-step` count
 from Phase 0 (`gh issue list --label blocked-step`) so the full escalation
