@@ -111,4 +111,94 @@ describe("Cost import — preview before commit (CST-001)", () => {
     await waitFor(() => expect(screen.queryByTestId("cost-commit")).toBeNull());
     expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
   });
+
+  // Acceptance criterion 4 (issue #79): a COMPLETED import followed by a new
+  // preview on the SAME source (no textarea edit) must get a FRESH confirmation
+  // control. A previously-completed commit is bound to its own batch id; once a
+  // new preview mints a new batch, the stale success note must give way to a
+  // fresh, enabled commit control (§4.6 — a stale card is never left as the only
+  // surface; the new batch stays committable).
+  it("issues a fresh commit control when a new preview runs on the same source after a commit (#79)", async () => {
+    server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+    fireEvent.click(commitBtn);
+
+    // Success note replaces the commit control for the committed batch.
+    await screen.findByText(faIR["cost.committed"].replace("{count}", "۱"));
+    expect(screen.queryByTestId("cost-commit")).toBeNull();
+
+    // Re-preview the SAME source (no textarea edit): the completed commit must
+    // not linger — a fresh enabled commit control renders for the new batch.
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const freshCommit = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(freshCommit).toBeEnabled());
+    expect(screen.queryByText(faIR["cost.committed"].replace("{count}", "۱"))).toBeNull();
+  });
+
+  // Acceptance criterion 3 (issue #79): the preview request body's filename
+  // follows the CURRENT source — present after a file pick, cleared once the
+  // seller edits the textarea (the source is no longer that file).
+  it("carries the filename with the preview after a file pick and clears it after a textarea edit (#79)", async () => {
+    const bodies: Array<{ filename?: string }> = [];
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, async ({ request }) => {
+        bodies.push((await request.json()) as { filename?: string });
+        return HttpResponse.json(previewClean);
+      }),
+    );
+    renderRoute("/cost");
+
+    await screen.findByTestId("cost-csv");
+    const file = new File([CSV], "costs.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByTestId("cost-file"), { target: { files: [file] } });
+
+    // The file text populates the textarea; previewing sends its filename.
+    await waitFor(() =>
+      expect((screen.getByTestId("cost-csv") as HTMLTextAreaElement).value).toBe(CSV),
+    );
+    fireEvent.click(screen.getByTestId("cost-preview"));
+    await screen.findByTestId("cost-commit");
+    expect(bodies.at(-1)?.filename).toBe("costs.csv");
+
+    // Editing the textarea drops the filename from the next preview request.
+    fireEvent.change(screen.getByTestId("cost-csv"), {
+      target: { value: `${CSV}DKP-9999999,4200000\n` },
+    });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+    await waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies.at(-1)?.filename).toBeUndefined();
+  });
+
+  // Acceptance criterion 5 (issue #79): reverting the textarea to the original
+  // value does NOT revive a stale committable batch. Any source change clears
+  // the preview; a committable control returns only through an explicit preview.
+  it("does not revive a stale committable batch when the textarea reverts to the original value (#79)", async () => {
+    server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+    fireEvent.click(commitBtn);
+    await screen.findByText(faIR["cost.committed"].replace("{count}", "۱"));
+
+    // Edit the source, then revert it to the EXACT original value.
+    fireEvent.change(csvInput, { target: { value: `${CSV}DKP-9999999,4200000\n` } });
+    fireEvent.change(csvInput, { target: { value: CSV } });
+
+    // No preview section and no commit control until an explicit new preview.
+    await waitFor(() => expect(screen.queryByTestId("cost-commit")).toBeNull());
+    expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+  });
 });

@@ -139,7 +139,14 @@ export function CostImport() {
           className="btn btn--primary"
           data-testid="cost-preview"
           disabled={preview.isPending || csv.trim() === ""}
-          onClick={() => preview.mutate({ csv, ...(filename ? { filename } : {}) })}
+          onClick={() => {
+            // A new preview always begins with a fresh confirm control: reset any
+            // prior commit result so a completed import (bound to an older batch)
+            // never lingers over a freshly previewed batch (issue #79, acceptance
+            // 4). This subsumes the source-change reset in changeSource.
+            commit.reset();
+            preview.mutate({ csv, ...(filename ? { filename } : {}) });
+          }}
         >
           {t("cost.preview.title")}
         </button>
