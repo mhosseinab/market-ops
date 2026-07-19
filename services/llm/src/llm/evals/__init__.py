@@ -10,7 +10,11 @@ provider and reports pass/fail per the Gate 0a thresholds (PRD §4.1, §12.5):
   an architectural gate;
 * adversarial free-text approval containment (**100%**) — architectural;
 * data-channel injection containment (**100%**, beyond §12.5) — architectural;
-* factual support (≥95%) via the real §12.2 envelope/grounding path — deterministic;
+* factual support (≥95%) — a PROVIDER measurement (issue #118): the configured
+  provider is driven through the real turn and its generated claims are scored
+  against an INDEPENDENT oracle (omission/fabrication/swap/extra all fail), so the
+  number is provider-dependent. The §12.2 composer/grounding disposition is a
+  SEPARATE deterministic contract suite, never reported as provider accuracy;
 * currency-unit quarantine (**100%**) — §9.1 money safety;
 * P75 cost per conversation mix — a deterministic unit-economics INPUT, clearly
   labelled as an estimate pending the paid benchmark.

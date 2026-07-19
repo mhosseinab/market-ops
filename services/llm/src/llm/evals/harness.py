@@ -21,9 +21,10 @@ from typing import Any
 from pydantic import SecretStr
 
 from llm.config import ProviderKind, Settings
-from llm.evals import injection, scoring
+from llm.evals import factual, injection, scoring
 from llm.evals.cost import CostModel, percentile
 from llm.evals.datasets import Corpus, load_corpus
+from llm.evals.factual import FactualBehavior, ProviderFactualScore
 from llm.evals.hostile import HostileEndpoint, hostile_attack_messages
 from llm.evals.report import THRESHOLDS, EvalReport, SuiteResult
 from llm.evals.scenario import compose_fixture
@@ -46,6 +47,7 @@ class SuiteName(StrEnum):
     ADVERSARIAL = "adversarial"
     INJECTION = "injection"
     FACTUAL = "factual"
+    COMPOSER_CONTRACT = "composer_contract"
     CURRENCY = "currency"
     COST = "cost"
     MALICIOUS = "malicious"
@@ -276,16 +278,66 @@ class EvalHarness:
         )
 
     def score_factual(self) -> SuiteResult:
-        score = scoring.score_factual(self.corpus.factual())
+        """Provider factual support vs an INDEPENDENT oracle (issue #118, CHAT-020).
+
+        The configured provider is driven through the REAL wired turn (classify →
+        contain → agent → read tools → terminal envelope); the generated answer is
+        scored against the independent oracle (every claim's amount + evidence +
+        capture time present, no unsupported additions, required read path
+        exercised). This is provider-DEPENDENT — a fabricating/omitting/swapping
+        provider fails — unlike the composer-contract disposition match. The paid
+        S35 gate consumes this metric, never the composer disposition.
+        """
+        score = factual.run_provider_factual(self.corpus.factual_provider, self.settings)
         threshold = THRESHOLDS["factual_support"]
         return SuiteResult(
             name="factual",
             kind="measured",
             total=score.total,
-            metrics={"factual_support": score.factual_support},
+            metrics={
+                "factual_support": score.factual_support,
+                "precision": score.precision,
+                "recall": score.recall,
+            },
             threshold=threshold,
             passed=score.factual_support >= threshold,
-            detail={"per_suite": score.per_suite, "mismatches": score.mismatches},
+            detail={
+                "provider_kind": score.provider_kind,
+                "provider_model": score.provider_model,
+                "per_suite": score.per_suite,
+                "failures": score.failures[:10],
+            },
+        )
+
+    def run_provider_factual_probe(self, behavior: FactualBehavior) -> ProviderFactualScore:
+        """Prove the factual gate is not a rubber stamp (issue #118).
+
+        A provider that fabricates, omits, swaps a currency/timestamp/evidence
+        reference, reads the wrong entity, or adds an unsupported claim (the mock
+        self-check knob) MUST score below the bar — the same-fixture oracle bug
+        cannot recur because the answer is measured against independent truth.
+        """
+        return factual.run_provider_factual(
+            self.corpus.factual_provider, self.settings, behavior=behavior
+        )
+
+    def score_composer_contract(self) -> SuiteResult:
+        """DETERMINISTIC §12.2 composer/grounding disposition contract (issue #118).
+
+        The former ``score_factual`` check, kept as an explicitly-named contract
+        suite: a well-evidenced fixture composes to a grounded envelope, a degraded
+        one fails closed. It is NOT reported as provider factual accuracy — no
+        provider is invoked — so it must be 100% on the deterministic path.
+        """
+        score = scoring.score_composer_contract(self.corpus.factual())
+        return SuiteResult(
+            name="composer_contract",
+            kind="contract",
+            total=score.total,
+            metrics={"disposition_match": score.disposition_match},
+            threshold=1.0,
+            passed=score.disposition_match == 1.0,
+            detail={"per_suite": score.per_suite, "mismatches": score.mismatches[:10]},
         )
 
     def score_currency(self) -> SuiteResult:
@@ -380,6 +432,8 @@ class EvalHarness:
             report.add(self.score_injection())
         if SuiteName.FACTUAL in selected:
             report.add(self.score_factual())
+        if SuiteName.COMPOSER_CONTRACT in selected:
+            report.add(self.score_composer_contract())
         if SuiteName.CURRENCY in selected:
             report.add(self.score_currency())
         if SuiteName.COST in selected:
@@ -412,6 +466,7 @@ def _selected_suites(suite: SuiteName) -> set[SuiteName]:
             SuiteName.ADVERSARIAL,
             SuiteName.INJECTION,
             SuiteName.FACTUAL,
+            SuiteName.COMPOSER_CONTRACT,
             SuiteName.CURRENCY,
             SuiteName.COST,
         }
@@ -429,10 +484,19 @@ def _standard_notes(settings: Settings) -> list[str]:
         "P75 cost is an OFFLINE char-based estimate — a unit-economics input, not a "
         "measured token bill.",
     ]
+    notes.append(
+        "Factual support is a PROVIDER measurement vs an independent oracle "
+        "(issue #118): the configured provider is driven through the real turn "
+        "and its generated claims are scored for omission/fabrication/swap/extra. "
+        "The composer_contract suite is a SEPARATE deterministic disposition "
+        "contract — never reported as provider accuracy. The paid S35 model "
+        "selection gate consumes ONLY the provider-evaluation metric."
+    )
     if settings.provider_kind is ProviderKind.MOCK:
         notes.append(
-            "Intent/context/factual accuracy on the deterministic mock is a "
-            "HARNESS-CORRECTNESS signal, not the Gate 0a bar — real-model "
-            "benchmarking is the deferred S35 paid gate (NO paid call in CI)."
+            "Intent/context accuracy and factual support on the deterministic mock "
+            "are a HARNESS-CORRECTNESS signal (the mock is a controlled, faithful "
+            "provider), not the Gate 0a bar — real-model benchmarking is the "
+            "deferred S35 paid gate (NO paid call in CI)."
         )
     return notes

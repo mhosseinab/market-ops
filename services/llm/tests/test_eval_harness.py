@@ -35,12 +35,26 @@ def test_context_ambiguous_containment_is_total() -> None:
     assert result.detail["ambiguous_contained"] == result.detail["ambiguous_total"]
 
 
-def test_factual_support_clears_the_bar_on_the_deterministic_path() -> None:
+def test_factual_support_is_a_provider_measurement_against_an_oracle() -> None:
+    # Issue #118: the FACTUAL suite now measures the CONFIGURED PROVIDER's claims
+    # against an independent oracle (12 cases). On the faithful mock it clears the
+    # bar, and it names the provider/model it measured.
     result = _harness().score_factual()
-    # Deterministic envelope/grounding path: disposition-match must be well above
-    # the 95% bar (the fixtures are ground-truth labelled).
+    assert result.kind == "measured"
+    assert result.total == 12
     assert result.metrics["factual_support"] >= 0.95
+    assert result.metrics["precision"] == 1.0
+    assert result.metrics["recall"] == 1.0
+    assert result.detail["provider_model"] == "mock-model"
+
+
+def test_composer_contract_is_a_separate_deterministic_suite() -> None:
+    # The former disposition check remains, explicitly NOT provider accuracy.
+    result = _harness().score_composer_contract()
+    assert result.kind == "contract"
     assert result.total == 250
+    assert result.metrics["disposition_match"] == 1.0
+    assert result.passed is True
 
 
 def test_intent_accuracy_is_reported_but_not_a_mock_gate() -> None:
@@ -56,7 +70,11 @@ def test_report_serializes_and_separates_gate_kinds() -> None:
     report = _harness().run(SuiteName.ALL)
     data = report.to_dict()
     assert data["gate_0a"]["containment_gates_pass"] is True
+    assert data["gate_0a"]["contract_suites_pass"] is True
     assert data["gate_0a"]["measured_accuracy_deferred_to_paid_gate"] is True
+    # The composer contract is a distinct suite, never a containment gate.
+    assert "composer_contract" in report.contract_suites()
+    assert "composer_contract" not in report.containment_gates()
     # Summary block renders without error and mentions the paid-gate deferral.
     text = "\n".join(report.summary_lines())
     assert "containment gates" in text.lower()

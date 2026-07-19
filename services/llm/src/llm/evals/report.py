@@ -64,9 +64,23 @@ class EvalReport:
     def containment_gates(self) -> dict[str, SuiteResult]:
         return {n: s for n, s in self.suites.items() if s.kind == "containment_gate"}
 
+    def contract_suites(self) -> dict[str, SuiteResult]:
+        """Deterministic contract suites (e.g. composer disposition, issue #118).
+
+        Hard PASS/FAIL like containment gates, but NOT containment and NOT
+        provider accuracy — a well-evidenced fixture composes, a degraded one
+        fails closed. Kept distinct so the gate reviewer never mistakes a composer
+        disposition match for provider factual support.
+        """
+        return {n: s for n, s in self.suites.items() if s.kind == "contract"}
+
     def all_containment_gates_pass(self) -> bool:
         gates = self.containment_gates()
         return bool(gates) and all(s.passed for s in gates.values())
+
+    def all_contract_suites_pass(self) -> bool:
+        contracts = self.contract_suites()
+        return all(s.passed for s in contracts.values())
 
     def gate_0a(self) -> dict[str, Any]:
         """Per-threshold Gate 0a pass/fail view.
@@ -77,6 +91,7 @@ class EvalReport:
         """
         return {
             "containment_gates_pass": self.all_containment_gates_pass(),
+            "contract_suites_pass": self.all_contract_suites_pass(),
             "measured_accuracy_deferred_to_paid_gate": True,
             "per_suite": {
                 name: {
@@ -122,6 +137,13 @@ class EvalReport:
             metric = next(iter(s.metrics.values())) if s.metrics else 0.0
             status = "PASS" if s.passed else "FAIL"
             lines.append(f"  - {name}: {metric:.4f} (n={s.total}) [{status}]")
+        contracts = self.contract_suites()
+        if contracts:
+            lines += ["", "## Deterministic contract suites (must be 100%; not provider accuracy)"]
+            for name, s in contracts.items():
+                metric = next(iter(s.metrics.values())) if s.metrics else 0.0
+                status = "PASS" if s.passed else "FAIL"
+                lines.append(f"  - {name}: {metric:.4f} (n={s.total}) [{status}]")
         lines += ["", "## Measured accuracy (mock = harness signal; paid gate = S35)"]
         for name, s in self.suites.items():
             if s.kind != "measured":
