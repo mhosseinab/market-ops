@@ -121,11 +121,24 @@ func componentsFromGateway(items []gateway.ContributionComponentInput) ([]margin
 			if err != nil {
 				return nil, err
 			}
+			// Defense in depth (issue #60): reject a negative absolute deduction
+			// at the transport boundary with the same typed error the engine
+			// enforces, so HTTP and direct callers fail identically. The engine
+			// remains the authoritative gate.
+			if amt.Mantissa() < 0 {
+				return nil, margin.ErrNegativeDeduction
+			}
 			ci.Amount = amt
 		case gateway.Rate:
 			ci.Kind = margin.KindRate
 			if it.RateBasisPoints == nil {
 				return nil, errors.New("policy: rate component " + string(it.Component) + " requires rateBasisPoints")
+			}
+			// Defense in depth (issue #60): a rate outside [0,10000] bp is
+			// rejected here too, mirroring the engine bound and the OpenAPI
+			// min/max on rateBasisPoints.
+			if *it.RateBasisPoints < margin.MinRateBasisPoints || *it.RateBasisPoints > margin.MaxRateBasisPoints {
+				return nil, margin.ErrRateOutOfRange
 			}
 			ci.Rate = money.NewBasisPoints(*it.RateBasisPoints)
 		default:
@@ -282,7 +295,8 @@ func policyErr(err error) gateway.ErrorEnvelope {
 	case errors.Is(err, margin.ErrMissingRequiredComponent):
 		code = "COST_INCOMPLETE"
 	case errors.Is(err, margin.ErrDuplicateComponent), errors.Is(err, margin.ErrInvalidComponent),
-		errors.Is(err, margin.ErrRateBaseRequired):
+		errors.Is(err, margin.ErrRateBaseRequired), errors.Is(err, margin.ErrNegativeDeduction),
+		errors.Is(err, margin.ErrRateOutOfRange):
 		code = "INVALID_CONTRIBUTION_INPUT"
 	case errors.Is(err, money.ErrCurrencyMismatch), errors.Is(err, money.ErrExponentMismatch),
 		errors.Is(err, money.ErrInvalidCurrency):

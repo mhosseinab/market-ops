@@ -132,6 +132,145 @@ func TestContribution_PartialNotExecutable(t *testing.T) {
 	}
 }
 
+// zeroValueContribution reports whether c is the engine's zero-value result,
+// i.e. no real Contribution was returned (the Money carries no currency).
+func zeroValueContribution(c Contribution) bool { return c.Amount.Currency() == "" }
+
+// TestContribution_NegativeAbsoluteDeductionRejected (issue #60) — a negative
+// absolute deduction cannot manufacture contribution. Every deduction component
+// must reject a negative Money amount with ErrNegativeDeduction, before any Sub
+// arithmetic, and never return a Contribution.
+func TestContribution_NegativeAbsoluteDeductionRejected(t *testing.T) {
+	var eng Engine
+	// Each case supplies COGS+commission (so the hard-required gate is not the
+	// blocker) and makes exactly the target component a negative absolute amount.
+	cases := []cost.Component{
+		cost.ComponentCOGS,
+		cost.ComponentCommission,
+		cost.ComponentShipping,
+		cost.ComponentPromotion,
+		cost.ComponentAds,
+		cost.ComponentReturns,
+	}
+	for _, target := range cases {
+		target := target
+		t.Run(string(target), func(t *testing.T) {
+			comps := []ComponentInput{
+				abs(cost.ComponentCOGS, irr(t, 100)),
+				abs(cost.ComponentCommission, irr(t, 50)),
+			}
+			neg := abs(target, irr(t, -1))
+			switch target {
+			case cost.ComponentCOGS:
+				comps[0] = neg
+			case cost.ComponentCommission:
+				comps[1] = neg
+			default:
+				comps = append(comps, neg)
+			}
+			got, err := eng.Contribution(ContributionInput{
+				NetProceeds: irr(t, 1000),
+				RateBase:    irr(t, 1000),
+				Readiness:   cost.StateComplete,
+				Components:  comps,
+			})
+			if !errors.Is(err, ErrNegativeDeduction) {
+				t.Fatalf("err = %v, want ErrNegativeDeduction", err)
+			}
+			if got.Executable() {
+				t.Fatal("invalid input must not report executable")
+			}
+			if !zeroValueContribution(got) {
+				t.Fatalf("invalid input must return zero Contribution, got %+v", got)
+			}
+		})
+	}
+}
+
+// TestContribution_NegativeRateRejected (issue #60) — a rate below the [0,10000]
+// bp domain is rejected with ErrRateOutOfRange before ApplyRate runs.
+func TestContribution_NegativeRateRejected(t *testing.T) {
+	var eng Engine
+	got, err := eng.Contribution(ContributionInput{
+		NetProceeds: irr(t, 1000),
+		RateBase:    irr(t, 1000),
+		Readiness:   cost.StateComplete,
+		Components: []ComponentInput{
+			abs(cost.ComponentCOGS, irr(t, 100)),
+			rate(cost.ComponentCommission, -1),
+		},
+	})
+	if !errors.Is(err, ErrRateOutOfRange) {
+		t.Fatalf("err = %v, want ErrRateOutOfRange", err)
+	}
+	if got.Executable() || !zeroValueContribution(got) {
+		t.Fatalf("invalid rate must return no executable, zero Contribution, got %+v", got)
+	}
+}
+
+// TestContribution_AboveMaxRateRejected (issue #60) — a rate above 10000 bp
+// (>100%) is rejected with ErrRateOutOfRange.
+func TestContribution_AboveMaxRateRejected(t *testing.T) {
+	var eng Engine
+	_, err := eng.Contribution(ContributionInput{
+		NetProceeds: irr(t, 1000),
+		RateBase:    irr(t, 1000),
+		Readiness:   cost.StateComplete,
+		Components: []ComponentInput{
+			abs(cost.ComponentCOGS, irr(t, 100)),
+			rate(cost.ComponentCommission, MaxRateBasisPoints+1),
+		},
+	})
+	if !errors.Is(err, ErrRateOutOfRange) {
+		t.Fatalf("err = %v, want ErrRateOutOfRange", err)
+	}
+}
+
+// TestContribution_BoundaryRatesAccepted (issue #60) — 0 bp and 10000 bp are the
+// inclusive boundaries of the accepted rate domain and must compute
+// deterministically.
+func TestContribution_BoundaryRatesAccepted(t *testing.T) {
+	var eng Engine
+	for _, bp := range []int64{MinRateBasisPoints, MaxRateBasisPoints} {
+		bp := bp
+		t.Run("bp", func(t *testing.T) {
+			_, err := eng.Contribution(ContributionInput{
+				NetProceeds: irr(t, 1_000_000),
+				RateBase:    irr(t, 1_000_000),
+				Readiness:   cost.StateComplete,
+				Components: []ComponentInput{
+					abs(cost.ComponentCOGS, irr(t, 100)),
+					rate(cost.ComponentCommission, bp),
+				},
+			})
+			if err != nil {
+				t.Fatalf("boundary rate %d bp rejected: %v", bp, err)
+			}
+		})
+	}
+}
+
+// TestContribution_ZeroAbsoluteDeductionAccepted (issue #60) — a zero absolute
+// deduction is valid and deterministic (zero is not negative).
+func TestContribution_ZeroAbsoluteDeductionAccepted(t *testing.T) {
+	var eng Engine
+	got, err := eng.Contribution(ContributionInput{
+		NetProceeds: irr(t, 1000),
+		RateBase:    irr(t, 1000),
+		Readiness:   cost.StateComplete,
+		Components: []ComponentInput{
+			abs(cost.ComponentCOGS, irr(t, 0)),
+			abs(cost.ComponentCommission, irr(t, 50)),
+		},
+	})
+	if err != nil {
+		t.Fatalf("zero deduction rejected: %v", err)
+	}
+	if got.Amount.Mantissa() != 950 {
+		t.Fatalf("contribution = %d, want 950", got.Amount.Mantissa())
+	}
+}
+
 func TestContribution_NegativeReportedFaithfully(t *testing.T) {
 	var eng Engine
 	got, err := eng.Contribution(ContributionInput{
