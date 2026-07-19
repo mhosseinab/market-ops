@@ -67,3 +67,49 @@ func (m *syncInitMetrics) record(ctx context.Context, outcome string) {
 		attribute.String("connector", connectorLabel),
 	))
 }
+
+// Capability-generation invalidation triggers: the bounded vocabulary of the
+// trigger attribute emitted when a new credential generation atomically resets
+// every capability to Unknown (issue #13). No free text, no PII, no Persian copy.
+const (
+	// capGenTriggerConnect: a fresh Connect (auth-code exchange) started a new
+	// credential generation.
+	capGenTriggerConnect = "connect"
+	// capGenTriggerRefresh: a token Refresh rotated to a new credential generation.
+	capGenTriggerRefresh = "refresh"
+)
+
+// capGenMetrics counts capability-generation invalidations — the atomic reset of
+// every capability to Unknown at the start of a new credential generation. It is
+// the observable boundary for the capability-gating invariant's generation switch
+// (CLAUDE.md observability: counters on capability transitions). Like
+// syncInitMetrics it is nil-safe and fails open to a no-op instrument, so a
+// telemetry hiccup never breaks the connect/refresh path.
+type capGenMetrics struct {
+	invalidations metric.Int64Counter
+}
+
+// newCapGenMetrics builds the counter against the global OTel provider, falling
+// back to a no-op instrument if construction fails.
+func newCapGenMetrics() *capGenMetrics {
+	m := otel.Meter(connInstrumentationName)
+	c, err := m.Int64Counter(
+		"connector.capability_generation_invalidations",
+		metric.WithDescription("atomic capability invalidations at the start of a new credential generation (connect/refresh)"),
+	)
+	if err != nil {
+		c, _ = otel.Meter("noop").Int64Counter("connector.capability_generation_invalidations")
+	}
+	return &capGenMetrics{invalidations: c}
+}
+
+// record emits one invalidation with a bounded trigger attribute. Nil-safe.
+func (m *capGenMetrics) record(ctx context.Context, trigger string) {
+	if m == nil {
+		return
+	}
+	m.invalidations.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("trigger", trigger),
+		attribute.String("connector", connectorLabel),
+	))
+}

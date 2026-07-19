@@ -102,13 +102,14 @@ type Service struct {
 	opts    ProbeOptions
 	syncEnq SyncEnqueuer
 	metrics *syncInitMetrics
+	capGen  *capGenMetrics
 }
 
 // NewService wires a Service. The cipher fails closed on a missing key at
 // construction time upstream (NewCipherFromEnv), so a Service can never be built
 // without an encryption key — plaintext tokens are impossible by construction.
 func NewService(store Store, cipher *Cipher, dk *DKClient) *Service {
-	return &Service{store: store, cipher: cipher, dk: dk, metrics: newSyncInitMetrics()}
+	return &Service{store: store, cipher: cipher, dk: dk, metrics: newSyncInitMetrics(), capGen: newCapGenMetrics()}
 }
 
 // WithProbeOptions sets sample identifiers used by per-variant probes.
@@ -156,10 +157,20 @@ func (s *Service) Connect(ctx context.Context, organizationID, accountID uuid.UU
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if err := s.persistTokens(ctx, organizationID, accountID, tokens); err != nil {
+	// New credential generation (issue #13). Ensure the capability rows exist,
+	// then ATOMICALLY invalidate every prior result to Unknown BEFORE the new
+	// tokens become visible. This is why the order is seed -> invalidate ->
+	// persist -> probe: no reader can combine a previous generation's Supported
+	// with the new credentials, and if the reprobe below is interrupted the
+	// unprobed capabilities stay Unknown instead of a stale previous-generation
+	// Supported (§15.2 capability-gating invariant; CLAUDE.md never-cut).
+	if err := s.seedCapabilities(ctx, organizationID, accountID); err != nil {
 		return Snapshot{}, err
 	}
-	if err := s.seedCapabilities(ctx, organizationID, accountID); err != nil {
+	if err := s.invalidateCapabilities(ctx, organizationID, accountID, capGenTriggerConnect); err != nil {
+		return Snapshot{}, err
+	}
+	if err := s.persistTokens(ctx, organizationID, accountID, tokens); err != nil {
 		return Snapshot{}, err
 	}
 	if err := s.probeAndPersist(ctx, organizationID, accountID, tokens.AccessToken); err != nil {
@@ -201,6 +212,17 @@ func (s *Service) Refresh(ctx context.Context, organizationID, accountID uuid.UU
 	}
 	tokens, err := s.dk.Refresh(ctx, prev)
 	if err != nil {
+		return Snapshot{}, err
+	}
+	// Refresh rotates to a new credential generation, so its capability results
+	// supersede the prior generation's (issue #13). Ensure the rows exist and
+	// ATOMICALLY invalidate them to Unknown before the rotated tokens become
+	// visible; the reprobe below repopulates only the active generation, and an
+	// interruption leaves unprobed capabilities Unknown, never stale Supported.
+	if err := s.seedCapabilities(ctx, organizationID, accountID); err != nil {
+		return Snapshot{}, err
+	}
+	if err := s.invalidateCapabilities(ctx, organizationID, accountID, capGenTriggerRefresh); err != nil {
 		return Snapshot{}, err
 	}
 	if err := s.persistTokens(ctx, organizationID, accountID, tokens); err != nil {
@@ -438,6 +460,26 @@ func (s *Service) seedCapabilities(ctx context.Context, organizationID, accountI
 			return fmt.Errorf("connector: seed capability %s: %w", c, err)
 		}
 	}
+	return nil
+}
+
+// invalidateCapabilities atomically returns every capability for the account to
+// Unknown, marking the start of a new credential generation on connect/refresh
+// (issue #13). It is a SINGLE UPDATE (ResetConnectorCapability), so all prior
+// results are invalidated together — a reader can never observe a mix of
+// generations, and because probing (probeAndPersist) runs after this, an
+// interrupted reprobe leaves the unprobed capabilities at Unknown rather than a
+// stale previous-generation Supported. The reset is the atomic generation switch;
+// SetConnectorCapabilityStatus then replaces state per probe within the active
+// generation (so no reconnect result depends on seed's conflict-ignore anymore).
+func (s *Service) invalidateCapabilities(ctx context.Context, organizationID, accountID uuid.UUID, trigger string) error {
+	if err := s.store.ResetConnectorCapability(ctx, db.ResetConnectorCapabilityParams{
+		MarketplaceAccountID: accountID,
+		OrganizationID:       organizationID,
+	}); err != nil {
+		return fmt.Errorf("connector: invalidate capabilities: %w", err)
+	}
+	s.capGen.record(ctx, trigger)
 	return nil
 }
 
