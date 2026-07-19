@@ -9,18 +9,46 @@ import {
 import type { i18n as I18n } from "i18next";
 import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from "react";
 import { I18nextProvider, useTranslation } from "react-i18next";
+import {
+  consoleMissingKeySink,
+  createMissingKeyReporter,
+  type MissingKeySink,
+} from "./missingKeyTelemetry";
 
 // The single i18n seam for the app. It owns: the i18next instance (ICU catalogs
 // from the locale pack), driving `dir`/`lang` onto <html> from locale DATA
 // (LOC-005, no direction branch in a view), and a telemetry-aware `useT` that
 // emits a missing-key event on any fallback (LOC-004).
 
-function reportMissingKey(event: MissingKeyEvent): void {
-  // Dev-time telemetry sink. In prod this is where an observability breadcrumb
-  // would be emitted; it is never a raw-key render (the fallback served a value).
+// The application telemetry sink for production missing-key fallbacks. It is an
+// injectable seam (not a hard-coded global): a deployment or a test can swap it
+// via `setMissingKeySink`. The default is the structured, bounded prod sink.
+//
+// One bounded, failure-safe reporter forwards to the active sink; its dedup
+// state is rebuilt whenever the sink is swapped, so swapping the telemetry
+// backend starts a fresh dedup window (and keeps tests isolated).
+let emitMissingKey = createMissingKeyReporter(consoleMissingKeySink);
+
+/** Inject a telemetry sink (deployment wiring / tests). */
+export function setMissingKeySink(sink: MissingKeySink): void {
+  emitMissingKey = createMissingKeyReporter(sink);
+}
+
+/** Restore the default production sink. */
+export function resetMissingKeySink(): void {
+  emitMissingKey = createMissingKeyReporter(consoleMissingKeySink);
+}
+
+export function reportMissingKey(event: MissingKeyEvent): void {
   if (import.meta.env.DEV) {
+    // Dev breadcrumb: a raw, un-deduped warning is the useful local signal.
     console.warn("[i18n] missing key served by fallback", event);
+    return;
   }
+  // Production (issue #14): the fallback is invisible unless we emit. This path
+  // is bounded and failure-safe; it never renders a raw key (the fallback
+  // already served a value) and never carries rendered copy.
+  emitMissingKey(event);
 }
 
 interface LocaleState {
