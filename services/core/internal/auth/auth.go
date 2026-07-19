@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/normalize"
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 )
 
@@ -114,6 +115,10 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 // timing uniform against user enumeration, a wrong email still runs an argon2id
 // verification against a dummy hash before failing.
 func (s *Service) Login(ctx context.Context, email, password string) (Session, error) {
+	// Normalize the login identifier to the same canonical form the write path
+	// stores (issue #12): the DB looks up on lower(email), so the argument must be
+	// pre-normalized for the unique index lookup to resolve exactly one principal.
+	email = normalize.Email(email)
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Constant-work path: verify against a throwaway hash so a missing user

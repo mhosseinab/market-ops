@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/normalize"
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 )
 
@@ -27,6 +28,11 @@ func newFakeStore() *fakeStore {
 	}
 }
 
+// GetUserByEmail mirrors the SQL query `WHERE lower(email) = $1`: rows are stored
+// under their canonical (normalized) email key, and the lookup argument is
+// matched verbatim. Callers (auth.Login) MUST pass an already-normalized email,
+// exactly as the real query requires $1 to be pre-normalized — so this fake keeps
+// the caller-side normalization load-bearing rather than papering over it.
 func (f *fakeStore) GetUserByEmail(_ context.Context, email string) (db.User, error) {
 	u, ok := f.usersByEmail[email]
 	if !ok {
@@ -97,8 +103,11 @@ func usersByID(f *fakeStore, id uuid.UUID) db.User {
 // seedUser adds a user with a password to the fake store, returning the user.
 func seedUser(t *testing.T, f *fakeStore, svc *Service, email, password string, role perm.Role) db.User {
 	t.Helper()
-	u := db.User{ID: uuid.New(), OrganizationID: uuid.New(), Email: email, Role: string(role)}
-	f.usersByEmail[email] = u
+	// The write path stores the canonical (normalized) email, exactly as the SQL
+	// CreateUser stores lower(email).
+	canonical := normalize.Email(email)
+	u := db.User{ID: uuid.New(), OrganizationID: uuid.New(), Email: canonical, Role: string(role)}
+	f.usersByEmail[canonical] = u
 	if err := svc.SetPassword(context.Background(), u.ID, password); err != nil {
 		t.Fatalf("set password: %v", err)
 	}
@@ -146,6 +155,30 @@ func TestLoginUnknownUserFailsClosed(t *testing.T) {
 	_, err := svc.Login(context.Background(), "ghost@x.io", "whatever12")
 	if err != ErrInvalidCredentials {
 		t.Fatalf("err = %v, want ErrInvalidCredentials", err)
+	}
+}
+
+// TestLoginNormalizesEmailToSamePrincipal is the write/auth normalization-parity
+// guard for issue #12: a user provisioned under "owner@x.io" must authenticate
+// when the login form supplies the same address with different case and
+// surrounding whitespace. Login normalizes identically to the write path, so the
+// lookup resolves exactly one intended principal.
+func TestLoginNormalizesEmailToSamePrincipal(t *testing.T) {
+	f := newFakeStore()
+	svc := NewService(f)
+	u := seedUser(t, f, svc, "owner@x.io", "hunter2hunter2", perm.RoleOwner)
+
+	for _, variant := range []string{"owner@x.io", "Owner@X.IO", "  OWNER@x.io ", "\towner@X.IO\n"} {
+		sess, err := svc.Login(context.Background(), variant, "hunter2hunter2")
+		if err != nil {
+			t.Fatalf("login with %q: %v", variant, err)
+		}
+		if sess.Principal.UserID != u.ID {
+			t.Fatalf("login with %q resolved user %s, want %s", variant, sess.Principal.UserID, u.ID)
+		}
+		if sess.Principal.OrganizationID != u.OrganizationID {
+			t.Fatalf("login with %q resolved org %s, want %s", variant, sess.Principal.OrganizationID, u.OrganizationID)
+		}
 	}
 }
 

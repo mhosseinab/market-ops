@@ -99,6 +99,89 @@ func TestAuthLifecycleDBBacked(t *testing.T) {
 	}
 }
 
+// TestGlobalEmailUniquenessRejectsCrossOrgDuplicate is the identity-isolation
+// security regression for issue #12: under the globally-unique normalized-email
+// model, the SAME email cannot exist in two organizations. Inserting the same
+// address (even in a different case) into a second organization must be rejected
+// by the schema, so login can never resolve an arbitrary matching tenant.
+func TestGlobalEmailUniquenessRejectsCrossOrgDuplicate(t *testing.T) {
+	q := newDBQueries(t)
+	ctx := context.Background()
+
+	orgA, err := q.CreateOrganization(ctx, "iso-A-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("create org A: %v", err)
+	}
+	orgB, err := q.CreateOrganization(ctx, "iso-B-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("create org B: %v", err)
+	}
+
+	email := "dup-" + uuid.NewString() + "@x.io"
+	if _, err := q.CreateUser(ctx, db.CreateUserParams{
+		OrganizationID: orgA.ID, Email: email, Role: string(perm.RoleOwner),
+	}); err != nil {
+		t.Fatalf("create user in org A: %v", err)
+	}
+
+	// Same email, different organization, different case — must be rejected by the
+	// global unique index on the normalized email.
+	_, err = q.CreateUser(ctx, db.CreateUserParams{
+		OrganizationID: orgB.ID, Email: strings.ToUpper(email), Role: string(perm.RoleOwner),
+	})
+	if err == nil {
+		t.Fatal("cross-org duplicate email was accepted — global email uniqueness not enforced")
+	}
+}
+
+// TestLoginResolvesExactOrganizationForNormalizedEmail proves login resolves
+// exactly one principal, bound to the organization that owns the address, when
+// the credentials are submitted with different case/whitespace than at write
+// time (write/auth normalization parity, issue #12).
+func TestLoginResolvesExactOrganizationForNormalizedEmail(t *testing.T) {
+	q := newDBQueries(t)
+	svc := auth.NewService(q)
+	ctx := context.Background()
+
+	org, err := q.CreateOrganization(ctx, "iso-C-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	email := "principal-" + uuid.NewString() + "@x.io"
+	u, err := q.CreateUser(ctx, db.CreateUserParams{
+		OrganizationID: org.ID, Email: email, Role: string(perm.RoleOwner),
+	})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	const password = "governOwner2026"
+	if err := svc.SetPassword(ctx, u.ID, password); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+
+	sess, err := svc.Login(ctx, "  "+strings.ToUpper(email)+" ", password)
+	if err != nil {
+		t.Fatalf("login with padded/upper email: %v", err)
+	}
+	if sess.Principal.UserID != u.ID {
+		t.Fatalf("resolved user %s, want %s", sess.Principal.UserID, u.ID)
+	}
+	if sess.Principal.OrganizationID != org.ID {
+		t.Fatalf("resolved org %s, want %s (token must carry the org from the same lookup)", sess.Principal.OrganizationID, org.ID)
+	}
+}
+
+// TestLoginUnknownNormalizedEmailFailsClosed confirms an email with no matching
+// normalized row fails closed with ErrInvalidCredentials (no enumeration signal).
+func TestLoginUnknownNormalizedEmailFailsClosed(t *testing.T) {
+	q := newDBQueries(t)
+	svc := auth.NewService(q)
+	ctx := context.Background()
+	if _, err := svc.Login(ctx, "no-such-"+uuid.NewString()+"@x.io", "whatever12"); err != auth.ErrInvalidCredentials {
+		t.Fatalf("login err = %v, want ErrInvalidCredentials", err)
+	}
+}
+
 // TestLoginWrongPasswordDBBacked confirms the fail-closed path against real
 // storage.
 func TestLoginWrongPasswordDBBacked(t *testing.T) {

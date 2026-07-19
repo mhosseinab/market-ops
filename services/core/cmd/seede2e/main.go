@@ -38,6 +38,7 @@ import (
 
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/normalize"
 )
 
 func main() {
@@ -56,6 +57,10 @@ func run() error {
 	if email == "" {
 		email = "owner@dev.local"
 	}
+	// Canonicalize the identifier exactly as the login/write paths do (issue #12),
+	// so the lookup on lower(email) resolves and a created user is stored in the
+	// same normalized form.
+	email = normalize.Email(email)
 	password := os.Getenv("SEEDE2E_PASSWORD")
 	if password == "" {
 		// Fail closed: never provision a credential-less or guessable-default
