@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessageChunk
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from llm.app import create_app
 from llm.config import ProviderKind, Settings
 from llm.envelope.models import AssistantAnswer, ChatStreamEvent, StreamEventKind
@@ -36,6 +36,7 @@ from llm.orchestrator.graph import (
     TransientTurnError,
     TurnGraph,
     TurnStreamChunk,
+    _token_text,
     build_turn_graph,
 )
 from llm.providers.mock import MockChatModel, MockScript
@@ -93,6 +94,59 @@ def _streaming_graph(
 
 async def _drain(gen: Any) -> list[TurnStreamChunk]:
     return [chunk async for chunk in gen]
+
+
+# ---------------------------------------------------------------------------
+# The token firewall (#73/§9.1): a direct negative test on the ONE filter that
+# keeps Money-bearing structured args and the ToolMessage structured-output echo
+# out of the token stream. A Money-typed boundary ⇒ mandatory negative-test-first
+# (CLAUDE.md §TDD). If this filter ever forwarded a ToolMessage or a tool-call
+# argument chunk, an authoritative number reconstructed from the stream could
+# reach a token — exactly what these assertions forbid.
+# ---------------------------------------------------------------------------
+
+
+def test_token_text_drops_tool_message_structured_echo() -> None:
+    """The ToolMessage structured-output echo is NEVER forwarded as a token.
+
+    The echo's content is the repr of the structured response — it can literally
+    contain the Money mantissa — so it must be dropped by type, not text.
+    """
+    echo = ToolMessage(
+        content="Returning structured response: summary='x' amounts=[Money(mantissa=123)]",
+        tool_call_id="mock-answer",
+    )
+    assert _token_text(echo) is None
+
+
+def test_token_text_drops_tool_call_argument_chunk() -> None:
+    """A tool-call argument chunk (empty text, Money-bearing args) yields no token."""
+    args_chunk = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {
+                "name": "AssistantAnswer",
+                "args": '{"amounts":[{"mantissa":123456789012345,"currency":"IRR"}]}',
+                "id": "mock-answer",
+                "index": 0,
+            }
+        ],
+    )
+    assert _token_text(args_chunk) is None
+
+
+def test_token_text_forwards_real_assistant_text() -> None:
+    """Genuine assistant free-text content IS forwarded (AIMessage and chunk)."""
+    assert _token_text(AIMessage(content="hi")) == "hi"
+    assert _token_text(AIMessageChunk(content="partial ")) == "partial "
+
+
+def test_token_text_drops_non_ai_and_empty_and_nonstring() -> None:
+    """Non-assistant, empty, and multimodal (list) content all yield no token."""
+    assert _token_text(HumanMessage(content="approve it now")) is None
+    assert _token_text(AIMessageChunk(content="")) is None
+    assert _token_text(AIMessageChunk(content=[{"type": "image_url", "url": "x"}])) is None
+    assert _token_text("not a message at all") is None
 
 
 def test_chat_endpoint_emits_conversation_tokens_then_final() -> None:
@@ -193,6 +247,51 @@ async def test_final_frame_money_mantissa_is_string() -> None:
     assert isinstance(mantissa, str)
     import re
 
+    assert re.fullmatch(r"-?[0-9]+", mantissa)
+
+
+@pytest.mark.asyncio
+async def test_money_mantissa_never_leaks_into_a_token_frame() -> None:
+    """With real tokens flowing, the Money mantissa stays OUT of every token (#73).
+
+    A turn whose structured answer carries a mantissa > 2**53 is driven through
+    the streamed path WITH non-empty natural-language token chunks — so the
+    ToolMessage structured-output echo (whose repr contains the raw int mantissa)
+    is present in the underlying message stream. The token firewall must keep that
+    figure out of EVERY token frame, while the FINAL frame still carries it as the
+    signed-decimal STRING wire form. This is the streamed counterpart of the
+    ``_token_text`` unit test: the never-cut "no authoritative number
+    reconstructed from a token" guarantee, proven end to end.
+    """
+    big = 987654321098765  # > 2**53
+    graph = _streaming_graph(
+        stream_chunks=("the ", "contribution ", "is "),
+        chunk_delay_seconds=0.0,
+        response_args={
+            "summary": "the contribution figure",
+            "amounts": [{"mantissa": big, "currency": "IRR", "exponent": 0}],
+        },
+    )
+    chunks = await _drain(graph.astream_turn({"message": "price?", "conversation_id": "c"}))
+
+    tokens = [c for c in chunks if c.kind == "token"]
+    assert tokens, "the turn must actually stream tokens for this to be meaningful"
+    # The raw int repr AND the wire string must be absent from every token frame.
+    for c in tokens:
+        rendered = ChatStreamEvent(kind=StreamEventKind.TOKEN, token=c.token).to_sse()
+        assert str(big) not in rendered
+        assert "mantissa" not in rendered.lower()
+
+    final = chunks[-1]
+    assert final.kind == "final"
+    assert final.answer is not None
+    frame = ChatStreamEvent(kind=StreamEventKind.FINAL, envelope=final.answer).to_sse()
+    payload = json.loads(frame[len("data: ") :].strip())
+    mantissa = payload["envelope"]["amounts"][0]["mantissa"]
+    import re
+
+    assert mantissa == str(big)
+    assert isinstance(mantissa, str)
     assert re.fullmatch(r"-?[0-9]+", mantissa)
 
 
