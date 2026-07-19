@@ -67,4 +67,48 @@ describe("Cost import — preview before commit (CST-001)", () => {
     // Success note confirms the committed row count.
     await screen.findByText(faIR["cost.committed"].replace("{count}", "۱"));
   });
+
+  // Regression for issue #79: a preview binds a commit control to one batch id.
+  // If the CSV source changes after a preview, the previously-previewed batch is
+  // stale and must not remain committable — CST-001 (preview before commit) plus
+  // the §4.6 rule that a stale card never stays clickable while the source no
+  // longer matches. Editing the CSV textarea (or picking a new file) invalidates
+  // the preview.
+  it("invalidates a stale preview when the CSV textarea changes (#79)", async () => {
+    server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    // A clean preview yields an enabled commit control bound to that batch id.
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+
+    // Editing the CSV source changes what would be committed: the stale preview
+    // (and its commit control) must disappear until a fresh preview is run.
+    fireEvent.change(csvInput, { target: { value: `${CSV}DKP-9999999,4200000\n` } });
+
+    await waitFor(() => expect(screen.queryByTestId("cost-commit")).toBeNull());
+    expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+  });
+
+  it("invalidates a stale preview when a new file is chosen (#79)", async () => {
+    server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+
+    const file = new File([`${CSV}DKP-9999999,4200000\n`], "costs.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByTestId("cost-file"), { target: { files: [file] } });
+
+    await waitFor(() => expect(screen.queryByTestId("cost-commit")).toBeNull());
+    expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+  });
 });

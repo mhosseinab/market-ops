@@ -78,10 +78,21 @@ export function CostImport() {
   const batch = preview.data;
   const hasDuplicates = (batch?.counts.duplicate ?? 0) > 0;
 
+  // Any change to the CSV source invalidates a prior preview (and any commit
+  // result bound to it): the previewed batch id no longer matches what would be
+  // committed, so it must not stay committable (CST-001; §4.6 — a stale card is
+  // never left clickable). Resetting the mutations removes the preview section
+  // and its commit control until a fresh preview is requested.
+  function changeSource(text: string, name?: string) {
+    setCsv(text);
+    setFilename(name);
+    preview.reset();
+    commit.reset();
+  }
+
   async function onFile(file: File) {
     const text = await file.text();
-    setCsv(text);
-    setFilename(file.name);
+    changeSource(text, file.name);
   }
 
   const columns: readonly Column<CostImportRow>[] = [
@@ -119,7 +130,7 @@ export function CostImport() {
           className="field__input ltr"
           data-testid="cost-csv"
           value={csv}
-          onChange={(e) => setCsv(e.target.value)}
+          onChange={(e) => changeSource(e.target.value)}
           rows={4}
           aria-label={t("cost.dropzone.title")}
         />
