@@ -120,6 +120,70 @@ func TestDKClientFetchVariantsPageIdentityErrors(t *testing.T) {
 	})
 }
 
+// TestDKClientFetchVariantsPageTrailingContentRejected proves the connector
+// decodes exactly ONE variants document and then requires EOF: a syntactically
+// valid envelope FOLLOWED BY a second JSON value or arbitrary non-whitespace
+// bytes is quarantined as a typed *VariantsPayloadError rather than silently
+// committing the first document and dropping the suffix (§10.4 parser drift,
+// quarantine-over-inference — no silent drop). A trailing SECOND document is the
+// concatenated-payload case; trailing garbage is the corrupted-suffix case.
+func TestDKClientFetchVariantsPageTrailingContentRejected(t *testing.T) {
+	// A fully coherent single-page variants document used as the accepted prefix.
+	valid := `{"status":"ok","data":{"items":[` +
+		`{"product_id":100,"id":1000,"product_variant_id":1}],` +
+		`"pager":{"page":1,"total_pages":1,"total_rows":1}}}`
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"concatenated second object", valid + `{}`},
+		{"concatenated second envelope", valid + valid},
+		{"trailing number scalar", valid + `123`},
+		{"trailing string scalar", valid + `"x"`},
+		{"trailing array", valid + `[1,2,3]`},
+		{"trailing garbage", valid + `TRAILING_CORRUPTION`},
+		{"trailing garbage after whitespace", valid + "\n\tGARBAGE"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dk := newRawVariantsClient(t, tc.body)
+			page, err := dk.FetchVariantsPage(context.Background(), "tok", 1, 50)
+			if err == nil {
+				t.Fatalf("want trailing-content rejection, got nil (page=%+v)", page)
+			}
+			var pe *VariantsPayloadError
+			if !errors.As(err, &pe) {
+				t.Fatalf("want *VariantsPayloadError, got %T: %v", err, err)
+			}
+			if pe.Page != 1 {
+				t.Fatalf("error page=%d, want 1", pe.Page)
+			}
+			if len(page.Items) != 0 {
+				t.Fatalf("rejected page must carry no items, got %d", len(page.Items))
+			}
+		})
+	}
+}
+
+// TestDKClientFetchVariantsPageTrailingWhitespaceAccepted is the positive control
+// for the decode-then-require-EOF guard: LEGAL trailing JSON whitespace (spaces,
+// tabs, newlines) after the document must remain accepted, because the second
+// decode returns io.EOF once only whitespace remains. A regression here would
+// reject well-formed DK responses that pad the body.
+func TestDKClientFetchVariantsPageTrailingWhitespaceAccepted(t *testing.T) {
+	body := `{"status":"ok","data":{"items":[` +
+		`{"product_id":100,"id":1000,"product_variant_id":1}],` +
+		`"pager":{"page":1,"total_pages":1,"total_rows":1}}}` + "  \n\t\r\n  "
+	dk := newRawVariantsClient(t, body)
+	page, err := dk.FetchVariantsPage(context.Background(), "tok", 1, 50)
+	if err != nil {
+		t.Fatalf("valid page with trailing whitespace rejected: %v", err)
+	}
+	if page.Page != 1 || page.TotalPages != 1 || page.TotalRows != 1 || len(page.Items) != 1 {
+		t.Fatalf("page not honoured: %+v", page)
+	}
+}
+
 // TestDKClientFetchVariantsPageMalformedJSON keeps the existing guarantee that a
 // syntactically invalid body is still an error (parser drift), distinct from the
 // new semantic checks.

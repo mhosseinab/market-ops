@@ -91,6 +91,60 @@ func zeroIDRows(t *testing.T, pool *pgxpool.Pool, account uuid.UUID) (prod, vari
 	return
 }
 
+// TestSyncerRejectsConcatenatedTrailingPayload drives issue #199 (a valid
+// variants envelope FOLLOWED BY a second JSON document) through the REAL
+// connector + Syncer.Resume: DK returns a fully coherent page 1 with a trailing
+// JSON object appended after it. The connector decodes one document, requires EOF,
+// and quarantines the trailing content as parser drift (§10.4). The incremental
+// run must stay retryable at page 1, commit nothing, record the error, run no
+// reconciliation (no false drift), and leave the pre-seeded offer intact — the
+// first document is NEVER committed as an authoritative page.
+func TestSyncerRejectsConcatenatedTrailingPayload(t *testing.T) {
+	pool, q := newPool(t)
+	account := seedAccount(t, q)
+	ctx := context.Background()
+
+	// Seed one existing owned offer via a normal initial import.
+	seed := catalog.NewSyncer(pool, newFakeSource([]connector.VariantItem{item(100, 1000, 1, 111000)}, 2), 2)
+	runImport(t, seed, account, catalog.KindInitial)
+	if _, _, _, o, _ := counts(t, q, account); o != 1 {
+		t.Fatalf("seed offers=%d, want 1", o)
+	}
+
+	// Incremental run whose page 1 is a coherent document followed by trailing JSON.
+	valid := `{"data":{"items":[{"product_id":100,"id":1000,"product_variant_id":1}],` +
+		`"pager":{"page":1,"total_pages":1,"total_rows":1}}}`
+	s := catalog.NewSyncer(pool, rawSource(t, valid+`{"unexpected":"suffix"}`), 1)
+	runID, err := s.Start(ctx, account, catalog.KindIncremental)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := s.Resume(ctx, account, runID); err == nil {
+		t.Fatal("expected trailing-content rejection on concatenated page 1")
+	}
+
+	run, _ := q.GetCatalogSyncRun(ctx, runID)
+	if run.Status != "running" {
+		t.Fatalf("status=%s, want running (retryable)", run.Status)
+	}
+	if run.NextPage != 1 {
+		t.Fatalf("next_page=%d, want 1 (cursor unchanged)", run.NextPage)
+	}
+	if run.Error == "" {
+		t.Fatal("expected the error recorded on the run")
+	}
+	if run.DriftCount != 0 {
+		t.Fatalf("drift_count=%d, want 0 (rejected page never reconciles)", run.DriftCount)
+	}
+	// The pre-seeded offer is untouched; the trailing-suffix page committed nothing.
+	if _, _, _, o, _ := counts(t, q, account); o != 1 {
+		t.Fatalf("offers=%d after rejected page, want 1 retained", o)
+	}
+	if p, v, l, o, sn := zeroIDRows(t, pool, account); p+v+l+o+sn != 0 {
+		t.Fatalf("zero-id rows present: products=%d variants=%d listings=%d offers=%d snapshots=%d", p, v, l, o, sn)
+	}
+}
+
 // TestSyncerRejectsInvalidEmptyEnvelopePayload proves a bare `{}` page 1 (issue
 // #7 case 1) fails closed: the run stays retryable at page 1, records the error,
 // completes no reconciliation, and records no drift against a pre-seeded offer.

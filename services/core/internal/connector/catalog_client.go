@@ -213,6 +213,18 @@ func (c *DKClient) FetchVariantsPage(ctx context.Context, accessToken string, pa
 		return VariantPage{}, fmt.Errorf("connector: decode variants page %d: %w", page, err)
 	}
 
+	// Require EOF after the single variants document: the response is authoritative
+	// only if it is EXACTLY one JSON value. A second JSON value (a concatenated
+	// envelope/object/array/scalar) or trailing non-whitespace garbage means the
+	// body is not the single document the frozen spec promises — decoding once and
+	// dropping the suffix would silently commit an ambiguous payload (§10.4 parser
+	// drift, quarantine-over-inference: no silent drop). Trailing JSON whitespace is
+	// legal — json.Decoder skips it and returns io.EOF once only whitespace remains.
+	var tail json.RawMessage
+	if err := dec.Decode(&tail); !errors.Is(err, io.EOF) {
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: "trailing content after variants document"}
+	}
+
 	// Validate the envelope + pager BEFORE building a VariantPage. A missing data
 	// envelope or pager is malformed, NOT an empty last page — never silently
 	// coerce absent pagination into a successful terminal page (issue #7).
