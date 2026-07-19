@@ -79,7 +79,7 @@ func countingMockDK(t *testing.T) (*httptest.Server, *int32) {
 // rather than exported cross-package, since it is test-only fixture setup,
 // not product logic; named distinctly to avoid any future collision in this
 // package).
-func seedApprovedCardSystem(t *testing.T, pool *pgxpool.Pool, q *db.Queries) (db.ApprovalCard, int64) {
+func seedApprovedCardSystem(t *testing.T, pool *pgxpool.Pool, q *db.Queries) (db.ApprovalCard, int64, uuid.UUID) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -152,7 +152,7 @@ func seedApprovedCardSystem(t *testing.T, pool *pgxpool.Pool, q *db.Queries) (db
 	if err != nil {
 		t.Fatalf("get approved card: %v", err)
 	}
-	return approved, nativeVariant
+	return approved, nativeVariant, org.ID
 }
 
 // fixedResolver returns an always-write-enabled RevalidationContext bound to
@@ -184,13 +184,17 @@ func (f fixedResolver) Resolve(_ context.Context, card db.ApprovalCard) (executi
 	}, nil
 }
 
-// systemOwnerServer builds a real gateway.NewServer wired with a single
-// Owner session (via the package's existing fakeAuth stub) plus whatever
-// extra options a scenario needs (execution, event, ...).
-func systemOwnerServer(t *testing.T, opts ...Option) (*http.Server, string) {
+// systemOwnerServerForOrg builds a real gateway.NewServer with the Owner session bound to a
+// SPECIFIC organization (issue #102): tenant-scoped routes resolve the principal's
+// organization to its marketplace account, so a card/action/outcome read or write
+// only succeeds when the session's org owns the seeded resource. Passing the
+// seeded account's org id is what makes the happy-path tenant checks pass; a
+// mismatched org would (correctly) return a uniform not-found.
+func systemOwnerServerForOrg(t *testing.T, organizationID uuid.UUID, opts ...Option) (*http.Server, string) {
 	t.Helper()
 	fa := newFakeAuth()
 	owner := principal(perm.RoleOwner)
+	owner.OrganizationID = organizationID
 	const tok = "s32-owner-session"
 	fa.principals[tok] = owner
 	base := []Option{WithAuth(fa), WithCookieSecure(false)}
@@ -209,13 +213,13 @@ func systemOwnerServer(t *testing.T, opts ...Option) (*http.Server, string) {
 // and exactly one response reports DidWrite=true.
 func TestSystemDuplicateWrite_ConcurrentDoubleConfirmExecute(t *testing.T) {
 	pool, q := newSystemPool(t)
-	card, native := seedApprovedCardSystem(t, pool, q)
+	card, native, org := seedApprovedCardSystem(t, pool, q)
 
 	dk, writes := countingMockDK(t)
 	writer := execution.NewHTTPWriter(dk.URL, "tok", dk.Client())
 	execSvc := execution.NewService(pool, recommendation.NewService(pool), writer, fixedResolver{card: card, nativeVariant: native})
 
-	srv, tok := systemOwnerServer(t, WithExecution(execSvc))
+	srv, tok := systemOwnerServerForOrg(t, org, WithExecution(execSvc))
 
 	body, err := json.Marshal(gateway.ExecuteActionRequest{CardId: card.ID})
 	if err != nil {

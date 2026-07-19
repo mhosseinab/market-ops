@@ -17,26 +17,39 @@ import (
 // ExecutionService is the execution/reconciliation seam the gateway depends on
 // (PRD §7.5 EXE-001..005). *execution.Service satisfies it. It is an interface so
 // the transport can be tested with a fake and httpapi stays free of DB wiring.
+//
+// Every method that reaches a tenant-owned action/execution takes the
+// authenticated organization id (issue #102) so the service predicates the
+// read/mutation on the caller's marketplace account. A foreign action is a uniform
+// not-found with no execution, retry, or disclosure; scope is derived from the
+// session principal, never from request input.
 type ExecutionService interface {
-	Execute(ctx context.Context, cardID uuid.UUID, actor audit.Actor) (execution.ExecuteResult, error)
-	Retry(ctx context.Context, actionID uuid.UUID, actor audit.Actor) (execution.RetryResult, error)
-	GetExecution(ctx context.Context, actionID uuid.UUID) (db.ActionExecution, error)
-	// GetUnifiedAction resolves an action in EITHER execution mode (issue #106):
-	// a write execution OR a recommend-only action, so a recommend-only action is
-	// no longer invisible (404) through the common action read.
-	GetUnifiedAction(ctx context.Context, actionID uuid.UUID) (execution.UnifiedAction, error)
-	// ListUnifiedByAccount projects both modes for an account so the actions list
-	// can overlay mode + canonical state (issue #106).
-	ListUnifiedByAccount(ctx context.Context, account uuid.UUID, limit int32) ([]execution.UnifiedAction, error)
-	// ListPendingReconciliation backs GET /ops/queues (PD-3 item 8, S37).
-	ListPendingReconciliation(ctx context.Context, account uuid.UUID, limit int32) ([]db.ActionExecution, error)
+	ExecuteForOrg(ctx context.Context, organizationID, cardID uuid.UUID, actor audit.Actor) (execution.ExecuteResult, error)
+	RetryForOrg(ctx context.Context, organizationID, actionID uuid.UUID, actor audit.Actor) (execution.RetryResult, error)
+	// GetUnifiedActionForOrg resolves an action in EITHER execution mode (issue
+	// #106) scoped to the caller's account (issue #102): a write execution OR a
+	// recommend-only action, so a recommend-only action is no longer invisible
+	// (404) through the common action read — while a foreign-account action stays a
+	// uniform not-found (pgx.ErrNoRows), never disclosed.
+	GetUnifiedActionForOrg(ctx context.Context, organizationID, actionID uuid.UUID) (execution.UnifiedAction, error)
+	// ListUnifiedByAccountForOrg projects both modes for the caller's OWN account so
+	// the actions list can overlay mode + canonical state (issue #106); a foreign
+	// account id is rejected with ErrAccountNotFound (issue #102), never another
+	// tenant's projection.
+	ListUnifiedByAccountForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]execution.UnifiedAction, error)
+	// ListPendingReconciliationForOrg backs GET /ops/queues (PD-3 item 8, S37),
+	// scoped to the caller's account.
+	ListPendingReconciliationForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]db.ActionExecution, error)
 }
 
 // OutcomeService backs GET /outcomes (OUT-001). *outcome.Service satisfies it.
+// Reads are scoped to the caller's account (issue #102): a foreign action's
+// outcome is a uniform not-found.
 type OutcomeService interface {
-	Get(ctx context.Context, actionID uuid.UUID) (outcome.View, error)
-	// ListByAccount backs GET /outcomes/list (PD-3 item 5, S37).
-	ListByAccount(ctx context.Context, account uuid.UUID, limit int32) ([]db.ListOutcomeWindowsByAccountRow, error)
+	GetForOrg(ctx context.Context, organizationID, actionID uuid.UUID) (outcome.View, error)
+	// ListByAccountForOrg backs GET /outcomes/list (PD-3 item 5, S37), scoped to
+	// the caller's account.
+	ListByAccountForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]db.ListOutcomeWindowsByAccountRow, error)
 }
 
 // ExecuteAction revalidates and executes an approved card (EXE-001/002/005). The
@@ -51,7 +64,7 @@ func (s *gatewayServer) ExecuteAction(
 	if req.Body == nil {
 		return gateway.ExecuteActiondefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	res, err := s.execution.Execute(ctx, req.Body.CardId, executionActorFrom(ctx))
+	res, err := s.execution.ExecuteForOrg(ctx, orgFromCtx(ctx), req.Body.CardId, executionActorFrom(ctx))
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -95,7 +108,7 @@ func (s *gatewayServer) RetryAction(
 	if req.Body == nil {
 		return gateway.RetryActiondefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	res, err := s.execution.Retry(ctx, req.Body.ActionId, executionActorFrom(ctx))
+	res, err := s.execution.RetryForOrg(ctx, orgFromCtx(ctx), req.Body.ActionId, executionActorFrom(ctx))
 	if err != nil {
 		switch {
 		case errors.Is(err, execution.ErrUnreconciled):
@@ -128,7 +141,7 @@ func (s *gatewayServer) GetActionExecution(
 	if s.execution == nil {
 		return gateway.GetActionExecutiondefaultJSONResponse{StatusCode: 503, Body: executionUnavailableErr()}, nil
 	}
-	ua, err := s.execution.GetUnifiedAction(ctx, req.Params.ActionId)
+	ua, err := s.execution.GetUnifiedActionForOrg(ctx, orgFromCtx(ctx), req.Params.ActionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return gateway.GetActionExecutiondefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
@@ -172,7 +185,7 @@ func (s *gatewayServer) GetOutcome(
 	if s.outcome == nil {
 		return gateway.GetOutcomedefaultJSONResponse{StatusCode: 503, Body: executionUnavailableErr()}, nil
 	}
-	view, err := s.outcome.Get(ctx, req.Params.ActionId)
+	view, err := s.outcome.GetForOrg(ctx, orgFromCtx(ctx), req.Params.ActionId)
 	if err != nil {
 		if errors.Is(err, outcome.ErrNoWindow) {
 			return gateway.GetOutcomedefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil

@@ -51,6 +51,43 @@ func (q *Queries) GetCurrentSelectionSet(ctx context.Context, lineageID uuid.UUI
 	return i, err
 }
 
+const getCurrentSelectionSetForAccount = `-- name: GetCurrentSelectionSetForAccount :one
+SELECT id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at, membership_fingerprint FROM selection_sets
+WHERE lineage_id = $1 AND marketplace_account_id = $2
+ORDER BY version DESC
+LIMIT 1
+`
+
+type GetCurrentSelectionSetForAccountParams struct {
+	LineageID            uuid.UUID
+	MarketplaceAccountID uuid.UUID
+}
+
+// Tenant-scoped current selection-set version (issue #102): the greatest version
+// of a lineage ONLY when that lineage belongs to the caller's marketplace account.
+// A lineage owned by another account matches no row, so a bulk confirmation can
+// never bind or probe a foreign selection set.
+func (q *Queries) GetCurrentSelectionSetForAccount(ctx context.Context, arg GetCurrentSelectionSetForAccountParams) (SelectionSet, error) {
+	row := q.db.QueryRow(ctx, getCurrentSelectionSetForAccount, arg.LineageID, arg.MarketplaceAccountID)
+	var i SelectionSet
+	err := row.Scan(
+		&i.ID,
+		&i.MarketplaceAccountID,
+		&i.LineageID,
+		&i.Version,
+		&i.Name,
+		&i.Criteria,
+		&i.MemberCount,
+		&i.AggregateImpactKnown,
+		&i.AggregateImpactMantissa,
+		&i.AggregateImpactCurrency,
+		&i.AggregateImpactExponent,
+		&i.CreatedAt,
+		&i.MembershipFingerprint,
+	)
+	return i, err
+}
+
 const getSelectionSet = `-- name: GetSelectionSet :one
 SELECT id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at, membership_fingerprint FROM selection_sets WHERE id = $1
 `
@@ -145,21 +182,27 @@ func (q *Queries) InsertSelectionSet(ctx context.Context, arg InsertSelectionSet
 
 const insertSelectionSetMember = `-- name: InsertSelectionSetMember :one
 INSERT INTO selection_set_members (
-    selection_set_id, variant_id, recommendation_id, disposition
-) VALUES ($1, $2, $3, $4)
-RETURNING id, selection_set_id, variant_id, recommendation_id, disposition, created_at
+    selection_set_id, marketplace_account_id, variant_id, recommendation_id, disposition
+) VALUES ($1, $2, $3, $4, $5)
+RETURNING id, selection_set_id, variant_id, recommendation_id, disposition, created_at, marketplace_account_id
 `
 
 type InsertSelectionSetMemberParams struct {
-	SelectionSetID   uuid.UUID
-	VariantID        uuid.UUID
-	RecommendationID pgtype.UUID
-	Disposition      string
+	SelectionSetID       uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	RecommendationID     pgtype.UUID
+	Disposition          string
 }
 
+// marketplace_account_id is the tenant key (issue #102): it MUST equal the owning
+// selection_set's account and — enforced by migration 0025's composite FKs and the
+// recommendation-account trigger — the variant's and (when present) the
+// recommendation's account, so a cross-account member is rejected at the DB.
 func (q *Queries) InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error) {
 	row := q.db.QueryRow(ctx, insertSelectionSetMember,
 		arg.SelectionSetID,
+		arg.MarketplaceAccountID,
 		arg.VariantID,
 		arg.RecommendationID,
 		arg.Disposition,
@@ -172,12 +215,13 @@ func (q *Queries) InsertSelectionSetMember(ctx context.Context, arg InsertSelect
 		&i.RecommendationID,
 		&i.Disposition,
 		&i.CreatedAt,
+		&i.MarketplaceAccountID,
 	)
 	return i, err
 }
 
 const listSelectionSetMembers = `-- name: ListSelectionSetMembers :many
-SELECT id, selection_set_id, variant_id, recommendation_id, disposition, created_at FROM selection_set_members
+SELECT id, selection_set_id, variant_id, recommendation_id, disposition, created_at, marketplace_account_id FROM selection_set_members
 WHERE selection_set_id = $1
 ORDER BY created_at, id
 `
@@ -198,6 +242,7 @@ func (q *Queries) ListSelectionSetMembers(ctx context.Context, selectionSetID uu
 			&i.RecommendationID,
 			&i.Disposition,
 			&i.CreatedAt,
+			&i.MarketplaceAccountID,
 		); err != nil {
 			return nil, err
 		}

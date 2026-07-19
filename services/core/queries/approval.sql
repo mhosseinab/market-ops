@@ -23,6 +23,13 @@ RETURNING *;
 -- name: GetApprovalCard :one
 SELECT * FROM approval_cards WHERE id = $1;
 
+-- name: GetApprovalCardForAccount :one
+-- Tenant-scoped card fetch (issue #102): resolves a card ONLY when it belongs to
+-- the caller's marketplace account. A card owned by another account matches no row
+-- (pgx.ErrNoRows), so the transport returns the SAME not-found as a genuinely
+-- missing card — a foreign card is never disclosed and never mutated.
+SELECT * FROM approval_cards WHERE id = $1 AND marketplace_account_id = $2;
+
 -- name: GetCurrentApprovalCard :one
 -- The greatest-version card for a lineage (the live card version).
 SELECT * FROM approval_cards

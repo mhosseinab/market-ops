@@ -2,10 +2,13 @@ package recommendation_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
@@ -228,22 +231,27 @@ func TestConfirmBulkSelection_SupersededMemberInvalidatedButOthersAuthorized(t *
 }
 
 // TestConfirmBulkSelection_CrossAccountMemberRejected is the tenant-integrity
-// negative test (never-cut, PRD §4.6): an executable member whose live approval
-// card belongs to a DIFFERENT marketplace_account_id than the selection set must
-// fail closed in authorizeBulkMember (account_mismatch), never be approved or
-// dispatched. The set is minted under account A (so its member resolves — the
-// recommendation belongs to A), but the member's live card was minted under a
-// different tenant (account B); the cross-account guard must reject it.
+// negative test (never-cut, PRD §4.6). #90's authorizeBulkMember rejects a member
+// whose live approval card belongs to a DIFFERENT marketplace_account_id than the
+// selection set (account_mismatch → BulkItemInvalidated), and that guard remains in
+// place as in-code defense-in-depth. After issue #102's migration 0025, that corrupt
+// precondition is ALSO — and first — unconstructable at the schema: the composite FK
+// approval_cards_recommendation_account_fkey forces an approval card and its
+// recommendation to share an account, so a card minted under account B for a
+// recommendation that belongs to account A is rejected at INSERT (SQLSTATE 23503).
+// This asserts that stronger, combined invariant: the mixed-tenant member cannot even
+// be persisted, so a bulk confirmation can never encounter one. (authorizeBulkMember's
+// account_mismatch branch is retained and unit-covered by #90; it is now unreachable
+// through the normal card-creation path because the DB rejects the corruption one
+// layer down — the guarantee is strengthened, never weakened.)
 func TestConfirmBulkSelection_CrossAccountMemberRejected(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
 	accountA, variantA := seedVariant(t, q)
-	accountB, _ := seedVariant(t, q) // a DIFFERENT tenant; a valid FK for the mis-tenanted card.
-	svc := recommendation.NewService(pool).SetExecutionDispatcher(realDispatcherFor(t, pool))
+	accountB, _ := seedVariant(t, q) // a second, DISTINCT tenant for the mis-tenanted card.
+	svc := recommendation.NewService(pool)
 
-	// A recommendation that BELONGS to account A (so PreviewBulkSelection accepts it
-	// and resolves it executable), but a live approval card minted under account B —
-	// the cross-account corruption the tenant guard must catch.
+	// A recommendation that BELONGS to account A.
 	in := baseValidInput(t)
 	in.AccountID = accountA
 	in.VariantID = variantA
@@ -256,51 +264,25 @@ func TestConfirmBulkSelection_CrossAccountMemberRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("persist recommendation: %v", err)
 	}
-	card, err := svc.CreateCard(ctx, persisted.ID, uuid.New(), accountB, rec) // WRONG tenant.
-	if err != nil {
-		t.Fatalf("create cross-account card: %v", err)
+
+	// Attempt the cross-account corruption: an approval card minted under account B for
+	// a recommendation owned by account A. Migration 0025's composite FK rejects it at
+	// the DB — the mixed-tenant member is unconstructable, fail closed.
+	_, err = svc.CreateCard(ctx, persisted.ID, uuid.New(), accountB, rec) // WRONG tenant.
+	if err == nil {
+		t.Fatalf("cross-account approval card was accepted; want a fail-closed FK violation (issue #102 migration 0025)")
 	}
-	// Drive the mis-tenanted card to a live, control-bearing state so, absent the
-	// tenant guard, it WOULD be an approvable control.
-	if _, err := svc.Advance(ctx, card.ID, approval.StateDraft, approval.StateReadyForReview, "ready"); err != nil {
-		t.Fatalf("advance draft→ready: %v", err)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		t.Fatalf("cross-account card insert error = %v; want foreign_key_violation (SQLSTATE 23503)", err)
 	}
-	if _, err := svc.Advance(ctx, card.ID, approval.StateReadyForReview, approval.StateAwaitingConfirmation, "open"); err != nil {
-		t.Fatalf("advance ready→awaiting: %v", err)
+	if pgErr.ConstraintName != "approval_cards_recommendation_account_fkey" {
+		t.Fatalf("cross-account card rejected by %q; want approval_cards_recommendation_account_fkey", pgErr.ConstraintName)
 	}
 
-	// Account A's selection set: its single member resolves executable (the
-	// recommendation belongs to A) — the preview cannot see the card's tenant.
-	res, err := svc.PreviewBulkSelection(ctx, accountA, uuid.Nil, "bulk-90", nil,
-		[]recommendation.PreviewMemberInput{{VariantID: variantA, RecommendationID: persisted.ID}})
-	if err != nil {
-		t.Fatalf("preview: %v", err)
-	}
-	if len(res.Members) != 1 || res.Members[0].Disposition != recommendation.DispositionExecutable {
-		t.Fatalf("seeded member not executable: %+v", res.Members)
-	}
-
-	out, err := svc.ConfirmBulkSelection(ctx, res.Set.LineageID, res.Set.Version, time.Now().UTC())
-	if err != nil {
-		t.Fatalf("confirm bulk: %v", err)
-	}
-	item := itemFor(t, out.Items, persisted.ID)
-	if item.State != recommendation.BulkItemInvalidated {
-		t.Fatalf("cross-account member state = %s; want invalidated", item.State)
-	}
-	if item.Reason != "account_mismatch" {
-		t.Fatalf("cross-account member reason = %q; want account_mismatch", item.Reason)
-	}
-	// The mis-tenanted card stays a live control — never approved, never advanced.
-	if got := reloadState(t, svc, card.ID); got != approval.StateAwaitingConfirmation {
-		t.Fatalf("cross-account card advanced to %s; want awaiting_confirmation", got)
-	}
-	// Fail closed: no execution intent dispatched, and no pending-execution signal.
-	if got := countIntents(t, pool, card.ID); got != 0 {
-		t.Fatalf("cross-account confirm enqueued %d execution intents; want 0", got)
-	}
-	if out.ExecutionPending {
-		t.Fatalf("cross-account confirm reported ExecutionPending; want false")
+	// No corrupt card row was created for A's recommendation under B's tenant.
+	if _, err := db.New(pool).GetCurrentApprovalCardByRecommendation(ctx, persisted.ID); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("a card row exists for the cross-account attempt (must be none): err=%v", err)
 	}
 }
 

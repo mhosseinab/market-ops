@@ -30,6 +30,20 @@ func principalFrom(ctx context.Context) (auth.Principal, bool) {
 	return p, ok
 }
 
+// orgFromCtx returns the authenticated principal's organization id for tenant
+// scoping (issue #102). A missing principal yields uuid.Nil; the scoped services
+// resolve that to no marketplace account and fail closed (uniform not-found). On
+// the protected routes the middleware always injects a principal, so a real human
+// caller always carries its organization; the org-less LLM machine principal
+// (OrganizationID == uuid.Nil) likewise resolves to no account and is denied
+// cross-tenant reads — it never carries an authoritative tenant scope of its own.
+func orgFromCtx(ctx context.Context) uuid.UUID {
+	if p, ok := principalFrom(ctx); ok {
+		return p.OrganizationID
+	}
+	return uuid.Nil
+}
+
 // tokenFrom returns the raw session token injected by the middleware (present
 // on session-optional routes such as logout).
 func tokenFrom(ctx context.Context) (string, bool) {

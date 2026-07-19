@@ -32,6 +32,13 @@ RETURNING *;
 -- name: GetRecommendation :one
 SELECT * FROM recommendations WHERE id = $1;
 
+-- name: GetRecommendationForAccount :one
+-- Tenant-scoped recommendation fetch (issue #102): resolves a recommendation ONLY
+-- when it belongs to the caller's marketplace account. A recommendation owned by
+-- another account matches no row, so a foreign recommendation is indistinguishable
+-- from a missing one (no existence oracle) and is never disclosed.
+SELECT * FROM recommendations WHERE id = $1 AND marketplace_account_id = $2;
+
 -- name: GetCurrentRecommendation :one
 -- The greatest-version row for a lineage (the current recommendation).
 SELECT * FROM recommendations

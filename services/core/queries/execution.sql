@@ -24,6 +24,16 @@ SELECT * FROM action_executions WHERE idempotency_key = $1;
 -- name: GetActionExecutionByAction :one
 SELECT * FROM action_executions WHERE action_id = $1;
 
+-- name: GetActionExecutionByActionForAccount :one
+-- Tenant-scoped execution fetch (issue #102): action_executions carries no account
+-- column of its own, so it is scoped through its bound approval_cards row. An
+-- execution whose card belongs to another account matches no row (pgx.ErrNoRows),
+-- so a foreign action's execution is never disclosed.
+SELECT ae.*
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ae.action_id = $1 AND ac.marketplace_account_id = $2;
+
 -- name: GetActionExecution :one
 SELECT * FROM action_executions WHERE id = $1;
 
@@ -64,6 +74,14 @@ RETURNING *;
 
 -- name: GetRecommendOnlyAction :one
 SELECT * FROM recommend_only_actions WHERE action_id = $1;
+
+-- name: GetRecommendOnlyActionForAccount :one
+-- Tenant-scoped recommend-only fetch (issue #102 × #106): recommend_only_actions
+-- carries its own account column, so the unified action read predicates on it
+-- directly. A recommend-only action owned by another account matches no row
+-- (pgx.ErrNoRows), so a foreign action is never disclosed through the common read.
+SELECT * FROM recommend_only_actions
+WHERE action_id = $1 AND marketplace_account_id = $2;
 
 -- name: SetRecommendOnlyState :one
 -- Advance a recommend-only action to a terminal EXE-005 state. FROM-guarded on

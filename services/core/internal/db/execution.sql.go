@@ -168,6 +168,42 @@ func (q *Queries) GetActionExecutionByAction(ctx context.Context, actionID uuid.
 	return i, err
 }
 
+const getActionExecutionByActionForAccount = `-- name: GetActionExecutionByActionForAccount :one
+SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ae.action_id = $1 AND ac.marketplace_account_id = $2
+`
+
+type GetActionExecutionByActionForAccountParams struct {
+	ActionID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+}
+
+// Tenant-scoped execution fetch (issue #102): action_executions carries no account
+// column of its own, so it is scoped through its bound approval_cards row. An
+// execution whose card belongs to another account matches no row (pgx.ErrNoRows),
+// so a foreign action's execution is never disclosed.
+func (q *Queries) GetActionExecutionByActionForAccount(ctx context.Context, arg GetActionExecutionByActionForAccountParams) (ActionExecution, error) {
+	row := q.db.QueryRow(ctx, getActionExecutionByActionForAccount, arg.ActionID, arg.MarketplaceAccountID)
+	var i ActionExecution
+	err := row.Scan(
+		&i.ID,
+		&i.CardID,
+		&i.ActionID,
+		&i.IdempotencyKey,
+		&i.Mode,
+		&i.ExternalState,
+		&i.ExternalRef,
+		&i.RequestPayload,
+		&i.ResponsePayload,
+		&i.ReconciledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getActionExecutionByKey = `-- name: GetActionExecutionByKey :one
 SELECT id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at FROM action_executions WHERE idempotency_key = $1
 `
@@ -249,6 +285,42 @@ SELECT id, card_id, action_id, marketplace_account_id, variant_id, approved_pric
 
 func (q *Queries) GetRecommendOnlyAction(ctx context.Context, actionID uuid.UUID) (RecommendOnlyAction, error) {
 	row := q.db.QueryRow(ctx, getRecommendOnlyAction, actionID)
+	var i RecommendOnlyAction
+	err := row.Scan(
+		&i.ID,
+		&i.CardID,
+		&i.ActionID,
+		&i.MarketplaceAccountID,
+		&i.VariantID,
+		&i.ApprovedPriceMantissa,
+		&i.ApprovedPriceCurrency,
+		&i.ApprovedPriceExponent,
+		&i.ApprovedAt,
+		&i.WindowExpiresAt,
+		&i.State,
+		&i.MatchedObservationAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getRecommendOnlyActionForAccount = `-- name: GetRecommendOnlyActionForAccount :one
+SELECT id, card_id, action_id, marketplace_account_id, variant_id, approved_price_mantissa, approved_price_currency, approved_price_exponent, approved_at, window_expires_at, state, matched_observation_at, created_at, updated_at FROM recommend_only_actions
+WHERE action_id = $1 AND marketplace_account_id = $2
+`
+
+type GetRecommendOnlyActionForAccountParams struct {
+	ActionID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+}
+
+// Tenant-scoped recommend-only fetch (issue #102 × #106): recommend_only_actions
+// carries its own account column, so the unified action read predicates on it
+// directly. A recommend-only action owned by another account matches no row
+// (pgx.ErrNoRows), so a foreign action is never disclosed through the common read.
+func (q *Queries) GetRecommendOnlyActionForAccount(ctx context.Context, arg GetRecommendOnlyActionForAccountParams) (RecommendOnlyAction, error) {
+	row := q.db.QueryRow(ctx, getRecommendOnlyActionForAccount, arg.ActionID, arg.MarketplaceAccountID)
 	var i RecommendOnlyAction
 	err := row.Scan(
 		&i.ID,

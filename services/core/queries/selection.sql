@@ -28,10 +28,24 @@ WHERE lineage_id = $1
 ORDER BY version DESC
 LIMIT 1;
 
+-- name: GetCurrentSelectionSetForAccount :one
+-- Tenant-scoped current selection-set version (issue #102): the greatest version
+-- of a lineage ONLY when that lineage belongs to the caller's marketplace account.
+-- A lineage owned by another account matches no row, so a bulk confirmation can
+-- never bind or probe a foreign selection set.
+SELECT * FROM selection_sets
+WHERE lineage_id = $1 AND marketplace_account_id = $2
+ORDER BY version DESC
+LIMIT 1;
+
 -- name: InsertSelectionSetMember :one
+-- marketplace_account_id is the tenant key (issue #102): it MUST equal the owning
+-- selection_set's account and — enforced by migration 0025's composite FKs and the
+-- recommendation-account trigger — the variant's and (when present) the
+-- recommendation's account, so a cross-account member is rejected at the DB.
 INSERT INTO selection_set_members (
-    selection_set_id, variant_id, recommendation_id, disposition
-) VALUES ($1, $2, $3, $4)
+    selection_set_id, marketplace_account_id, variant_id, recommendation_id, disposition
+) VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: ListSelectionSetMembers :many

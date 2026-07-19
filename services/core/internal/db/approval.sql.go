@@ -124,6 +124,45 @@ func (q *Queries) GetApprovalCard(ctx context.Context, id uuid.UUID) (ApprovalCa
 	return i, err
 }
 
+const getApprovalCardForAccount = `-- name: GetApprovalCardForAccount :one
+SELECT id, recommendation_id, marketplace_account_id, lineage_id, version, action_id, parameter_version, context_version, policy_version, cost_profile_version, evidence_versions, idempotency_key, state, price_mantissa, price_currency, price_exponent, expires_at, created_at FROM approval_cards WHERE id = $1 AND marketplace_account_id = $2
+`
+
+type GetApprovalCardForAccountParams struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+}
+
+// Tenant-scoped card fetch (issue #102): resolves a card ONLY when it belongs to
+// the caller's marketplace account. A card owned by another account matches no row
+// (pgx.ErrNoRows), so the transport returns the SAME not-found as a genuinely
+// missing card — a foreign card is never disclosed and never mutated.
+func (q *Queries) GetApprovalCardForAccount(ctx context.Context, arg GetApprovalCardForAccountParams) (ApprovalCard, error) {
+	row := q.db.QueryRow(ctx, getApprovalCardForAccount, arg.ID, arg.MarketplaceAccountID)
+	var i ApprovalCard
+	err := row.Scan(
+		&i.ID,
+		&i.RecommendationID,
+		&i.MarketplaceAccountID,
+		&i.LineageID,
+		&i.Version,
+		&i.ActionID,
+		&i.ParameterVersion,
+		&i.ContextVersion,
+		&i.PolicyVersion,
+		&i.CostProfileVersion,
+		&i.EvidenceVersions,
+		&i.IdempotencyKey,
+		&i.State,
+		&i.PriceMantissa,
+		&i.PriceCurrency,
+		&i.PriceExponent,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getCurrentApprovalCard = `-- name: GetCurrentApprovalCard :one
 SELECT id, recommendation_id, marketplace_account_id, lineage_id, version, action_id, parameter_version, context_version, policy_version, cost_profile_version, evidence_versions, idempotency_key, state, price_mantissa, price_currency, price_exponent, expires_at, created_at FROM approval_cards
 WHERE lineage_id = $1

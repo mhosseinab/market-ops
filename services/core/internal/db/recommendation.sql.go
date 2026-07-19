@@ -134,6 +134,74 @@ func (q *Queries) GetRecommendation(ctx context.Context, id uuid.UUID) (Recommen
 	return i, err
 }
 
+const getRecommendationForAccount = `-- name: GetRecommendationForAccount :one
+SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at FROM recommendations WHERE id = $1 AND marketplace_account_id = $2
+`
+
+type GetRecommendationForAccountParams struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+}
+
+// Tenant-scoped recommendation fetch (issue #102): resolves a recommendation ONLY
+// when it belongs to the caller's marketplace account. A recommendation owned by
+// another account matches no row, so a foreign recommendation is indistinguishable
+// from a missing one (no existence oracle) and is never disclosed.
+func (q *Queries) GetRecommendationForAccount(ctx context.Context, arg GetRecommendationForAccountParams) (Recommendation, error) {
+	row := q.db.QueryRow(ctx, getRecommendationForAccount, arg.ID, arg.MarketplaceAccountID)
+	var i Recommendation
+	err := row.Scan(
+		&i.ID,
+		&i.MarketplaceAccountID,
+		&i.VariantID,
+		&i.LineageID,
+		&i.Version,
+		&i.EventID,
+		&i.Objective,
+		&i.CurrentPriceMantissa,
+		&i.CurrentPriceCurrency,
+		&i.CurrentPriceExponent,
+		&i.ProposedPriceAvailable,
+		&i.ProposedPriceMantissa,
+		&i.ProposedPriceCurrency,
+		&i.ProposedPriceExponent,
+		&i.ProposedPriceReason,
+		&i.CurrentContributionAvailable,
+		&i.CurrentContributionMantissa,
+		&i.CurrentContributionCurrency,
+		&i.CurrentContributionExponent,
+		&i.CurrentContributionReason,
+		&i.ProposedContributionAvailable,
+		&i.ProposedContributionMantissa,
+		&i.ProposedContributionCurrency,
+		&i.ProposedContributionExponent,
+		&i.ProposedContributionReason,
+		&i.AllowedRangeAvailable,
+		&i.AllowedRangeMinMantissa,
+		&i.AllowedRangeMaxMantissa,
+		&i.AllowedRangeCurrency,
+		&i.AllowedRangeExponent,
+		&i.AllowedRangeReason,
+		&i.Readiness,
+		&i.EvidenceQuality,
+		&i.EvidenceObservationID,
+		&i.EvidenceRefs,
+		&i.EvidenceAsOf,
+		&i.CostProfileVersion,
+		&i.PolicyVersion,
+		&i.ContextVersion,
+		&i.ParameterVersion,
+		&i.Inputs,
+		&i.Assumptions,
+		&i.Blockers,
+		&i.Approvable,
+		&i.Simulation,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertRecommendation = `-- name: InsertRecommendation :one
 
 INSERT INTO recommendations (

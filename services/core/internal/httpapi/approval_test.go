@@ -38,28 +38,28 @@ type fakeApproval struct {
 	previewCalls int
 }
 
-func (f *fakeApproval) GetCard(context.Context, uuid.UUID) (db.ApprovalCard, error) {
+func (f *fakeApproval) GetCardForOrg(context.Context, uuid.UUID, uuid.UUID) (db.ApprovalCard, error) {
 	return f.card, f.err
 }
 func (f *fakeApproval) History(context.Context, uuid.UUID) ([]db.ApprovalCardState, error) {
 	return f.history, f.err
 }
-func (f *fakeApproval) ConfirmIndividual(context.Context, uuid.UUID, approval.Binding, time.Time) (recommendation.ConfirmOutcome, error) {
+func (f *fakeApproval) ConfirmIndividualForOrg(context.Context, uuid.UUID, uuid.UUID, approval.Binding, time.Time) (recommendation.ConfirmOutcome, error) {
 	return f.outcome, f.confirmErr
 }
-func (f *fakeApproval) ConfirmBulkSelection(context.Context, uuid.UUID, int32, time.Time) (recommendation.BulkConfirmOutcome, error) {
+func (f *fakeApproval) ConfirmBulkSelectionForOrg(context.Context, uuid.UUID, uuid.UUID, int32, time.Time) (recommendation.BulkConfirmOutcome, error) {
 	return f.bulkOutcome, f.bulkErr
 }
-func (f *fakeApproval) EditPrice(context.Context, uuid.UUID, money.Money, time.Time) (db.ApprovalCard, error) {
+func (f *fakeApproval) EditPriceForOrg(context.Context, uuid.UUID, uuid.UUID, money.Money, time.Time) (db.ApprovalCard, error) {
 	return f.editedCard, f.editErr
 }
-func (f *fakeApproval) ListActions(context.Context, uuid.UUID, string, int32) ([]db.ApprovalCard, error) {
+func (f *fakeApproval) ListActionsForOrg(context.Context, uuid.UUID, uuid.UUID, string, int32) ([]db.ApprovalCard, error) {
 	return f.actions, f.err
 }
-func (f *fakeApproval) GetRecommendation(context.Context, uuid.UUID) (db.Recommendation, error) {
+func (f *fakeApproval) GetRecommendationForOrg(context.Context, uuid.UUID, uuid.UUID) (db.Recommendation, error) {
 	return f.rec, f.recErr
 }
-func (f *fakeApproval) PreviewBulkSelection(context.Context, uuid.UUID, uuid.UUID, string, map[string]string, []recommendation.PreviewMemberInput) (recommendation.PreviewResult, error) {
+func (f *fakeApproval) PreviewBulkSelectionForOrg(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, map[string]string, []recommendation.PreviewMemberInput) (recommendation.PreviewResult, error) {
 	f.previewCalls++
 	return f.preview, f.previewErr
 }

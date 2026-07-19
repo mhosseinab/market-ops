@@ -121,10 +121,11 @@ func sealSelectionVersion(
 	// would be rejected, so partial/over-population fails closed here.
 	for _, v := range views {
 		if _, err := q.InsertSelectionSetMember(ctx, db.InsertSelectionSetMemberParams{
-			SelectionSetID:   set.ID,
-			VariantID:        v.VariantID,
-			RecommendationID: optionalUUID(v.RecommendationID),
-			Disposition:      string(v.Disposition),
+			SelectionSetID:       set.ID,
+			MarketplaceAccountID: account,
+			VariantID:            v.VariantID,
+			RecommendationID:     optionalUUID(v.RecommendationID),
+			Disposition:          string(v.Disposition),
 		}); err != nil {
 			return db.SelectionSet{}, err
 		}
