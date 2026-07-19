@@ -1,8 +1,4 @@
-import {
-  FRESHNESS_AGING_MAX_MINUTES,
-  FRESHNESS_FRESH_MAX_MINUTES,
-  type MessageKey,
-} from "@market-ops/locale";
+import type { FreshnessState, MessageKey } from "@market-ops/locale";
 import { useT } from "../app/i18n";
 
 // Badge/pill primitives (design/IA_AND_COMPONENTS.md component inventory). Every
@@ -182,16 +178,21 @@ export function DispositionBadge({ state }: { state: DispositionState }) {
   return <Badge tone={m.tone} label={t(m.key)} />;
 }
 
-// ── Freshness pill (fresh ≤60m / aging 1–6h / stale >6h) ───────────────────
-// Thresholds are the SHARED constants (packages/locale) the extension overlay
-// also reads (EXT-005 parity) — never a locally-duplicated magic number.
-export function FreshnessPill({ ageMinutes }: { ageMinutes: number }) {
+// ── Freshness pill (OBS-004) ───────────────────────────────────────────────
+// Renders an ALREADY-DERIVED freshness state. Callers derive it from the shared
+// source of truth (apps/web/src/data/freshness.ts): offer surfaces via
+// `freshnessState(offer, now)` (deadline-driven), event surfaces via
+// `freshnessStateFromAge(ageMinutes(...))`. This pill never re-derives from an
+// age threshold, so it can never disagree with the extension overlay or the
+// action/bulk gates that read the SAME derived state at the SAME instant.
+const FRESHNESS: Record<FreshnessState, { tone: Tone; key: MessageKey }> = {
+  fresh: { tone: "tone-pos", key: "freshness.fresh" },
+  aging: { tone: "tone-warn", key: "freshness.aging" },
+  stale: { tone: "tone-risk", key: "freshness.stale" },
+};
+
+export function FreshnessPill({ state }: { state: FreshnessState }) {
   const t = useT();
-  const band: { tone: Tone; key: MessageKey } =
-    ageMinutes <= FRESHNESS_FRESH_MAX_MINUTES
-      ? { tone: "tone-pos", key: "freshness.fresh" }
-      : ageMinutes <= FRESHNESS_AGING_MAX_MINUTES
-        ? { tone: "tone-warn", key: "freshness.aging" }
-        : { tone: "tone-risk", key: "freshness.stale" };
+  const band = FRESHNESS[state];
   return <Badge tone={band.tone} label={t(band.key)} />;
 }

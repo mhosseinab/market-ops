@@ -13,7 +13,8 @@ import { LtrToken } from "../components/LtrToken";
 import { MoneyView } from "../components/MoneyView";
 import { Section } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
-import { ageMinutes, formatCount, formatInstant } from "../data/format";
+import { formatCount, formatInstant } from "../data/format";
+import { freshnessState } from "../data/freshness";
 import {
   useCostProfiles,
   useMarginReadiness,
@@ -125,7 +126,7 @@ export function ProductDetail() {
                       <span>{t("product.section.readiness")}</span>
                       <span className="inline-badges">
                         <QualityBadge state={offer.quality} />
-                        <FreshnessPill ageMinutes={ageMinutes(offer.capturedAt)} />
+                        <FreshnessPill state={freshnessState(offer, Date.now())} />
                       </span>
                     </div>
                     <div className="kv__row">

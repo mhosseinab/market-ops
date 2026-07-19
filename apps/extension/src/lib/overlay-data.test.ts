@@ -1,3 +1,4 @@
+import { freshnessState } from "@market-ops/locale";
 import { describe, expect, it } from "vitest";
 import {
   deriveOverlayView,
@@ -91,12 +92,27 @@ describe("overlay-data — EXT-005 rendered, never recomputed", () => {
     expect(view.lowestQualifying).toBeNull();
   });
 
-  it("freshnessBucketOf mirrors Market.tsx thresholds VERBATIM (<=60 fresh, <=360 aging, else stale)", () => {
-    expect(freshnessBucketOf(new Date(NOW - 10 * 60_000).toISOString(), NOW)).toBe("fresh");
-    expect(freshnessBucketOf(new Date(NOW - 60 * 60_000).toISOString(), NOW)).toBe("fresh");
-    expect(freshnessBucketOf(new Date(NOW - 61 * 60_000).toISOString(), NOW)).toBe("aging");
-    expect(freshnessBucketOf(new Date(NOW - 360 * 60_000).toISOString(), NOW)).toBe("aging");
-    expect(freshnessBucketOf(new Date(NOW - 361 * 60_000).toISOString(), NOW)).toBe("stale");
+  it("freshnessBucketOf DELEGATES to the shared freshnessState — overlay bucket === Market derivation for the same offer/instant (EXT-005)", () => {
+    const o = offer({
+      capturedAt: "2026-07-18T11:00:00Z",
+      freshnessDeadline: "2026-07-18T17:00:00Z",
+    });
+    expect(freshnessBucketOf(o, NOW)).toBe(freshnessState(o, NOW));
+    const later = Date.parse("2026-07-18T16:30:00Z");
+    expect(freshnessBucketOf(o, later)).toBe(freshnessState(o, later));
+  });
+
+  it("a PRIORITY-tier offer (60m deadline) flips to Stale AT its own deadline — NOT held fresh by a fixed six-hour threshold (OBS-004)", () => {
+    // Captured at 12:00, priority deadline 60m later at 13:00. A fixed 6h
+    // threshold would call this offer aging/fresh well past its deadline; the
+    // authoritative derivation calls it STALE at 13:00.
+    const priority = offer({
+      capturedAt: "2026-07-18T12:00:00Z",
+      freshnessDeadline: "2026-07-18T13:00:00Z",
+    });
+    expect(freshnessBucketOf(priority, Date.parse("2026-07-18T12:59:59Z"))).toBe("aging");
+    expect(freshnessBucketOf(priority, Date.parse("2026-07-18T13:00:00Z"))).toBe("stale");
+    expect(freshnessBucketOf(priority, Date.parse("2026-07-18T13:00:01Z"))).toBe("stale");
   });
 
   it("an empty offer set yields no freshness/quality/lowest — honest absence, never a guess", () => {

@@ -28,7 +28,7 @@ describe("pseudo-localization renders (LOC-011)", () => {
         <StatusBadge state="accepted" />
         <StatusBadge state="pendingReconciliation" />
         <EventTypeBadge type={1} />
-        <FreshnessPill ageMinutes={30} />
+        <FreshnessPill state="aging" />
         <EmptyState />
       </PseudoHarness>,
     );

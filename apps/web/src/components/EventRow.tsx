@@ -1,6 +1,7 @@
 import { formatBasisPoints, type MessageKey } from "@market-ops/locale";
 import { useLocale, useT } from "../app/i18n";
 import { ageMinutes } from "../data/format";
+import { freshnessStateFromAge } from "../data/freshness";
 import type { EventRankFactors, EventType, MarketEvent, QualityState } from "../data/types";
 import { AppLink } from "./AppLink";
 import { type EventType as BadgeType, EventTypeBadge, FreshnessPill, QualityBadge } from "./badges";
@@ -72,7 +73,7 @@ export function EventRow({
           <EventTypeBadge type={EVENT_TYPE_NUM[event.type]} />
           <LtrToken text={String(event.variantId)} />
           <QualityBadge state={quality} />
-          <FreshnessPill ageMinutes={ageMinutes(event.lastEvidenceAt)} />
+          <FreshnessPill state={freshnessStateFromAge(ageMinutes(event.lastEvidenceAt))} />
         </div>
 
         <dl className="event-row__factors">
