@@ -52,10 +52,12 @@ def test_context_corpus_has_100_valid_cases() -> None:
         assert r["expected"]["kind"] in _VALID_KINDS, r["id"]
         assert r["id"] not in ids
         ids.add(r["id"])
-        # Each case maps onto a valid, typed ResolveRequest (no malformed seed).
+        # Each case maps onto a valid, typed ResolveRequest (no malformed seed),
+        # carrying the authenticated organization/account scope (PRD §12).
         ResolveRequest.model_validate(
             {
                 "intent": r["intent"],
+                "scope": r["scope"],
                 "active_context": r["active_context"],
                 "references": r["references"],
                 "candidates": r["candidates"],

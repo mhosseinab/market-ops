@@ -12,7 +12,14 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from llm.contextres import ContextChip, EntityCandidate, EntityRef, ResolveRequest, resolve
+from llm.contextres import (
+    ContextChip,
+    EntityCandidate,
+    EntityRef,
+    RequestScope,
+    ResolveRequest,
+    resolve,
+)
 from llm.contextres.models import ResolutionKind
 from llm.envelope.contract import Provenance, SourcedValue, SourceRef
 from llm.envelope.grounding import find_violations
@@ -83,6 +90,7 @@ def _resolve_request(row: dict[str, Any]) -> ResolveRequest:
     }
     return ResolveRequest(
         intent=IntentClass(row["intent"]),
+        scope=RequestScope.model_validate(row["scope"]),
         active_context=ContextChip.model_validate(active) if active else None,
         references=references,
         candidates=candidates,

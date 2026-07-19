@@ -73,11 +73,15 @@ class EntityCandidate(BaseModel):
 
     Unlike :class:`EntityRef` (which is only what the message named), a candidate
     is supplied by a deterministic read tool and therefore carries the provenance
-    a card binds at creation: the owning ``account_id`` plus the ``context_version``
-    (and, for a Recommendation, the ``recommendation_version``) required for
-    stale-card invalidation. These survive resolution byte-for-byte; a card-leading
-    intent resolving a candidate that lacks a required version fails closed rather
-    than emit a chip that cannot be bound or invalidated.
+    a card binds at creation: the owning ``organization_id`` + ``account_id`` plus
+    the ``context_version`` (and, for a Recommendation, the ``recommendation_version``)
+    required for stale-card invalidation. The organization/account are the source
+    tenant the read tool returned the candidate for — they are validated against
+    the authenticated request scope (§8.1, PRD §12 tenant isolation) BEFORE the
+    candidate can resolve, and are never manufactured from the request. These
+    survive resolution byte-for-byte; a card-leading intent resolving a candidate
+    that lacks a required version fails closed rather than emit a chip that cannot
+    be bound or invalidated.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -86,6 +90,7 @@ class EntityCandidate(BaseModel):
     entity_id: str
     raw: str
     label: str = ""
+    organization_id: str | None = None
     account_id: str | None = None
     context_version: str | None = None
     recommendation_version: str | None = None
@@ -112,15 +117,64 @@ def missing_card_version_reason(
     return None
 
 
+class RequestScope(BaseModel):
+    """The authenticated organization/account scope of the turn (PRD §12).
+
+    This is the tenant the caller's read/Draft credential is authorized for — the
+    single source of truth the resolver validates every candidate and active-context
+    against. It is NEVER derived from candidate data; candidates are checked against
+    it, not the other way round. Both fields are required so a scopeless request
+    cannot slip past validation.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: str
+    account_id: str
+
+
+def scope_mismatch_reason(
+    organization_id: str | None,
+    account_id: str | None,
+    scope: RequestScope,
+) -> str | None:
+    """Return a stable reason token if provenance is absent or outside ``scope``.
+
+    Tenant isolation (PRD §12, §4.6 identity quarantine): a candidate or active
+    context may only resolve when it carries authoritative organization + account
+    provenance that matches the authenticated request scope. Missing provenance
+    fails closed — it is never manufactured from the request scope — and a
+    mismatch fails closed rather than relabeling the entity into the caller's
+    tenant. Organization is checked before account so a cross-org leak is named
+    precisely. Returns ``None`` only when provenance is present and in-scope.
+    """
+    if not organization_id:
+        return "missing_organization_provenance"
+    if not account_id:
+        return "missing_account_provenance"
+    if organization_id != scope.organization_id:
+        return "organization_scope_mismatch"
+    if account_id != scope.account_id:
+        return "account_scope_mismatch"
+    return None
+
+
 class ContextChip(BaseModel):
     """The single active context chip, with the identifiers a card binds at
-    creation (PRD §8.1: resolved entity, account, context version, recommendation
-    version).
+    creation (PRD §8.1: resolved entity, organization, account, context version,
+    recommendation version).
+
+    ``organization_id`` + ``account_id`` are the chip's authoritative source tenant.
+    An inbound active-context chip carries the tenant it was fetched under; the
+    resolver validates that provenance against the authenticated request scope
+    before resolving, so a stale or cross-tenant chip fails closed rather than
+    binding the wrong tenant (PRD §12).
     """
 
     model_config = ConfigDict(extra="forbid")
 
     context_type: ContextType
+    organization_id: str | None = None
     account_id: str | None = None
     entity_id: str | None = None
     context_version: str | None = None
@@ -185,16 +239,18 @@ class Resolution(BaseModel):
 class ResolveRequest(BaseModel):
     """The full, JSON-safe input to :func:`~llm.contextres.resolver.resolve`.
 
-    ``candidates`` maps each explicit reference's ``raw`` token to the entities it
-    could denote (supplied by the caller from deterministic read tools — the
-    resolver never fetches). ``now`` is the injected as-of clock so time
-    resolution is deterministic and testable.
+    ``scope`` is the authenticated organization/account the turn runs under; every
+    candidate and the active context must carry provenance matching it or the turn
+    fails closed (PRD §12). ``candidates`` maps each explicit reference's ``raw``
+    token to the entities it could denote (supplied by the caller from deterministic
+    read tools — the resolver never fetches). ``now`` is the injected as-of clock so
+    time resolution is deterministic and testable.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     intent: IntentClass
-    account_id: str | None = None
+    scope: RequestScope
     active_context: ContextChip | None = None
     references: list[EntityRef] = Field(default_factory=list)
     candidates: dict[str, list[EntityCandidate]] = Field(default_factory=dict)

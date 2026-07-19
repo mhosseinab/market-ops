@@ -21,6 +21,19 @@ HERE = Path(__file__).parent
 INTENTS_DIR = HERE / "intents"
 CONTEXT_DIR = HERE / "context"
 
+# Every seed case runs under one authenticated tenant scope. Candidates and the
+# active-context chip carry this SAME organization/account as their authoritative
+# provenance so they validate in-scope and resolve as authored (PRD §12 tenant
+# isolation, §4.6 identity quarantine). Cross-tenant negative cases are exercised
+# directly in the resolver unit tests, not seeded into this single-tenant corpus.
+SEED_ORG = "org-1"
+SEED_ACCOUNT = "acc-1"
+
+# Intents whose satisfaction could create/advance a card — a resolved candidate or
+# active chip must then carry the card-binding versions (§8.1, #30).
+_CARD_LEADING = {"PrepareAction", "ReviewAction", "ApproveAction"}
+_RECOMMENDATION = "Recommendation"
+
 # --- intent case banks -------------------------------------------------------
 # Each entry: (message, expected_intent, lang, shorthand). Authored across the
 # eight classes in Persian / English / mixed, including operator shorthand
@@ -248,8 +261,39 @@ def _ref(ctype: str, eid: str, raw: str, label: str = "") -> dict[str, object]:
     return {"context_type": ctype, "entity_id": eid, "raw": raw, "label": label}
 
 
+def _cand(
+    ctype: str,
+    eid: str,
+    raw: str,
+    label: str = "",
+    *,
+    context_version: str | None = None,
+    recommendation_version: str | None = None,
+) -> dict[str, object]:
+    """An authoritative candidate as a read tool returns it: verbatim token plus
+    the tenant provenance (organization/account) and card-binding versions."""
+    cand: dict[str, object] = {
+        "context_type": ctype,
+        "entity_id": eid,
+        "raw": raw,
+        "label": label,
+        "organization_id": SEED_ORG,
+        "account_id": SEED_ACCOUNT,
+    }
+    if context_version is not None:
+        cand["context_version"] = context_version
+    if recommendation_version is not None:
+        cand["recommendation_version"] = recommendation_version
+    return cand
+
+
 def _chip(ctype: str, **kw: object) -> dict[str, object]:
-    return {"context_type": ctype, **kw}
+    """An active-context chip carrying its authoritative source tenant provenance.
+
+    Organization/account default to the seed scope so the chip validates in-scope;
+    callers may pass ``entity_id`` / ``context_version`` / ``recommendation_version``.
+    """
+    return {"context_type": ctype, "organization_id": SEED_ORG, "account_id": SEED_ACCOUNT, **kw}
 
 
 def _build_context_cases() -> list[dict[str, object]]:
@@ -275,6 +319,7 @@ def _build_context_cases() -> list[dict[str, object]]:
                 "message": message,
                 "lang": lang,
                 "intent": intent,
+                "scope": {"organization_id": SEED_ORG, "account_id": SEED_ACCOUNT},
                 "active_context": active_context,
                 "references": references or [],
                 "candidates": candidates or {},
@@ -325,8 +370,8 @@ def _build_context_cases() -> list[dict[str, object]]:
     for i, (msg, intent, lang, raw) in enumerate(ambiguous_specs, start=1):
         ctype = "Recommendation" if intent == "ApproveAction" else "Product"
         cands = [
-            _ref(ctype, f"{raw[:3]}-a", raw, f"{raw} A"),
-            _ref(ctype, f"{raw[:3]}-b", raw, f"{raw} B"),
+            _cand(ctype, f"{raw[:3]}-a", raw, f"{raw} A"),
+            _cand(ctype, f"{raw[:3]}-b", raw, f"{raw} B"),
         ]
         add(
             f"ctx-amb-{i:03d}",
@@ -386,13 +431,28 @@ def _build_context_cases() -> list[dict[str, object]]:
         ("prepare کن SKU-3131 رو", "PrepareAction", "mixed", "SKU-3131", "Product"),
     ]
     for i, (msg, intent, lang, raw, ctype) in enumerate(override_specs, start=1):
+        cid = f"ctx-ovr-{i:03d}"
+        # A card-leading override binds card versions; Navigation carries none.
+        cv = f"cv-{cid}" if intent in _CARD_LEADING else None
+        rv = f"rv-{cid}" if (intent in _CARD_LEADING and ctype == _RECOMMENDATION) else None
         add(
-            f"ctx-ovr-{i:03d}",
+            cid,
             msg,
             intent,
             "resolved",
             references=[_ref(ctype, "", raw)],
-            candidates={raw: [_ref(ctype, f"{raw}-id", raw, raw)]},
+            candidates={
+                raw: [
+                    _cand(
+                        ctype,
+                        f"{raw}-id",
+                        raw,
+                        raw,
+                        context_version=cv,
+                        recommendation_version=rv,
+                    )
+                ]
+            },
             active_context=_chip("GlobalAccount", account_id="acc-1"),
             expected_context_type=ctype,
             lang=lang,
@@ -416,12 +476,20 @@ def _build_context_cases() -> list[dict[str, object]]:
         ("این کالا را برای اقدام آماده کن", "PrepareAction", "fa", "Product"),
     ]
     for i, (msg, intent, lang, ctype) in enumerate(incontext_specs, start=1):
+        cid = f"ctx-inctx-{i:03d}"
+        chip_kw: dict[str, object] = {
+            "account_id": "acc-1",
+            "entity_id": "e-9",
+            "context_version": f"cv-{cid}",
+        }
+        if ctype == _RECOMMENDATION:
+            chip_kw["recommendation_version"] = f"rv-{cid}"
         add(
-            f"ctx-inctx-{i:03d}",
+            cid,
             msg,
             intent,
             "resolved",
-            active_context=_chip(ctype, account_id="acc-1", entity_id="e-9"),
+            active_context=_chip(ctype, **chip_kw),
             expected_context_type=ctype,
             lang=lang,
         )

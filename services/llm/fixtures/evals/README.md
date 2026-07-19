@@ -44,10 +44,18 @@ Intent case:
 
 Context case (maps 1:1 onto `llm.contextres.ResolveRequest` plus `expected`):
 ```
-{"id", "message", "lang", "intent", "active_context", "references", "candidates",
+{"id", "message", "lang", "intent",
+ "scope": {"organization_id", "account_id"},   # authenticated request scope (PRD §12)
+ "active_context", "references", "candidates",
  "time_phrase", "now", "ambiguous": bool,
  "expected": {"kind": "resolved|picker|not_found", "context_type": <or null>}}
 ```
+`scope` is the authenticated tenant the turn runs under. Each candidate and the
+`active_context` chip carry their own `organization_id` + `account_id` provenance;
+the resolver validates that provenance against `scope` before resolving, so a
+candidate or chip from another organization/account fails closed (never a
+relabeled chip). This single-tenant seed uses `org-1`/`acc-1` throughout; the
+cross-tenant negative cases live in `tests/test_context_resolver.py`.
 
 Every `ambiguous: true` context case is card-leading and MUST resolve to a
 `picker` — the CHAT-007 containment set. `context/context_ambiguous.jsonl` holds
