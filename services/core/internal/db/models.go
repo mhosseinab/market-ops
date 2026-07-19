@@ -323,6 +323,7 @@ type MarginReadiness struct {
 	MissingComponents    []byte
 	StaleComponents      []byte
 	ComputedAt           time.Time
+	StaleBoundary        pgtype.Timestamptz
 }
 
 type MarketEvent struct {

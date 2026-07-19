@@ -109,15 +109,18 @@ ORDER BY effective_from DESC, version DESC;
 
 -- name: UpsertMarginReadiness :one
 -- Recompute the derived readiness projection (CST-003). Upsert: readiness is a
--- current-state projection, recomputed on any input change.
+-- current-state projection, recomputed on any input change. stale_boundary is the
+-- earliest review-by instant at which this projection must next age into Stale even
+-- with no new input (issue #39); NULL ⇒ nothing can age by time alone.
 INSERT INTO margin_readiness (
-    variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at
-) VALUES ($1, $2, $3, $4, $5, $6)
+    variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at, stale_boundary
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (variant_id) DO UPDATE
 SET state = EXCLUDED.state,
     missing_components = EXCLUDED.missing_components,
     stale_components = EXCLUDED.stale_components,
-    computed_at = EXCLUDED.computed_at
+    computed_at = EXCLUDED.computed_at,
+    stale_boundary = EXCLUDED.stale_boundary
 RETURNING *;
 
 -- name: GetMarginReadiness :one

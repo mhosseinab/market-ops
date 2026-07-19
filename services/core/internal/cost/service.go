@@ -402,10 +402,25 @@ func (s *Service) ListVersions(ctx context.Context, variant uuid.UUID, component
 // GetReadiness returns the stored readiness projection for a variant, recomputing
 // it on demand when none is stored yet (so a never-imported SKU reports Missing
 // rather than a not-found).
+//
+// The read is FRESHNESS-AWARE (issue #39): a stored projection carries the earliest
+// review-by instant (stale_boundary) at which a required, present component ages
+// out. When wall-clock time (via the injected clock) has reached/passed that
+// horizon — the same at/after semantics recompute uses (stale when now >= boundary)
+// — the cached row is NOT served; the read recomputes and returns the freshly-aged
+// verdict. This fails closed to Stale: a Complete row can never outlive its horizon
+// just because no new cost input arrived. A NULL horizon means nothing can age by
+// time alone, so the cached row is served as-is.
 func (s *Service) GetReadiness(ctx context.Context, variant uuid.UUID) (db.MarginReadiness, error) {
 	q := db.New(s.pool)
 	row, err := q.GetMarginReadiness(ctx, variant)
 	if err == nil {
+		now := s.now()
+		if row.StaleBoundary.Valid && !row.StaleBoundary.Time.After(now) {
+			// Horizon reached/passed and no new input has recomputed this row: age it
+			// now. The stored row already knows its owning account, so no second lookup.
+			return s.recompute(ctx, q, row.MarketplaceAccountID, variant, now)
+		}
 		return row, nil
 	}
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -435,6 +450,7 @@ func (s *Service) recompute(ctx context.Context, q *db.Queries, account, variant
 		return db.MarginReadiness{}, fmt.Errorf("cost: readiness point-in-time: %w", err)
 	}
 	components := make(map[Component]ComponentPresence, len(profiles))
+	staleAfter := make(map[Component]time.Time, len(profiles))
 	for _, p := range profiles {
 		// Carry the in-force version's source through as provenance. The exact
 		// source is effective-dated on the version, so a historical recompute
@@ -445,6 +461,9 @@ func (s *Service) recompute(ctx context.Context, q *db.Queries, account, variant
 			Present:       true,
 			Stale:         p.StaleAfter.Valid && !p.StaleAfter.Time.After(now),
 			Authoritative: IsAuthoritativeSource(p.Source),
+		}
+		if p.StaleAfter.Valid {
+			staleAfter[Component(p.Component)] = p.StaleAfter.Time
 		}
 	}
 
@@ -457,11 +476,12 @@ func (s *Service) recompute(ctx context.Context, q *db.Queries, account, variant
 		return db.MarginReadiness{}, err
 	}
 
-	verdict := DeriveReadiness(ReadinessInput{
+	in := ReadinessInput{
 		Components:       components,
 		Applicable:       applicable,
 		RequiredOptional: pol.requiredOptional,
-	})
+	}
+	verdict := DeriveReadiness(in)
 
 	row, err := q.UpsertMarginReadiness(ctx, db.UpsertMarginReadinessParams{
 		VariantID:            variant,
@@ -470,11 +490,50 @@ func (s *Service) recompute(ctx context.Context, q *db.Queries, account, variant
 		MissingComponents:    marshalComponents(verdict.Missing),
 		StaleComponents:      marshalComponents(verdict.Stale),
 		ComputedAt:           now,
+		StaleBoundary:        earliestStaleBoundary(in, staleAfter, now),
 	})
 	if err != nil {
 		return db.MarginReadiness{}, fmt.Errorf("cost: upsert readiness: %w", err)
 	}
 	return row, nil
+}
+
+// earliestStaleBoundary computes the freshness horizon stored on the readiness
+// projection (issue #39): the earliest review-by instant (stale_after) among the
+// components that currently COUNT as satisfied and fresh — i.e. required for this
+// SKU, present, provenance-satisfied, and not already stale. That instant is when
+// the projection must next transition to Stale even with no new cost input, so a
+// freshness-aware read can age the cached row deterministically.
+//
+// An invalid (missing) result means no such component can age: nothing carries a
+// review-by instant, so the projection never expires by time alone. Time is
+// compared as data (UTC/monotonic) — no locale/calendar branch (LOC-001, §4.6).
+// Semantics match recompute's staleness test (stale when now >= stale_after): only
+// a stale_after strictly after now bounds a still-fresh component, so the stored
+// boundary is always in the future relative to the recompute instant.
+func earliestStaleBoundary(in ReadinessInput, staleAfter map[Component]time.Time, now time.Time) pgtype.Timestamptz {
+	var boundary pgtype.Timestamptz
+	for _, c := range AllComponents {
+		if !in.required(c) {
+			continue
+		}
+		p := in.Components[c]
+		// Only components that currently satisfy their requirement can age INTO Stale.
+		// An absent or non-authoritative-when-required component already blocks
+		// (Missing) and is excluded; an already-stale component needs no future
+		// boundary.
+		if !p.Present || (c.RequiresAuthoritativeProvenance() && !p.Authoritative) || p.Stale {
+			continue
+		}
+		sa, ok := staleAfter[c]
+		if !ok {
+			continue // no review-by instant ⇒ this component cannot age by time
+		}
+		if !boundary.Valid || sa.Before(boundary.Time) {
+			boundary = pgtype.Timestamptz{Time: sa, Valid: true}
+		}
+	}
+	return boundary
 }
 
 // loadApplicable reads the SKU's required-when-applicable component set.
