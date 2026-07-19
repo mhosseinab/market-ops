@@ -103,3 +103,58 @@ func TestEmail_Idempotent(t *testing.T) {
 		}
 	}
 }
+
+// canonicalWhitespace is the EXACT set the SQL email_canonical() function trims
+// (migration 0034), enumerated from Go's unicode.IsSpace / strings.TrimSpace set.
+// It is duplicated here on purpose: this test is the lockstep guard proving the
+// Go canonicalizer strips every code point the SQL side does, so the two
+// definitions cannot silently drift apart — the drift class that let a padded
+// login id resolve another organization's row (issue #201, PRD §4.6 identity
+// quarantine). If Go's whitespace set ever changes, update the SQL btrim set in
+// 0034 in the same change.
+var canonicalWhitespace = []rune{
+	0x0009, 0x000A, 0x000B, 0x000C, 0x000D, 0x0020, 0x0085, 0x00A0, 0x1680,
+	0x2000, 0x2001, 0x2002, 0x2003, 0x2004, 0x2005, 0x2006, 0x2007, 0x2008,
+	0x2009, 0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000,
+}
+
+// TestEmail_TrimsEveryCanonicalWhitespaceRune proves normalize.Email strips each
+// whitespace code point in the shared canonical set from BOTH ends, so a login id
+// padded with any of them (notably tab U+0009 and newline U+000A from issue #201)
+// canonicalizes to the same principal identifier the write path stored. This is
+// the write/auth parity contract on the Go side; the DB-backed tests assert the
+// SQL side and the two together close the cross-org shadow.
+func TestEmail_TrimsEveryCanonicalWhitespaceRune(t *testing.T) {
+	const base = "owner@example.com"
+	for _, ws := range canonicalWhitespace {
+		padded := string(ws) + base + string(ws)
+		if got := normalize.Email(padded); got != base {
+			t.Errorf("Email(U+%04X padded) = %q, want %q — Go whitespace set drifted from SQL email_canonical", ws, got, base)
+		}
+		// Interior whitespace is NOT trimmed: canonicalization must never rewrite
+		// the address body, only strip surrounding whitespace and case-fold.
+		interior := "a" + string(ws) + "b@example.com"
+		if got := normalize.Email(interior); got != interior {
+			t.Errorf("Email(interior U+%04X) = %q, want unchanged %q", ws, got, interior)
+		}
+	}
+}
+
+// TestEmail_TabAndNewlineAliasesCollapseToOneCanonical is the issue #201 defect
+// pinned as a Go-side unit: the tab- and newline-padded aliases that PostgreSQL's
+// 1-arg btrim used to preserve must all normalize to the SAME canonical string,
+// so no whitespace alias can name a distinct principal.
+func TestEmail_TabAndNewlineAliasesCollapseToOneCanonical(t *testing.T) {
+	const want = "owner@example.com"
+	for _, in := range []string{
+		"\towner@example.com\n",
+		"\nowner@example.com\t",
+		"\r\nOWNER@EXAMPLE.COM\r\n",
+		"\vowner@example.com\f",
+		"  owner@example.com  ",
+	} {
+		if got := normalize.Email(in); got != want {
+			t.Errorf("Email(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

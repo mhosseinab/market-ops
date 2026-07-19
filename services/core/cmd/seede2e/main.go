@@ -57,8 +57,9 @@ func run() error {
 	if email == "" {
 		email = "owner@dev.local"
 	}
-	// Canonicalize the identifier exactly as the login/write paths do (issue #12),
-	// so the lookup on lower(email) resolves and a created user is stored in the
+	// Canonicalize the identifier exactly as the login/write paths do (issue #12,
+	// #201): normalize.Email matches the SQL email_canonical() used by GetUserByEmail
+	// and CreateUser, so the lookup resolves and a created user is stored in the
 	// same normalized form.
 	email = normalize.Email(email)
 	password := os.Getenv("SEEDE2E_PASSWORD")
