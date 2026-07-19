@@ -146,6 +146,12 @@ services:
       # unset ⇒ the mock provider (LLM_PROVIDER_KIND defaults to mock), matching
       # every other offline suite in this repo (§12.5 — paid provider calls are a
       # gated, human-authorized S35 operation, never CI).
+      #
+      # Inbound gateway auth (issue #167): the LLM plane requires every non-public
+      # request to carry `Authorization: Bearer <LLM_GATEWAY_TOKEN>`. This is the
+      # SAME token `core` mints (see the `core` service env below); the two MUST
+      # match or the core→llm integration turn is rejected 401.
+      LLM_GATEWAY_TOKEN: s32-integration-gateway-token
       HOME: /tmp
       # The mounted repo (../:/src) is the SAME checkout the CI job already ran
       # a host-side `uv sync --frozen --group dev` against (Python 3.12,

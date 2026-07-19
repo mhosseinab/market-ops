@@ -21,6 +21,20 @@ from llm.metrics import ContainmentMetrics
 from llm.orchestrator.agent import AgentHandle
 from llm.orchestrator.graph import build_turn_graph
 from llm.providers.mock import MockChatModel, MockScript
+from pydantic import SecretStr
+
+# Since issue #167 the /chat endpoint requires the inbound gateway bearer.
+_GATEWAY_TOKEN = "test-gateway-token"
+AUTH_HEADERS = {"Authorization": f"Bearer {_GATEWAY_TOKEN}"}
+
+
+def mock_settings(**overrides: Any) -> Settings:
+    base: dict[str, Any] = {
+        "provider_kind": ProviderKind.MOCK,
+        "gateway_token": SecretStr(_GATEWAY_TOKEN),
+    }
+    base.update(overrides)
+    return Settings(**base)
 
 
 def _content_classifier() -> IntentClassifier:
@@ -74,9 +88,13 @@ def test_question_turn_reaches_the_agent() -> None:
 
 
 def test_chat_sse_contains_an_approve_message_end_to_end() -> None:
-    app = create_app(Settings(provider_kind=ProviderKind.MOCK))
+    app = create_app(mock_settings())
     with TestClient(app) as client:
-        resp = client.post("/chat", json={"message": "go ahead and apply it, approved"})
+        resp = client.post(
+            "/chat",
+            json={"message": "go ahead and apply it, approved"},
+            headers=AUTH_HEADERS,
+        )
         assert resp.status_code == 200
         frames = [
             json.loads(block[len("data:") :].strip())

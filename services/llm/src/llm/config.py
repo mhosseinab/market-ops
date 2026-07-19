@@ -76,6 +76,20 @@ class Settings(BaseSettings):
     # Single §12.4 transient retry at the node level — never stacked.
     node_transient_retries: int = 1
 
+    # --- inbound gateway authentication (issue #167) -------------------------
+    # The SAME credential the Go core mints and presents as
+    # ``Authorization: Bearer <token>`` on every call into this plane
+    # (``LLM_GATEWAY_TOKEN``; env_prefix ``LLM_`` ⇒ this field is
+    # ``gateway_token``). A SecretStr so it never renders in logs/reprs. Empty ⇒
+    # no credential configured: the plane may START only under the mock provider
+    # (a local-test mode; see ``validate_auth_config``), and even then inbound
+    # requests fail closed unless the explicit local-test bypass below is set.
+    gateway_token: SecretStr = SecretStr("")
+    # Explicit, documented dev-only escape hatch: run the tokenless mock plane AND
+    # accept unauthenticated inbound requests. Never valid on the production
+    # (openai_compatible) transport. Off by default — fail closed.
+    gateway_auth_local_bypass: bool = False
+
     # --- kill switch (CHAT-009) ----------------------------------------------
     # The authoritative kill switch is the gateway's; the LLM plane also honors a
     # local disabled state so a direct probe degrades cleanly. Chat-only: never
@@ -105,6 +119,47 @@ class Settings(BaseSettings):
         if self.is_ci():
             return False
         return self.langsmith_tracing and bool(self.langsmith_api_key.get_secret_value().strip())
+
+    def expected_gateway_token(self) -> str | None:
+        """The inbound bearer the plane requires callers to present (issue #167).
+
+        ``None`` ⇒ no credential is configured. Startup permits that ONLY under
+        the mock provider (see ``validate_auth_config``); at request time it is
+        still fail-closed unless ``gateway_auth_local_bypass`` is set.
+        """
+        token = self.gateway_token.get_secret_value().strip()
+        return token or None
+
+    def require_gateway_auth(self) -> bool:
+        """Whether inbound requests must present the gateway bearer (issue #167).
+
+        A configured token is ALWAYS enforced. When none is configured (mock /
+        local test only) the plane still fails closed — requiring auth it cannot
+        satisfy — UNLESS the explicit local-test bypass is set.
+        """
+        if self.expected_gateway_token() is not None:
+            return True
+        return not self.gateway_auth_local_bypass
+
+    def validate_auth_config(self) -> None:
+        """Fail closed at startup on an unauthenticated production plane (#167).
+
+        The production transport (``openai_compatible``) MUST carry an inbound
+        gateway credential; only the mock provider may run tokenless (local
+        test). The local-test bypass is never valid on the production transport.
+        """
+        if self.provider_kind is ProviderKind.OPENAI_COMPATIBLE:
+            if self.expected_gateway_token() is None:
+                raise ValueError(
+                    "LLM_GATEWAY_TOKEN is required when provider_kind is "
+                    "openai_compatible: the production LLM plane refuses to start "
+                    "without an inbound gateway credential (issue #167)."
+                )
+            if self.gateway_auth_local_bypass:
+                raise ValueError(
+                    "gateway_auth_local_bypass is a local-test-only escape hatch "
+                    "and must not be set on the openai_compatible transport (#167)."
+                )
 
     def chat_disabled_for(self, marketplace_account_id: str | None) -> bool:
         """Local kill-switch view (CHAT-009). Chat only; screens unaffected."""

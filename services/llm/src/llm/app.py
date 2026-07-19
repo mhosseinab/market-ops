@@ -19,11 +19,12 @@ turn around it. Graph state is per-request and in-process (no DB credential,
 
 from __future__ import annotations
 
+import hmac
 import uuid
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -91,23 +92,73 @@ def _classifier_mock_script(settings: Settings) -> MockScript | None:
     )
 
 
+_BEARER_PREFIX = "Bearer "
+
+
+def _extract_bearer(authorization: str | None) -> str | None:
+    """The token from an ``Authorization: Bearer <token>`` header, else None.
+
+    Anything without the exact ``Bearer `` scheme prefix (missing header, a bare
+    token, ``Basic ...``) is malformed and yields ``None`` — the caller rejects.
+    """
+    if authorization is None or not authorization.startswith(_BEARER_PREFIX):
+        return None
+    token = authorization[len(_BEARER_PREFIX) :].strip()
+    return token or None
+
+
+def _enforce_gateway_auth(settings: Settings, authorization: str | None) -> None:
+    """Reject any inbound request lacking the exact gateway bearer (issue #167).
+
+    Constant-time comparison (``hmac.compare_digest``, never ``==``) so a wrong
+    token cannot be recovered byte-by-byte from response timing. Fails closed: a
+    missing / malformed / mismatched credential raises 401 and NEVER echoes the
+    secret. This runs as a route dependency, so it precedes the kill-switch and
+    every graph/model/registry branch — an arbitrary internal caller cannot
+    reach inference or supply account/global chat controls without the bearer.
+    """
+    if not settings.require_gateway_auth():
+        return  # explicit, documented local-test bypass (mock only)
+    expected = settings.expected_gateway_token()
+    if expected is None:
+        # require_gateway_auth() true but nothing to compare against ⇒ fail closed.
+        raise HTTPException(status_code=401, detail="gateway credential not configured")
+    provided = _extract_bearer(authorization)
+    if provided is None or not hmac.compare_digest(provided, expected):
+        raise HTTPException(status_code=401, detail="invalid gateway credential")
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Build the FastAPI app. Tests pass explicit settings (mock provider)."""
     resolved = settings or load_settings()
+    # Fail closed at startup: the production transport must carry an inbound
+    # gateway credential (issue #167). Raises before any singletons are wired.
+    resolved.validate_auth_config()
     state = AppState(resolved)
     app = FastAPI(title="DK Marketplace Intelligence — LLM plane", version="0.0.0")
     app.state.app_state = state
 
+    def require_gateway_credential(
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> None:
+        """Route dependency guarding every NON-public endpoint (issue #167)."""
+        _enforce_gateway_auth(state.settings, authorization)
+
+    # Only /healthz is public (narrow liveness probe, no secrets). Every other
+    # internal endpoint requires the gateway bearer.
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
-    @app.get("/registry/manifest")
+    @app.get("/registry/manifest", dependencies=[Depends(require_gateway_credential)])
     def registry_manifest() -> dict[str, Any]:
         return state.registry.manifest()
 
-    @app.post("/chat")
+    @app.post("/chat", dependencies=[Depends(require_gateway_credential)])
     def chat(req: ChatRequest) -> Any:
+        # Auth (issue #167) has already run as a route dependency, so this body —
+        # including the kill switch below — is only reached by an authenticated
+        # caller; auth precedes CHAT-009.
         # Kill switch (CHAT-009): chat-only structured disabled state. Screens —
         # and every other endpoint here — stay fully functional.
         if state.settings.chat_disabled_for(req.marketplace_account_id):
