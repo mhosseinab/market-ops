@@ -200,12 +200,12 @@ func (r *DefaultResolver) Resolve(ctx context.Context, card db.ApprovalCard) (Re
 	if err != nil {
 		return RevalidationContext{}, err
 	}
-	bound := bindingOf(fresh)
-	boundEvidence, err := parseEvidenceVersions(fresh.EvidenceVersions)
+	// bindingOf already parses the card's bound evidence-version map, so the bound
+	// binding carries the exact cited-evidence versions (issue #104).
+	bound, err := bindingOf(fresh)
 	if err != nil {
 		return RevalidationContext{}, err
 	}
-	bound.EvidenceVersions = boundEvidence
 
 	// Re-resolve the CURRENT versions from the authoritative recommendation lineage.
 	rc, err := q.GetCurrentExecutionContext(ctx, fresh.RecommendationID)

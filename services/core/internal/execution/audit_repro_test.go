@@ -115,8 +115,12 @@ func TestExecute_GateBlockedWritePreventsWrite(t *testing.T) {
 	rc := enabledContext(card, native)
 	// Inject a server-resolved cost-profile version that diverges from the bound
 	// version: the costs gate must block the write.
-	rc.Inputs.Bound = bindingOf(card)
-	rc.Inputs.Current = bindingOf(card)
+	boundBinding, err := bindingOf(card)
+	if err != nil {
+		t.Fatalf("bindingOf: %v", err)
+	}
+	rc.Inputs.Bound = boundBinding
+	rc.Inputs.Current = boundBinding
 	rc.Inputs.Current.CostProfileVersion = 999
 
 	writer := NewHTTPWriter(srv.URL, "tok", srv.Client())

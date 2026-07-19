@@ -28,6 +28,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/execution"
+	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
 // ErrNotPending — reconciliation was asked to resolve an action that is not in
@@ -102,6 +103,10 @@ func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, reso
 	if err != nil {
 		return err
 	}
+	binding, err := bindingOf(card)
+	if err != nil {
+		return err
+	}
 
 	// Resolve the execution record, advance the card PendingReconciliation →
 	// terminal, append the reconciliation + terminal audit records, and open the
@@ -125,10 +130,23 @@ func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, reso
 	if _, err := s.cards.AdvanceTx(ctx, tq, card.ID, approval.StatePendingReconciliation, cardState, "reconciled:"+string(terminal)); err != nil {
 		return err
 	}
+	// The reconciliation record carries the read-back / manual evidence that
+	// resolved the pending write, plus the pre-reconciliation external ref, into the
+	// append-only trail (issue #104 / AUD-001): the terminal state is reproducible
+	// from immutable rows, not inferred and not read from the mutable
+	// action_executions projection. `detail` is a bounded, structured note — never
+	// raw marketplace free text.
 	if _, err := audit.Append(ctx, tq, audit.Event{
 		ActionID: actionID, CardID: card.ID, Type: audit.EventReconciliation,
-		Binding: bindingOf(card), CardSnapshot: map[string]any{"state": string(cardState)},
-		Detail: map[string]any{"resolution": terminal, "detail": detail}, TerminalState: string(terminal),
+		Binding:      binding,
+		CardSnapshot: map[string]any{"id": card.ID, "action_id": card.ActionID, "state": string(cardState)},
+		Detail: map[string]any{
+			"resolution":           terminal,
+			"detail":               detail,
+			"prior_external_state": exec.ExternalState,
+			"external_ref":         exec.ExternalRef,
+		},
+		TerminalState: string(terminal),
 	}); err != nil {
 		return err
 	}
@@ -141,7 +159,7 @@ func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, reso
 	}
 	if _, err := audit.Append(ctx, tq, audit.Event{
 		ActionID: actionID, CardID: card.ID, Type: audit.EventTerminal,
-		Binding: bindingOf(card), TerminalState: string(terminal),
+		Binding: binding, TerminalState: string(terminal),
 	}); err != nil {
 		return err
 	}
@@ -156,15 +174,25 @@ func (s *Service) InvalidateStaleCardsForVariant(ctx context.Context, variant uu
 	return s.invalidator.ExpireDependentForVariant(ctx, variant, "manual_dk_change:"+reason)
 }
 
-func bindingOf(card db.ApprovalCard) approval.Binding {
+// bindingOf builds the APR-001 binding for a reconciliation audit event, parsing
+// the card's bound evidence-version map so the reconciliation and terminal records
+// carry the exact cited-evidence versions that were approved (issue #104 / AUD-001)
+// rather than an empty {}. A malformed payload is a corrupt card state and is
+// returned as an error (fail closed).
+func bindingOf(card db.ApprovalCard) (approval.Binding, error) {
+	evidence, err := recommendation.DecodeEvidenceVersions(card.EvidenceVersions)
+	if err != nil {
+		return approval.Binding{}, err
+	}
 	return approval.Binding{
 		ActionID:           card.ActionID,
 		ParameterVersion:   card.ParameterVersion,
 		ContextVersion:     card.ContextVersion,
 		PolicyVersion:      card.PolicyVersion,
 		CostProfileVersion: card.CostProfileVersion,
+		EvidenceVersions:   evidence,
 		Expiry:             card.ExpiresAt,
-	}
+	}, nil
 }
 
 func pgUUID(id uuid.UUID) pgtype.UUID {
