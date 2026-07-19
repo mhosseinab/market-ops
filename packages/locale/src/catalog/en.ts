@@ -288,6 +288,15 @@ export const en: Catalog = {
   "product.stock.noSignal": "No stock signal",
   "product.cost.notRecorded": "Not recorded",
   "product.cost.version": "Version {version}",
+  "product.readiness.error.title": "Margin readiness could not be loaded",
+  "product.readiness.error.body":
+    "This request failed — readiness is not shown until it loads. Retry to load it.",
+  "product.cost.error.title": "Cost profile could not be loaded",
+  "product.cost.error.body":
+    "This request failed — cost components are not shown until they load. Retry to load them.",
+  "product.diagnostics.error.title": "Diagnostics could not be loaded",
+  "product.diagnostics.error.body":
+    "This request failed — diagnostics are not shown until they load. Retry to load them.",
   "product.readiness.missingList": "Missing components",
   "product.readiness.staleList": "Stale components",
   "product.diagnostics.observedField": "Observed field",
