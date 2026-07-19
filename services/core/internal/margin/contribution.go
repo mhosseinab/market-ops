@@ -24,6 +24,27 @@ var (
 	// ErrRateBaseRequired — a rate-kind component was supplied with no rate base
 	// to apply the percentage to.
 	ErrRateBaseRequired = errors.New("margin: rate component requires a rate base")
+	// ErrNegativeDeduction — an absolute deduction was supplied with a negative
+	// amount. Every §9.2 deduction subtracts from net proceeds, so a negative
+	// value would ADD to contribution and could manufacture an apparently
+	// executable margin (issue #60). Deductions are non-negative; zero is valid.
+	// The engine fails closed rather than coerce/abs the value.
+	ErrNegativeDeduction = errors.New("margin: deduction amount must be non-negative")
+	// ErrRateOutOfRange — a rate-kind deduction was supplied with a basis-point
+	// rate outside the accepted domain [MinRateBasisPoints, MaxRateBasisPoints]
+	// (issue #60). A deduction rate cannot be negative and cannot exceed 100% of
+	// its rate base; PRD §9.2 defines no tighter per-component cap, so the
+	// defensible universal bound is [0, 10000] bp inclusive.
+	ErrRateOutOfRange = errors.New("margin: rate basis points out of range [0,10000]")
+)
+
+// Accepted rate domain for a KindRate deduction, in basis points (issue #60).
+// The bounds are inclusive: 0% and 100% are both valid boundaries. MaxRate is
+// pinned to money.BasisPointScale (10000 bp = 100%) so there is one source of
+// truth for "100%". PRD §9.2 specifies no tighter per-component cap.
+const (
+	MinRateBasisPoints int64 = 0
+	MaxRateBasisPoints int64 = money.BasisPointScale
 )
 
 // Kind distinguishes an absolute money deduction from a fixed-point rate applied
@@ -145,6 +166,14 @@ func (Engine) Contribution(in ContributionInput) (Contribution, error) {
 		}
 		seen[comp.Component] = true
 
+		// Domain-validate the deduction BEFORE any arithmetic (issue #60): a
+		// negative absolute amount or an out-of-range rate would otherwise be
+		// subtracted/applied and could manufacture an executable margin. Fail
+		// closed with a typed error; never coerce, clamp, or abs.
+		if err := validateComponentDomain(comp); err != nil {
+			return Contribution{}, err
+		}
+
 		amount, err := resolveComponent(comp, in.RateBase)
 		if err != nil {
 			return Contribution{}, err
@@ -176,6 +205,28 @@ func (Engine) Contribution(in ContributionInput) (Contribution, error) {
 		RoundingRule: ContributionRoundingRule,
 		AsOf:         in.AsOf,
 	}, nil
+}
+
+// validateComponentDomain rejects a deduction whose sign or rate is outside the
+// §9.2 domain (issue #60), so an invalid cost input fails closed instead of
+// increasing contribution. It scopes the checks to the deduction components and
+// their rates only — NetProceeds and RateBase are top-line values, not
+// deductions, and are not subject to the non-negative rule here. It performs no
+// money arithmetic: absolute amounts are compared by mantissa and rates by their
+// basis-point value.
+func validateComponentDomain(comp ComponentInput) error {
+	switch comp.Kind {
+	case KindAbsolute:
+		if comp.Amount.Mantissa() < 0 {
+			return ErrNegativeDeduction
+		}
+	case KindRate:
+		v := comp.Rate.Value()
+		if v < MinRateBasisPoints || v > MaxRateBasisPoints {
+			return ErrRateOutOfRange
+		}
+	}
+	return nil
 }
 
 // resolveComponent turns a component input into the exact money amount to

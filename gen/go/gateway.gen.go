@@ -1405,7 +1405,7 @@ type ContributionComponentInput struct {
 	// Kind Whether a contribution component is an absolute money amount or a fixed-point basis-point rate applied to the rate base (§9.2). Both stay in exact money arithmetic — there is no float (§9.1).
 	Kind ContributionComponentKind `json:"kind"`
 
-	// RateBasisPoints Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`.
+	// RateBasisPoints Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`. A deduction rate is bounded to [0, 10000] bp inclusive (0%..100%); values outside this range are rejected as an invalid contribution input (issue #60, matching the margin engine bound).
 	RateBasisPoints *int64 `json:"rateBasisPoints,omitempty"`
 
 	// Version Cost-profile component version id (CST-002); 0 for synthetic input.

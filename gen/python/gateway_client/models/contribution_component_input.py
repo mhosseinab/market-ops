@@ -33,7 +33,9 @@ class ContributionComponentInput:
                 Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is
                 representable because the account's entry currency is known; it stays excluded from executable paths until
                 S16+S35.
-            rate_basis_points (int | Unset): Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`.
+            rate_basis_points (int | Unset): Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`. A deduction
+                rate is bounded to [0, 10000] bp inclusive (0%..100%); values outside this range are rejected as an invalid
+                contribution input (issue #60, matching the margin engine bound).
             version (int | Unset): Cost-profile component version id (CST-002); 0 for synthetic input.
     """
 

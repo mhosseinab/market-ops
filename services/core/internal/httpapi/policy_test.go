@@ -112,6 +112,51 @@ func TestSimulatePolicy_LooseCapRejected(t *testing.T) {
 	}
 }
 
+// TestSimulatePolicy_NegativeAbsoluteDeductionRejected (issue #60) — a negative
+// absolute deduction is rejected at the transport boundary with the same typed
+// contribution-input error the engine enforces (HTTP and direct enforce
+// identical rules).
+func TestSimulatePolicy_NegativeAbsoluteDeductionRejected(t *testing.T) {
+	body := strings.Replace(simBodyHappy,
+		`{"component": "cogs", "kind": "absolute", "amount": {"mantissa": "800", "currency": "IRR", "exponent": 0}, "version": 1}`,
+		`{"component": "cogs", "kind": "absolute", "amount": {"mantissa": "-800", "currency": "IRR", "exponent": 0}, "version": 1}`, 1)
+	rec := postSimulate(t, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	var env gateway.ErrorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Code != "INVALID_CONTRIBUTION_INPUT" {
+		t.Fatalf("code = %q, want INVALID_CONTRIBUTION_INPUT", env.Code)
+	}
+}
+
+// TestSimulatePolicy_RateOutOfRangeRejected (issue #60) — a rate outside
+// [0,10000] bp is rejected as an invalid contribution input.
+func TestSimulatePolicy_RateOutOfRangeRejected(t *testing.T) {
+	for _, bp := range []string{"-1", "10001"} {
+		bp := bp
+		t.Run(bp, func(t *testing.T) {
+			body := strings.Replace(simBodyHappy,
+				`{"component": "commission", "kind": "rate", "rateBasisPoints": 0, "version": 1}`,
+				`{"component": "commission", "kind": "rate", "rateBasisPoints": `+bp+`, "version": 1}`, 1)
+			rec := postSimulate(t, body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+			}
+			var env gateway.ErrorEnvelope
+			if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if env.Code != "INVALID_CONTRIBUTION_INPUT" {
+				t.Fatalf("code = %q, want INVALID_CONTRIBUTION_INPUT", env.Code)
+			}
+		})
+	}
+}
+
 func TestSimulatePolicy_MissingCommissionBlocks(t *testing.T) {
 	// A hard-required component absent ⇒ COST_INCOMPLETE (no contribution).
 	body := strings.Replace(simBodyHappy,

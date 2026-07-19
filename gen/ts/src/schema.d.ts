@@ -1733,7 +1733,7 @@ export interface components {
             amount?: components["schemas"]["MoneyAmount"];
             /**
              * Format: int64
-             * @description Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`.
+             * @description Fixed-point rate in ten-thousandths (1200 = 12%), for kind `rate`. A deduction rate is bounded to [0, 10000] bp inclusive (0%..100%); values outside this range are rejected as an invalid contribution input (issue #60, matching the margin engine bound).
              */
             rateBasisPoints?: number;
             /**
