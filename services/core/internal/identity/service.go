@@ -19,6 +19,13 @@ import (
 // the producer treats as success — never a double-expire.
 const uniqueViolation = "23505"
 
+// confirmedPerVariantIndex is the partial unique index (migration 0006) that
+// enforces the CAT-002 invariant: at most one active Confirmed mapping per
+// variant. A confirm that races another confirm for the same variant fails on
+// THIS constraint, and only this constraint is translated into the domain
+// conflict — any other unique violation stays an internal error (issue #35).
+const confirmedPerVariantIndex = "uq_mpi_one_active_confirmed_per_variant"
+
 // GenerateCandidates creates rule-based EXACT-native-id candidates for every
 // variant of the account that has no pending or Confirmed mapping. Each new
 // candidate is NeedsReview (never executable until a human confirms) and is
@@ -81,15 +88,16 @@ func (s *Service) GenerateCandidates(ctx context.Context, account uuid.UUID) ([]
 // violation. Only after Confirm does the variant become an observation target
 // (OBS-001, wired downstream).
 func (s *Service) Confirm(ctx context.Context, identityID uuid.UUID, actor Actor) (db.MarketProductIdentity, error) {
-	return s.decide(ctx, identityID, actor, "confirmed", func(q *db.Queries) (db.MarketProductIdentity, error) {
-		return q.ConfirmIdentity(ctx, identityID)
-	})
+	return s.decideWithReason(ctx, identityID, actor, "confirmed", "", confirmOwnershipPreflight,
+		func(q *db.Queries) (db.MarketProductIdentity, error) {
+			return q.ConfirmIdentity(ctx, identityID)
+		})
 }
 
 // Reject transitions a NeedsReview candidate to Rejected (journey 4 step 2). A
 // rejected mapping never feeds an executable path.
 func (s *Service) Reject(ctx context.Context, identityID uuid.UUID, actor Actor, note string) (db.MarketProductIdentity, error) {
-	return s.decideWithReason(ctx, identityID, actor, "rejected", note, func(q *db.Queries) (db.MarketProductIdentity, error) {
+	return s.decideWithReason(ctx, identityID, actor, "rejected", note, nil, func(q *db.Queries) (db.MarketProductIdentity, error) {
 		return q.RejectIdentity(ctx, identityID)
 	})
 }
@@ -97,23 +105,26 @@ func (s *Service) Reject(ctx context.Context, identityID uuid.UUID, actor Actor,
 // Defer leaves a candidate in NeedsReview (journey 4 step 2) and records the
 // deferral in the append-only audit. It never promotes the mapping.
 func (s *Service) Defer(ctx context.Context, identityID uuid.UUID, actor Actor, note string) (db.MarketProductIdentity, error) {
-	return s.decideWithReason(ctx, identityID, actor, "deferred", note, func(q *db.Queries) (db.MarketProductIdentity, error) {
+	return s.decideWithReason(ctx, identityID, actor, "deferred", note, nil, func(q *db.Queries) (db.MarketProductIdentity, error) {
 		return q.DeferIdentity(ctx, identityID)
 	})
 }
 
-// decide runs a guarded state transition plus its append-only audit row in one
-// transaction. transition returns pgx.ErrNoRows when the mapping was not in
-// NeedsReview, which decide maps to ErrNotPending.
-func (s *Service) decide(
-	ctx context.Context, identityID uuid.UUID, actor Actor, decision string,
-	transition func(*db.Queries) (db.MarketProductIdentity, error),
-) (db.MarketProductIdentity, error) {
-	return s.decideWithReason(ctx, identityID, actor, decision, "", transition)
-}
+// preflight is an optional guard run inside the transaction, after the mapping is
+// loaded and before the state transition, so a detectable conflict fails the
+// decision cleanly (with rollback) instead of relying on the database constraint
+// alone. It receives the tx-bound queries and the loaded mapping.
+type preflight func(ctx context.Context, q *db.Queries, before db.MarketProductIdentity) error
 
+// decideWithReason runs an optional in-transaction preflight, a guarded state
+// transition, and its append-only audit row in one transaction. transition
+// returns pgx.ErrNoRows when the mapping was not in NeedsReview, which maps to
+// ErrNotPending. A CAT-002 ownership conflict — surfaced either by the preflight
+// or by the partial unique index at write time — maps to the single, stable
+// ErrIdentityConflict; every other failure stays an internal error (issue #35).
 func (s *Service) decideWithReason(
 	ctx context.Context, identityID uuid.UUID, actor Actor, decision, reason string,
+	pre preflight,
 	transition func(*db.Queries) (db.MarketProductIdentity, error),
 ) (db.MarketProductIdentity, error) {
 	tx, err := s.pool.Begin(ctx)
@@ -131,10 +142,23 @@ func (s *Service) decideWithReason(
 		return db.MarketProductIdentity{}, fmt.Errorf("identity: load mapping: %w", err)
 	}
 
+	if pre != nil {
+		if err := pre(ctx, q, before); err != nil {
+			return db.MarketProductIdentity{}, err
+		}
+	}
+
 	after, err := transition(q)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return db.MarketProductIdentity{}, ErrNotPending
+		}
+		if ownershipConflict(err) {
+			// The partial unique index rejected a racing confirm for the same
+			// variant: an expected domain conflict, not an internal fault. The
+			// deferred Rollback above unwinds the whole transaction so neither
+			// mapping is partially mutated.
+			return db.MarketProductIdentity{}, ErrIdentityConflict
 		}
 		return db.MarketProductIdentity{}, fmt.Errorf("identity: %s mapping: %w", decision, err)
 	}
@@ -154,9 +178,46 @@ func (s *Service) decideWithReason(
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		if ownershipConflict(err) {
+			return db.MarketProductIdentity{}, ErrIdentityConflict
+		}
 		return db.MarketProductIdentity{}, fmt.Errorf("identity: commit %s tx: %w", decision, err)
 	}
 	return after, nil
+}
+
+// confirmOwnershipPreflight fails a confirm fast when another active Confirmed
+// mapping already owns the variant (the pre-write half of the conflict-aware
+// confirm, issue #35). It is best-effort: under READ COMMITTED a concurrent
+// uncommitted confirm is invisible here, so a confirm can still slip past it and
+// be caught by the partial unique index at write time — both paths return the
+// SAME ErrIdentityConflict. A confirm whose only active Confirmed row for the
+// variant is the mapping itself is not a conflict (defensive; a NeedsReview
+// candidate never already owns the variant).
+func confirmOwnershipPreflight(ctx context.Context, q *db.Queries, before db.MarketProductIdentity) error {
+	owner, err := q.GetActiveConfirmedIdentityForVariant(ctx, before.VariantID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("identity: confirm ownership pre-check: %w", err)
+	}
+	if owner.ID != before.ID {
+		return ErrIdentityConflict
+	}
+	return nil
+}
+
+// ownershipConflict reports whether err is the partial-unique-index violation
+// that enforces one active Confirmed mapping per variant (CAT-002). Only that
+// specific constraint is a domain conflict; any other unique violation — or any
+// other database error — is left to surface as an internal failure so a real
+// fault is never masked as a client conflict (issue #35).
+func ownershipConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) &&
+		pgErr.Code == uniqueViolation &&
+		pgErr.ConstraintName == confirmedPerVariantIndex
 }
 
 // Reopen reopens an active Confirmed mapping on a merge/split/redirect/
