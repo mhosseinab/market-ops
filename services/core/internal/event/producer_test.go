@@ -84,6 +84,12 @@ func (f *fakeRecorder) ResolveOpen(_ context.Context, _ uuid.UUID, dedupKey stri
 	return false, nil
 }
 
+// AdvanceConsumedCursor is a no-op for the in-memory recorder: the fake has no
+// durable cursor. The DB-backed tests exercise the real advance (issue #212).
+func (f *fakeRecorder) AdvanceConsumedCursor(_ context.Context, _ event.Consumption) error {
+	return nil
+}
+
 // fiveTransitions returns one materialising transition per detector type, all for
 // the same account/variant so a full pass exercises every detector routing.
 func fiveTransitions(t *testing.T, account, variant uuid.UUID, now time.Time) []event.Transition {

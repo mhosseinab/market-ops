@@ -170,6 +170,30 @@ type Evidence struct {
 	Detail        map[string]string
 }
 
+// Consumption binds a candidate to the durable observation-consumption seam
+// (issue #212). It carries the input-transition identity (prev+curr observation
+// evidence) plus the per-stream cursor position, so RecordFor can commit the event
+// write, the append-only ingestion-idempotency claim, and the durable cursor
+// advance in ONE transaction. It is set ONLY for competitor-price candidates
+// derived from the ObservationSource; a nil Consumption means "not consumed from an
+// observation stream" and RecordFor persists the event without touching the ledger
+// or cursor (the four dormant legs and direct callers).
+type Consumption struct {
+	// InputKey is the deterministic ingestion-idempotency identity of the consumed
+	// transition: target|native_seller_id|offer_identity|prevObsID|currObsID.
+	InputKey       string
+	Account        uuid.UUID
+	Target         uuid.UUID
+	NativeSellerID string
+	OfferIdentity  string
+	PrevObsID      uuid.UUID
+	CurrObsID      uuid.UUID
+	CurrCapturedAt time.Time
+	// CurrValue is the raw quarantined price token of the newer observation — the
+	// cursor's next pairing anchor ("before"). Never a Money.
+	CurrValue string
+}
+
 // Candidate is a detector's output: a fully-derived event ready to be recorded.
 // Confidence and Urgency are derived inside the detector (from evidence quality
 // and severity respectively) so the EVT-004 factor derivation lives in one place.
@@ -188,4 +212,10 @@ type Candidate struct {
 	ExpiresAt        time.Time
 	ThresholdID      uuid.UUID // zero when no versioned threshold governs the type
 	ThresholdVersion int32
+	// Consumption, when non-nil, binds this candidate to the durable observation-
+	// consumption seam (issue #212): RecordFor commits the append-only ingestion-
+	// idempotency ledger row and the durable per-stream cursor advance in the SAME
+	// transaction as the event write. nil for candidates not derived from an
+	// observation stream.
+	Consumption *Consumption
 }

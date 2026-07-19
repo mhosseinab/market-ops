@@ -261,6 +261,49 @@ func (q *Queries) GetOpenEventByDedupKey(ctx context.Context, arg GetOpenEventBy
 	return i, err
 }
 
+const insertInputTransition = `-- name: InsertInputTransition :execrows
+INSERT INTO event_input_transitions (
+    input_key, marketplace_account_id, target_id, native_seller_id, offer_identity,
+    prev_observation_id, curr_observation_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (input_key) DO NOTHING
+`
+
+type InsertInputTransitionParams struct {
+	InputKey             string
+	MarketplaceAccountID uuid.UUID
+	TargetID             uuid.UUID
+	NativeSellerID       string
+	OfferIdentity        string
+	PrevObservationID    uuid.UUID
+	CurrObservationID    uuid.UUID
+}
+
+// APPEND-ONLY ingestion-idempotency claim (issue #212). Records that one consumed
+// input transition (the prev+curr observation evidence identity) has been ingested.
+// ON CONFLICT DO NOTHING makes it idempotent: 1 row affected ⇒ a fresh consumption
+// (write the event); 0 rows ⇒ the transition was already consumed (skip — never a
+// second event). Called inside the SAME transaction as the event write and cursor
+// advance so ingestion dedup, the event, and the durable position commit atomically.
+// This is a SEPARATE concern from lifecycle dedup (dedup_key): once consumed here a
+// transition can never re-open an event even after resolve/expire frees its
+// lifecycle identity.
+func (q *Queries) InsertInputTransition(ctx context.Context, arg InsertInputTransitionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertInputTransition,
+		arg.InputKey,
+		arg.MarketplaceAccountID,
+		arg.TargetID,
+		arg.NativeSellerID,
+		arg.OfferIdentity,
+		arg.PrevObservationID,
+		arg.CurrObservationID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertMaterialityThreshold = `-- name: InsertMaterialityThreshold :one
 
 INSERT INTO materiality_thresholds (
