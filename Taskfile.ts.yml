@@ -51,14 +51,22 @@ tasks:
 
   copylint:
     desc: >-
-      Copy-lint (LOC-002): fail on any inline string literal / Persian-script text
-      in UI components. All user-facing copy must flow through catalog keys.
-      Covers apps/web (JSX) and the extension's UI surfaces — popup + content
-      overlay (S31). apps/extension/src/lib is EXCLUDED: it legitimately
-      contains Persian selector/DOM-matching DATA (e.g. the DK "ناموجود"
-      unavailable badge text in dom-validate.ts) that is parsed website
-      content, not user-facing extension copy.
+      Copy-lint (LOC-002): fail on any inline user-facing string literal /
+      Persian-script text in UI components. All display copy must flow through
+      catalog keys. A TypeScript/JSX PARSER + AST walk classifies literals by
+      syntactic position (issue #16) — JSX text, display attributes (aria-*,
+      title, placeholder, alt), JSX/ternary/template expression containers,
+      user-facing config-object properties, and vanilla-DOM display assignments —
+      so it no longer misses the common patterns a regex scan skipped. Exceptions
+      are narrow and reviewable: test/story/harness files, and an inline
+      `// copylint-allow: <reason>` directive (a reason is mandatory). The self-
+      test runs the linter over a positive/negative fixture matrix first, then it
+      scans apps/web (JSX) and the extension's UI surfaces — popup + content
+      overlay (S31). apps/extension/src/lib is EXCLUDED: it legitimately contains
+      Persian selector/DOM-matching DATA (e.g. the DK "ناموجود" unavailable badge
+      text in dom-validate.ts) that is parsed website content, not extension copy.
     cmds:
+      - node --test tools/copylint/copylint.test.mjs
       - node tools/copylint/copylint.mjs apps/web/src apps/extension/src/popup apps/extension/src/content
 
   pseudoloc:
