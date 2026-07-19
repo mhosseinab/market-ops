@@ -70,6 +70,15 @@ const (
 	// capture credential fails closed with 401. It never accepts the LLM machine
 	// gateway token.
 	kindCapture
+	// kindCaptureRead: a credential-scoped READ route (GET /ext/owned-targets,
+	// #145). It REQUIRES a valid scoped capture credential (Bearer, resolved by the
+	// pairing service to its bound marketplace account) and injects that account —
+	// there is NO human-session fallback and the LLM machine gateway token is NEVER
+	// accepted, so tenant authority stays strictly credential-derived (the #131
+	// systemic concern). A revoked/expired/unknown/absent credential fails closed
+	// with 401. Unlike kindCapture there is no caller-supplied account to reconcile:
+	// the handler reads ONLY the injected credential account.
+	kindCaptureRead
 )
 
 // machinePrincipal is the identity injected for a gateway-token-authenticated
@@ -126,6 +135,10 @@ var routePolicies = []routePolicy{
 	{http.MethodGet, "/observation/observed-offers", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/observation/observations", kindProtected, perm.ActionReadObservations},
 	{http.MethodPost, "/observation/capture", kindCapture, perm.ActionUploadCapture},
+	// Credential-scoped owned-target READ (#145, EXT-004). REQUIRES a valid
+	// capture credential; the account is derived from it, never caller-supplied.
+	// No human-session fallback and never the machine gateway token.
+	{http.MethodGet, "/ext/owned-targets", kindCaptureRead, ""},
 	// Extension pairing (PRD §14 EXT-001). Mint code + revoke are human-session
 	// L2 config (extension.pair). Claim carries NO session — the extension is not
 	// logged in — so it is public and authenticated only by the single-use code.
@@ -347,6 +360,27 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 			}
 			ctx := context.WithValue(r.Context(), principalKey, p)
 			ctx = context.WithValue(ctx, tokenKey, token)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+
+		case kindCaptureRead:
+			// Credential-scoped READ (#145). A valid capture credential is the ONLY
+			// way in: resolve the presented Bearer to its bound marketplace account
+			// and inject it. There is NO human-session fallback and the machine
+			// gateway token is never accepted, so the tenant is always derived from
+			// the credential — never caller-selected. An absent/revoked/expired/
+			// unknown credential fails closed with 401.
+			bt := bearerToken(r)
+			if bt == "" || m.pairing == nil {
+				writeError(w, http.StatusUnauthorized, noSessionErr())
+				return
+			}
+			resolved, err := m.pairing.ResolveCredential(r.Context(), bt)
+			if err != nil {
+				writeError(w, http.StatusUnauthorized, noSessionErr())
+				return
+			}
+			ctx := context.WithValue(r.Context(), captureAccountKey, resolved.MarketplaceAccountID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 

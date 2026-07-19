@@ -2129,7 +2129,7 @@ type PairingCode struct {
 	MarketplaceAccountId openapi_types.UUID `json:"marketplaceAccountId"`
 }
 
-// PairingCredential A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY /observation/capture and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value.
+// PairingCredential A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY the capture upload (POST /observation/capture) and the credential-scoped owned-target read (GET /ext/owned-targets), and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value.
 type PairingCredential struct {
 	// Credential The raw capture credential; presented as a Bearer on uploads.
 	Credential string `json:"credential"`
@@ -2842,6 +2842,9 @@ type ServerInterface interface {
 	// RecordEventRelevance Record relevance feedback on a market event.
 	// (POST /events/relevance)
 	RecordEventRelevance(w http.ResponseWriter, r *http.Request)
+	// ListOwnedTargets List the paired account's Confirmed owned observation targets (EXT-004).
+	// (GET /ext/owned-targets)
+	ListOwnedTargets(w http.ResponseWriter, r *http.Request)
 	// ClaimPairingCode Exchange a pairing code for a capture credential (EXT-001).
 	// (POST /ext/pairing/claim)
 	ClaimPairingCode(w http.ResponseWriter, r *http.Request)
@@ -3573,6 +3576,20 @@ func (siw *ServerInterfaceWrapper) RecordEventRelevance(w http.ResponseWriter, r
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.RecordEventRelevance(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListOwnedTargets operation middleware
+func (siw *ServerInterfaceWrapper) ListOwnedTargets(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListOwnedTargets(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4373,6 +4390,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ext/pairing/code", wrapper.CreatePairingCode)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ext/pairing/claim", wrapper.ClaimPairingCode)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/ext/pairing/revoke", wrapper.RevokePairing)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/ext/owned-targets", wrapper.ListOwnedTargets)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/cost/import/preview", wrapper.PreviewCostImport)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/cost/import", wrapper.GetCostImportPreview)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/cost/import/commit", wrapper.CommitCostImport)
@@ -5607,6 +5625,72 @@ func (response RecordEventRelevancedefaultJSONResponse) VisitRecordEventRelevanc
 	return err
 }
 
+type ListOwnedTargetsRequestObject struct {
+}
+
+type ListOwnedTargetsResponseObject interface {
+	VisitListOwnedTargetsResponse(w http.ResponseWriter) error
+}
+
+type ListOwnedTargets200JSONResponse ObservationTargetList
+
+func (response ListOwnedTargets200JSONResponse) VisitListOwnedTargetsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListOwnedTargets401JSONResponse ErrorEnvelope
+
+func (response ListOwnedTargets401JSONResponse) VisitListOwnedTargetsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(401)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListOwnedTargets503JSONResponse ErrorEnvelope
+
+func (response ListOwnedTargets503JSONResponse) VisitListOwnedTargetsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(503)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListOwnedTargetsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListOwnedTargetsdefaultJSONResponse) VisitListOwnedTargetsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
 type ClaimPairingCodeRequestObject struct {
 	Body *ClaimPairingCodeJSONRequestBody
 }
@@ -6753,6 +6837,9 @@ type StrictServerInterface interface {
 	// RecordEventRelevance Record relevance feedback on a market event.
 	// (POST /events/relevance)
 	RecordEventRelevance(ctx context.Context, request RecordEventRelevanceRequestObject) (RecordEventRelevanceResponseObject, error)
+	// ListOwnedTargets List the paired account's Confirmed owned observation targets (EXT-004).
+	// (GET /ext/owned-targets)
+	ListOwnedTargets(ctx context.Context, request ListOwnedTargetsRequestObject) (ListOwnedTargetsResponseObject, error)
 	// ClaimPairingCode Exchange a pairing code for a capture credential (EXT-001).
 	// (POST /ext/pairing/claim)
 	ClaimPairingCode(ctx context.Context, request ClaimPairingCodeRequestObject) (ClaimPairingCodeResponseObject, error)
@@ -7703,6 +7790,30 @@ func (sh *strictHandler) RecordEventRelevance(w http.ResponseWriter, r *http.Req
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(RecordEventRelevanceResponseObject); ok {
 		if err := validResponse.VisitRecordEventRelevanceResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListOwnedTargets operation middleware
+func (sh *strictHandler) ListOwnedTargets(w http.ResponseWriter, r *http.Request) {
+	var request ListOwnedTargetsRequestObject
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListOwnedTargets(ctx, request.(ListOwnedTargetsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListOwnedTargets")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListOwnedTargetsResponseObject); ok {
+		if err := validResponse.VisitListOwnedTargetsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

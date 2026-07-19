@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExtMessage, ExtResponse } from "../lib/messages";
 import { parseProductResponse } from "../lib/parse";
 import type { ParsedProduct } from "../lib/types";
@@ -60,6 +60,45 @@ function ownedTargetFor(product: ParsedProduct) {
   };
 }
 
+// ownedTargetRow is the server's wire ObservationTarget shape returned by GET
+// /ext/owned-targets. fetchOwnedTargets maps `id` → targetId; the extra fields
+// are the account's own data, ignored by the projection.
+function ownedTargetRow(product: ParsedProduct) {
+  const t = ownedTargetFor(product);
+  return {
+    id: t.targetId,
+    marketplaceAccountId: t.marketplaceAccountId,
+    identityId: "99999999-9999-9999-9999-999999999999",
+    variantId: "88888888-8888-8888-8888-888888888888",
+    nativeVariantId: t.nativeVariantId,
+    nativeProductId: product.nativeProductId,
+    tier: "standard",
+    cadenceSeconds: 21600,
+    freshnessDeadlineSeconds: 21600,
+    active: true,
+  };
+}
+
+// gatewayFetchMock routes the service worker's outbound gateway calls: the
+// pairing claim yields the capture credential, the credential-scoped owned-target
+// read (#145) yields `targetsStatus`/`rows`, and a capture upload is accepted.
+// This lets a test drive the Confirmed-owned-target projection through the REAL
+// credential-scoped sync (after pair) — never the removed setOwnedTargets message.
+function gatewayFetchMock(rows: unknown[], targetsStatus = 200) {
+  return vi.fn(async (input: string, _init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/ext/pairing/claim")) {
+      return new Response(JSON.stringify(CRED), { status: 200 });
+    }
+    if (url.includes("/ext/owned-targets")) {
+      return new Response(targetsStatus === 200 ? JSON.stringify({ items: rows }) : "{}", {
+        status: targetsStatus,
+      });
+    }
+    return new Response(null, { status: 202 }); // /observation/capture
+  });
+}
+
 type Sender = { tab?: { id: number } };
 
 async function loadWorker(): Promise<(msg: ExtMessage, sender?: Sender) => Promise<ExtResponse>> {
@@ -118,16 +157,15 @@ describe("service worker — EXT-004 gate applies to watchlist + overlay too (ne
 // call itself stubbed to resolve immediately.
 describe("service worker — EXT-003 on-demand refresh has no artificial delay (bounded local proxy for the 10s SLA)", () => {
   it("handleOnDemandCapture resolves well under 10s and emits on_demand_latency_ms", async () => {
-    const fetchMock = vi.fn(async () => new Response(null, { status: 202 }));
+    const product = parsedProduct();
+    const fetchMock = gatewayFetchMock([ownedTargetRow(product)]);
     vi.stubGlobal("fetch", fetchMock);
 
-    const { storage } = installChromeMock();
+    installChromeMock();
     const send = await loadWorker();
-    const product = parsedProduct();
-    const target = ownedTargetFor(product);
-    await send({ kind: "setOwnedTargets", targets: [target] });
-    storage.set(KEY_CAPABILITY, "ready");
-    storage.set(KEY_CREDENTIAL, CRED);
+    // Pairing populates the Confirmed-owned-target projection through the REAL
+    // credential-scoped sync (#145) — no setOwnedTargets message exists anymore.
+    await send({ kind: "pair", code: "pair-code" });
 
     const startedAt = Date.now();
     const resp = await send({ kind: "onDemandCapture", product });
@@ -152,17 +190,21 @@ describe("service worker — EXT-009 kill switch: capability gates nav-shim/watc
   let executeScript: ReturnType<typeof vi.fn>;
   let send: (msg: ExtMessage, sender?: Sender) => Promise<ExtResponse>;
   let product: ParsedProduct;
-  let target: ReturnType<typeof ownedTargetFor>;
 
   beforeEach(async () => {
+    product = parsedProduct();
+    // The credential-scoped owned-target read populates the projection through
+    // the REAL sync when the extension pairs (#145) — never a client payload.
+    vi.stubGlobal("fetch", gatewayFetchMock([ownedTargetRow(product)]));
     const mock = installChromeMock();
     storage = mock.storage;
     executeScript = mock.executeScript;
     send = await loadWorker();
-    product = parsedProduct();
-    target = ownedTargetFor(product);
-    await send({ kind: "setOwnedTargets", targets: [target] });
-    storage.set(KEY_CREDENTIAL, CRED);
+    await send({ kind: "pair", code: "pair-code" }); // stores CRED + syncs targets
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("injectNavShim NEVER calls chrome.scripting.executeScript for unknown/disabled/revoked capability", async () => {
@@ -245,5 +287,46 @@ describe("service worker — EXT-009 kill switch: capability gates nav-shim/watc
     storage.set(KEY_CREDENTIAL, CRED);
     const resp = await send({ kind: "addToWatchlist", product });
     expect(resp).toEqual({ ok: true, watchlist: { ok: false, reason: "denied" } });
+  });
+});
+
+// #145: the Confirmed-owned-target projection is driven ONLY by the real
+// credential-scoped sync (GET /ext/owned-targets) — the untrusted setOwnedTargets
+// message is gone. These assert the fail-closed + open behaviors end to end.
+describe("service worker — #145 owned-target sync drives the EXT-004 gate (no setOwnedTargets)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a failed/unauthorized owned-targets sync leaves the index EMPTY → passive capture stays not_confirmed_owned (capture disabled)", async () => {
+    const product = parsedProduct();
+    // Pair succeeds (capability ready) but the owned-target read is unauthorized:
+    // the projection must be CLEARED, never guessed — capture uploads nothing.
+    vi.stubGlobal("fetch", gatewayFetchMock([ownedTargetRow(product)], 401));
+    installChromeMock();
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "pair-code" });
+
+    const resp = await send({ kind: "capture", product });
+    expect(resp.ok).toBe(true);
+    // Nothing enqueued: the EXT-004 gate skipped it as not_confirmed_owned.
+    if ("state" in resp) expect(resp.state.queuedCount).toBe(0);
+  });
+
+  it("after a successful sync a Confirmed-owned product is enqueued + uploaded WITHOUT any setOwnedTargets message", async () => {
+    const product = parsedProduct();
+    const fetchMock = gatewayFetchMock([ownedTargetRow(product)]);
+    vi.stubGlobal("fetch", fetchMock);
+    installChromeMock();
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "pair-code" }); // real sync populates the index
+
+    await send({ kind: "capture", product });
+    // The capture reached the gateway — proof the gate OPENED purely from the
+    // credential-scoped sync, with no client-authored target list.
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/observation/capture"),
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 });

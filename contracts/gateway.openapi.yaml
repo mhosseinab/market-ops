@@ -733,6 +733,53 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /ext/owned-targets:
+    get:
+      operationId: listOwnedTargets
+      tags:
+        - extension
+      summary: List the paired account's Confirmed owned observation targets (EXT-004).
+      description: >-
+        The credential-scoped owned-target READ the browser extension calls to
+        learn WHICH variants are the account's Confirmed owned targets (PRD §14
+        EXT-004, OBS-001). The marketplace account is derived SOLELY from the
+        presented capture credential (captureAuth) — there is NO query or path
+        parameter, so an extension can never select another seller's account
+        (tenant authority is credential-derived, never caller-supplied). The
+        server returns the SAME active targets as GET /observation/targets for
+        that account (a target exists ONLY for an active Confirmed identity — a
+        NeedsReview/Rejected/Obsolete/deactivated identity is never returned), so
+        the extension's local owned-target projection can never resolve an
+        unconfirmed product into the commercial path. A revoked/expired/unknown
+        credential fails closed with 401.
+      security:
+        - captureAuth: []
+      responses:
+        '200':
+          description: The paired account's active Confirmed owned observation targets.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ObservationTargetList'
+        '401':
+          description: No valid capture credential (revoked, expired, or unknown) — fail closed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '503':
+          description: The observation plane is not configured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
   /cost/import/preview:
     post:
       operationId: previewCostImport
@@ -1999,10 +2046,14 @@ components:
       description: >-
         Extension capture/overlay credential (PRD §14 EXT-001), obtained by
         exchanging a short-lived pairing code. It is a SCOPED capture credential
-        bound to one marketplace account — never a seller-API token — and
-        authorizes ONLY /observation/capture. Revocation (or expiry) fails the
-        next upload closed with 401. The authoritative credential record lives in
-        the database; only its hash is stored, never the raw value.
+        bound to one marketplace account — never a seller-API token. It
+        authorizes ONLY POST /observation/capture (owned-offer capture upload)
+        and the credential-scoped READ GET /ext/owned-targets (the account's own
+        Confirmed owned observation targets), where the marketplace account is
+        derived from this credential, never caller-selected. It authorizes no
+        other route. Revocation (or expiry) fails the next request closed with
+        401. The authoritative credential record lives in the database; only its
+        hash is stored, never the raw value.
 
   schemas:
     Health:
@@ -2917,9 +2968,10 @@ components:
       type: object
       description: >-
         A scoped capture/overlay credential (EXT-001) issued for a claimed pairing
-        code. It authorizes ONLY /observation/capture and is bound to one
-        marketplace account. It is NEVER a seller-API token; the extension stores
-        only this value.
+        code. It authorizes ONLY the capture upload (POST /observation/capture)
+        and the credential-scoped owned-target read (GET /ext/owned-targets), and
+        is bound to one marketplace account. It is NEVER a seller-API token; the
+        extension stores only this value.
       required:
         - credential
         - credentialId

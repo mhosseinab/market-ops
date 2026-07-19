@@ -1,6 +1,5 @@
 import type { HistorySeries } from "./history";
 import type { OverlayView } from "./overlay-data";
-import type { OwnedTarget } from "./owned-targets";
 import type { PopupState } from "./storage";
 import type { ParsedProduct } from "./types";
 import type { WatchlistOutcome } from "./watchlist";
@@ -38,8 +37,7 @@ export type ExtMessage =
   // intentionally. Both are addressed by the item's stable dedup key and are
   // observable, never a silent mutation.
   | { kind: "retryDeadLetter"; dedupKey: string }
-  | { kind: "discardDeadLetter"; dedupKey: string }
-  | { kind: "setOwnedTargets"; targets: OwnedTarget[] };
+  | { kind: "discardDeadLetter"; dedupKey: string };
 
 export type ExtResponse =
   | { ok: true; state: PopupState }
