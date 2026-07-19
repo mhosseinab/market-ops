@@ -29,18 +29,15 @@ def build_chat_model(settings: Settings, *, mock_script: MockScript | None = Non
         return MockChatModel(script=mock_script or MockScript())
 
     if settings.provider_kind is ProviderKind.OPENAI_COMPATIBLE:
-        # Imported lazily so the mock path (and CI) never needs the client wired
-        # to a real endpoint. Still the same OpenAI-compatible contract.
-        from langchain_openai import ChatOpenAI
+        # Imported lazily so the mock path (and CI) never needs ``langchain-openai``
+        # wired to a real endpoint. The builder returns the classifying transport
+        # that normalizes provider/transport failures at THIS owned boundary
+        # (§12.4, issue #22) and disables the SDK's hidden retry loop so the graph
+        # node stays the sole retry authority. Still the same OpenAI-compatible
+        # contract — no vendor SDK branch.
+        from llm.providers.openai_compatible import build_openai_compatible_model
 
-        # max_tokens is the per-turn token ceiling (§12.4), set as model config.
-        return ChatOpenAI(
-            base_url=settings.provider_base_url,
-            api_key=settings.provider_api_key,
-            model=settings.provider_model,
-            timeout=settings.provider_timeout_seconds,
-            max_tokens=settings.max_output_tokens,  # type: ignore[call-arg]
-        )
+        return build_openai_compatible_model(settings)
 
     # Fail closed on an unknown provider kind (defense in depth; the enum is
     # closed, so this is unreachable unless a new kind is added without wiring).

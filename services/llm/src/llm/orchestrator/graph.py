@@ -43,10 +43,21 @@ from llm.flows.dispatch import contain
 from llm.intents.classifier import IntentClassifier
 from llm.metrics import ContainmentMetrics
 from llm.orchestrator.agent import AgentHandle, TokenCeilingError, ToolTimeoutError
+from llm.providers.transient import NonRetryableProviderError, TransientTurnError
 
-
-class TransientTurnError(Exception):
-    """A transient model/tool failure eligible for the single §12.4 retry."""
+# Re-exported: the transport-failure taxonomy is defined at the owned provider
+# boundary (:mod:`llm.providers.transient`), but the §12.4 retry/mapping that
+# consumes it lives here. Callers may import either name from this module.
+__all__ = [
+    "NonRetryableProviderError",
+    "TransientTurnError",
+    "TurnGraph",
+    "TurnResult",
+    "TurnState",
+    "TurnStreamChunk",
+    "build_turn_graph",
+    "envelope_from_structured",
+]
 
 
 class TurnState(TypedDict, total=False):
@@ -124,6 +135,16 @@ _HARD_BOUNDS: tuple[tuple[type[Exception], str, str], ...] = (
         TokenCeilingError,
         "TOKEN_CEILING",
         "the response exceeded the length limit; use the structured screen",
+    ),
+    (
+        # A provider error classified NON-retryable at the owned boundary (auth,
+        # permission, not-found, validation, other 4xx). Never retried — a bad
+        # request/credential does not improve on a second identical attempt
+        # (§12.4, issue #22). Mapped like the other hard bounds so it surfaces
+        # identically on the buffered and streamed paths.
+        NonRetryableProviderError,
+        "MODEL_PROVIDER_ERROR",
+        "the assistant hit a provider error; use the structured screen",
     ),
 )
 
