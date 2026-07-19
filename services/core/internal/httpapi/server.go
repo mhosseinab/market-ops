@@ -147,6 +147,15 @@ func WithWatchlist(w WatchlistService) Option {
 	return func(s *gatewayServer) { s.watchlistSvc = w }
 }
 
+// WithChatConversations injects the GATEWAY-owned conversation durability store
+// backing /chat persistence (CHAT-008). Without it /chat still streams but does
+// not persist history (no DB wired); with it, every turn's user + terminal
+// assistant record is persisted under the caller's organization and a cross-org
+// conversation is denied before proxying.
+func WithChatConversations(c ChatConversationStore) Option {
+	return func(s *gatewayServer) { s.conversations = c }
+}
+
 // WithGatewayToken sets the read/Draft-only machine credential (LLM_GATEWAY_TOKEN)
 // the middleware matches to authenticate the machine principal on the Draft-only
 // routes and the machine read envelope (perm.GatewayCan). Empty ⇒ no machine

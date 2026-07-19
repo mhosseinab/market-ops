@@ -1,16 +1,21 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/google/uuid"
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
+	"github.com/mhosseinab/market-ops/services/core/internal/conversation"
 )
 
 // ChatKillSwitch reports whether chat is disabled globally or for a specific
@@ -41,6 +46,23 @@ type LLMChatService interface {
 	// is streamed verbatim to the browser and closed when the stream ends. An
 	// error means the LLM plane is unreachable (provider_unavailable).
 	StartTurn(ctx context.Context, turn ChatTurn) (io.ReadCloser, error)
+}
+
+// ChatConversationStore is the GATEWAY-owned conversation durability seam
+// (CHAT-008, §15.1). *conversation.Store satisfies it. The LLM plane never
+// touches it (no DB credential, §19.3): the gateway persists the user turn BEFORE
+// proxying and the terminal assistant record AFTER the stream, and it owns
+// conversation identity so the stream merely echoes the resolved id. It never
+// writes an action/approval/execution row — a stored message carries no authority.
+type ChatConversationStore interface {
+	// BeginTurn resolves the conversation under the caller's org (creating one
+	// when none is supplied, validating ownership otherwise) and appends the user
+	// turn atomically. A foreign/unknown conversation returns
+	// conversation.ErrConversationDenied and writes nothing.
+	BeginTurn(ctx context.Context, p conversation.OpenParams, userBody string) (conversation.Conversation, error)
+	// AppendAssistant appends the terminal assistant record (answer envelope,
+	// structured failure, or interrupted marker) after the stream completes.
+	AppendAssistant(ctx context.Context, conversationID uuid.UUID, body string, envelope []byte) error
 }
 
 // ChatTurn is the transport-boundary request the gateway hands the LLM plane.
@@ -146,13 +168,194 @@ func (s *gatewayServer) Chat(
 		MarketplaceAccountID: req.Body.MarketplaceAccountId,
 		Message:              req.Body.Message,
 	}
+
+	// Persist the turn under the caller's organization BEFORE proxying (CHAT-008).
+	// The gateway owns conversation identity: BeginTurn creates or validates the
+	// conversation and appends the user turn, and we hand the resolved id to the
+	// LLM plane so the stream echoes it (no id race, no parsing the stream for
+	// identity). A cross-org/unknown conversation is denied here and NEVER
+	// proxied; a persistence failure fails closed — an unpersisted turn is never
+	// proxied. When no store is wired (no DB), /chat proxies without persistence.
+	var conversationID uuid.UUID
+	if s.conversations != nil {
+		conv, err := s.conversations.BeginTurn(ctx, conversation.OpenParams{
+			OrganizationID:       p.OrganizationID,
+			UserID:               p.UserID,
+			MarketplaceAccountID: req.Body.MarketplaceAccountId,
+			ConversationID:       req.Body.ConversationId,
+		}, req.Body.Message)
+		if errors.Is(err, conversation.ErrConversationDenied) {
+			s.logChatPersist(ctx, "begin-turn-denied", uuid.Nil, err)
+			return chatConversationDenied(), nil
+		}
+		if err != nil {
+			s.logChatPersist(ctx, "begin-turn-failed", uuid.Nil, err)
+			return chatPersistFailed(), nil
+		}
+		conversationID = conv.ID
+		turn.ConversationID = &conv.ID
+	}
+
 	stream, err := s.llmChat.StartTurn(ctx, turn)
 	if err != nil {
 		// One transient upstream failure degrades to the structured unavailable
 		// state; the LLM plane owns the §12.4 single-retry before this point.
 		return chatUnavailable(gateway.ProviderUnavailable), nil
 	}
+
+	// Tee the stream: relay the upstream SSE bytes verbatim to the browser while
+	// capturing the terminal assistant envelope/failure so it persists after the
+	// stream completes (or a deterministic interrupted marker if it does not).
+	if s.conversations != nil {
+		stream = newPersistingStream(stream, s.conversations, conversationID, s.logger)
+	}
 	return gateway.Chat200TexteventStreamResponse{Body: stream}, nil
+}
+
+// persistingStream relays an upstream SSE body verbatim to the browser while
+// buffering it so the gateway can persist the terminal assistant record once the
+// stream ends (CHAT-008). The relay is byte-for-byte: Read returns exactly what
+// the upstream produced. Persistence runs at Close (the generated handler defers
+// Close after streaming), with its own bounded context so the assistant turn
+// persists even if the browser connection is already closing.
+type persistingStream struct {
+	src            io.ReadCloser
+	store          ChatConversationStore
+	conversationID uuid.UUID
+	logger         *slog.Logger
+	buf            bytes.Buffer
+	truncated      bool
+	closed         bool
+}
+
+// maxCapturedStream bounds the buffered copy used only for terminal-frame
+// capture (chat envelopes are small; a runaway stream never grows this
+// unbounded). The verbatim relay to the browser is never bounded.
+const maxCapturedStream = 1 << 20
+
+func newPersistingStream(src io.ReadCloser, store ChatConversationStore, conversationID uuid.UUID, logger *slog.Logger) *persistingStream {
+	return &persistingStream{src: src, store: store, conversationID: conversationID, logger: logger}
+}
+
+func (p *persistingStream) Read(b []byte) (int, error) {
+	n, err := p.src.Read(b)
+	if n > 0 && !p.truncated {
+		if p.buf.Len()+n > maxCapturedStream {
+			p.truncated = true
+		} else {
+			p.buf.Write(b[:n])
+		}
+	}
+	return n, err
+}
+
+func (p *persistingStream) Close() error {
+	err := p.src.Close()
+	if !p.closed {
+		p.closed = true
+		p.persistTerminal()
+	}
+	return err
+}
+
+// persistTerminal appends the terminal assistant record for the completed stream.
+// It is deterministic: a final envelope yields the answer record, a failure frame
+// yields the structured-failure record, and any other ending (interrupted / no
+// terminal frame) yields a stable interrupted marker — the turn is never silently
+// lost. It uses its own bounded context so persistence survives a closing browser
+// connection.
+func (p *persistingStream) persistTerminal() {
+	body, envelope := parseAssistantRecord(p.buf.Bytes())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := p.store.AppendAssistant(ctx, p.conversationID, body, envelope); err != nil {
+		if p.logger != nil {
+			p.logger.WarnContext(ctx, "chat assistant turn not persisted",
+				"conversation_id", p.conversationID.String(), "error", err.Error())
+		}
+		return
+	}
+	if p.logger != nil {
+		p.logger.InfoContext(ctx, "chat assistant turn persisted",
+			"conversation_id", p.conversationID.String())
+	}
+}
+
+// SSE frame kinds on the gateway↔LLM-plane transport (mirrors the LLM plane's
+// StreamEventKind). The gateway relays frames opaquely to the browser; it parses
+// only these two terminal kinds to persist the assistant record.
+const (
+	sseKindFinal   = "final"
+	sseKindFailure = "failure"
+)
+
+// sseTerminalFrame is the minimal shape parsed from each SSE data frame to locate
+// the terminal record. It never interprets authority — envelope/failure are
+// retained verbatim as evidence.
+type sseTerminalFrame struct {
+	Kind     string          `json:"kind"`
+	Envelope json.RawMessage `json:"envelope"`
+	Failure  json.RawMessage `json:"failure"`
+}
+
+// parseAssistantRecord scans the buffered SSE body and derives the deterministic
+// terminal assistant record: (body, envelope-jsonb). A failure frame wins over a
+// final frame (a turn that failed after partial output is recorded as failed);
+// absent both, the record is a stable interrupted marker.
+func parseAssistantRecord(raw []byte) (string, []byte) {
+	var lastFinal, lastFailure json.RawMessage
+	sc := bufio.NewScanner(bytes.NewReader(raw))
+	sc.Buffer(make([]byte, 0, 64*1024), maxCapturedStream)
+	for sc.Scan() {
+		payload, ok := bytes.CutPrefix(bytes.TrimSpace(sc.Bytes()), []byte("data:"))
+		if !ok {
+			continue
+		}
+		payload = bytes.TrimSpace(payload)
+		if len(payload) == 0 {
+			continue
+		}
+		var f sseTerminalFrame
+		if err := json.Unmarshal(payload, &f); err != nil {
+			continue
+		}
+		switch f.Kind {
+		case sseKindFinal:
+			if len(f.Envelope) > 0 {
+				lastFinal = f.Envelope
+			}
+		case sseKindFailure:
+			if len(f.Failure) > 0 {
+				lastFailure = f.Failure
+			}
+		}
+	}
+	switch {
+	case lastFailure != nil:
+		return jsonStringField(lastFailure, "message"), lastFailure
+	case lastFinal != nil:
+		return jsonStringField(lastFinal, "summary"), lastFinal
+	default:
+		return "", []byte(`{"interrupted":true}`)
+	}
+}
+
+// jsonStringField extracts a top-level string field from a JSON object, or "" if
+// absent/typed otherwise. It never fails — a missing summary/message is empty.
+func jsonStringField(raw json.RawMessage, field string) string {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return ""
+	}
+	v, ok := obj[field]
+	if !ok {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(v, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 // httpLLMChat is the default LLMChatService: an HTTP client that opens the
@@ -221,6 +424,49 @@ func (h *httpLLMChat) StartTurn(ctx context.Context, turn ChatTurn) (io.ReadClos
 // chatUnavailable builds the 503 structured disabled/unavailable response.
 func chatUnavailable(reason gateway.ChatUnavailableReason) gateway.Chat503JSONResponse {
 	return gateway.Chat503JSONResponse(unavailable(reason))
+}
+
+// chatConversationDenied builds the 404 for a continued turn that names a
+// conversation the caller's organization does not own (authorization). It is
+// fail-closed: the turn is never proxied and no assistant record is written.
+func chatConversationDenied() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 404,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CONVERSATION_NOT_FOUND",
+			Message: "conversation not found for this organization",
+		},
+	}
+}
+
+// chatPersistFailed builds the 500 for a turn whose user message could not be
+// persisted. Fail closed: an unpersisted turn is never proxied to the LLM plane.
+func chatPersistFailed() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 500,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CHAT_PERSIST_FAILED",
+			Message: "the conversation turn could not be persisted; use the structured screens",
+		},
+	}
+}
+
+// logChatPersist emits the structured boundary log for a chat-persistence outcome
+// (never silent). It carries the conversation id (a technical identifier) and the
+// outcome — NEVER the message body or any raw free text as a diagnostic value.
+func (s *gatewayServer) logChatPersist(ctx context.Context, stage string, conversationID uuid.UUID, err error) {
+	if s.logger == nil {
+		return
+	}
+	convField := ""
+	if conversationID != uuid.Nil {
+		convField = conversationID.String()
+	}
+	if err != nil {
+		s.logger.WarnContext(ctx, "chat persistence rejected", "stage", stage, "conversation_id", convField, "error", err.Error())
+		return
+	}
+	s.logger.InfoContext(ctx, "chat persistence ok", "stage", stage, "conversation_id", convField)
 }
 
 // unavailable builds the ChatUnavailable body for a reason. The message is free

@@ -29,6 +29,10 @@ type Querier interface {
 	// action is reproducible from these rows (plus approval_card_states and
 	// action_executions) WITHOUT the chat transcript (transcript-independent audit).
 	AppendAuditRecord(ctx context.Context, arg AppendAuditRecordParams) (AuditRecord, error)
+	// Appends one turn (user or assistant) to a conversation. APPEND-ONLY: message
+	// history is never updated or deleted. The assistant's typed response envelope is
+	// retained verbatim as JSONB evidence; it is NULL for a user turn.
+	AppendConversationMessage(ctx context.Context, arg AppendConversationMessageParams) (ConversationMessage, error)
 	// Append the §15.3 result + confidence at window close (once per window;
 	// UNIQUE(window_id)).
 	AppendOutcomeResult(ctx context.Context, arg AppendOutcomeResultParams) (OutcomeResult, error)
@@ -95,6 +99,25 @@ type Querier interface {
 	// constraint.
 	CountWatchlistEntries(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
+	// Conversation durability queries (PRD §15.1 CHAT-008). These tables are
+	// GATEWAY-owned: the LLM plane holds NO DB credential (§19.3), so every write to
+	// conversation history flows through the gateway, never the model plane.
+	//
+	// conversation_messages is APPEND-ONLY (§4.6 never-cut): there is deliberately NO
+	// UPDATE and NO DELETE on message history here. The ONLY mutable column in this
+	// file is conversations.updated_at, advanced by the single org-scoped UPDATE
+	// below (activity recency for history ordering) — never a message row and never
+	// pinned/retention state.
+	//
+	// Audit independence (CHAT-008): these tables reference NOTHING in the
+	// append-only action/audit surface and hold no action/approval/execution column,
+	// so deleting a conversation leaves the complete action audit intact. Free text
+	// carries no authority (§8): a stored message can never approve or execute.
+	// Opens a new conversation under the caller's organization and author. title,
+	// pinned, created_at, updated_at, and retention_expires_at (now() + 90 days) take
+	// their schema defaults, so 90-day retention (CHAT-008) is set at creation without
+	// the caller computing a date.
+	CreateConversation(ctx context.Context, arg CreateConversationParams) (Conversation, error)
 	CreateCostImportBatch(ctx context.Context, arg CreateCostImportBatchParams) (CostImportBatch, error)
 	// Market Product Identity queries (S11, CAT-002, §6.5 journey 4, §16).
 	// market_product_identities is a current-state table (state transitions UPDATE in
@@ -203,6 +226,11 @@ type Querier interface {
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	// ORG-SCOPED: only returns the row when the account belongs to the organization.
 	GetConnectorConnection(ctx context.Context, arg GetConnectorConnectionParams) (ConnectorConnection, error)
+	// Fetches a conversation scoped to the caller's organization. A conversation that
+	// does not exist OR belongs to another organization returns NO row, so a
+	// cross-org continued turn is denied at the query boundary (authorization), never
+	// served or appended to.
+	GetConversationForOrg(ctx context.Context, arg GetConversationForOrgParams) (Conversation, error)
 	GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	// The greatest-version card for a lineage (the live card version).
 	GetCurrentApprovalCard(ctx context.Context, lineageID uuid.UUID) (ApprovalCard, error)
@@ -405,6 +433,9 @@ type Querier interface {
 	ListConflictedObservedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservedOffer, error)
 	// ORG-SCOPED: capability rows are visible only to the owning organization.
 	ListConnectorCapabilities(ctx context.Context, arg ListConnectorCapabilitiesParams) ([]ConnectorCapability, error)
+	// Reads a conversation's turns in order (history rendering + the cross-boundary
+	// persistence proof). APPEND-ONLY read.
+	ListConversationMessages(ctx context.Context, conversationID uuid.UUID) ([]ConversationMessage, error)
 	ListCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
 	// Full version history for one (variant, component), newest first — the versioned
 	// cost-profile list the product-detail screen renders.
@@ -565,6 +596,11 @@ type Querier interface {
 	// Advance a recommend-only action to a terminal EXE-005 state. FROM-guarded on
 	// the awaiting state so a resolved action is not re-resolved.
 	SetRecommendOnlyState(ctx context.Context, arg SetRecommendOnlyStateParams) (RecommendOnlyAction, error)
+	// Advances conversations.updated_at for a conversation owned by the caller's
+	// organization. This is the ONLY UPDATE in this file: it touches NO message row
+	// and NO retention/pinned state, and a foreign conversation matches nothing and
+	// returns no row (no cross-org write).
+	TouchConversation(ctx context.Context, arg TouchConversationParams) (Conversation, error)
 	// EVT-003 / §16: a duplicate detection UPDATES the open record in place — it
 	// refreshes the evidence, factors, exposure, severity, and expiry, marks the row
 	// 'updated', and bumps evidence_update_count. It produces ZERO new events rows,
