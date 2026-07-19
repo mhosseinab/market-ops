@@ -33,12 +33,12 @@ func TestMovementCeiling_DefaultIsFiveHundredBp(t *testing.T) {
 // default-path ceiling at exactly 500 bp.
 func TestMovementCeiling_NewConfigRejects501AndAccepts500(t *testing.T) {
 	at500 := money.NewBasisPoints(500)
-	if _, err := NewConfig(ConfigParams{MovementCap: &at500}); err != nil {
+	if _, err := NewConfig(ConfigParams{MovementCap: &at500, Strategy: StrategyHold, Objective: ObjectiveTrackStrategy}); err != nil {
 		t.Fatalf("NewConfig(500 bp) err = %v, want nil (500 is the ceiling and is accepted)", err)
 	}
 
 	at501 := money.NewBasisPoints(501)
-	if _, err := NewConfig(ConfigParams{MovementCap: &at501}); !errors.Is(err, ErrMovementCapTooLoose) {
+	if _, err := NewConfig(ConfigParams{MovementCap: &at501, Strategy: StrategyHold, Objective: ObjectiveTrackStrategy}); !errors.Is(err, ErrMovementCapTooLoose) {
 		t.Fatalf("NewConfig(501 bp) err = %v, want ErrMovementCapTooLoose", err)
 	}
 }
@@ -83,17 +83,17 @@ func TestMovementCeiling_ConcurrentNoSharedMutableState(t *testing.T) {
 			defer wg.Done()
 
 			// Default path.
-			if _, err := NewConfig(ConfigParams{}); err != nil {
+			if _, err := NewConfig(ConfigParams{Strategy: StrategyHold, Objective: ObjectiveTrackStrategy}); err != nil {
 				t.Errorf("NewConfig(default) err = %v", err)
 			}
 			// Stricter value is accepted.
 			strict := money.NewBasisPoints(300)
-			if _, err := NewConfig(ConfigParams{MovementCap: &strict}); err != nil {
+			if _, err := NewConfig(ConfigParams{MovementCap: &strict, Strategy: StrategyHold, Objective: ObjectiveTrackStrategy}); err != nil {
 				t.Errorf("NewConfig(300 bp) err = %v", err)
 			}
 			// Ceiling is never widened: 501 always rejected.
 			loose := money.NewBasisPoints(501)
-			if _, err := NewConfig(ConfigParams{MovementCap: &loose}); !errors.Is(err, ErrMovementCapTooLoose) {
+			if _, err := NewConfig(ConfigParams{MovementCap: &loose, Strategy: StrategyHold, Objective: ObjectiveTrackStrategy}); !errors.Is(err, ErrMovementCapTooLoose) {
 				t.Errorf("NewConfig(501 bp) err = %v, want ErrMovementCapTooLoose", err)
 			}
 			// Direct Evaluate path shares the same immutable ceiling.

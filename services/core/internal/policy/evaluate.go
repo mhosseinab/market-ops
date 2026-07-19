@@ -343,8 +343,11 @@ func strategyDesired(cfg Config, current money.Money) (money.Money, error) {
 		}
 		return cfg.Reference.Sub(cut)
 	default:
-		// Unknown/empty strategy holds — the safest choice (no movement desired).
-		return current, nil
+		// Fail closed (issue #63, §4.6): an unknown/empty strategy is NEVER coerced
+		// to a hold. Unreachable in practice because validate() runs first at the
+		// Evaluate boundary — this is defense in depth against a config that reaches
+		// here another way.
+		return money.Money{}, ErrUnknownStrategy
 	}
 }
 
@@ -358,7 +361,10 @@ func objectivePreferred(cfg Config, desired, low, high money.Money) (money.Money
 	case ObjectiveTrackStrategy:
 		return clamp(desired, low, high)
 	default:
-		return clamp(desired, low, high)
+		// Fail closed (issue #63, §4.6): an unknown/empty objective is NEVER coerced
+		// to TrackStrategy. Unreachable in practice because validate() runs first at
+		// the Evaluate boundary — defense in depth.
+		return money.Money{}, ErrUnknownObjective
 	}
 }
 

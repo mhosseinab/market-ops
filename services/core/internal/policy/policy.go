@@ -64,6 +64,13 @@ var (
 	ErrInvalidMovementCap = policyError("policy: movement cap must be non-negative")
 	// ErrInvalidCooldown — negative cooldown.
 	ErrInvalidCooldown = policyError("policy: cooldown must be non-negative")
+	// ErrUnknownStrategy — Strategy is empty or outside the closed set (§4.6
+	// quarantine-over-inference): an unknown token fails closed and is NEVER
+	// reinterpreted as StrategyHold.
+	ErrUnknownStrategy = policyError("policy: unknown pricing strategy (closed set: hold, match, undercut)")
+	// ErrUnknownObjective — Objective is empty or outside the closed set: an
+	// unknown token fails closed and is NEVER reinterpreted as ObjectiveTrackStrategy.
+	ErrUnknownObjective = policyError("policy: unknown optimization objective (closed set: maximize_contribution, track_strategy)")
 )
 
 // policyError is a tiny sentinel error type (avoids importing errors for New).
@@ -158,6 +165,13 @@ func NewConfig(p ConfigParams) (Config, error) {
 		return Config{}, err
 	}
 
+	if err := validateStrategy(p.Strategy); err != nil {
+		return Config{}, err
+	}
+	if err := validateObjective(p.Objective); err != nil {
+		return Config{}, err
+	}
+
 	return Config{
 		Boundary:          p.Boundary,
 		ContributionFloor: p.ContributionFloor,
@@ -178,7 +192,37 @@ func (c Config) validate() error {
 	if err := validateCap(c.MovementCap); err != nil {
 		return err
 	}
-	return validateCooldown(c.Cooldown)
+	if err := validateCooldown(c.Cooldown); err != nil {
+		return err
+	}
+	if err := validateStrategy(c.Strategy); err != nil {
+		return err
+	}
+	return validateObjective(c.Objective)
+}
+
+// validateStrategy enforces the closed Strategy set (§4.6 quarantine-over-inference,
+// issue #63). Empty or unknown tokens fail closed with ErrUnknownStrategy; they are
+// NEVER coerced to a default strategy.
+func validateStrategy(s Strategy) error {
+	switch s {
+	case StrategyHold, StrategyMatch, StrategyUndercut:
+		return nil
+	default:
+		return ErrUnknownStrategy
+	}
+}
+
+// validateObjective enforces the closed Objective set (§4.6, issue #63). Empty or
+// unknown tokens fail closed with ErrUnknownObjective; they are NEVER coerced to a
+// default objective.
+func validateObjective(o Objective) error {
+	switch o {
+	case ObjectiveMaximizeContribution, ObjectiveTrackStrategy:
+		return nil
+	default:
+		return ErrUnknownObjective
+	}
 }
 
 // validateCap enforces 0 ≤ cap ≤ default (stricter-only, PRC-004).

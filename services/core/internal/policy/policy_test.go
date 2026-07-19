@@ -55,7 +55,11 @@ func bpPtr(v int64) *money.BasisPoints {
 func durPtr(d time.Duration) *time.Duration { return &d }
 
 func TestNewConfig_StricterOnly(t *testing.T) {
-	base := ConfigParams{Boundary: Boundary{Known: true, Min: m0(t, 1), Max: m0(t, 10)}}
+	base := ConfigParams{
+		Boundary:  Boundary{Known: true, Min: m0(t, 1), Max: m0(t, 10)},
+		Strategy:  StrategyHold,
+		Objective: ObjectiveTrackStrategy,
+	}
 
 	// Default cap/cooldown (nil) are accepted.
 	if _, err := NewConfig(base); err != nil {
