@@ -96,6 +96,8 @@ def _resolve_request(row: dict[str, Any]) -> ResolveRequest:
         candidates=candidates,
         time_phrase=row.get("time_phrase"),
         now=row.get("now", "1970-01-01T00:00:00Z"),
+        business_timezone=row.get("business_timezone", "UTC"),
+        week_starts_on=row.get("week_starts_on", 0),
     )
 
 

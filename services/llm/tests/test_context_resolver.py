@@ -584,28 +584,33 @@ def test_cross_account_scope_check_precedes_card_version_check() -> None:
 # --- time-range resolution ---------------------------------------------------
 
 
+# now = Friday 2026-07-17 09:30Z. A named CALENDAR period carries the correctly
+# resolved boundary (#28): a COMPLETED period (yesterday) ends at the start of the
+# next period, NOT at ``now``; a CURRENT period (today) still ends at ``now``. A
+# rolling "last N days" window is DISTINCT and always ends at ``now``.
 @pytest.mark.parametrize(
-    ("phrase", "expected_start", "expected_label"),
+    ("phrase", "expected_start", "expected_end", "expected_label"),
     [
-        ("today", "2026-07-17T00:00:00Z", "time.range.today"),
-        ("امروز", "2026-07-17T00:00:00Z", "time.range.today"),
-        ("yesterday", "2026-07-16T00:00:00Z", "time.range.yesterday"),
-        ("دیروز", "2026-07-16T00:00:00Z", "time.range.yesterday"),
-        ("last 7 days", "2026-07-11T00:00:00Z", "time.range.last_n_days"),
-        ("۷ روز گذشته", "2026-07-11T00:00:00Z", "time.range.last_n_days"),
-        ("past 5 days", "2026-07-13T00:00:00Z", "time.range.last_n_days"),
-        ("something odd", "2026-07-17T00:00:00Z", "time.range.unspecified"),
+        ("today", "2026-07-17T00:00:00Z", "2026-07-17T09:30:00Z", "time.range.today"),
+        ("امروز", "2026-07-17T00:00:00Z", "2026-07-17T09:30:00Z", "time.range.today"),
+        # Yesterday is a COMPLETED day: it ends at the start of today, not at now.
+        ("yesterday", "2026-07-16T00:00:00Z", "2026-07-17T00:00:00Z", "time.range.yesterday"),
+        ("دیروز", "2026-07-16T00:00:00Z", "2026-07-17T00:00:00Z", "time.range.yesterday"),
+        ("last 7 days", "2026-07-11T00:00:00Z", "2026-07-17T09:30:00Z", "time.range.last_n_days"),
+        ("۷ روز گذشته", "2026-07-11T00:00:00Z", "2026-07-17T09:30:00Z", "time.range.last_n_days"),
+        ("past 5 days", "2026-07-13T00:00:00Z", "2026-07-17T09:30:00Z", "time.range.last_n_days"),
+        ("something odd", "2026-07-17T00:00:00Z", "2026-07-17T09:30:00Z", "time.range.unspecified"),
     ],
 )
 def test_time_range_is_explicit_with_as_of(
-    phrase: str, expected_start: str, expected_label: str
+    phrase: str, expected_start: str, expected_end: str, expected_label: str
 ) -> None:
     now = "2026-07-17T09:30:00Z"
     tr = resolve_time_range(phrase, now)
     # Always an explicit closed range plus an as-of instant (§8.1).
     assert tr.start == expected_start
-    assert tr.end == now
-    assert tr.as_of == now
+    assert tr.end == expected_end
+    assert tr.as_of == now  # as-of stays the real now, separate from the range end.
     assert tr.label_key == expected_label
 
 
@@ -620,6 +625,187 @@ def test_resolve_attaches_time_range_when_phrase_present() -> None:
     res = resolve(req)
     assert res.time_range is not None
     assert res.time_range.as_of == "2026-07-17T09:30:00Z"
+
+
+# --- named calendar periods (#28, PRD §8.1) ----------------------------------
+# A named calendar period ("yesterday", "this/last week", "this/last month") is
+# resolved to its ACTUAL calendar boundaries under the configured business
+# timezone — never a rolling "midnight N days ago through now" window. as_of stays
+# separate. Persian and English aliases MUST resolve to IDENTICAL instants because
+# the phrase language is not a branch: boundaries come from the (tz, week-start)
+# DATA, not from which language named the period.
+
+# now = Friday 2026-07-17 09:30Z; default business tz = UTC, week starts Monday.
+_NOW_FRI = "2026-07-17T09:30:00Z"
+
+
+def test_yesterday_excludes_today_ends_at_start_of_today() -> None:
+    tr = resolve_time_range("yesterday", _NOW_FRI)
+    assert tr.start == "2026-07-16T00:00:00Z"  # start of yesterday
+    assert tr.end == "2026-07-17T00:00:00Z"  # START OF TODAY — today is excluded
+    assert tr.as_of == _NOW_FRI  # as-of is the real now, distinct from the range end
+    assert tr.end < tr.as_of  # the current day is NOT inside a "yesterday" range
+    assert tr.label_key == "time.range.yesterday"
+
+
+def test_this_week_uses_calendar_week_start_not_rolling_seven_days() -> None:
+    # Monday-start week containing Friday 2026-07-17 begins Monday 2026-07-13.
+    tr = resolve_time_range("this week", _NOW_FRI)
+    assert tr.start == "2026-07-13T00:00:00Z"  # calendar week start (Monday)
+    assert tr.end == _NOW_FRI  # current period runs up to now
+    assert tr.label_key == "time.range.this_week"
+
+
+def test_last_week_is_the_prior_calendar_week_not_a_rolling_span() -> None:
+    # Prior full Monday..Sunday week: 2026-07-06 .. up to (not incl) this week.
+    tr = resolve_time_range("last week", _NOW_FRI)
+    assert tr.start == "2026-07-06T00:00:00Z"  # start of previous calendar week
+    assert tr.end == "2026-07-13T00:00:00Z"  # start of THIS week — excludes this week
+    assert tr.as_of == _NOW_FRI
+    assert tr.label_key == "time.range.last_week"
+
+
+def test_this_month_uses_month_start_not_rolling_thirty_days() -> None:
+    tr = resolve_time_range("this month", _NOW_FRI)
+    assert tr.start == "2026-07-01T00:00:00Z"  # first of the month
+    assert tr.end == _NOW_FRI  # current month up to now
+    assert tr.label_key == "time.range.this_month"
+
+
+def test_last_month_uses_actual_month_boundaries() -> None:
+    tr = resolve_time_range("last month", _NOW_FRI)
+    assert tr.start == "2026-06-01T00:00:00Z"  # first of previous month
+    assert tr.end == "2026-07-01T00:00:00Z"  # first of this month — excludes this month
+    assert tr.label_key == "time.range.last_month"
+
+
+def test_last_month_spans_variable_length_leap_february() -> None:
+    # now in March 2024 (a leap year): "last month" is all of February (29 days).
+    tr = resolve_time_range("last month", "2024-03-15T10:00:00Z")
+    assert tr.start == "2024-02-01T00:00:00Z"
+    assert tr.end == "2024-03-01T00:00:00Z"  # 29-day span, ends at March 1
+    assert tr.label_key == "time.range.last_month"
+
+
+def test_yesterday_resolves_leap_day() -> None:
+    # On March 1 of a leap year, "yesterday" is Feb 29 — a date that exists only
+    # because month lengths and leap years are honored, not a 28-day assumption.
+    tr = resolve_time_range("yesterday", "2024-03-01T08:00:00Z")
+    assert tr.start == "2024-02-29T00:00:00Z"
+    assert tr.end == "2024-03-01T00:00:00Z"
+
+
+def test_last_month_across_year_transition() -> None:
+    # now in January: "last month" is the previous December of the PRIOR year.
+    tr = resolve_time_range("last month", "2026-01-10T05:00:00Z")
+    assert tr.start == "2025-12-01T00:00:00Z"
+    assert tr.end == "2026-01-01T00:00:00Z"
+
+
+def test_last_week_across_year_transition() -> None:
+    # now = Thursday 2026-01-01. This Monday-start week began Mon 2025-12-29, so
+    # last week is 2025-12-22 .. 2025-12-29 — spanning the year boundary.
+    tr = resolve_time_range("last week", "2026-01-01T12:00:00Z")
+    assert tr.start == "2025-12-22T00:00:00Z"
+    assert tr.end == "2025-12-29T00:00:00Z"
+
+
+def test_named_period_honors_business_timezone_offset() -> None:
+    # Asia/Tehran is UTC+03:30 (no DST since 2022). At 2026-07-16T21:00Z it is
+    # already 2026-07-17T00:30 in Tehran, so "yesterday" (Tehran) is the Tehran
+    # calendar day 2026-07-16 — a DIFFERENT instant span than UTC yesterday.
+    now = "2026-07-16T21:00:00Z"
+    tr = resolve_time_range("yesterday", now, "Asia/Tehran")
+    assert tr.start == "2026-07-15T20:30:00Z"  # Tehran 2026-07-16 00:00 in UTC
+    assert tr.end == "2026-07-16T20:30:00Z"  # Tehran 2026-07-17 00:00 in UTC
+    assert tr.end < tr.as_of  # excludes the current Tehran day
+    # UTC resolution of the same instant differs — the tz offset is load-bearing.
+    utc = resolve_time_range("yesterday", now, "UTC")
+    assert utc.start != tr.start
+
+
+def test_this_month_boundary_computed_at_its_own_dst_offset() -> None:
+    # America/New_York: March 1 is EST (-05:00); now (Mar 15) is EDT (-04:00) after
+    # the Mar 10 spring-forward. The month start must use March-1's OWN offset, so
+    # 2024-03-01 00:00 local = 05:00Z, NOT 04:00Z.
+    tr = resolve_time_range("this month", "2024-03-15T12:00:00Z", "America/New_York")
+    assert tr.start == "2024-03-01T05:00:00Z"  # EST offset at the boundary date
+    assert tr.end == "2024-03-15T12:00:00Z"
+
+
+def test_last_week_range_crossing_dst_transition() -> None:
+    # America/New_York, now = Wednesday 2024-03-13 (EDT). This week starts Mon
+    # 2024-03-11 (EDT, -04:00 → 04:00Z). Last week starts Mon 2024-03-04 (EST,
+    # -05:00 → 05:00Z) and ends at this week's start. The two boundaries carry
+    # DIFFERENT offsets across the Mar 10 spring-forward — each at its own wall time.
+    tr = resolve_time_range("last week", "2024-03-13T12:00:00Z", "America/New_York")
+    assert tr.start == "2024-03-04T05:00:00Z"  # EST boundary
+    assert tr.end == "2024-03-11T04:00:00Z"  # EDT boundary
+    assert tr.label_key == "time.range.last_week"
+
+
+@pytest.mark.parametrize(
+    ("en", "fa"),
+    [
+        ("yesterday", "دیروز"),
+        ("this week", "این هفته"),
+        ("last week", "هفته گذشته"),
+        ("this month", "این ماه"),
+        ("last month", "ماه گذشته"),
+        ("today", "امروز"),
+    ],
+)
+@pytest.mark.parametrize("tz", ["UTC", "Asia/Tehran", "America/New_York"])
+def test_persian_and_english_named_periods_resolve_to_identical_instants(
+    en: str, fa: str, tz: str
+) -> None:
+    now = "2026-07-17T09:30:00Z"
+    en_tr = resolve_time_range(en, now, tz)
+    fa_tr = resolve_time_range(fa, now, tz)
+    # Phrase language is NOT a branch: identical resolved instants and label.
+    assert en_tr.start == fa_tr.start
+    assert en_tr.end == fa_tr.end
+    assert en_tr.as_of == fa_tr.as_of
+    assert en_tr.label_key == fa_tr.label_key
+
+
+def test_configurable_week_start_shifts_calendar_week() -> None:
+    # A Saturday-start week (week_starts_on=5) is DATA, not a locale branch: it
+    # shifts the boundary deterministically regardless of phrase language.
+    # Friday 2026-07-17 with a Saturday-start week began Sat 2026-07-11.
+    tr = resolve_time_range("this week", _NOW_FRI, "UTC", 5)
+    assert tr.start == "2026-07-11T00:00:00Z"
+    fa = resolve_time_range("این هفته", _NOW_FRI, "UTC", 5)
+    assert fa.start == tr.start  # language-independent
+
+
+def test_resolve_threads_business_timezone_into_named_period() -> None:
+    # The top-level resolver passes the request's business timezone (DATA) into
+    # calendar-period resolution, so "yesterday" is the business-tz calendar day.
+    req = ResolveRequest(
+        intent=IntentClass.QUESTION,
+        scope=_SCOPE,
+        active_context=_chip(ContextType.PRODUCT, entity_id="e"),
+        time_phrase="yesterday",
+        now="2026-07-16T21:00:00Z",
+        business_timezone="Asia/Tehran",
+    )
+    res = resolve(req)
+    assert res.time_range is not None
+    assert res.time_range.start == "2026-07-15T20:30:00Z"
+    assert res.time_range.end == "2026-07-16T20:30:00Z"
+
+
+def test_rolling_last_n_days_stays_distinct_from_named_periods() -> None:
+    # "last 7 days" is a ROLLING window ending at now — NOT the "last week" named
+    # calendar period. Their ranges and labels must differ (#28).
+    rolling = resolve_time_range("last 7 days", _NOW_FRI)
+    named = resolve_time_range("last week", _NOW_FRI)
+    assert rolling.label_key == "time.range.last_n_days"
+    assert named.label_key == "time.range.last_week"
+    assert rolling.end == _NOW_FRI  # rolling ends at now
+    assert named.end == "2026-07-13T00:00:00Z"  # named ends at this week's start
+    assert rolling.start != named.start
 
 
 # --- bounded relative-day resolution (#34, PRD §4.6 fail-closed) --------------

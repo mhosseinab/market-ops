@@ -256,3 +256,15 @@ class ResolveRequest(BaseModel):
     candidates: dict[str, list[EntityCandidate]] = Field(default_factory=dict)
     time_phrase: str | None = None
     now: str = "1970-01-01T00:00:00Z"
+    business_timezone: str = "UTC"
+    """IANA timezone the account's calendar periods are resolved under (§8.1, #28).
+
+    A named calendar period ("yesterday", "this/last week/month") is anchored to
+    this timezone's calendar day, then stored/compared in UTC. It is DATA, never a
+    locale branch: Persian and English phrases resolve through the same value to
+    identical instants (localization boundary, PRD §11)."""
+    week_starts_on: int = 0
+    """First weekday of the business calendar week (0=Monday … 6=Sunday, ISO 8601).
+
+    Configured per account as DATA so "this/last week" boundaries are deterministic
+    and language-independent — the phrase's language never selects the week start."""
