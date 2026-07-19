@@ -76,6 +76,11 @@ func (s *gatewayServer) SimulatePolicy(
 		CurrentPrice: currentPrice,
 		Contribution: oracle,
 		Now:          time.Now(),
+		// Carry the verified margin readiness through so the approvability gate
+		// (CST-003 / PRD §9.2) holds for HTTP callers too. This path is always a
+		// simulation (never approvable), but threading readiness keeps the seam
+		// honest and fails closed for any non-Complete state.
+		Readiness: readiness,
 	}
 	if body.NowRfc3339 != nil {
 		in.Now = *body.NowRfc3339

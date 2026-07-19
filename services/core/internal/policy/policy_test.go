@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
 
@@ -109,6 +110,7 @@ func TestEvaluate_HappyProposal(t *testing.T) {
 		CurrentPrice: m0(t, 1000),
 		Contribution: mkContrib(t, m0(t, 800), 0), // contribution(1000) = 200
 		Now:          time.Unix(1_000_000, 0),
+		Readiness:    cost.StateComplete,
 	})
 	if err != nil {
 		t.Fatalf("Evaluate: %v", err)
