@@ -339,6 +339,13 @@ jobs:
       - run: task ts:lint
       - run: task ts:test
       - run: task ts:build
+      # The pseudo-locale merge gate now includes a browser layout pass
+      # (task ts:pseudoloc → pseudoloc:visual, issue #15): it renders the real
+      # shell under the pseudo pack in Chromium and fails on overflow, clipped
+      # copy, or direction regressions jsdom cannot see. Install the browser here
+      # (mirrors the integration job); the served harness uses MSW, no core stack.
+      - name: install Chromium for the pseudo-locale visual gate
+        run: pnpm --filter @market-ops/web exec playwright install --with-deps chromium
       # Pseudo-locale + copy-lint merge gate (LOC-011), live from S25.
       - run: task ts:pseudoloc
 

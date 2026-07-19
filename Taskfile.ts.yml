@@ -64,10 +64,25 @@ tasks:
   pseudoloc:
     desc: >-
       Pseudo-localization + copy-lint gate (LOC-011). Copy-lint proves no inline
-      copy; the vitest pseudo suite renders components under the expanded /
-      bracketed / forced-LTR pack and fails on untranslated, clipped, or
-      direction-broken output.
+      copy; the vitest pseudo suite proves every string resolves through the
+      catalog; the browser visual gate (pseudoloc:visual) renders the real shell
+      in Chromium under PSEUDO_DIR and fails on layout overflow, clipped copy, or
+      direction regressions jsdom cannot see (issue #15).
     cmds:
       - task: copylint
       - pnpm --filter @market-ops/locale test
       - pnpm --filter @market-ops/web test
+      - task: pseudoloc:visual
+
+  pseudoloc:visual:
+    desc: >-
+      Browser-based pseudo-locale LAYOUT gate (LOC-011, issue #15). Serves the
+      real app shell under the pseudo pack (forced PSEUDO_DIR + ~40% expansion)
+      via MSW — no core stack — then asserts in Chromium: PSEUDO_DIR is on the
+      document root, no horizontal overflow, no clipped critical copy, no
+      hardcoded direction, plus reviewed screenshot baselines. A negative fixture
+      proves the gate fails on known clipping + RTL defects. Chromium is
+      preinstalled (PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers); never run
+      `playwright install` — CI installs the browser in its own step.
+    cmds:
+      - pnpm --filter @market-ops/web test:pseudo:visual
