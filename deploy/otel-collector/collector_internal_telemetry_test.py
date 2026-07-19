@@ -99,18 +99,21 @@ def internal_scrape_target(prom_cfg: dict) -> tuple[str, int]:
     return _split_host_port(targets[0])
 
 
-def main() -> int:
+def evaluate(cfg: dict, prom_cfg: dict) -> list[str]:
+    """Run the full compose-reachability guard against a collector config + a
+    prometheus config, returning the list of reasons the pairing is REJECTED
+    (empty ⇒ ACCEPTED). Both the real committed files and the inline synthetic
+    fixtures below flow through this single function, so the negative cases
+    exercise exactly the branches that guard the real config."""
     errors: list[str] = []
 
-    cfg = yaml.safe_load(COLLECTOR_CONFIG.read_text())
-    prom_cfg = yaml.safe_load(PROM_CONFIG.read_text())
-
+    # 0. A missing/empty listener config means the collector falls back to the
+    #    0.119.0 loopback default — the #153 defect. collector_internal_bind
+    #    raises here; treat that as a rejection reason, not a crash.
     try:
         bind_host, bind_port = collector_internal_bind(cfg)
     except AssertionError as exc:
-        print("COLLECTOR SELF-TELEMETRY VALIDATION FAILED:")
-        print("  " + str(exc))
-        return 1
+        return [str(exc)]
 
     # 1. The listener must NOT bind to a loopback-only interface, or Prometheus
     #    (a separate container) can never reach it.
@@ -134,14 +137,99 @@ def main() -> int:
             f"scrapes :{tgt_port} — the scrape target is unreachable"
         )
 
+    return errors
+
+
+# ── Synthetic prometheus config the negative cases scrape against: the internal
+#    job targets the collector compose service on the canonical 8888 port, so any
+#    rejection below comes from the COLLECTOR-side bind, not the scrape config. ──
+_SYNTHETIC_PROM = {
+    "scrape_configs": [
+        {
+            "job_name": INTERNAL_JOB,
+            "static_configs": [{"targets": [f"{COLLECTOR_SERVICE}:8888"]}],
+        }
+    ]
+}
+
+
+def _bind_cfg(address: str | None) -> dict:
+    """A minimal collector config whose only relevant knob is the internal
+    metrics bind address. ``None`` omits the block entirely (loopback fallback)."""
+    if address is None:
+        return {"service": {"telemetry": {}}}
+    return {"service": {"telemetry": {"metrics": {"address": address}}}}
+
+
+def selftest() -> list[str]:
+    """Committed RED half (issue #153): the guard must REJECT every unreachable
+    binding and ACCEPT only a compose-reachable one. Each case fails if the
+    matching branch in ``evaluate`` is removed — the inline proof the sibling
+    guards (reconciliation_alert_test.py, streak_alert_test.py,
+    compose_ports_test.sh) all commit alongside their GREEN assertion."""
+    failures: list[str] = []
+
+    # NEGATIVE 1 — pre-fix config with NO service.telemetry.metrics block:
+    #   the collector silently falls back to the 0.119.0 loopback default.
+    #   collector_internal_bind must raise ⇒ evaluate rejects.
+    if not evaluate(_bind_cfg(None), _SYNTHETIC_PROM):
+        failures.append(
+            "NEGATIVE 1 FAILED: a config with no service.telemetry.metrics block "
+            "(loopback fallback) must be REJECTED"
+        )
+
+    # NEGATIVE 2 — an explicit loopback bind is still unreachable from the
+    #   Prometheus container. Both spellings the 0.119.0 default can take.
+    for loopback in ("localhost:8888", "127.0.0.1:8888"):
+        if not evaluate(_bind_cfg(loopback), _SYNTHETIC_PROM):
+            failures.append(
+                f"NEGATIVE 2 FAILED: loopback bind '{loopback}' must be REJECTED "
+                "(unreachable across the compose network)"
+            )
+
+    # NEGATIVE 3 — reachable interface but the WRONG port: the scrape job targets
+    #   8888 while the listener binds 9999, so the target is dead.
+    if not evaluate(_bind_cfg("0.0.0.0:9999"), _SYNTHETIC_PROM):
+        failures.append(
+            "NEGATIVE 3 FAILED: port-mismatch bind '0.0.0.0:9999' vs scrape :8888 "
+            "must be REJECTED"
+        )
+
+    # POSITIVE — the real/fixed shape: all-interfaces bind on the scraped port.
+    if evaluate(_bind_cfg("0.0.0.0:8888"), _SYNTHETIC_PROM):
+        failures.append(
+            "POSITIVE FAILED: a compose-reachable bind '0.0.0.0:8888' matching the "
+            "scrape target must be ACCEPTED"
+        )
+
+    return failures
+
+
+def main() -> int:
+    # Committed RED half: the guard rejects unreachable bindings and accepts the
+    # fixed shape, using the same evaluate() the real config below flows through.
+    selftest_failures = selftest()
+    if selftest_failures:
+        print("COLLECTOR SELF-TELEMETRY GUARD SELF-TEST FAILED:")
+        for f in selftest_failures:
+            print("  " + f)
+        return 1
+
+    cfg = yaml.safe_load(COLLECTOR_CONFIG.read_text())
+    prom_cfg = yaml.safe_load(PROM_CONFIG.read_text())
+
+    errors = evaluate(cfg, prom_cfg)
     if errors:
         print("COLLECTOR SELF-TELEMETRY VALIDATION FAILED:")
         for e in errors:
             print("  " + e)
         return 1
 
+    bind_host, bind_port = collector_internal_bind(cfg)
+    tgt_host, tgt_port = internal_scrape_target(prom_cfg)
     print(
-        f"OK: collector internal telemetry binds {bind_host}:{bind_port}; "
+        f"OK: 4 guard self-tests pass (no-metrics/loopback/port-mismatch rejected, "
+        f"fixed accepted); collector internal telemetry binds {bind_host}:{bind_port}; "
         f"job '{INTERNAL_JOB}' scrapes {tgt_host}:{tgt_port} (compose-reachable)."
     )
     return 0
