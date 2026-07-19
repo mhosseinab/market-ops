@@ -1,0 +1,109 @@
+import type { MissingKeyEvent, MissingKeyTelemetry } from "@market-ops/locale";
+
+// Missing-key telemetry adapter for the web app (LOC-004, issue #14).
+//
+// The locale core already reports a fallback through a caller-supplied sink
+// (`MissingKeyTelemetry`). This module turns that into an OBSERVABLE production
+// signal that is:
+//   * safe        — carries only technical identifiers (the message KEY and
+//                    locale ids) plus safe release/page context; NEVER the
+//                    rendered Persian/fallback copy or user data. Locale copy is
+//                    data, never a diagnostic identifier (CLAUDE.md).
+//   * bounded     — identical misses are deduplicated via a bounded, oldest-out
+//                    set so a hot render loop cannot flood telemetry.
+//   * failure-safe — a throwing/slow sink is swallowed; emission never breaks or
+//                    blocks rendering (the fallback string is already returned).
+//
+// All field names here are STABLE ASCII technical identifiers — they are wire
+// keys, not user copy, and deliberately do NOT go through the copy catalog.
+
+/** The enriched, safe payload emitted for a single missing-key fallback. */
+export interface MissingKeyReport extends MissingKeyEvent {
+  /** Build/release identifier (safe, non-PII). */
+  readonly release: string;
+  /** Path only (no query/hash) of the page where the miss occurred. */
+  readonly page: string;
+}
+
+/** An application telemetry sink. Injected in tests; defaulted in the bundle. */
+export type MissingKeySink = (report: MissingKeyReport) => void;
+
+export interface MissingKeyReporterOptions {
+  /** Max distinct (key+requested+servedBy) signatures retained for dedup. */
+  readonly dedupLimit?: number;
+}
+
+const DEFAULT_DEDUP_LIMIT = 256;
+
+// Dedup-signature field separator. A NUL is a collision-proof delimiter (it can
+// never appear inside a message key or locale id), but it is written here as the
+// visible escape so the source stays plain ASCII text and remains diff-reviewable
+// (issue #14 fix cycle). Runtime value is identical to the raw NUL byte.
+const SIG_SEP = "\0";
+
+function safeRelease(): string {
+  try {
+    return import.meta.env.VITE_RELEASE ?? "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function safePage(): string {
+  try {
+    // Path only — query strings and fragments can carry user data (no PII).
+    return globalThis.location?.pathname ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Build a telemetry-aware reporter around an injected sink. The returned
+ * function matches the locale core's `MissingKeyTelemetry` contract, so it can
+ * be handed straight to `translate()`.
+ */
+export function createMissingKeyReporter(
+  sink: MissingKeySink,
+  options: MissingKeyReporterOptions = {},
+): MissingKeyTelemetry {
+  const dedupLimit = options.dedupLimit ?? DEFAULT_DEDUP_LIMIT;
+  // Insertion-ordered set of signatures; oldest is evicted first when bounded.
+  const seen = new Set<string>();
+
+  return (event: MissingKeyEvent): void => {
+    const signature = `${event.key}${SIG_SEP}${event.requested}${SIG_SEP}${event.servedBy}`;
+    if (seen.has(signature)) return; // deduped — already reported this miss.
+
+    if (seen.size >= dedupLimit) {
+      const oldest = seen.values().next().value;
+      if (oldest !== undefined) seen.delete(oldest);
+    }
+    seen.add(signature);
+
+    const report: MissingKeyReport = {
+      key: event.key,
+      requested: event.requested,
+      servedBy: event.servedBy,
+      release: safeRelease(),
+      page: safePage(),
+    };
+
+    try {
+      sink(report);
+    } catch {
+      // Telemetry must never break rendering; the fallback string already
+      // rendered. Failures are intentionally swallowed here.
+    }
+  };
+}
+
+/**
+ * Default production sink: a structured, bounded emission. There is no cloud
+ * telemetry backend wired in P0 web, so the observable default is a structured
+ * console record keyed by a stable ASCII event name that a log drain can pick
+ * up. A deployment can override this via `setMissingKeySink`.
+ */
+export const consoleMissingKeySink: MissingKeySink = (report) => {
+  console.warn("i18n.missing_key", report);
+};
