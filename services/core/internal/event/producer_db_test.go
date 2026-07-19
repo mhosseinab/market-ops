@@ -47,9 +47,16 @@ func seedTarget(t *testing.T, pool *pgxpool.Pool, q *db.Queries) (account, varia
 	return account, variant, tgt.ID, nativeVariant
 }
 
-// appendObservation writes one append-only observation row for a competitor offer
-// identity with a raw (quarantined) price token.
+// appendObservation writes one append-only in-stock observation row for a
+// competitor offer identity with a raw (quarantined) price token.
 func appendObservation(t *testing.T, q *db.Queries, account, target uuid.UUID, nv int64, offer, rawValue string, at time.Time) {
+	t.Helper()
+	appendObsAvail(t, q, account, target, nv, offer, rawValue, "in_stock", at)
+}
+
+// appendObsAvail writes one append-only observation row with an explicit
+// availability status (so a test can seed a would-be suppression transition).
+func appendObsAvail(t *testing.T, q *db.Queries, account, target uuid.UUID, nv int64, offer, rawValue, avail string, at time.Time) {
 	t.Helper()
 	_, err := q.InsertObservation(context.Background(), db.InsertObservationParams{
 		CapturedAt:           at,
@@ -65,10 +72,10 @@ func appendObservation(t *testing.T, q *db.Queries, account, target uuid.UUID, n
 		PriceRawText:         rawValue + " IRR",
 		PriceRawValue:        rawValue,
 		PriceRawUnit:         "IRR",
-		AvailabilityStatus:   "in_stock",
+		AvailabilityStatus:   avail,
 		Quality:              "supported",
 		FreshnessDeadline:    at.Add(6 * time.Hour),
-		DedupKey:             offer + ":" + rawValue + ":" + at.Format(time.RFC3339Nano),
+		DedupKey:             offer + ":" + rawValue + ":" + avail + ":" + at.Format(time.RFC3339Nano),
 		SchemaValid:          true,
 		IdentityValid:        true,
 		Confidence:           "partially_verified",
@@ -76,6 +83,120 @@ func appendObservation(t *testing.T, q *db.Queries, account, target uuid.UUID, n
 	})
 	if err != nil {
 		t.Fatalf("insert observation: %v", err)
+	}
+}
+
+// ownedSellerID returns the account's own DK seller identity (its marketplace-
+// assigned native account id), which an owned offer observation carries as
+// native_seller_id.
+func ownedSellerID(t *testing.T, q *db.Queries, account uuid.UUID) string {
+	t.Helper()
+	acct, err := q.GetMarketplaceAccount(context.Background(), account)
+	if err != nil {
+		t.Fatalf("get account: %v", err)
+	}
+	return acct.NativeAccountID
+}
+
+// transitionsForTarget filters a source's transitions down to those for one target.
+func transitionsForTarget(all []event.Transition, target uuid.UUID) []event.Transition {
+	var out []event.Transition
+	for _, tr := range all {
+		if tr.CompetitorPrice != nil && tr.CompetitorPrice.Target == target {
+			out = append(out, tr)
+		}
+	}
+	return out
+}
+
+// TestObservationSourceExcludesOwnedOffer is the BLOCKER 2 correctness proof: the
+// account's OWN offer, if observed (Route C emits every matching-variant offer,
+// unfiltered — observer.go buildCaptures), must NEVER drive a competitor_price
+// event (EVT-001 type-2 is a COMPETITOR price movement). A genuine competitor with
+// the same movement still fires.
+func TestObservationSourceExcludesOwnedOffer(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, _, target, nv := seedTarget(t, pool, q)
+	owned := ownedSellerID(t, q, account)
+
+	base := time.Now().UTC().Add(-30 * time.Minute)
+	// The account's OWN offer moved price — must NOT become a competitor event.
+	appendObservation(t, q, account, target, nv, owned, "1000000", base)
+	appendObservation(t, q, account, target, nv, owned, "1300000", base.Add(5*time.Minute))
+	// A genuine competitor moved price — MUST become a competitor event.
+	appendObservation(t, q, account, target, nv, "rival-1", "2000000", base.Add(time.Minute))
+	appendObservation(t, q, account, target, nv, "rival-1", "2600000", base.Add(6*time.Minute))
+
+	all, err := event.NewObservationSource(pool).Transitions(ctx)
+	if err != nil {
+		t.Fatalf("transitions: %v", err)
+	}
+	got := transitionsForTarget(all, target)
+	if len(got) != 1 {
+		t.Fatalf("want exactly 1 competitor transition (owned excluded), got %d: %+v", len(got), got)
+	}
+	if got[0].CompetitorPrice.OfferIdentity == owned {
+		t.Fatalf("the account's OWN offer must never drive a competitor_price event")
+	}
+	if got[0].CompetitorPrice.OfferIdentity != "rival-1" {
+		t.Fatalf("competitor transition offer = %q, want rival-1", got[0].CompetitorPrice.OfferIdentity)
+	}
+}
+
+// TestObservationSourceEmitsOnlyCompetitorPrice is the BLOCKER 1 fail-closed proof
+// for the explicitly-planned stubs: even when the seeded data WOULD trigger a
+// winning-state / seller-count / suppression-boundary / contribution-floor signal,
+// the source emits ONLY competitor-price transitions and ZERO of the four dormant
+// types (they are wired dormant pending their downstream prerequisites).
+func TestObservationSourceEmitsOnlyCompetitorPrice(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, _, target, nv := seedTarget(t, pool, q)
+
+	base := time.Now().UTC().Add(-30 * time.Minute)
+	// A would-be suppression/boundary transition on the owned offer: in_stock → unavailable.
+	owned := ownedSellerID(t, q, account)
+	appendObsAvail(t, q, account, target, nv, owned, "1000000", "in_stock", base)
+	appendObsAvail(t, q, account, target, nv, owned, "1000000", "unavailable", base.Add(4*time.Minute))
+	// A would-be seller-count increase: three distinct competing sellers appear.
+	appendObservation(t, q, account, target, nv, "rival-1", "2000000", base.Add(time.Minute))
+	appendObservation(t, q, account, target, nv, "rival-2", "2100000", base.Add(2*time.Minute))
+	appendObservation(t, q, account, target, nv, "rival-3", "2200000", base.Add(3*time.Minute))
+	// A genuine competitor price movement (the ONE leg that is sourced).
+	appendObservation(t, q, account, target, nv, "rival-1", "2600000", base.Add(7*time.Minute))
+
+	all, err := event.NewObservationSource(pool).Transitions(ctx)
+	if err != nil {
+		t.Fatalf("transitions: %v", err)
+	}
+	dormant := map[event.Type]int{}
+	competitor := 0
+	for _, tr := range all {
+		// Scope to this target's transitions.
+		if tr.CompetitorPrice != nil && tr.CompetitorPrice.Target != target {
+			continue
+		}
+		switch tr.Type {
+		case event.TypeCompetitorPrice:
+			if tr.CompetitorPrice != nil && tr.CompetitorPrice.Target == target {
+				competitor++
+			}
+		case event.TypeWinningState, event.TypeSellerCount,
+			event.TypeSuppressionBoundary, event.TypeContributionFloor:
+			dormant[tr.Type]++
+		}
+	}
+	for _, ty := range []event.Type{
+		event.TypeWinningState, event.TypeSellerCount,
+		event.TypeSuppressionBoundary, event.TypeContributionFloor,
+	} {
+		if dormant[ty] != 0 {
+			t.Errorf("dormant leg %s must emit ZERO transitions from the source, got %d", ty, dormant[ty])
+		}
+	}
+	if competitor < 1 {
+		t.Fatalf("the sourced competitor-price leg must still emit for rival-1, got %d", competitor)
 	}
 }
 
