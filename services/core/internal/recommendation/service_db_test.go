@@ -170,43 +170,43 @@ func TestAdvance_RejectsStaleFromState(t *testing.T) {
 }
 
 // TestSelectionSet_ChangeInvalidatesBulkPreview proves CHAT-051/052: a bulk
-// preview bound to a selection-set version is invalidated by a set change (a new
-// version).
+// preview bound to a selection-set version is invalidated by a set change. Under
+// the immutable-membership model (#91) a set change is NEVER an in-place append —
+// it mints a NEW version through PreviewBulkSelection on the same lineage.
 func TestSelectionSet_ChangeInvalidatesBulkPreview(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
 	account, variant := seedVariant(t, q)
 	svc := recommendation.NewService(pool)
-	lineage := uuid.New()
+	recID := persistRecommendation(t, svc, account, variant)
 
-	set1, err := svc.CreateSelectionSet(ctx, recommendation.SelectionSetInput{
-		Account: account, Lineage: lineage, Name: "priority", MemberCount: 1,
-	})
+	// Version N: a bulk preview over a single member. Membership is sealed here.
+	set1, err := svc.PreviewBulkSelection(ctx, account, uuid.Nil, "priority",
+		nil, []recommendation.PreviewMemberInput{{VariantID: variant, RecommendationID: recID}})
 	if err != nil {
-		t.Fatalf("create set: %v", err)
+		t.Fatalf("preview v1: %v", err)
 	}
-	if _, err := svc.AddMember(ctx, set1.ID, variant, uuid.Nil, recommendation.DispositionExecutable); err != nil {
-		t.Fatalf("add member: %v", err)
-	}
+	lineage := set1.Set.LineageID
+
 	// A preview bound to set1.Version is currently valid.
-	ok, err := svc.BulkPreviewValid(ctx, lineage, set1.Version)
+	ok, err := svc.BulkPreviewValid(ctx, lineage, set1.Set.Version)
 	if err != nil {
 		t.Fatalf("bulk valid: %v", err)
 	}
 	if !ok {
 		t.Fatalf("bound preview should be valid before the set changes")
 	}
-	// The set changes → a new version. The old-bound preview is now invalid.
-	set2, err := svc.CreateSelectionSet(ctx, recommendation.SelectionSetInput{
-		Account: account, Lineage: lineage, Name: "priority", MemberCount: 2,
-	})
+
+	// A scope change ⇒ N+1 with its own membership snapshot (here the membership
+	// shrinks to zero). The old-bound preview is now invalid.
+	set2, err := svc.PreviewBulkSelection(ctx, account, lineage, "priority", nil, nil)
 	if err != nil {
-		t.Fatalf("create set v2: %v", err)
+		t.Fatalf("preview v2: %v", err)
 	}
-	if set2.Version == set1.Version {
+	if set2.Set.Version == set1.Set.Version {
 		t.Fatalf("selection-set change did not mint a new version")
 	}
-	stillValid, err := svc.BulkPreviewValid(ctx, lineage, set1.Version)
+	stillValid, err := svc.BulkPreviewValid(ctx, lineage, set1.Set.Version)
 	if err != nil {
 		t.Fatalf("bulk valid: %v", err)
 	}
