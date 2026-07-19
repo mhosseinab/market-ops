@@ -78,27 +78,46 @@ func TestLimiterPerAccountCap(t *testing.T) {
 	}
 }
 
+// mustReserve reserves once and fails the test on a store error (the in-memory
+// budget never errors; this keeps the ported assertions on the admit/deny value).
+func mustReserve(t *testing.T, b routec.BudgetReserver, a uuid.UUID) bool {
+	t.Helper()
+	ok, err := b.Reserve(context.Background(), a)
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	return ok
+}
+
 // TestBudgetReserveAndConsume asserts request headroom is enforced and byte spend
-// is tracked per account within a window.
+// is tracked per account within a window (in-memory reserver; the durable store's
+// equivalent is proven in budget_db_test.go).
 func TestBudgetReserveAndConsume(t *testing.T) {
+	ctx := context.Background()
 	clock := time.Unix(0, 0).UTC()
 	b := routec.NewBudget(3, 1000, 24*time.Hour, func() time.Time { return clock })
 	a := uuid.New()
 	for i := 0; i < 3; i++ {
-		if !b.Reserve(a) {
+		if !mustReserve(t, b, a) {
 			t.Fatalf("reserve %d should succeed", i)
 		}
 	}
-	if b.Reserve(a) {
+	if mustReserve(t, b, a) {
 		t.Fatal("4th reserve should fail (request budget exhausted)")
 	}
 	// A different account has its own budget.
-	if !b.Reserve(uuid.New()) {
+	if !mustReserve(t, b, uuid.New()) {
 		t.Fatal("other account should have fresh budget")
 	}
-	b.Consume(a, 999)
-	if got := b.Snapshot(a).BytesRemaining; got != 1 {
-		t.Fatalf("bytes remaining: got %d want 1", got)
+	if err := b.Consume(ctx, a, 999); err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	st, err := b.Snapshot(ctx, a)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if st.BytesRemaining != 1 {
+		t.Fatalf("bytes remaining: got %d want 1", st.BytesRemaining)
 	}
 }
 
@@ -106,30 +125,35 @@ func TestBudgetReserveAndConsume(t *testing.T) {
 // account resumes after the window boundary. The reset is deterministic —
 // driven by advancing the injected clock past the window, never wall-clock.
 func TestBudgetWindowRollover(t *testing.T) {
+	ctx := context.Background()
 	clock := time.Date(2026, 7, 17, 9, 0, 0, 0, time.UTC)
 	b := routec.NewBudget(2, 1<<30, 24*time.Hour, func() time.Time { return clock })
 	a := uuid.New()
 
-	r1 := b.Reserve(a)
-	r2 := b.Reserve(a)
+	r1 := mustReserve(t, b, a)
+	r2 := mustReserve(t, b, a)
 	if !r1 || !r2 {
 		t.Fatal("first two reserves in window should succeed")
 	}
-	if b.Reserve(a) {
+	if mustReserve(t, b, a) {
 		t.Fatal("third reserve within window must fail (budget exhausted)")
 	}
 	// Advance within the SAME day: still exhausted (no premature reset).
 	clock = clock.Add(6 * time.Hour)
-	if b.Reserve(a) {
+	if mustReserve(t, b, a) {
 		t.Fatal("still same window: must remain exhausted")
 	}
 	// Cross the daily boundary: the account resumes.
 	clock = time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
-	if !b.Reserve(a) {
+	if !mustReserve(t, b, a) {
 		t.Fatal("after window rollover the account must resume (no permanent starvation)")
 	}
-	if got := b.Snapshot(a).RequestsRemaining; got != 1 {
-		t.Fatalf("post-rollover remaining: got %d want 1", got)
+	st, err := b.Snapshot(ctx, a)
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if st.RequestsRemaining != 1 {
+		t.Fatalf("post-rollover remaining: got %d want 1", st.RequestsRemaining)
 	}
 }
 

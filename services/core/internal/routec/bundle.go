@@ -30,8 +30,12 @@ func NewObserverForPool(pool *pgxpool.Pool, cfg Config, httpClient *http.Client)
 		Kill:       NewDBKillSwitchStore(pool),
 		Source:     NewDBTargetSource(pool),
 		Drift:      NewDriftGuard(),
-		Now:        time.Now,
-		Rand:       rand.New(rand.NewSource(time.Now().UnixNano())),
+		// The DURABLE budget is the authoritative admission source (issue #48): the
+		// daily total lives in route_budget_usage, so it survives restart and every
+		// scheduler execution reserves against the same total. Limits stay from Config.
+		Budget: NewDBBudget(pool, cfg.RequestBudget, cfg.ByteBudget, cfg.BudgetWindow, time.Now),
+		Now:    time.Now,
+		Rand:   rand.New(rand.NewSource(time.Now().UnixNano())),
 	})
 }
 
