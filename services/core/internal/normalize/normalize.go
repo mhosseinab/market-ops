@@ -25,8 +25,12 @@ import "strings"
 // can never fabricate a different account. It is idempotent.
 //
 // The database is the enforcement authority: the users table carries a global
-// UNIQUE index on lower(email) and the login query matches on lower(email), so
-// this helper and the schema normalize to the same canonical form.
+// UNIQUE index on email_canonical(email) and both CreateUser and the login query
+// run email_canonical() (migration 0034), which reproduces THIS helper's trim +
+// case-fold over the full Unicode White_Space set. Keeping the two in lockstep is
+// what closes issue #201 — a tab/newline-padded alias can no longer store a
+// distinct row or resolve another organization's principal. If this helper's
+// whitespace set changes, update the SQL btrim set in 0034 in the same change.
 func Email(s string) string {
 	return strings.ToLower(strings.TrimSpace(s))
 }

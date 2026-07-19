@@ -28,11 +28,12 @@ func newFakeStore() *fakeStore {
 	}
 }
 
-// GetUserByEmail mirrors the SQL query `WHERE lower(email) = $1`: rows are stored
-// under their canonical (normalized) email key, and the lookup argument is
-// matched verbatim. Callers (auth.Login) MUST pass an already-normalized email,
-// exactly as the real query requires $1 to be pre-normalized — so this fake keeps
-// the caller-side normalization load-bearing rather than papering over it.
+// GetUserByEmail mirrors the SQL query `WHERE email_canonical(email) =
+// email_canonical($1)` (issue #201): rows are stored under their canonical
+// (normalized) email key, and the lookup argument — pre-normalized by auth.Login
+// with normalize.Email, which matches email_canonical — is matched verbatim. This
+// fake keeps the caller-side normalization load-bearing rather than papering over
+// it.
 func (f *fakeStore) GetUserByEmail(_ context.Context, email string) (db.User, error) {
 	u, ok := f.usersByEmail[email]
 	if !ok {
@@ -104,7 +105,7 @@ func usersByID(f *fakeStore, id uuid.UUID) db.User {
 func seedUser(t *testing.T, f *fakeStore, svc *Service, email, password string, role perm.Role) db.User {
 	t.Helper()
 	// The write path stores the canonical (normalized) email, exactly as the SQL
-	// CreateUser stores lower(email).
+	// CreateUser stores email_canonical(email) (issue #201).
 	canonical := normalize.Email(email)
 	u := db.User{ID: uuid.New(), OrganizationID: uuid.New(), Email: canonical, Role: string(role)}
 	f.usersByEmail[canonical] = u

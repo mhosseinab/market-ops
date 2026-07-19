@@ -171,6 +171,124 @@ func TestLoginResolvesExactOrganizationForNormalizedEmail(t *testing.T) {
 	}
 }
 
+// TestWhitespaceAliasCannotCoexistCrossOrg is the issue #201 storage regression:
+// a tab/newline-padded email and its trimmed twin must NOT be able to coexist in
+// two organizations. Before the fix, the write used lower(btrim(email)) (1-arg
+// btrim strips only spaces) and the index keyed lower(email), so a tab/newline
+// alias stored a padded row the index treated as distinct — both inserts
+// succeeded. After 0034, email_canonical() collapses the full whitespace set at
+// write AND in the index, so the second insert is rejected. The user rows are
+// created WITHOUT pre-normalizing (raw padded input) precisely to prove the
+// schema — not the caller — is the enforcement authority.
+func TestWhitespaceAliasCannotCoexistCrossOrg(t *testing.T) {
+	q := newDBQueries(t)
+	ctx := context.Background()
+
+	for _, tc := range []struct {
+		name   string
+		padded func(email string) string
+	}{
+		{"tab", func(e string) string { return "\t" + e + "\n" }},
+		{"newline", func(e string) string { return "\n" + e + "\r" }},
+		{"vertical-tab-formfeed", func(e string) string { return "\v" + e + "\f" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			orgA, err := q.CreateOrganization(ctx, "iso201-A-"+uuid.NewString())
+			if err != nil {
+				t.Fatalf("create org A: %v", err)
+			}
+			orgB, err := q.CreateOrganization(ctx, "iso201-B-"+uuid.NewString())
+			if err != nil {
+				t.Fatalf("create org B: %v", err)
+			}
+			clean := "alias-" + uuid.NewString() + "@x.io"
+
+			// Org A gets the RAW padded identifier (attacker-shaped input).
+			a, err := q.CreateUser(ctx, db.CreateUserParams{
+				OrganizationID: orgA.ID, Email: tc.padded(clean), Role: string(perm.RoleOwner),
+			})
+			if err != nil {
+				t.Fatalf("create padded user in org A: %v", err)
+			}
+			// The stored email must already be canonical — the padding is gone, so
+			// there is no distinct alias for the index to miss.
+			if a.Email != clean {
+				t.Fatalf("stored email = %q, want canonical %q (write did not canonicalize)", a.Email, clean)
+			}
+
+			// Org B's clean twin collides on the canonical form and MUST be rejected.
+			if _, err := q.CreateUser(ctx, db.CreateUserParams{
+				OrganizationID: orgB.ID, Email: clean, Role: string(perm.RoleOwner),
+			}); err == nil {
+				t.Fatal("whitespace alias coexisted across organizations — global canonical uniqueness not enforced")
+			}
+		})
+	}
+}
+
+// TestPaddedIdentityCannotShadowOrIssueWrongOrgSession is the issue #201 auth
+// regression, including the password-reuse case. A padded login id must resolve
+// the EXACT principal that owns the canonical email — never another organization —
+// and an attacker cannot pre-plant a same-canonical row in a second org to be
+// shadowed, even with an identical password.
+func TestPaddedIdentityCannotShadowOrIssueWrongOrgSession(t *testing.T) {
+	q := newDBQueries(t)
+	svc := auth.NewService(q)
+	ctx := context.Background()
+	const password = "governOwner2026" // reused across both orgs (password-reuse case)
+
+	orgA, err := q.CreateOrganization(ctx, "iso201-owner-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("create org A: %v", err)
+	}
+	orgB, err := q.CreateOrganization(ctx, "iso201-shadow-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("create org B: %v", err)
+	}
+	clean := "principal-" + uuid.NewString() + "@x.io"
+
+	// Org A owner created from a RAW tab/newline-padded identifier.
+	a, err := q.CreateUser(ctx, db.CreateUserParams{
+		OrganizationID: orgA.ID, Email: "\t" + clean + "\n", Role: string(perm.RoleOwner),
+	})
+	if err != nil {
+		t.Fatalf("create padded owner: %v", err)
+	}
+	if err := svc.SetPassword(ctx, a.ID, password); err != nil {
+		t.Fatalf("set password A: %v", err)
+	}
+
+	// The shadow attempt in org B with the SAME password must be rejected at write
+	// time by canonical uniqueness — the wrong-org row can never be created.
+	if _, err := q.CreateUser(ctx, db.CreateUserParams{
+		OrganizationID: orgB.ID, Email: clean, Role: string(perm.RoleOwner),
+	}); err == nil {
+		t.Fatal("shadow row with reused password was created in a second org — canonical uniqueness not enforced")
+	}
+
+	// Login with the padded identifier resolves EXACTLY org A's principal.
+	sess, err := svc.Login(ctx, "\t"+clean+"\n", password)
+	if err != nil {
+		t.Fatalf("login with padded id: %v", err)
+	}
+	if sess.Principal.UserID != a.ID {
+		t.Fatalf("resolved user %s, want %s", sess.Principal.UserID, a.ID)
+	}
+	if sess.Principal.OrganizationID != orgA.ID {
+		t.Fatalf("resolved org %s, want %s — padded id must never issue a wrong-org session", sess.Principal.OrganizationID, orgA.ID)
+	}
+
+	// Login with the clean identifier resolves the SAME single principal — the
+	// padded and trimmed forms are one identity, not two.
+	sessClean, err := svc.Login(ctx, clean, password)
+	if err != nil {
+		t.Fatalf("login with clean id: %v", err)
+	}
+	if sessClean.Principal.UserID != a.ID || sessClean.Principal.OrganizationID != orgA.ID {
+		t.Fatalf("clean-id principal mismatch: %+v", sessClean.Principal)
+	}
+}
+
 // TestLoginUnknownNormalizedEmailFailsClosed confirms an email with no matching
 // normalized row fails closed with ErrInvalidCredentials (no enumeration signal).
 func TestLoginUnknownNormalizedEmailFailsClosed(t *testing.T) {

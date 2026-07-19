@@ -116,8 +116,11 @@ func (s *Service) SetPassword(ctx context.Context, userID uuid.UUID, plain strin
 // verification against a dummy hash before failing.
 func (s *Service) Login(ctx context.Context, email, password string) (Session, error) {
 	// Normalize the login identifier to the same canonical form the write path
-	// stores (issue #12): the DB looks up on lower(email), so the argument must be
-	// pre-normalized for the unique index lookup to resolve exactly one principal.
+	// stores (issue #12, #201): normalize.Email matches the SQL email_canonical()
+	// used by the write, the unique index, and this lookup, so a padded identifier
+	// (tab/newline included) resolves exactly one principal and never another org's
+	// row. The DB re-applies email_canonical to both sides, so it stays the
+	// enforcement authority even if this pre-normalization ever drifted.
 	email = normalize.Email(email)
 	user, err := s.store.GetUserByEmail(ctx, email)
 	if errors.Is(err, pgx.ErrNoRows) {
