@@ -35,6 +35,18 @@ func TestSyncStreak_ProducerSeam_FailThenSucceed(t *testing.T) {
 		t.Fatalf("after one failed sync the streak should be 1, got %d", got)
 	}
 
+	// Mark the failing run terminal before starting the next one. A retryable Resume
+	// leaves the run 'running' (in-flight); the account may hold at most one in-flight
+	// run (uq_catalog_sync_runs_inflight, issue #76), so a fresh run can only be
+	// created once the prior one is terminal — exactly what happens in production when
+	// River exhausts a run's retries. This durable transition does not touch the live
+	// telemetry streak (already recorded above).
+	if _, err := q.FailCatalogSyncRun(ctx, db.FailCatalogSyncRunParams{
+		ID: failRun.ID, Error: "retries exhausted (seam test)",
+	}); err != nil {
+		t.Fatalf("fail run: %v", err)
+	}
+
 	// A succeeding source => the run completes => streak resets to 0.
 	okRun, err := q.CreateCatalogSyncRun(ctx, db.CreateCatalogSyncRunParams{
 		MarketplaceAccountID: account, Kind: string(catalog.KindIncremental),

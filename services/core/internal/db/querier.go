@@ -131,6 +131,13 @@ type Querier interface {
 	// CountWatchlistEntries, so the insert itself never needs to race a check
 	// constraint.
 	CountWatchlistEntries(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
+	// Idempotent in-flight claim (issue #76, PRD §9.1 never-cut). ON CONFLICT DO NOTHING
+	// against uq_catalog_sync_runs_inflight (the partial unique index on
+	// marketplace_account_id WHERE status IN ('running','queued')) makes this INSERT the
+	// atomic serialization point: when a non-terminal run already exists this returns NO
+	// row (pgx.ErrNoRows), which the enqueue path treats as "already in-flight" and
+	// enqueues nothing. The row is inserted with status='running'; 'queued' is a RESERVED
+	// forward state covered by the index predicate but not yet emitted here.
 	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
 	// Conversation durability queries (PRD §15.1 CHAT-008). These tables are
 	// GATEWAY-owned: the LLM plane holds NO DB credential (§19.3), so every write to

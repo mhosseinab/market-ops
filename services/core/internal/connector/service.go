@@ -29,6 +29,14 @@ var ErrAccountNotFound = errors.New("connector: account not found")
 // sync could not be initiated rather than silently believing one was queued.
 var ErrSyncUnavailable = errors.New("connector: catalog sync enqueuer is not configured")
 
+// ErrSyncAlreadyInFlight is returned by a SyncEnqueuer when the atomic in-flight
+// claim lost the race: another run for the same account already holds the partial
+// unique index (status running/queued), so this call created NO run and enqueued NO
+// job (issue #76, PRD §9.1 never-cut idempotency). SyncCatalog treats it as an
+// idempotent SUCCESS — it reports the current durable status rather than surfacing
+// an error — so two concurrent sync requests never produce two in-flight runs.
+var ErrSyncAlreadyInFlight = errors.New("connector: catalog sync already in flight")
+
 // SyncState is the durable state of the latest catalog synchronization run
 // (ACC-004/ACC-005). It is EVIDENCE of completed work, distinct from catalog_read
 // capability support (which only means the operation is allowed). "none" means no
@@ -93,13 +101,14 @@ type Service struct {
 	dk      *DKClient
 	opts    ProbeOptions
 	syncEnq SyncEnqueuer
+	metrics *syncInitMetrics
 }
 
 // NewService wires a Service. The cipher fails closed on a missing key at
 // construction time upstream (NewCipherFromEnv), so a Service can never be built
 // without an encryption key — plaintext tokens are impossible by construction.
 func NewService(store Store, cipher *Cipher, dk *DKClient) *Service {
-	return &Service{store: store, cipher: cipher, dk: dk}
+	return &Service{store: store, cipher: cipher, dk: dk, metrics: newSyncInitMetrics()}
 }
 
 // WithProbeOptions sets sample identifiers used by per-variant probes.
@@ -308,24 +317,41 @@ func (s *Service) SyncCatalog(ctx context.Context, organizationID, accountID uui
 	// Capability gate: catalog_read MUST be Supported. Unknown/Unsupported/
 	// Degraded fail closed with ErrCapabilityNotSupported and enqueue nothing.
 	if err := s.requireCapabilities(ctx, organizationID, accountID, CatalogRead); err != nil {
+		if errors.Is(err, ErrCapabilityNotSupported) {
+			s.metrics.record(ctx, syncOutcomeCapabilityRefused)
+		}
 		return Snapshot{}, err
 	}
-	// Idempotency (PRD §9.1 never-cut): if a run is already in-flight, do not
-	// enqueue a duplicate — report the current durable state. An in-flight run is
-	// one whose status is still "running" (or "queued"); a terminal run
-	// (completed/failed) or no run at all is eligible to start a fresh sync.
+	// Idempotency (PRD §9.1 never-cut). syncInFlight is a BEST-EFFORT fast path only:
+	// it avoids opening an enqueue transaction when a run is already visibly active.
+	// It is NOT the correctness guard — a plain SELECT cannot close the TOCTOU window
+	// against a concurrent request. The AUTHORITATIVE serialization point is the
+	// partial unique index (uq_catalog_sync_runs_inflight): the claim+enqueue is one
+	// atomic transaction whose INSERT ... ON CONFLICT DO NOTHING decides the race, so
+	// two concurrent syncs produce exactly one in-flight run and one job.
 	inFlight, err := s.syncInFlight(ctx, accountID)
 	if err != nil {
 		return Snapshot{}, err
 	}
-	if !inFlight {
-		if s.syncEnq == nil {
-			return Snapshot{}, ErrSyncUnavailable
-		}
-		if _, err := s.syncEnq.EnqueueIncrementalSync(ctx, organizationID, accountID); err != nil {
-			return Snapshot{}, fmt.Errorf("connector: enqueue catalog sync: %w", err)
-		}
+	if inFlight {
+		s.metrics.record(ctx, syncOutcomeIdempotentSkip)
+		return s.Status(ctx, organizationID, accountID)
 	}
+	if s.syncEnq == nil {
+		s.metrics.record(ctx, syncOutcomeUnavailable)
+		return Snapshot{}, ErrSyncUnavailable
+	}
+	if _, err := s.syncEnq.EnqueueIncrementalSync(ctx, organizationID, accountID); err != nil {
+		// The atomic claim lost the race to a concurrent request: another run already
+		// holds the in-flight index, so nothing was enqueued. Idempotent success —
+		// report the current durable status rather than an error (PRD §9.1).
+		if errors.Is(err, ErrSyncAlreadyInFlight) {
+			s.metrics.record(ctx, syncOutcomeIdempotentSkip)
+			return s.Status(ctx, organizationID, accountID)
+		}
+		return Snapshot{}, fmt.Errorf("connector: enqueue catalog sync: %w", err)
+	}
+	s.metrics.record(ctx, syncOutcomeEnqueued)
 	return s.Status(ctx, organizationID, accountID)
 }
 

@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -120,6 +121,15 @@ func enqueueRun(ctx context.Context, client *jobs.Client, tx pgx.Tx, account uui
 		MarketplaceAccountID: account,
 		Kind:                 string(kind),
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// ON CONFLICT DO NOTHING returned no row: a non-terminal (running/queued) run
+		// already holds uq_catalog_sync_runs_inflight, so this concurrent claim lost
+		// the race. Enqueue NO job and roll back — the caller reports the current
+		// durable status as idempotent success (issue #76, PRD §9.1 never-cut). The
+		// unique index is the atomic serialization point, so the claim and its job are
+		// created together or not at all.
+		return uuid.Nil, connector.ErrSyncAlreadyInFlight
+	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("catalog: create %s run: %w", kind, err)
 	}
