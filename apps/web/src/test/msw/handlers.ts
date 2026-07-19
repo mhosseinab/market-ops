@@ -47,6 +47,7 @@ export const handlers = [
   http.post(`${B}/connector/refresh`, () => HttpResponse.json(connectorUnknown)),
   http.post(`${B}/connector/disconnect`, () => HttpResponse.json(connectorUnknown)),
   http.post(`${B}/connector/connect`, () => HttpResponse.json(connectorUnknown)),
+  http.post(`${B}/connector/catalog/sync`, () => HttpResponse.json(connectorUnknown)),
 
   http.get(`${B}/observation/targets`, () => HttpResponse.json({ items: [target] })),
   http.get(`${B}/observation/observed-offers`, () => HttpResponse.json({ items: [offer] })),

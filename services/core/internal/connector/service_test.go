@@ -26,14 +26,23 @@ type fakeStore struct {
 	owner map[uuid.UUID]uuid.UUID // account -> owning organization
 	conn  map[uuid.UUID]db.ConnectorConnection
 	caps  map[uuid.UUID]map[string]db.ConnectorCapability
+	// syncRuns maps an account to its latest catalog_sync_runs row (if any),
+	// mirroring GetLatestCatalogSyncRun's newest-first LIMIT 1.
+	syncRuns map[uuid.UUID]db.CatalogSyncRun
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		owner: map[uuid.UUID]uuid.UUID{},
-		conn:  map[uuid.UUID]db.ConnectorConnection{},
-		caps:  map[uuid.UUID]map[string]db.ConnectorCapability{},
+		owner:    map[uuid.UUID]uuid.UUID{},
+		conn:     map[uuid.UUID]db.ConnectorConnection{},
+		caps:     map[uuid.UUID]map[string]db.ConnectorCapability{},
+		syncRuns: map[uuid.UUID]db.CatalogSyncRun{},
 	}
+}
+
+// setLatestSyncRun records the account's latest catalog-sync run for the fake.
+func (f *fakeStore) setLatestSyncRun(account uuid.UUID, run db.CatalogSyncRun) {
+	f.syncRuns[account] = run
 }
 
 // own registers account as belonging to org, mirroring a marketplace_accounts row.
@@ -160,6 +169,13 @@ func (f *fakeStore) ListConnectorCapabilities(_ context.Context, arg db.ListConn
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeStore) GetLatestCatalogSyncRun(_ context.Context, account uuid.UUID) (db.CatalogSyncRun, error) {
+	if run, ok := f.syncRuns[account]; ok {
+		return run, nil
+	}
+	return db.CatalogSyncRun{}, pgxNoRows
 }
 
 func newTestService(t *testing.T, store Store, baseURL string) *Service {

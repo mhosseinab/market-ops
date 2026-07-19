@@ -189,6 +189,8 @@ func (q *Queries) CountVariants(ctx context.Context, marketplaceAccountID uuid.U
 const createCatalogSyncRun = `-- name: CreateCatalogSyncRun :one
 INSERT INTO catalog_sync_runs (marketplace_account_id, kind, status, next_page)
 VALUES ($1, $2, 'running', 1)
+ON CONFLICT (marketplace_account_id) WHERE status IN ('running', 'queued')
+DO NOTHING
 RETURNING id, marketplace_account_id, kind, status, next_page, pages_done, total_pages, total_rows, items_seen, records_inserted, records_updated, drift_count, error, started_at, updated_at, completed_at
 `
 
@@ -197,6 +199,13 @@ type CreateCatalogSyncRunParams struct {
 	Kind                 string
 }
 
+// Idempotent in-flight claim (issue #76, PRD §9.1 never-cut). ON CONFLICT DO NOTHING
+// against uq_catalog_sync_runs_inflight (the partial unique index on
+// marketplace_account_id WHERE status IN ('running','queued')) makes this INSERT the
+// atomic serialization point: when a non-terminal run already exists this returns NO
+// row (pgx.ErrNoRows), which the enqueue path treats as "already in-flight" and
+// enqueues nothing. The row is inserted with status='running'; 'queued' is a RESERVED
+// forward state covered by the index predicate but not yet emitted here.
 func (q *Queries) CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error) {
 	row := q.db.QueryRow(ctx, createCatalogSyncRun, arg.MarketplaceAccountID, arg.Kind)
 	var i CatalogSyncRun

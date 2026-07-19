@@ -58,6 +58,30 @@ export const connectorSupported: ConnectorStatus = {
   ),
 };
 
+/** Supported capability but a specific durable catalog-sync run state. Onboarding
+ *  derives step completion from THIS, never from capability support (issue #76). */
+function withSyncState(state: ConnectorStatus["catalogSync"]): ConnectorStatus {
+  return { ...connectorSupported, catalogSync: state };
+}
+
+export const connectorSyncQueued = withSyncState({
+  state: "queued",
+  lastRunAt: "2026-07-17T08:05:00Z",
+});
+export const connectorSyncRunning = withSyncState({
+  state: "running",
+  lastRunAt: "2026-07-17T08:05:00Z",
+});
+export const connectorSyncCompleted = withSyncState({
+  state: "completed",
+  lastRunAt: "2026-07-17T08:05:00Z",
+});
+export const connectorSyncFailed = withSyncState({
+  state: "failed",
+  lastRunAt: "2026-07-17T08:05:00Z",
+  detail: "page_fetch_timeout",
+});
+
 export const target: ObservationTarget = {
   id: TARGET_ID,
   marketplaceAccountId: ACCOUNT_ID,

@@ -36,6 +36,11 @@ type Store interface {
 	SetConnectorCapabilityStatus(ctx context.Context, arg db.SetConnectorCapabilityStatusParams) (db.ConnectorCapability, error)
 	ResetConnectorCapability(ctx context.Context, arg db.ResetConnectorCapabilityParams) error
 	ListConnectorCapabilities(ctx context.Context, arg db.ListConnectorCapabilitiesParams) ([]db.ConnectorCapability, error)
+	// GetLatestCatalogSyncRun returns the account's most recent catalog_sync_runs
+	// row (newest-first). It is the durable evidence the connector reads to report
+	// catalog-sync progress (ACC-004/ACC-005) and to guard against enqueuing a
+	// duplicate while one is in-flight. pgxNoRows means no sync has ever run.
+	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (db.CatalogSyncRun, error)
 }
 
 // capabilityStatusFrom converts a persisted row into the domain status,

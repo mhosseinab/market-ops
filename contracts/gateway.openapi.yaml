@@ -211,6 +211,41 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /connector/catalog/sync:
+    post:
+      operationId: syncCatalog
+      tags:
+        - organization
+      summary: Start (or resume) an idempotent catalog synchronization.
+      description: >-
+        Enqueues an idempotent incremental catalog sync for the account and
+        returns the reconciled connector status, including the durable
+        `catalogSync` run state. The operation fails closed on `catalog_read`:
+        while that capability is not Supported (Unknown/Unsupported/Degraded) no
+        sync is enqueued (ACC-001, §15.2). It is idempotent — a sync already
+        in-flight is never duplicated; the caller observes the current durable
+        state instead (ACC-005). This is the ONLY control that initiates a sync;
+        capability support alone never advances onboarding (ACC-004/ACC-005).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConnectorAccountRef'
+      responses:
+        '200':
+          description: Sync enqueued (or already in-flight); status with sync state returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConnectorStatus'
+        default:
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
   /auth/login:
     post:
       operationId: login
@@ -2201,6 +2236,46 @@ components:
           description: All nine §15.2 capabilities, always present.
           items:
             $ref: '#/components/schemas/CapabilityStatus'
+        catalogSync:
+          $ref: '#/components/schemas/CatalogSyncStatus'
+      additionalProperties: false
+
+    CatalogSyncState:
+      type: string
+      description: >-
+        Durable state of the latest catalog synchronization run (ACC-004/ACC-005).
+        This is EVIDENCE of completed work, distinct from `catalog_read`
+        capability support (which only means the operation is allowed). `none`
+        means no sync has ever run for the account.
+      enum:
+        - none
+        - queued
+        - running
+        - completed
+        - failed
+
+    CatalogSyncStatus:
+      type: object
+      description: >-
+        The account's latest catalog-sync run, derived from durable
+        catalog_sync_runs. Onboarding advances the "sync catalog" step ONLY when
+        `state` is `completed` — never from capability availability.
+      required:
+        - state
+      properties:
+        state:
+          $ref: '#/components/schemas/CatalogSyncState'
+        lastRunAt:
+          type: string
+          format: date-time
+          description: >-
+            When the latest run started (RFC 3339, UTC). Absent while `state` is
+            `none`.
+        detail:
+          type: string
+          description: >-
+            Recovery-oriented reason for a `failed` run. Free text only; carries
+            no authority (PRD §8).
       additionalProperties: false
 
     UserRole:

@@ -69,8 +69,17 @@ INSERT INTO catalog_payload_snapshots (
 ) VALUES ($1, $2, $3, $4, $5);
 
 -- name: CreateCatalogSyncRun :one
+-- Idempotent in-flight claim (issue #76, PRD §9.1 never-cut). ON CONFLICT DO NOTHING
+-- against uq_catalog_sync_runs_inflight (the partial unique index on
+-- marketplace_account_id WHERE status IN ('running','queued')) makes this INSERT the
+-- atomic serialization point: when a non-terminal run already exists this returns NO
+-- row (pgx.ErrNoRows), which the enqueue path treats as "already in-flight" and
+-- enqueues nothing. The row is inserted with status='running'; 'queued' is a RESERVED
+-- forward state covered by the index predicate but not yet emitted here.
 INSERT INTO catalog_sync_runs (marketplace_account_id, kind, status, next_page)
 VALUES ($1, $2, 'running', 1)
+ON CONFLICT (marketplace_account_id) WHERE status IN ('running', 'queued')
+DO NOTHING
 RETURNING *;
 
 -- name: GetCatalogSyncRun :one

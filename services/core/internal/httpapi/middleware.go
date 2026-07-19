@@ -139,6 +139,7 @@ var routePolicies = []routePolicy{
 	{http.MethodPost, "/connector/connect", kindProtected, perm.ActionConnectorConnect},
 	{http.MethodPost, "/connector/refresh", kindProtected, perm.ActionConnectorRefresh},
 	{http.MethodPost, "/connector/disconnect", kindProtected, perm.ActionConnectorDisconnect},
+	{http.MethodPost, "/connector/catalog/sync", kindProtected, perm.ActionConnectorSync},
 	{http.MethodGet, "/connector/status", kindProtected, perm.ActionConnectorInspect},
 	{http.MethodPost, "/chat", kindProtected, perm.ActionChatConverse},
 	{http.MethodGet, "/identity/needs-review", kindProtected, perm.ActionReadNeedsReview},

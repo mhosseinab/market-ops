@@ -233,6 +233,23 @@ export function useConnectorAction(path: "/connector/refresh" | "/connector/disc
   });
 }
 
+// Starts an idempotent catalog sync (ACC-004/ACC-005, issue #76). The ONLY
+// control that initiates a sync — capability support alone never advances
+// onboarding. The server gates on catalog_read (fail closed) and collapses a
+// duplicate request while a run is in-flight; the returned status carries the
+// durable catalogSync state. On success we refetch connector status so the
+// stepper re-derives completion from durable evidence, not capability.
+export function useSyncCatalog() {
+  const { marketplaceAccountId } = useAccount();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async () =>
+      unwrap(await gateway.POST("/connector/catalog/sync", { body: { marketplaceAccountId } })),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: queryKeys.connectorStatus(marketplaceAccountId) }),
+  });
+}
+
 export function useCostImportPreview() {
   const { marketplaceAccountId } = useAccount();
   return useMutation({

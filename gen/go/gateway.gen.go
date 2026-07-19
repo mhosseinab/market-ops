@@ -280,6 +280,33 @@ func (e CaptureUploadSubRoute) Valid() bool {
 	}
 }
 
+// Defines values for CatalogSyncState.
+const (
+	CatalogSyncStateCompleted CatalogSyncState = "completed"
+	CatalogSyncStateFailed    CatalogSyncState = "failed"
+	CatalogSyncStateNone      CatalogSyncState = "none"
+	CatalogSyncStateQueued    CatalogSyncState = "queued"
+	CatalogSyncStateRunning   CatalogSyncState = "running"
+)
+
+// Valid indicates whether the value is a known member of the CatalogSyncState enum.
+func (e CatalogSyncState) Valid() bool {
+	switch e {
+	case CatalogSyncStateCompleted:
+		return true
+	case CatalogSyncStateFailed:
+		return true
+	case CatalogSyncStateNone:
+		return true
+	case CatalogSyncStateQueued:
+		return true
+	case CatalogSyncStateRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ChatUnavailableReason.
 const (
 	KillSwitchAccount   ChatUnavailableReason = "kill_switch_account"
@@ -1402,6 +1429,21 @@ type CaptureUploadSourceType string
 // CaptureUploadSubRoute Route B sub-route (PRD §7.3 OBS-005).
 type CaptureUploadSubRoute string
 
+// CatalogSyncState Durable state of the latest catalog synchronization run (ACC-004/ACC-005). This is EVIDENCE of completed work, distinct from `catalog_read` capability support (which only means the operation is allowed). `none` means no sync has ever run for the account.
+type CatalogSyncState string
+
+// CatalogSyncStatus The account's latest catalog-sync run, derived from durable catalog_sync_runs. Onboarding advances the "sync catalog" step ONLY when `state` is `completed` — never from capability availability.
+type CatalogSyncStatus struct {
+	// Detail Recovery-oriented reason for a `failed` run. Free text only; carries no authority (PRD §8).
+	Detail *string `json:"detail,omitempty"`
+
+	// LastRunAt When the latest run started (RFC 3339, UTC). Absent while `state` is `none`.
+	LastRunAt *time.Time `json:"lastRunAt,omitempty"`
+
+	// State Durable state of the latest catalog synchronization run (ACC-004/ACC-005). This is EVIDENCE of completed work, distinct from `catalog_read` capability support (which only means the operation is allowed). `none` means no sync has ever run for the account.
+	State CatalogSyncState `json:"state"`
+}
+
 // ChatTurnRequest One conversation turn from the browser. The message is free text and carries NO authority (PRD §8 free-text containment): it can never approve, execute, or confirm — those live only in structured controls outside the model plane. A turn optionally continues an existing conversation and/or binds a marketplace-account context; context resolution itself is deterministic in the LLM plane (§8.1), never guessed from this field.
 type ChatTurnRequest struct {
 	// ConversationId Existing conversation to continue. Absent on the first turn; the gateway opens a new conversation and returns its id in the stream.
@@ -1466,6 +1508,9 @@ type ConnectorConnectionState string
 type ConnectorStatus struct {
 	// Capabilities All nine §15.2 capabilities, always present.
 	Capabilities []CapabilityStatus `json:"capabilities"`
+
+	// CatalogSync The account's latest catalog-sync run, derived from durable catalog_sync_runs. Onboarding advances the "sync catalog" step ONLY when `state` is `completed` — never from capability availability.
+	CatalogSync *CatalogSyncStatus `json:"catalogSync,omitempty"`
 
 	// ConnectionState Whether the DK connection is currently established.
 	ConnectionState      ConnectorConnectionState `json:"connectionState"`
@@ -2799,6 +2844,9 @@ type CreateRecommendationDraftJSONRequestBody = RecommendationDraftRequest
 // CreateSelectionSetDraftJSONRequestBody defines body for CreateSelectionSetDraft for application/json ContentType.
 type CreateSelectionSetDraftJSONRequestBody = SelectionSetDraftRequest
 
+// SyncCatalogJSONRequestBody defines body for SyncCatalog for application/json ContentType.
+type SyncCatalogJSONRequestBody = ConnectorAccountRef
+
 // ConnectConnectorJSONRequestBody defines body for ConnectConnector for application/json ContentType.
 type ConnectConnectorJSONRequestBody = ConnectorConnectRequest
 
@@ -2900,6 +2948,9 @@ type ServerInterface interface {
 	// CreateSelectionSetDraft Create a named, versioned bulk selection-set Draft (CHAT-050/051).
 	// (POST /chat/cards/selection-set-draft)
 	CreateSelectionSetDraft(w http.ResponseWriter, r *http.Request)
+	// SyncCatalog Start (or resume) an idempotent catalog synchronization.
+	// (POST /connector/catalog/sync)
+	SyncCatalog(w http.ResponseWriter, r *http.Request)
 	// ConnectConnector Connect the DK account for a marketplace account.
 	// (POST /connector/connect)
 	ConnectConnector(w http.ResponseWriter, r *http.Request)
@@ -3364,6 +3415,20 @@ func (siw *ServerInterfaceWrapper) CreateSelectionSetDraft(w http.ResponseWriter
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.CreateSelectionSetDraft(w, r)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// SyncCatalog operation middleware
+func (siw *ServerInterfaceWrapper) SyncCatalog(w http.ResponseWriter, r *http.Request) {
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.SyncCatalog(w, r)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4472,6 +4537,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/refresh", wrapper.RefreshConnector)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/connector/status", wrapper.GetConnectorStatus)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/disconnect", wrapper.DisconnectConnector)
+	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/connector/catalog/sync", wrapper.SyncCatalog)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/login", wrapper.Login)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/auth/me", wrapper.GetCurrentSession)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/auth/logout", wrapper.Logout)
@@ -5204,6 +5270,45 @@ type CreateSelectionSetDraftdefaultJSONResponse struct {
 }
 
 func (response CreateSelectionSetDraftdefaultJSONResponse) VisitCreateSelectionSetDraftResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SyncCatalogRequestObject struct {
+	Body *SyncCatalogJSONRequestBody
+}
+
+type SyncCatalogResponseObject interface {
+	VisitSyncCatalogResponse(w http.ResponseWriter) error
+}
+
+type SyncCatalog200JSONResponse ConnectorStatus
+
+func (response SyncCatalog200JSONResponse) VisitSyncCatalogResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type SyncCatalogdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response SyncCatalogdefaultJSONResponse) VisitSyncCatalogResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -6895,6 +7000,9 @@ type StrictServerInterface interface {
 	// CreateSelectionSetDraft Create a named, versioned bulk selection-set Draft (CHAT-050/051).
 	// (POST /chat/cards/selection-set-draft)
 	CreateSelectionSetDraft(ctx context.Context, request CreateSelectionSetDraftRequestObject) (CreateSelectionSetDraftResponseObject, error)
+	// SyncCatalog Start (or resume) an idempotent catalog synchronization.
+	// (POST /connector/catalog/sync)
+	SyncCatalog(ctx context.Context, request SyncCatalogRequestObject) (SyncCatalogResponseObject, error)
 	// ConnectConnector Connect the DK account for a marketplace account.
 	// (POST /connector/connect)
 	ConnectConnector(ctx context.Context, request ConnectConnectorRequestObject) (ConnectConnectorResponseObject, error)
@@ -7514,6 +7622,37 @@ func (sh *strictHandler) CreateSelectionSetDraft(w http.ResponseWriter, r *http.
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(CreateSelectionSetDraftResponseObject); ok {
 		if err := validResponse.VisitCreateSelectionSetDraftResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// SyncCatalog operation middleware
+func (sh *strictHandler) SyncCatalog(w http.ResponseWriter, r *http.Request) {
+	var request SyncCatalogRequestObject
+
+	var body SyncCatalogJSONRequestBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		sh.options.RequestErrorHandlerFunc(w, r, fmt.Errorf("can't decode JSON body: %w", err))
+		return
+	}
+	request.Body = &body
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.SyncCatalog(ctx, request.(SyncCatalogRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "SyncCatalog")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(SyncCatalogResponseObject); ok {
+		if err := validResponse.VisitSyncCatalogResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

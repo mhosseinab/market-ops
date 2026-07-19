@@ -25,6 +25,8 @@ from .capture_upload_availability_status import CaptureUploadAvailabilityStatus
 from .capture_upload_confidence import CaptureUploadConfidence
 from .capture_upload_source_type import CaptureUploadSourceType
 from .capture_upload_sub_route import CaptureUploadSubRoute
+from .catalog_sync_state import CatalogSyncState
+from .catalog_sync_status import CatalogSyncStatus
 from .chat_envelope import ChatEnvelope
 from .chat_evidence_ref import ChatEvidenceRef
 from .chat_failure import ChatFailure
@@ -189,6 +191,8 @@ __all__ = (
     "CaptureUploadConfidence",
     "CaptureUploadSourceType",
     "CaptureUploadSubRoute",
+    "CatalogSyncState",
+    "CatalogSyncStatus",
     "ChatEnvelope",
     "ChatEvidenceRef",
     "ChatFailure",

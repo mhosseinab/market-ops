@@ -8,9 +8,32 @@ import { Section } from "../components/primitives";
 import { type Step, Stepper, type StepState } from "../components/Stepper";
 import { ViewState } from "../components/ViewState";
 import { formatInstant } from "../data/format";
-import { useConnect, useConnectorAction, useConnectorStatus } from "../data/hooks";
-import type { CapabilityStatus, ConnectorCapability, ConnectorStatus } from "../data/types";
+import { useConnect, useConnectorAction, useConnectorStatus, useSyncCatalog } from "../data/hooks";
+import type {
+  CapabilityStatus,
+  CatalogSyncState,
+  ConnectorCapability,
+  ConnectorStatus,
+} from "../data/types";
 import { NeedsReview } from "./NeedsReview";
+
+// Durable catalog-sync state → its catalog label key (LOC-002: no string
+// literals; the canonical Failed term mirrors the glossary). The state is
+// EVIDENCE of completed work — it is what advances onboarding, never capability
+// support (issue #76).
+const SYNC_STATE_LABEL: Record<CatalogSyncState, MessageKey> = {
+  none: "onboarding.sync.state.none",
+  queued: "onboarding.sync.state.queued",
+  running: "onboarding.sync.state.running",
+  completed: "onboarding.sync.state.completed",
+  failed: "onboarding.sync.state.failed",
+};
+
+// The durable sync state, defaulting to "none" when the server reports no run.
+// Capability support is NEVER consulted here (issue #76 acceptance).
+function syncStateOf(status: ConnectorStatus): CatalogSyncState {
+  return status.catalogSync?.state ?? "none";
+}
 
 // The nine §15.2 capabilities in the order the onboarding "access scopes" list
 // shows them. Data, not a branch — a marketplace's capability set never gates
@@ -48,14 +71,21 @@ function findCapability(
 
 function deriveSteps(status: ConnectorStatus): readonly Step[] {
   const connected = status.connectionState === "connected";
-  const catalogReady = findCapability(status, "catalog_read")?.status === "supported";
+  // Sync completion is DURABLE EVIDENCE, not capability availability: the step is
+  // done ONLY when the latest sync run reached "completed" (issue #76). A
+  // Supported catalog_read with no completed run keeps the step active/todo.
+  const syncCompleted = syncStateOf(status) === "completed";
   const s = (done: boolean, active = false): StepState =>
     done ? "done" : active ? "active" : "todo";
   return [
     { id: "org", labelKey: "onboarding.step.createOrg", state: "done" },
     { id: "connect", labelKey: "onboarding.step.connectDk", state: s(connected, !connected) },
-    { id: "sync", labelKey: "onboarding.step.syncCatalog", state: s(catalogReady, connected) },
-    { id: "costs", labelKey: "onboarding.step.importCosts", state: s(false, catalogReady) },
+    {
+      id: "sync",
+      labelKey: "onboarding.step.syncCatalog",
+      state: s(syncCompleted, connected && !syncCompleted),
+    },
+    { id: "costs", labelKey: "onboarding.step.importCosts", state: s(false, syncCompleted) },
     { id: "map", labelKey: "onboarding.step.resolveMappings", state: "todo" },
     { id: "assort", labelKey: "onboarding.step.confirmAssortment", state: "todo" },
     { id: "event", labelKey: "onboarding.step.firstEvent", state: "todo" },
@@ -69,6 +99,7 @@ export function Onboarding() {
   const connect = useConnect();
   const refresh = useConnectorAction("/connector/refresh");
   const disconnect = useConnectorAction("/connector/disconnect");
+  const syncCatalog = useSyncCatalog();
   const [authCode, setAuthCode] = useState("");
 
   const status = query.data;
@@ -134,15 +165,27 @@ export function Onboarding() {
                   </div>
                 </div>
 
+                {/* Durable sync state (ACC-004/ACC-005): rendered from the latest
+                    run, NOT from capability support. */}
+                <div className="kv">
+                  <div className="kv__row">
+                    <span>{t("onboarding.sync.label")}</span>
+                    <span data-testid="sync-state">{t(SYNC_STATE_LABEL[syncStateOf(status)])}</span>
+                  </div>
+                </div>
+
                 {/* ACC-001 dependent UI: syncing the catalog requires a probe to
-                    have confirmed catalog_read. Unknown NEVER enables it. */}
+                    have confirmed catalog_read. Unknown NEVER enables it. The
+                    click initiates exactly one idempotent sync request; the
+                    server collapses duplicates while a run is in-flight. */}
                 <CapabilityGate state={findCapability(status, "catalog_read")?.status ?? "unknown"}>
                   {(enabled) => (
                     <button
                       type="button"
                       className="btn btn--primary"
                       data-testid="sync-catalog"
-                      disabled={!enabled}
+                      disabled={!enabled || syncCatalog.isPending}
+                      onClick={() => syncCatalog.mutate()}
                     >
                       {t("onboarding.action.syncCatalog")}
                     </button>
