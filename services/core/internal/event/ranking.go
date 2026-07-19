@@ -1,8 +1,13 @@
 package event
 
 import (
+	"context"
+	"log/slog"
 	"math/big"
 	"sort"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 )
@@ -20,10 +25,30 @@ type RankFactors struct {
 	UrgencyBp        int32
 }
 
+// exposureBand is the comparability class an event lands in. Bands are a TOTAL
+// ordering key: comparable-known ranks ahead of quarantined-known, which ranks
+// ahead of unknown. A magnitude Score is only ever compared WITHIN the comparable
+// band (same currency, exponent-normalized) — never across bands (issue #71).
+type exposureBand int
+
+const (
+	// bandComparable: known exposure in the canonical currency; carries an
+	// exponent-normalized composite Score comparable to its peers.
+	bandComparable exposureBand = iota
+	// bandQuarantined: known exposure in a NON-canonical currency. Fail closed —
+	// no cross-currency magnitude is invented; Score stays nil and it is ordered by
+	// the deterministic tie-break only (money-correctness never-cut, PRD §9.1).
+	bandQuarantined
+	// bandUnknown: exposure is unknown (EVT-005); ordered by confidence×urgency.
+	bandUnknown
+)
+
 // Ranked is one event placed in the deterministic Today order (EVT-004). Rank is
 // 1-based. Score is the composite exposure×confidence×urgency magnitude for a
-// KNOWN-exposure event and is nil for an unknown-exposure event (which is ranked
-// in a separate band by confidence×urgency only — EVT-005, never a fabricated 0).
+// KNOWN-exposure event in the canonical currency (exponent-normalized so equal
+// real values tie exactly). Score is nil for an unknown-exposure event (EVT-005,
+// never a fabricated 0) AND for a known-exposure event quarantined into a
+// non-canonical currency band (issue #71 — never cross-currency compared).
 type Ranked struct {
 	Event   db.MarketEvent
 	Rank    int
@@ -47,20 +72,68 @@ func factorsOf(e db.MarketEvent) RankFactors {
 	return f
 }
 
-// knownScore is the composite ranking magnitude for a KNOWN-exposure event:
-// exposureMantissa × confidenceBp × urgencyBp, computed in big.Int so it is exact
-// and cannot overflow (no float ever touches the exposure/money path — EVT-004).
-// A non-positive exposure mantissa clamps to a zero magnitude so a credit can
-// never outrank a real loss.
-func knownScore(f RankFactors) *big.Int {
+// comparableScore is the composite ranking magnitude for a KNOWN-exposure event in
+// the canonical currency: clamp(mantissa) × 10^(exponent − minExp) × confidenceBp ×
+// urgencyBp, computed in big.Int so it is exact and cannot overflow. Because minExp
+// is the MINIMUM exponent among the canonical-currency events, (exponent − minExp)
+// is a NON-NEGATIVE integer, so scaling is a whole power-of-ten multiplication — no
+// division, no float ever touches the exposure/money path (issue #71, PRD §9.1).
+// Equal real values expressed at different exponents (1000@2 vs 100000@0) therefore
+// scale to EXACTLY equal scores. A non-positive mantissa clamps to a zero magnitude
+// BEFORE scaling so a credit can never outrank a real loss.
+func comparableScore(f RankFactors, minExp int16) *big.Int {
 	mant := f.ExposureMantissa
 	if mant < 0 {
 		mant = 0
 	}
 	score := big.NewInt(mant)
+	if shift := int64(f.ExposureExponent) - int64(minExp); shift > 0 {
+		scale := new(big.Int).Exp(big.NewInt(10), big.NewInt(shift), nil)
+		score.Mul(score, scale)
+	}
 	score.Mul(score, big.NewInt(int64(f.ConfidenceBp)))
 	score.Mul(score, big.NewInt(int64(f.UrgencyBp)))
 	return score
+}
+
+// canonicalCurrency picks the reference currency for the comparable band: the
+// currency with the MOST known-exposure events, breaking ties by the smallest
+// ISO-4217 code (lexicographic ascending) so the choice is deterministic and
+// input-order independent. Returns ok=false when no event has a known exposure
+// (nothing is comparable, nothing is quarantined).
+func canonicalCurrency(events []db.MarketEvent) (string, bool) {
+	counts := make(map[string]int)
+	for _, e := range events {
+		if e.ExposureKnown {
+			counts[e.ExposureCurrency]++
+		}
+	}
+	if len(counts) == 0 {
+		return "", false
+	}
+	best, bestCount := "", -1
+	for cur, c := range counts {
+		if c > bestCount || (c == bestCount && cur < best) {
+			best, bestCount = cur, c
+		}
+	}
+	return best, true
+}
+
+// minCanonicalExponent is the minimum ExposureExponent among the known-exposure
+// events sharing the canonical currency — the normalization floor that makes every
+// (exponent − minExp) shift non-negative (issue #71).
+func minCanonicalExponent(events []db.MarketEvent, canonical string) int16 {
+	found := false
+	var min int16
+	for _, e := range events {
+		if e.ExposureKnown && e.ExposureCurrency == canonical {
+			if !found || e.ExposureExponent < min {
+				min, found = e.ExposureExponent, true
+			}
+		}
+	}
+	return min
 }
 
 // unknownScore ranks unknown-exposure events among themselves by confidence ×
@@ -71,33 +144,87 @@ func unknownScore(f RankFactors) int64 {
 	return int64(f.ConfidenceBp) * int64(f.UrgencyBp)
 }
 
-// Rank orders events for the Today feed (EVT-004) with a DETERMINISTIC final rank.
-// Known-exposure events come first, ordered by exposure×confidence×urgency; then
-// unknown-exposure events, ordered by confidence×urgency. Ties break by severity
-// (desc), then first-detected time (asc), then id (asc) — a total, stable order
-// independent of the input order. The input slice is not mutated.
+// Ranker orders events for the Today feed (EVT-004) and observes the money-
+// correctness quarantine boundary (issue #71). It carries an instance logger and
+// telemetry (no package-global singleton) so the observability seam is testable in
+// isolation, mirroring newProducerTelemetry.
+type Ranker struct {
+	logger *slog.Logger
+	tel    *rankingTelemetry
+}
+
+// NewRanker wires a Ranker with an instance logger + telemetry. A nil logger
+// degrades to slog.Default (never nil-deref on the observability path).
+func NewRanker(logger *slog.Logger) *Ranker {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Ranker{
+		logger: logger.With("component", "event_ranker"),
+		tel:    newRankingTelemetry(),
+	}
+}
+
+// Rank is the package-level entry point kept for existing callers. It delegates to
+// a default Ranker (slog.Default) so behaviour is unchanged for callers that do not
+// need to inject observability.
 func Rank(events []db.MarketEvent) []Ranked {
-	ranked := make([]Ranked, len(events))
+	return NewRanker(nil).Rank(context.Background(), events)
+}
+
+// rankable is the internal sort carrier: a Ranked plus its comparability band, so
+// the sort can enforce a total cross-band ordering without leaking the band onto
+// the public Ranked type.
+type rankable struct {
+	Ranked
+	band exposureBand
+}
+
+// Rank orders events for the Today feed (EVT-004) with a DETERMINISTIC final rank.
+// Events are separated into three bands (comparable-known in the canonical currency,
+// quarantined-known in a non-canonical currency, then unknown-exposure). Within the
+// comparable band ordering is by the exponent-normalized exposure×confidence×urgency
+// magnitude; within the unknown band by confidence×urgency; the quarantined band is
+// ordered by the tie-break only (no invented cross-currency magnitude — issue #71).
+// Ties break by severity (desc), first-detected time (asc), then id (asc) — a total,
+// stable order independent of input order. The input slice is not mutated. Every
+// quarantined event is counted on the telemetry counter and summarized on a warn log.
+func (r *Ranker) Rank(ctx context.Context, events []db.MarketEvent) []Ranked {
+	canonical, hasCanonical := canonicalCurrency(events)
+	minExp := minCanonicalExponent(events, canonical)
+
+	items := make([]rankable, len(events))
+	quarantined := 0
 	for i, e := range events {
 		f := factorsOf(e)
-		r := Ranked{Event: e, Factors: f}
-		if f.ExposureKnown {
-			r.Score = knownScore(f)
+		item := rankable{Ranked: Ranked{Event: e, Factors: f}}
+		switch {
+		case !f.ExposureKnown:
+			item.band = bandUnknown
+		case hasCanonical && f.ExposureCurrency == canonical:
+			item.band = bandComparable
+			item.Score = comparableScore(f, minExp)
+		default:
+			// Known exposure in a non-canonical currency: fail closed. Keep
+			// ExposureKnown=true (factorsOf already set it), leave Score nil, and
+			// order by tie-break only — never a fabricated cross-currency number.
+			item.band = bandQuarantined
+			quarantined++
 		}
-		ranked[i] = r
+		items[i] = item
 	}
 
-	sort.SliceStable(ranked, func(i, j int) bool {
-		a, b := ranked[i], ranked[j]
-		// Band 1: known exposure ranks ahead of unknown.
-		if a.Score == nil != (b.Score == nil) {
-			return a.Score != nil
+	sort.SliceStable(items, func(i, j int) bool {
+		a, b := items[i], items[j]
+		if a.band != b.band {
+			return a.band < b.band
 		}
-		if a.Score != nil { // both known: compare composite magnitude desc
+		switch a.band {
+		case bandComparable:
 			if cmp := a.Score.Cmp(b.Score); cmp != 0 {
 				return cmp > 0
 			}
-		} else { // both unknown: compare confidence×urgency desc
+		case bandUnknown:
 			as, bs := unknownScore(a.Factors), unknownScore(b.Factors)
 			if as != bs {
 				return as > bs
@@ -106,10 +233,18 @@ func Rank(events []db.MarketEvent) []Ranked {
 		return lessByTieBreak(a.Event, b.Event)
 	})
 
-	for i := range ranked {
-		ranked[i].Rank = i + 1
+	out := make([]Ranked, len(items))
+	for i := range items {
+		items[i].Rank = i + 1
+		out[i] = items[i].Ranked
 	}
-	return ranked
+
+	if quarantined > 0 {
+		r.tel.quarantinedCurrency.Add(ctx, int64(quarantined))
+		r.logger.WarnContext(ctx, "event ranking quarantined non-canonical currency exposures",
+			"canonical_currency", canonical, "quarantined", quarantined)
+	}
+	return out
 }
 
 // lessByTieBreak is the deterministic final tie-break: severity desc, then
@@ -124,4 +259,24 @@ func lessByTieBreak(a, b db.MarketEvent) bool {
 		return a.FirstDetectedAt.Before(b.FirstDetectedAt)
 	}
 	return a.ID.String() < b.ID.String()
+}
+
+// rankingTelemetry holds the OTel counter on the money-correctness ranking
+// boundary: known-exposure events dropped from the comparable band because their
+// currency is not canonical (a quarantine, PRD §9.1). Counter construction failures
+// degrade to no-op so a telemetry hiccup never breaks ranking. Instance-scoped (no
+// package-global singleton) so the emission seam is testable in isolation, mirroring
+// newProducerTelemetry.
+type rankingTelemetry struct {
+	quarantinedCurrency metric.Int64Counter
+}
+
+func newRankingTelemetry() *rankingTelemetry {
+	m := otel.Meter(producerInstrumentation)
+	c, err := m.Int64Counter("event.ranking.quarantined_currency",
+		metric.WithDescription("known-exposure events dropped from the comparable Today band because their currency is not the canonical one (money-correctness quarantine, PRD §9.1 / issue #71)"))
+	if err != nil {
+		c, _ = otel.Meter("noop").Int64Counter("event.ranking.quarantined_currency")
+	}
+	return &rankingTelemetry{quarantinedCurrency: c}
 }
