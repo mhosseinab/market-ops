@@ -10,6 +10,11 @@ plane (free text never approves — PRD §8, §12.3, CHAT-041).
 
 from __future__ import annotations
 
+from llm.intents.capabilities import (
+    EMPTY_CAPABILITY,
+    IntentCapability,
+    capability_for,
+)
 from llm.intents.classifier import IntentClassifier, IntentDecision
 from llm.intents.models import (
     GUIDANCE_ONLY_INTENTS,
@@ -22,7 +27,9 @@ from llm.intents.models import (
 from llm.intents.normalize import NormalizedInput, normalize_digits, normalize_input, tokenize
 
 __all__ = [
+    "EMPTY_CAPABILITY",
     "GUIDANCE_ONLY_INTENTS",
+    "IntentCapability",
     "IntentClass",
     "IntentClassification",
     "IntentClassifier",
@@ -30,6 +37,7 @@ __all__ = [
     "IntentDisposition",
     "IntentRoute",
     "NormalizedInput",
+    "capability_for",
     "normalize_digits",
     "normalize_input",
     "route_intent",
