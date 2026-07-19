@@ -416,6 +416,10 @@ type Querier interface {
 	// within a lineage: a set change is a new version. A bulk approval binds ONE
 	// version, so any set/evidence change (a new version) invalidates it. No
 	// UPDATE/DELETE — the current set is the greatest version per lineage.
+	// membership_fingerprint is the canonical hash of the exact membership + aggregate
+	// computed by the atomic create BEFORE any write. It is set once at INSERT and never
+	// UPDATEd (selection_sets is append-only), so a version's fingerprint is immutable —
+	// binding the version at confirm transitively binds this fingerprint (issue #91).
 	InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error)
 	InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error)
 	InsertWatchlistEntry(ctx context.Context, arg InsertWatchlistEntryParams) (WatchlistEntry, error)

@@ -24,7 +24,7 @@ func (q *Queries) CountSelectionSetMembers(ctx context.Context, selectionSetID u
 }
 
 const getCurrentSelectionSet = `-- name: GetCurrentSelectionSet :one
-SELECT id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at FROM selection_sets
+SELECT id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at, membership_fingerprint FROM selection_sets
 WHERE lineage_id = $1
 ORDER BY version DESC
 LIMIT 1
@@ -46,12 +46,13 @@ func (q *Queries) GetCurrentSelectionSet(ctx context.Context, lineageID uuid.UUI
 		&i.AggregateImpactCurrency,
 		&i.AggregateImpactExponent,
 		&i.CreatedAt,
+		&i.MembershipFingerprint,
 	)
 	return i, err
 }
 
 const getSelectionSet = `-- name: GetSelectionSet :one
-SELECT id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at FROM selection_sets WHERE id = $1
+SELECT id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at, membership_fingerprint FROM selection_sets WHERE id = $1
 `
 
 func (q *Queries) GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error) {
@@ -70,6 +71,7 @@ func (q *Queries) GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionS
 		&i.AggregateImpactCurrency,
 		&i.AggregateImpactExponent,
 		&i.CreatedAt,
+		&i.MembershipFingerprint,
 	)
 	return i, err
 }
@@ -78,13 +80,14 @@ const insertSelectionSet = `-- name: InsertSelectionSet :one
 
 INSERT INTO selection_sets (
     marketplace_account_id, lineage_id, version, name, criteria, member_count,
-    aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent
+    aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent,
+    membership_fingerprint
 ) VALUES (
     $1, $2,
     (SELECT COALESCE(MAX(version), 0) + 1 FROM selection_sets WHERE lineage_id = $2),
-    $3, $4, $5, $6, $7, $8, $9
+    $3, $4, $5, $6, $7, $8, $9, $10
 )
-RETURNING id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at
+RETURNING id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at, membership_fingerprint
 `
 
 type InsertSelectionSetParams struct {
@@ -97,12 +100,17 @@ type InsertSelectionSetParams struct {
 	AggregateImpactMantissa pgtype.Int8
 	AggregateImpactCurrency string
 	AggregateImpactExponent int16
+	MembershipFingerprint   []byte
 }
 
 // Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
 // within a lineage: a set change is a new version. A bulk approval binds ONE
 // version, so any set/evidence change (a new version) invalidates it. No
 // UPDATE/DELETE — the current set is the greatest version per lineage.
+// membership_fingerprint is the canonical hash of the exact membership + aggregate
+// computed by the atomic create BEFORE any write. It is set once at INSERT and never
+// UPDATEd (selection_sets is append-only), so a version's fingerprint is immutable —
+// binding the version at confirm transitively binds this fingerprint (issue #91).
 func (q *Queries) InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error) {
 	row := q.db.QueryRow(ctx, insertSelectionSet,
 		arg.MarketplaceAccountID,
@@ -114,6 +122,7 @@ func (q *Queries) InsertSelectionSet(ctx context.Context, arg InsertSelectionSet
 		arg.AggregateImpactMantissa,
 		arg.AggregateImpactCurrency,
 		arg.AggregateImpactExponent,
+		arg.MembershipFingerprint,
 	)
 	var i SelectionSet
 	err := row.Scan(
@@ -129,6 +138,7 @@ func (q *Queries) InsertSelectionSet(ctx context.Context, arg InsertSelectionSet
 		&i.AggregateImpactCurrency,
 		&i.AggregateImpactExponent,
 		&i.CreatedAt,
+		&i.MembershipFingerprint,
 	)
 	return i, err
 }

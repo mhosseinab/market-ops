@@ -4,13 +4,18 @@
 -- UPDATE/DELETE — the current set is the greatest version per lineage.
 
 -- name: InsertSelectionSet :one
+-- membership_fingerprint is the canonical hash of the exact membership + aggregate
+-- computed by the atomic create BEFORE any write. It is set once at INSERT and never
+-- UPDATEd (selection_sets is append-only), so a version's fingerprint is immutable —
+-- binding the version at confirm transitively binds this fingerprint (issue #91).
 INSERT INTO selection_sets (
     marketplace_account_id, lineage_id, version, name, criteria, member_count,
-    aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent
+    aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent,
+    membership_fingerprint
 ) VALUES (
     $1, $2,
     (SELECT COALESCE(MAX(version), 0) + 1 FROM selection_sets WHERE lineage_id = $2),
-    $3, $4, $5, $6, $7, $8, $9
+    $3, $4, $5, $6, $7, $8, $9, $10
 )
 RETURNING *;
 

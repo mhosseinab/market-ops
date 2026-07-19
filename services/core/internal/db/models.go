@@ -709,6 +709,7 @@ type SelectionSet struct {
 	AggregateImpactCurrency string
 	AggregateImpactExponent int16
 	CreatedAt               time.Time
+	MembershipFingerprint   []byte
 }
 
 type SelectionSetMember struct {

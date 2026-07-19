@@ -119,21 +119,66 @@ func (s *Service) PreviewBulkSelection(ctx context.Context, account, lineage uui
 		lineage = uuid.New()
 	}
 
+	// The WHOLE preview — member resolution, fingerprint, version mint, and the
+	// exactly-member_count member inserts — happens in ONE transaction and fails
+	// closed (rollback) on any error. No half-populated version can ever be observed
+	// or bound (#91).
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return PreviewResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	views, impactPtr, err := s.resolveBulkMembers(ctx, q, account, members)
+	if err != nil {
+		return PreviewResult{}, err
+	}
+
+	// Serialize per-lineage version minting BEFORE computing MAX(version)+1 and
+	// writing members, so two concurrent creations on one lineage produce ORDERED,
+	// distinct versions with no lost members (the lock is held to commit).
+	if err := q.LockApprovalLineage(ctx, lineage); err != nil {
+		return PreviewResult{}, err
+	}
+
+	// The membership_fingerprint is computed inside sealSelectionVersion from the
+	// resolved views + aggregate BEFORE any member write, then the version and its
+	// exact membership are inserted and sealed.
+	set, err := sealSelectionVersion(ctx, q, account, lineage, name, criteria, views, impactPtr)
+	if err != nil {
+		return PreviewResult{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return PreviewResult{}, err
+	}
+
+	return PreviewResult{Set: set, Members: views, AggregateImpact: impactPtr}, nil
+}
+
+// resolveBulkMembers resolves each requested member's SERVER-side disposition from
+// its own persisted recommendation (never a client assertion), failing closed
+// (ErrUnknownMember) on a recommendation that does not exist or does not belong to
+// account/variant, and computes the aggregate impact. A cross-currency/exponent
+// mismatch flips the WHOLE aggregate to unknown (quarantine-over-inference) rather
+// than presenting an understated partial total. It reads on the caller's q so the
+// resolution and the subsequent seal share one transaction.
+func (s *Service) resolveBulkMembers(ctx context.Context, q *db.Queries, account uuid.UUID, members []PreviewMemberInput) ([]PreviewMemberView, *money.Money, error) {
 	views := make([]PreviewMemberView, 0, len(members))
 	var impact money.Money
 	haveImpact := false
 	impactUnavailable := false
-	q := db.New(s.pool)
 	for _, m := range members {
 		row, err := q.GetRecommendation(ctx, m.RecommendationID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
-				return PreviewResult{}, ErrUnknownMember
+				return nil, nil, ErrUnknownMember
 			}
-			return PreviewResult{}, err
+			return nil, nil, err
 		}
 		if row.MarketplaceAccountID != account || row.VariantID != m.VariantID {
-			return PreviewResult{}, ErrUnknownMember
+			return nil, nil, ErrUnknownMember
 		}
 		disp := dispositionOf(row)
 		views = append(views, PreviewMemberView{VariantID: m.VariantID, RecommendationID: m.RecommendationID, Disposition: disp})
@@ -141,7 +186,7 @@ func (s *Service) PreviewBulkSelection(ctx context.Context, account, lineage uui
 		if row.ProposedContributionAvailable && !impactUnavailable {
 			contrib, err := money.New(row.ProposedContributionMantissa.Int64, row.ProposedContributionCurrency, int8(row.ProposedContributionExponent))
 			if err != nil {
-				return PreviewResult{}, err
+				return nil, nil, err
 			}
 			if !haveImpact {
 				impact = contrib
@@ -164,28 +209,10 @@ func (s *Service) PreviewBulkSelection(ctx context.Context, account, lineage uui
 			impact = summed
 		}
 	}
-
-	set, err := s.CreateSelectionSet(ctx, SelectionSetInput{
-		Account:     account,
-		Lineage:     lineage,
-		Name:        name,
-		Criteria:    criteria,
-		MemberCount: len(views),
-	})
-	if err != nil {
-		return PreviewResult{}, err
-	}
-	for _, v := range views {
-		if _, err := s.AddMember(ctx, set.ID, v.VariantID, v.RecommendationID, v.Disposition); err != nil {
-			return PreviewResult{}, err
-		}
-	}
-
-	result := PreviewResult{Set: set, Members: views}
 	if haveImpact {
-		result.AggregateImpact = &impact
+		return views, &impact, nil
 	}
-	return result, nil
+	return views, nil, nil
 }
 
 // dispositionOf derives a member's SERVER-side bulk disposition from its
