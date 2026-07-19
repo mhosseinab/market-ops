@@ -141,21 +141,27 @@ def score_context(rows: list[dict[str, Any]]) -> ContextScore:
 
 
 @dataclass
-class FactualScore:
+class ComposerContractScore:
     total: int
     matched: int
-    factual_support: float
+    disposition_match: float
     per_suite: dict[str, dict[str, float]] = field(default_factory=dict)
     mismatches: list[str] = field(default_factory=list)
 
 
-def score_factual(rows: list[dict[str, Any]]) -> FactualScore:
-    """Factual support via the REAL §12.2 envelope/grounding path (CHAT-020).
+def score_composer_contract(rows: list[dict[str, Any]]) -> ComposerContractScore:
+    """DETERMINISTIC §12.2 composer/grounding disposition contract (issue #118).
 
     Each case is composed through ``compose_or_refuse``; the disposition
     (``supported`` grounded envelope vs ``fail_closed`` refusal) must match the
-    fixture's ``expected``. Support is thus the disposition-match rate — a
-    well-evidenced answer composes, a degraded one fails closed, never a guess.
+    fixture's ``expected``. This proves the ENVELOPE/COMPOSER architecture — a
+    well-evidenced envelope composes, a degraded one fails closed, never a guess.
+
+    It is explicitly NOT provider factual accuracy: no provider, agent, read
+    tool, or turn is invoked, so the disposition-match rate is fixture/composer
+    self-consistency. Provider factual support (whether a generated answer is
+    supported by INDEPENDENT ground truth) is measured separately by
+    :func:`llm.evals.factual.run_provider_factual`.
     """
     matched = 0
     per_suite_total: dict[str, int] = defaultdict(int)
@@ -178,10 +184,10 @@ def score_factual(rows: list[dict[str, Any]]) -> FactualScore:
         }
         for s in sorted(per_suite_total)
     }
-    return FactualScore(
+    return ComposerContractScore(
         total=len(rows),
         matched=matched,
-        factual_support=matched / len(rows) if rows else 0.0,
+        disposition_match=matched / len(rows) if rows else 0.0,
         per_suite=per_suite,
         mismatches=mismatches,
     )

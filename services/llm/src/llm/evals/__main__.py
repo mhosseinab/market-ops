@@ -88,6 +88,11 @@ def main(argv: list[str] | None = None) -> int:
         failed = [n for n, s in gates.items() if not s.passed]
         print(f"\nCONTAINMENT GATE FAILURE (release blocker): {failed}", file=sys.stderr)
         return 1
+    contracts = report.contract_suites()
+    if contracts and not report.all_contract_suites_pass():
+        failed = [n for n, s in contracts.items() if not s.passed]
+        print(f"\nCONTRACT SUITE FAILURE (release blocker): {failed}", file=sys.stderr)
+        return 1
     return 0
 
 

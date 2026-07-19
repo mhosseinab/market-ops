@@ -28,6 +28,9 @@ EXPECTED_COUNTS: dict[str, int] = {
     "listing": 50,
     "currency": 30,
     "injection": 20,
+    # Provider factual-support cases (issue #118): authoritative reads scored
+    # against an independent oracle by the real provider-driven turn.
+    "factual_provider": 12,
 }
 
 # Suites whose §12.5 count is a lower bound ("at least N"), not an exact target.
@@ -65,9 +68,15 @@ class Corpus:
     listing: list[dict[str, Any]]
     currency: list[dict[str, Any]]
     injection: list[dict[str, Any]]
+    factual_provider: list[dict[str, Any]]
 
     def factual(self) -> list[dict[str, Any]]:
-        """Every factual-support case (pricing/data-quality/boundary/listing)."""
+        """Every composer-contract case (pricing/data-quality/boundary/listing).
+
+        These drive the DETERMINISTIC §12.2 composer/grounding disposition
+        contract (``score_composer_contract``) — NOT provider factual accuracy.
+        Provider factual support is measured over :attr:`factual_provider`.
+        """
         return [*self.pricing, *self.data_quality, *self.boundary, *self.listing]
 
     def counts(self) -> dict[str, int]:
@@ -81,6 +90,7 @@ class Corpus:
             "listing": len(self.listing),
             "currency": len(self.currency),
             "injection": len(self.injection),
+            "factual_provider": len(self.factual_provider),
         }
 
 
@@ -100,6 +110,7 @@ def load_corpus(*, strict_counts: bool = True) -> Corpus:
         listing=_read_dir("listing"),
         currency=_read_dir("currency"),
         injection=_read_dir("injection"),
+        factual_provider=_read_dir("factual_provider"),
     )
     if strict_counts:
         actual = corpus.counts()

@@ -12,7 +12,7 @@ from __future__ import annotations
 from llm.evals import scoring
 
 
-def test_factual_scorer_distinguishes_supported_from_fail_closed() -> None:
+def test_composer_contract_distinguishes_supported_from_fail_closed() -> None:
     supported = {
         "id": "s1",
         "suite": "pricing",
@@ -46,12 +46,14 @@ def test_factual_scorer_distinguishes_supported_from_fail_closed() -> None:
         "model_inference": "no evidence available",
         "observed_facts": [{"statement": "observed offer captured", "evidence": []}],
     }
-    score = scoring.score_factual([supported, degraded])
+    score = scoring.score_composer_contract([supported, degraded])
     assert score.matched == 2
-    assert score.factual_support == 1.0
+    # This is a DETERMINISTIC composer disposition contract, NOT provider factual
+    # accuracy (issue #118): no provider is invoked here.
+    assert score.disposition_match == 1.0
 
 
-def test_factual_scorer_flags_a_mislabelled_case() -> None:
+def test_composer_contract_flags_a_mislabelled_case() -> None:
     # Labelled supported but has no evidence ⇒ composes to fail_closed ⇒ mismatch.
     mislabelled = {
         "id": "m1",
@@ -59,7 +61,7 @@ def test_factual_scorer_flags_a_mislabelled_case() -> None:
         "expected": "supported",
         "observed_facts": [{"statement": "claim", "evidence": []}],
     }
-    score = scoring.score_factual([mislabelled])
+    score = scoring.score_composer_contract([mislabelled])
     assert score.matched == 0
     assert score.mismatches == ["m1:fail_closed!=supported"]
 
