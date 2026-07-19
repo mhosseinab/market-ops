@@ -496,6 +496,13 @@ type Querier interface {
 	// before any retry (EXE-003, never inferred). Scoped via the bound
 	// approval_cards row (action_executions carries no account column of its own).
 	ListPendingReconciliationByAccount(ctx context.Context, arg ListPendingReconciliationByAccountParams) ([]ActionExecution, error)
+	// READ-ONLY durable ordered sync-run state for restart re-derivation of the §20.1
+	// connector-sync failure streak (issue #146). Newest-first per account; the
+	// telemetry seam (catalog.deriveStreaks) counts the leading consecutive non-success
+	// runs since the last completed run. The run id is carried so the seam can re-seed
+	// its per-run idempotency guard: a run still being retried after a restart is never
+	// double-counted on the live path. Pure SELECT: never mutates a run row.
+	ListRecentCatalogSyncOutcomes(ctx context.Context) ([]ListRecentCatalogSyncOutcomesRow, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)

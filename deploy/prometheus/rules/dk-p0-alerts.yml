@@ -18,21 +18,28 @@ groups:
   - name: dk-p0-failure-domains
     rules:
       # ── Connector sync (docs/14: three consecutive non-200 canary responses) ──
-      # Backing series: http_server_request_duration_count on the connector sync
-      # routes with a 5xx class (RED errors, S33 gateway seam). A sustained error
-      # streak on /connector/refresh|connect is the platform-visible sync failure.
+      # Backing series: connector_sync_failure_streak — a bounded gauge the catalog
+      # sync seam (internal/catalog/telemetry.go) emits at the AUTHORITATIVE sync
+      # lifecycle boundary, carrying the CURRENT count of consecutive sync failures
+      # per account/connector. The Go seam owns the reset: any non-200/typed/
+      # transport sync failure increments the gauge, a successful sync resets it to
+      # zero, and the value is re-derived from durable sync-run state on restart.
+      # True streak semantics PromQL's increase() over a rolling window cannot
+      # express: an interleaved failure/success/failure never reaches the threshold,
+      # and credential connect/refresh HTTP traffic can never move this series.
+      # `for` is a small stability delay only, NOT a substitute for streak logic.
       - alert: ConnectorSyncFailureStreak
         expr: |
-          sum(increase(http_server_request_duration_count{http_route=~"/connector/(refresh|connect)", http_status_class="5xx"}[15m])) >= 3
-        for: 15m
+          max by (account_id, connector) (connector_sync_failure_streak) >= 3
+        for: 2m
         labels:
           severity: page
           failure_domain: connector
         annotations:
-          summary: "Connector sync failing (>=3 errors in 15m)"
+          summary: "Connector sync failing (>=3 consecutive sync failures)"
           runbook: "runbooks/connector.md"
           ops_queue: "operations.queue.failedSync"
-          description: "Connect/refresh is returning 5xx. Owning queue: Operations → Failed sync. Follow runbooks/connector.md."
+          description: "Three consecutive catalog syncs failed with no successful sync between them. Owning queue: Operations → Failed sync. Follow runbooks/connector.md."
 
       # ── Route C / extension circuit open (breaker trip → screens-only fallback) ──
       # Backing series: analytics_events with the observation/extension circuit-stop
