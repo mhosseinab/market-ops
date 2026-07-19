@@ -76,7 +76,11 @@ func seedAggregate(t *testing.T, pool *pgxpool.Pool, q *db.Queries) aggregateFix
 // insertEventRow inserts a market_events row directly (bypassing the service) so a
 // test can construct an INTENTIONALLY cross-account aggregate and assert the DB
 // trigger rejects it transactionally. NULL target/threshold/evidence are allowed
-// (passed as uuid.Nil → NULL).
+// (passed as uuid.Nil → NULL). A present threshold cites version 1 to satisfy the
+// issue #69 provenance binding (both-or-neither id+version); seedAggregate always
+// creates its competitor_price threshold at version 1, effective an hour ago, so a
+// same-account citation is fully in-force and a cross-account one still fails on the
+// account dimension.
 func insertEventRow(pool *pgxpool.Pool, account, variant uuid.UUID, target, threshold, obs uuid.UUID) error {
 	ctx := context.Background()
 	nullable := func(id uuid.UUID) any {
@@ -85,19 +89,23 @@ func insertEventRow(pool *pgxpool.Pool, account, variant uuid.UUID, target, thre
 		}
 		return id
 	}
+	var thrVersion any
+	if threshold != uuid.Nil {
+		thrVersion = int32(1)
+	}
 	_, err := pool.Exec(ctx, `
 		INSERT INTO market_events (
 			marketplace_account_id, variant_id, target_id, event_type, severity, state,
-			dedup_key, threshold_id, exposure_known,
+			dedup_key, threshold_id, threshold_version, exposure_known,
 			confidence_bp, urgency_bp, evidence_observation_id, evidence_quality,
 			first_detected_at, last_evidence_at, expires_at
 		) VALUES (
 			$1, $2, $3, 'competitor_price', 'warning', 'open',
-			$4, $5, false,
-			5000, 5000, $6, 'supported',
+			$4, $5, $6, false,
+			5000, 5000, $7, 'supported',
 			now(), now(), now() + interval '1 hour'
 		)`,
-		account, variant, nullable(target), "dedup:"+uuid.NewString(), nullable(threshold), nullable(obs))
+		account, variant, nullable(target), "dedup:"+uuid.NewString(), nullable(threshold), thrVersion, nullable(obs))
 	return err
 }
 
