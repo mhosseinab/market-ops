@@ -63,6 +63,13 @@ type ChatConversationStore interface {
 	// AppendAssistant appends the terminal assistant record (answer envelope,
 	// structured failure, or interrupted marker) after the stream completes.
 	AppendAssistant(ctx context.Context, conversationID uuid.UUID, body string, envelope []byte) error
+	// AccountContext resolves the AUTHORITATIVE marketplace account bound to an
+	// existing conversation under the caller's org, WITHOUT appending or mutating
+	// anything. It is the read the gateway uses to evaluate the per-account kill
+	// switch against STORED context rather than the caller-supplied optional field
+	// (CHAT-009, issue #27). A returned nil pointer means a no-account conversation;
+	// a foreign/unknown id returns conversation.ErrConversationDenied (fail closed).
+	AccountContext(ctx context.Context, organizationID, conversationID uuid.UUID) (*uuid.UUID, error)
 }
 
 // ChatTurn is the transport-boundary request the gateway hands the LLM plane.
@@ -92,6 +99,50 @@ func NewStaticKillSwitch(global bool, disabledAccounts []uuid.UUID) ChatKillSwit
 		set[id] = true
 	}
 	return &staticKillSwitch{global: global, accounts: set}
+}
+
+// errChatAccountMismatch marks a turn whose supplied account contradicts the
+// stored conversation context (issue #27). It is a diagnostic, never surfaced as
+// free text with authority.
+var errChatAccountMismatch = errors.New("chat: request account contradicts stored conversation context")
+
+// chatAccountDecision is the resolved input to the per-account kill switch for a
+// turn: the account the switch is evaluated against, and whether the request
+// contradicts the stored conversation context.
+type chatAccountDecision struct {
+	account  uuid.UUID // authoritative account (uuid.Nil = the no-account context)
+	mismatch bool      // request account contradicts stored conversation context
+}
+
+// authoritativeChatAccount picks the account the kill switch is evaluated against
+// and flags a request that contradicts stored context (CHAT-009, issue #27):
+//
+//   - resolvedStored: the stored conversation account was authoritatively loaded
+//     under the caller's org. Its value (possibly the no-account nil) GOVERNS; a
+//     request account that differs is a mismatch; an omitted request inherits it
+//     so a disabled account cannot be bypassed by dropping the optional field.
+//   - otherwise (a new conversation, or a continuation with no durability store to
+//     resolve against): the request account governs and there is no mismatch.
+//
+// It is pure so the safety-critical decision is unit-tested independent of DB.
+func authoritativeChatAccount(requestAccount, storedAccount *uuid.UUID, resolvedStored bool) chatAccountDecision {
+	if !resolvedStored {
+		return chatAccountDecision{account: derefUUID(requestAccount)}
+	}
+	stored := derefUUID(storedAccount)
+	if requestAccount != nil && *requestAccount != stored {
+		return chatAccountDecision{account: stored, mismatch: true}
+	}
+	return chatAccountDecision{account: stored}
+}
+
+// derefUUID returns the pointed-to uuid, or uuid.Nil (the no-account context)
+// when the pointer is nil.
+func derefUUID(id *uuid.UUID) uuid.UUID {
+	if id == nil {
+		return uuid.Nil
+	}
+	return *id
 }
 
 func (k *staticKillSwitch) GlobalOff() bool { return k.global }
@@ -134,31 +185,61 @@ func (s *gatewayServer) Chat(
 		}, nil
 	}
 
-	var accountID uuid.UUID
-	if req.Body.MarketplaceAccountId != nil {
-		accountID = *req.Body.MarketplaceAccountId
+	// The authenticated principal is guaranteed present (kindProtected route). We
+	// resolve it BEFORE the per-account kill switch because the authoritative
+	// account context is loaded under the caller's org, never trusted from input.
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.Chat503JSONResponse(unavailable(gateway.ProviderUnavailable)), nil
 	}
 
-	// Kill switch: global first, then per-account. Both leave screens fully
-	// functional; only chat degrades to the structured disabled state (CHAT-009).
-	if s.killSwitch != nil {
-		if s.killSwitch.GlobalOff() {
-			return chatUnavailable(gateway.KillSwitchGlobal), nil
+	// Global kill switch first: it needs no context and kills every turn. Both
+	// switches leave screens fully functional; only chat degrades to the
+	// structured disabled state (CHAT-009).
+	if s.killSwitch != nil && s.killSwitch.GlobalOff() {
+		return chatUnavailable(gateway.KillSwitchGlobal), nil
+	}
+
+	// CHAT-009 / issue #27: the per-account kill switch MUST be evaluated against
+	// the account the turn is AUTHORITATIVELY bound to — never the caller-supplied
+	// optional field. For a continuation we load the STORED conversation's account
+	// under the caller's org; a request that omits the account inherits it (so a
+	// disabled account cannot be bypassed by dropping the field) and a request that
+	// contradicts it is rejected. If the stored context cannot be resolved for an
+	// account-bound continuation we FAIL CLOSED to the account-disabled state.
+	continuation := req.Body.ConversationId != nil
+	var storedAccount *uuid.UUID
+	resolvedStored := false
+	if continuation && s.conversations != nil {
+		acc, err := s.conversations.AccountContext(ctx, p.OrganizationID, *req.Body.ConversationId)
+		if errors.Is(err, conversation.ErrConversationDenied) {
+			s.logChatPersist(ctx, "account-context-denied", *req.Body.ConversationId, err)
+			return chatConversationDenied(), nil
 		}
-		if s.killSwitch.AccountOff(accountID) {
+		if err != nil {
+			// Unresolvable authoritative context on an account-bound continuation:
+			// fail closed rather than risk bypassing an account disablement.
+			s.logChatPersist(ctx, "account-context-unresolved", *req.Body.ConversationId, err)
 			return chatUnavailable(gateway.KillSwitchAccount), nil
 		}
+		storedAccount = acc
+		resolvedStored = true
+	}
+
+	decision := authoritativeChatAccount(req.Body.MarketplaceAccountId, storedAccount, resolvedStored)
+	if decision.mismatch {
+		// A request that contradicts stored conversation context cannot override it
+		// (identity/tenant quarantine): reject, never proxy.
+		s.logChatPersist(ctx, "account-context-mismatch", *req.Body.ConversationId, errChatAccountMismatch)
+		return chatAccountMismatch(), nil
+	}
+	if s.killSwitch != nil && s.killSwitch.AccountOff(decision.account) {
+		return chatUnavailable(gateway.KillSwitchAccount), nil
 	}
 
 	// LLM plane not wired ⇒ fail closed with a structured unavailable state.
 	if s.llmChat == nil {
 		return chatUnavailable(gateway.ProviderUnavailable), nil
-	}
-
-	// The authenticated principal is guaranteed present (kindProtected route).
-	p, ok := principalFrom(ctx)
-	if !ok {
-		return gateway.Chat503JSONResponse(unavailable(gateway.ProviderUnavailable)), nil
 	}
 
 	turn := ChatTurn{
@@ -435,6 +516,20 @@ func chatConversationDenied() gateway.ChatdefaultJSONResponse {
 		Body: gateway.ErrorEnvelope{
 			Code:    "CONVERSATION_NOT_FOUND",
 			Message: "conversation not found for this organization",
+		},
+	}
+}
+
+// chatAccountMismatch builds the 409 for a continued turn whose supplied account
+// contradicts the stored conversation context (CHAT-009, issue #27). Fail closed:
+// a mismatched account cannot override stored context and the turn is never
+// proxied — the caller must continue under the conversation's own account.
+func chatAccountMismatch() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 409,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CONVERSATION_ACCOUNT_MISMATCH",
+			Message: "the supplied account does not match this conversation's account context",
 		},
 	}
 }

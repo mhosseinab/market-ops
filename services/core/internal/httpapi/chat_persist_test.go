@@ -24,11 +24,14 @@ type assistantCall struct {
 type fakeConvStore struct {
 	mu sync.Mutex
 
-	conv      conversation.Conversation
-	beginErr  error
-	begins    []conversation.OpenParams
-	userTurns []string
-	assistant []assistantCall
+	conv       conversation.Conversation
+	beginErr   error
+	begins     []conversation.OpenParams
+	userTurns  []string
+	assistant  []assistantCall
+	account    *uuid.UUID  // authoritative account AccountContext returns
+	accountErr error       // when set, AccountContext fails (unresolvable)
+	accountIDs []uuid.UUID // conversation ids AccountContext was asked to resolve
 }
 
 func (f *fakeConvStore) BeginTurn(_ context.Context, p conversation.OpenParams, userBody string) (conversation.Conversation, error) {
@@ -47,6 +50,31 @@ func (f *fakeConvStore) AppendAssistant(_ context.Context, conversationID uuid.U
 	defer f.mu.Unlock()
 	f.assistant = append(f.assistant, assistantCall{conversationID: conversationID, body: body, envelope: envelope})
 	return nil
+}
+
+func (f *fakeConvStore) AccountContext(_ context.Context, _, conversationID uuid.UUID) (*uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.accountIDs = append(f.accountIDs, conversationID)
+	if f.accountErr != nil {
+		return nil, f.accountErr
+	}
+	return f.account, nil
+}
+
+func (f *fakeConvStore) accountLookupCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.accountIDs)
+}
+
+func (f *fakeConvStore) lastAccountLookup() uuid.UUID {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.accountIDs) == 0 {
+		return uuid.Nil
+	}
+	return f.accountIDs[len(f.accountIDs)-1]
 }
 
 func (f *fakeConvStore) snapshot() ([]conversation.OpenParams, []string, []assistantCall) {

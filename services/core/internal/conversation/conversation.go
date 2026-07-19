@@ -167,6 +167,27 @@ func (s *Store) BeginTurn(ctx context.Context, p OpenParams, userBody string) (C
 	return toConversation(touched), nil
 }
 
+// AccountContext resolves the authoritative marketplace account bound to an
+// existing conversation under the caller's org, WITHOUT appending anything or
+// advancing recency. It is the read the gateway uses to evaluate the per-account
+// chat kill switch against STORED context rather than a caller-supplied optional
+// field (CHAT-009, issue #27). A returned nil pointer is a no-account
+// conversation; a foreign/unknown id returns ErrConversationDenied (fail closed).
+// It issues no UPDATE — safe against the append-only history invariant (§4.6).
+func (s *Store) AccountContext(ctx context.Context, organizationID, conversationID uuid.UUID) (*uuid.UUID, error) {
+	row, err := db.New(s.pool).GetConversationForOrg(ctx, db.GetConversationForOrgParams{
+		ID:             conversationID,
+		OrganizationID: organizationID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrConversationDenied
+	}
+	if err != nil {
+		return nil, err
+	}
+	return toConversation(row).MarketplaceAccountID, nil
+}
+
 // AppendAssistant appends the terminal assistant turn after the stream completes
 // (the typed answer envelope, a structured failure, or a deterministic
 // interrupted marker — the caller decides the content). APPEND-ONLY: it never
