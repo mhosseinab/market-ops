@@ -24,6 +24,10 @@ export function toThreadMessageLike(message: DockMessage): ThreadMessageLike {
   if (message.envelope) content.push({ type: "data", name: "envelope", data: message.envelope });
   for (const card of message.cards) content.push({ type: "data", name: "card", data: card });
   if (message.failure) content.push({ type: "data", name: "failure", data: message.failure });
+  // A transport-seam failure (truncation / malformed / EOF without terminal —
+  // issue #116) carries no structured `failure` payload; it rides as its own part
+  // so the view renders an unmistakable incomplete notice, never a completed turn.
+  if (message.transportFailed) content.push({ type: "data", name: "incomplete", data: {} });
   // A part is always present so a streaming assistant turn with no text yet still
   // renders (assistant-ui shows the running indicator via message status).
   if (content.length === 0) content.push({ type: "text", text: "" });

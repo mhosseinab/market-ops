@@ -166,6 +166,8 @@ export const en: Catalog = {
   "chat.unavailable.toActions": "See cards in Actions →",
   "chat.failure.title": "The response did not complete",
   "chat.failure.deepLink": "Continue in screen →",
+  "chat.failure.transportBody":
+    "The connection ended before the answer was verified. Use the structured screens for a complete, grounded view.",
 
   "action.retry": "Try again",
   "action.resolve": "Resolve",

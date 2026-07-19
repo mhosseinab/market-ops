@@ -165,6 +165,8 @@ export const faIR: Catalog = {
   "chat.unavailable.toActions": "مشاهدهٔ کارت‌ها در اقدام‌ها ←",
   "chat.failure.title": "پاسخ ناتمام ماند",
   "chat.failure.deepLink": "ادامه در صفحه ←",
+  "chat.failure.transportBody":
+    "ارتباط پیش از تأیید پاسخ قطع شد. برای نمای کامل و مستند از صفحه‌های ساختاریافته استفاده کنید.",
 
   "action.retry": "تلاش دوباره",
   "action.resolve": "رفع",

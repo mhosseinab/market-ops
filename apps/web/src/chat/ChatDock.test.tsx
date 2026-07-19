@@ -380,3 +380,72 @@ describe("ChatDock — digit normalization (CHAT-081)", () => {
     expect(messages[0]).toBe("قیمت 123");
   });
 });
+
+// ── Terminal-frame invariant on the dock surface (issue #116) ───────────────
+// A truncated or malformed stream must render an unmistakable incomplete state,
+// never a completed answer. Partial tokens may show, but with no completed
+// envelope/cards and a visible transport-failure notice.
+describe("ChatDock — truncated / malformed streams never complete (#116)", () => {
+  function rawChat(chunks: readonly string[]) {
+    server.use(
+      http.post(`${BASE}/chat`, () => {
+        const encoder = new TextEncoder();
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            for (const c of chunks) controller.enqueue(encoder.encode(c));
+            controller.close();
+          },
+        });
+        return new HttpResponse(stream, { headers: { "content-type": "text/event-stream" } });
+      }),
+    );
+  }
+
+  it("EOF after tokens but before a terminal frame renders incomplete, never complete", async () => {
+    server.use(
+      http.post(`${BASE}/chat`, () =>
+        sseResponse(chatFinal({ kind: "token", token: "partial answer" })),
+      ),
+    );
+    await openDock();
+    await sendComposer("what happened?");
+    // The transport-failure notice appears; no completed envelope is rendered.
+    expect(await screen.findByTestId("chat-transport-failure")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-envelope")).not.toBeInTheDocument();
+  });
+
+  it("a malformed JSON frame fails the turn", async () => {
+    rawChat(['data: {"kind":"conversation","conversationId":"c1"}\n\n', "data: {not json}\n\n"]);
+    await openDock();
+    await sendComposer("price?");
+    expect(await screen.findByTestId("chat-transport-failure")).toBeInTheDocument();
+  });
+
+  it("a final frame with an invalid envelope fails closed, not an empty completed answer", async () => {
+    server.use(
+      http.post(`${BASE}/chat`, () => sseResponse(chatFinal({ kind: "final" } as ChatStreamEvent))),
+    );
+    await openDock();
+    await sendComposer("summary?");
+    expect(await screen.findByTestId("chat-transport-failure")).toBeInTheDocument();
+    expect(screen.queryByTestId("chat-envelope")).not.toBeInTheDocument();
+  });
+
+  it("a valid `failure` terminal renders the structured server failure state", async () => {
+    server.use(
+      http.post(`${BASE}/chat`, () =>
+        sseResponse(
+          chatFinal({
+            kind: "failure",
+            failure: { code: "BUDGET_EXCEEDED", message: "stopped", deepLink: "/actions" },
+          }),
+        ),
+      ),
+    );
+    await openDock();
+    await sendComposer("do it");
+    expect(await screen.findByTestId("chat-failure")).toBeInTheDocument();
+    // A server failure is NOT the client transport-failure notice.
+    expect(screen.queryByTestId("chat-transport-failure")).not.toBeInTheDocument();
+  });
+});

@@ -128,6 +128,13 @@ export interface DockAssistantMessage {
   readonly envelope?: ChatEnvelope;
   readonly cards: readonly DockCard[];
   readonly failure?: ChatFailure;
+  /**
+   * Set when the turn failed at the TRANSPORT seam (truncation, malformed frame,
+   * invalid terminal payload, or EOF without a terminal — issue #116) rather than
+   * via a structured `failure` frame. It renders the client-side incomplete
+   * notice so partial/ungrounded output is never shown as a completed answer.
+   */
+  readonly transportFailed?: boolean;
 }
 
 export type DockMessage = DockUserMessage | DockAssistantMessage;
