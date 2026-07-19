@@ -30,6 +30,18 @@ WHERE lineage_id = $1
 ORDER BY version DESC
 LIMIT 1;
 
+-- name: GetCurrentApprovalCardByRecommendation :one
+-- The greatest-version (live) card for a recommendation. A recommendation is
+-- stable across its card lineage (a price edit keeps the same recommendation_id and
+-- lineage_id, only bumping the version), so the greatest version by recommendation
+-- is the current authoritative card. Bulk confirmation (issue #90) resolves each
+-- executable selection-set member's live card through this read, then authorizes it
+-- through the SAME §8.4 individual-confirm path — never a bulk-only shortcut.
+SELECT * FROM approval_cards
+WHERE recommendation_id = $1
+ORDER BY version DESC
+LIMIT 1;
+
 -- name: LockApprovalLineage :exec
 -- Serialize every writer that mints or advances a card in one lineage (APR-001
 -- authoritative-current resolution): a transaction-scoped advisory lock keyed on

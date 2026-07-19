@@ -20,13 +20,13 @@ import (
 
 // fakeApproval is an ApprovalService stub for transport tests.
 type fakeApproval struct {
-	card       db.ApprovalCard
-	history    []db.ApprovalCardState
-	outcome    recommendation.ConfirmOutcome
-	confirmErr error
-	bulkValid  bool
-	current    int32
-	err        error
+	card        db.ApprovalCard
+	history     []db.ApprovalCardState
+	outcome     recommendation.ConfirmOutcome
+	confirmErr  error
+	bulkOutcome recommendation.BulkConfirmOutcome
+	bulkErr     error
+	err         error
 
 	editedCard   db.ApprovalCard
 	editErr      error
@@ -47,11 +47,8 @@ func (f *fakeApproval) History(context.Context, uuid.UUID) ([]db.ApprovalCardSta
 func (f *fakeApproval) ConfirmIndividual(context.Context, uuid.UUID, approval.Binding, time.Time) (recommendation.ConfirmOutcome, error) {
 	return f.outcome, f.confirmErr
 }
-func (f *fakeApproval) BulkPreviewValid(context.Context, uuid.UUID, int32) (bool, error) {
-	return f.bulkValid, f.err
-}
-func (f *fakeApproval) CurrentSelectionSetVersion(context.Context, uuid.UUID) (int32, error) {
-	return f.current, f.err
+func (f *fakeApproval) ConfirmBulkSelection(context.Context, uuid.UUID, int32, time.Time) (recommendation.BulkConfirmOutcome, error) {
+	return f.bulkOutcome, f.bulkErr
 }
 func (f *fakeApproval) EditPrice(context.Context, uuid.UUID, money.Money, time.Time) (db.ApprovalCard, error) {
 	return f.editedCard, f.editErr
@@ -178,9 +175,15 @@ func TestConfirmApproval_NoControlIsRejected(t *testing.T) {
 }
 
 // TestConfirmBulkApproval_StaleVersionInvalid proves a bulk confirmation bound to
-// a stale selection-set version is rejected as invalid (CHAT-052).
+// a stale selection-set version is rejected as invalid, authorizes nothing, and
+// surfaces the current version (CHAT-052, issue #90).
 func TestConfirmBulkApproval_StaleVersionInvalid(t *testing.T) {
-	fake := &fakeApproval{bulkValid: false, current: 2}
+	fake := &fakeApproval{bulkOutcome: recommendation.BulkConfirmOutcome{
+		BoundVersion:     1,
+		CurrentVersion:   2,
+		Valid:            false,
+		ExecutionPending: false,
+	}}
 	srv := NewServer(":0", BuildInfo{}, testLogger(), WithApproval(fake))
 
 	body := `{"selectionSetLineage":"` + uuid.New().String() + `","boundVersion":1}`
@@ -196,7 +199,57 @@ func TestConfirmBulkApproval_StaleVersionInvalid(t *testing.T) {
 	if out.Valid || out.ExecutionPending {
 		t.Fatalf("stale bulk preview must be invalid and not execute")
 	}
+	if len(out.Items) != 0 {
+		t.Fatalf("stale bulk result authorized %d items; want 0", len(out.Items))
+	}
 	if out.CurrentVersion == nil || *out.CurrentVersion != 2 {
 		t.Fatalf("stale bulk result should surface the current version 2; got %v", out.CurrentVersion)
+	}
+}
+
+// TestConfirmBulkApproval_MapsPerItemResults proves the transport maps the
+// authoritative per-item outcomes (issue #90): a valid confirmation returns each
+// member's disposition + state, and executionPending reflects a durable pending
+// authorization.
+func TestConfirmBulkApproval_MapsPerItemResults(t *testing.T) {
+	execRec := uuid.New()
+	blockedRec := uuid.New()
+	fake := &fakeApproval{bulkOutcome: recommendation.BulkConfirmOutcome{
+		BoundVersion:     3,
+		CurrentVersion:   3,
+		Valid:            true,
+		ExecutionPending: true,
+		Items: []recommendation.BulkItemResult{
+			{VariantID: uuid.New(), RecommendationID: execRec, Disposition: recommendation.DispositionExecutable, State: recommendation.BulkItemAuthorized, Reason: "authorized"},
+			{VariantID: uuid.New(), RecommendationID: blockedRec, Disposition: recommendation.DispositionBlocked, State: recommendation.BulkItemExcluded, Reason: "blocked"},
+		},
+	}}
+	srv := NewServer(":0", BuildInfo{}, testLogger(), WithApproval(fake))
+
+	body := `{"selectionSetLineage":"` + uuid.New().String() + `","boundVersion":3}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/approvals/bulk/confirm", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler.ServeHTTP(rec, req)
+
+	var out gateway.BulkApprovalConfirmResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !out.Valid || !out.ExecutionPending {
+		t.Fatalf("valid confirm: valid=%v pending=%v; want both true", out.Valid, out.ExecutionPending)
+	}
+	if len(out.Items) != 2 {
+		t.Fatalf("items = %d; want 2", len(out.Items))
+	}
+	byRec := map[uuid.UUID]gateway.BulkApprovalItemResult{}
+	for _, it := range out.Items {
+		byRec[it.RecommendationId] = it
+	}
+	if got := byRec[execRec]; got.State != gateway.BulkApprovalItemStateAuthorized || got.Disposition != gateway.SelectionSetDispositionExecutable {
+		t.Fatalf("exec item = %+v; want authorized/executable", got)
+	}
+	if got := byRec[blockedRec]; got.State != gateway.BulkApprovalItemStateExcluded || got.Disposition != gateway.SelectionSetDispositionBlocked {
+		t.Fatalf("blocked item = %+v; want excluded/blocked", got)
 	}
 }

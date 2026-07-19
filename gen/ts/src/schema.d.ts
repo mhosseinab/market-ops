@@ -2078,7 +2078,7 @@ export interface components {
              */
             boundVersion: number;
         };
-        /** @description The outcome of a bulk confirmation. `valid` is false when the bound selection-set version is stale (invalidated by a set/evidence change). `executionPending` is true for a valid bulk confirmation — per-item execution lands in S18. */
+        /** @description The AUTHORITATIVE outcome of a bulk confirmation (issue #90). `valid` is false when the bound selection-set version is stale (invalidated by a set/evidence change), in which case NOTHING is authorized and `items` is empty. When `valid`, each executable member is durably authorized through the same §8.4 individual-confirm path and reported in `items` with an explicit per-item state; blocked/warning members are `excluded` and never execute. `executionPending` is true only when at least one member now carries a durable, pending execution authorization. */
         BulkApprovalConfirmResult: {
             /** Format: uuid */
             selectionSetLineage: string;
@@ -2091,6 +2091,24 @@ export interface components {
             currentVersion?: number;
             valid: boolean;
             executionPending: boolean;
+            /** @description One durable result per member of the bound version. Empty when the confirmation is invalid (nothing authorized). */
+            items: components["schemas"]["BulkApprovalItemResult"][];
+        };
+        /**
+         * @description A per-member bulk-confirmation outcome (issue #90). Only `authorized` and `already_authorized` mean the member carries a durable authorization + execution intent; every other state means the member did NOT execute this call. `failed` is a TRANSIENT failure a resume (re-confirm) retries; the other terminal states are not retried into execution.
+         * @enum {string}
+         */
+        BulkApprovalItemState: "authorized" | "already_authorized" | "excluded" | "invalidated" | "failed";
+        /** @description One selection-set member's authoritative bulk outcome. `disposition` is the SERVER-sealed disposition of the bound (immutable) version — never a client assertion. */
+        BulkApprovalItemResult: {
+            /** Format: uuid */
+            variantId: string;
+            /** Format: uuid */
+            recommendationId: string;
+            disposition: components["schemas"]["SelectionSetDisposition"];
+            state: components["schemas"]["BulkApprovalItemState"];
+            /** @description A stable, non-localized diagnostic reason for the item's state. */
+            reason: string;
         };
         /**
          * @description The execution mode of a completed Execute call. `write` attempted a real external write (write enabled); `recommend_only` tracked the approved action for external matching because writes are OFF (EXE-005).
