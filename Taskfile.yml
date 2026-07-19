@@ -92,6 +92,7 @@ tasks:
     cmds:
       - bash tools/dev/up_test.sh
       - bash tools/dev/db_reset_guard_test.sh
+      - bash tools/ledger/validate_ledger_test.sh
 
   lint:all:
     desc: Run every language linter in parallel.
@@ -123,6 +124,18 @@ tasks:
       # restrict findings to the four money-domain packages, so packages that do
       # not exist yet are simply not matched.
       - semgrep --config tools/semgrep/money.yml services/core --error --quiet --disable-version-check
+
+  ledger:validate:
+    desc: >-
+      Validate the orchestration progress ledger's verification-gate integrity
+      (issue #19): a step may be recorded `passed` — and satisfy a dependency
+      gate — only after every MANDATORY verification has a successful evidence
+      record. Rejects any `passed` step whose exact Verify block is recorded as a
+      still-pending mandatory gate, and any deferred item left unclassified.
+      Stdlib-only; part of `task ci:local`.
+    silent: true
+    cmds:
+      - python3 tools/ledger/validate_ledger.py --file docs/implementation/dk-p0-progress.md
 
   obs:dashboards:
     desc: Regenerate the §18 Grafana dashboard JSON from its single source (deploy/grafana/gen_dashboards.py).
@@ -245,6 +258,9 @@ tasks:
       # §18 dashboard drift + §20.1 alert-rule/runbook validation (mirrors the CI
       # deploy-obs job). Stdlib-only checks; deep PromQL parse is best-effort.
       - task: obs:validate
+      # Orchestration-ledger verification-gate integrity (issue #19): no `passed`
+      # step may carry a still-pending mandatory verification gate. Stdlib-only.
+      - task: ledger:validate
 
   test:integration:
     desc: >-
