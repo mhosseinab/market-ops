@@ -78,9 +78,13 @@ class IntentClassification(BaseModel):
 class IntentRoute:
     """The deterministic routing decision for one intent class.
 
-    ``may_use_tools`` gates every downstream tool binding. ``guidance_key`` is the
-    catalog key for the structured-control guidance shown when the disposition is
-    GUIDANCE_ONLY; it is ``None`` for tool-capable intents.
+    ``may_use_tools`` is a DERIVED convenience — it is ``True`` iff the intent's
+    explicit capability (:mod:`llm.intents.capabilities`) grants at least one
+    tool. The real authority is the per-intent capability set, which additionally
+    distinguishes read-only from Draft-only authority (issue #31); this boolean
+    only answers "any tool at all?" for callers that need a coarse gate.
+    ``guidance_key`` is the catalog key for the structured-control guidance shown
+    when the disposition is GUIDANCE_ONLY; it is ``None`` for tool-capable intents.
     """
 
     intent: IntentClass
@@ -95,17 +99,24 @@ def route_intent(intent: IntentClass) -> IntentRoute:
     ApproveAction and ConfirmResult route to GUIDANCE_ONLY with
     ``may_use_tools=False`` — they can NEVER invoke a tool (§12.3, CHAT-041).
     Every other class is TOOL_CAPABLE (read/Draft-only; nothing past Draft).
+    ``may_use_tools`` is derived from the explicit capability set so the coarse
+    boolean can never disagree with the authoritative per-intent grant.
     """
+    # Imported lazily to keep the capability layer (which reads the tool
+    # registry) off the import path of callers that only need the class enum.
+    from llm.intents.capabilities import capability_for
+
+    may_use_tools = bool(capability_for(intent).tool_names)
     if intent in GUIDANCE_ONLY_INTENTS:
         return IntentRoute(
             intent=intent,
             disposition=IntentDisposition.GUIDANCE_ONLY,
-            may_use_tools=False,
+            may_use_tools=may_use_tools,
             guidance_key=_GUIDANCE_KEYS[intent],
         )
     return IntentRoute(
         intent=intent,
         disposition=IntentDisposition.TOOL_CAPABLE,
-        may_use_tools=True,
+        may_use_tools=may_use_tools,
         guidance_key=None,
     )
