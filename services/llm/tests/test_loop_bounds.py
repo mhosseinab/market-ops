@@ -97,6 +97,7 @@ def test_per_tool_timeout_maps_to_structured_failure() -> None:
         tool_call_run_limit=10_000,
         per_tool_call_run_limit=10_000,
         per_tool_timeout_seconds=0.2,
+        draft_timeout_seconds=0.1,  # keep the transport deadline strictly below (#25)
     )
     registry = build_registry()
 

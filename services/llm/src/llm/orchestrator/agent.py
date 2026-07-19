@@ -27,6 +27,8 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextvars
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -42,7 +44,20 @@ from langchain_core.runnables import Runnable
 
 from llm.config import Settings
 from llm.envelope.models import AssistantAnswer
+from llm.orchestrator.cancellation import (
+    CancelToken,
+    reset_cancel_token,
+    set_cancel_token,
+)
 from llm.tools.registry import ToolRegistry
+
+_LOGGER = logging.getLogger("llm.orchestrator")
+
+# Stable metric/log identifier: a worker that ignored cancellation past the
+# bounded cleanup grace is an incident (a hung tool holding resources), never a
+# silent recovery. Emitted with the tool name + timeout so telemetry can
+# distinguish a contained-but-uncancellable tool from a clean one.
+TOOL_TIMEOUT_WORKER_METRIC = "llm_tool_timeout_uncancelled_worker_total"
 
 
 class ToolTimeoutError(Exception):
@@ -66,40 +81,105 @@ class TokenCeilingError(Exception):
 class PerToolTimeoutMiddleware(AgentMiddleware[Any, Any, Any]):
     """Enforce a per-tool wall-clock timeout on BOTH the sync and async paths.
 
-    The sync path (``invoke``/``stream``) runs the tool on a worker thread and
-    abandons it (``wait=False``) if it overruns; the async path
-    (``ainvoke``/``astream`` — the #23 token-streaming path) wraps the awaited
-    handler in :func:`asyncio.wait_for`. Either way an overrun raises
-    :class:`ToolTimeoutError`, which the graph maps to the ``TOOL_TIMEOUT`` §12.4
-    structured failure so a hung tool never holds a turn open. Implementing both
-    hooks is required: a sync-only middleware raises ``NotImplementedError`` the
-    moment the agent is streamed asynchronously.
+    The timeout is a real containment boundary, not merely a stop-waiting: an
+    unkillable Python worker thread is NEVER the authoritative boundary (issue
+    #25). Each call runs with a request-scoped :class:`CancelToken` published on a
+    context var; the outbound tool transport (the real read/Draft ports wired in
+    S21/S23) reads it and aborts its in-flight network operation on cancellation.
+
+    * Sync path (``invoke``/``stream``): the handler runs on a worker thread inside
+      a copied context carrying the token. On overrun the token is cancelled so the
+      operation receives cancellation, then the worker is joined for a BOUNDED
+      cleanup grace. A worker that ignores cancellation past the grace is reported
+      as an audited incident (:data:`TOOL_TIMEOUT_WORKER_METRIC`) — never silently
+      abandoned.
+    * Async path (``ainvoke``/``astream`` — the #23 token-streaming path):
+      :func:`asyncio.wait_for` cancels the awaited handler (injects
+      ``CancelledError``); the token is cancelled too so cooperative sync sections
+      inside it also stop.
+
+    Either way an overrun raises :class:`ToolTimeoutError`, which the graph maps to
+    the ``TOOL_TIMEOUT`` §12.4 structured failure so a hung tool never holds a turn
+    open. Implementing both hooks is required: a sync-only middleware raises
+    ``NotImplementedError`` the moment the agent is streamed asynchronously.
     """
 
     tools: list[Any] = []  # noqa: RUF012 - framework reads middleware.tools
 
-    def __init__(self, timeout_seconds: float) -> None:
+    def __init__(self, timeout_seconds: float, cleanup_grace_seconds: float = 1.0) -> None:
         super().__init__()
         self._timeout_seconds = timeout_seconds
+        self._cleanup_grace_seconds = cleanup_grace_seconds
 
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:  # noqa: ANN401
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(handler, request)
+        token = CancelToken()
+        # Run the handler in a copy of THIS context so the token is visible to the
+        # tool/transport (via current_cancel_token) without leaking into the caller.
+        ctx = contextvars.copy_context()
+        executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tool-timeout"
+        )
+        future = executor.submit(ctx.run, self._invoke_with_token, token, handler, request)
         try:
-            return future.result(timeout=self._timeout_seconds)
-        except concurrent.futures.TimeoutError as exc:
-            raise self._timeout_error(request) from exc
+            try:
+                return future.result(timeout=self._timeout_seconds)
+            except concurrent.futures.TimeoutError as exc:
+                # Signal cancellation so the operation stops at its own seam, then
+                # give the worker a BOUNDED window to unwind. The token — not the
+                # abandoned thread — is the containment boundary. This cancel +
+                # bounded-join + incident report runs BEFORE the finally below.
+                token.cancel()
+                finished = self._await_bounded(future)
+                if not finished:
+                    self._report_uncancelled_worker(request)
+                raise self._timeout_error(request) from exc
         finally:
-            # Do NOT block on a runaway tool; the turn is already failing closed.
+            # Deterministic cleanup on EVERY path — success, timeout, and any
+            # non-timeout exception passthrough — so the per-call worker thread is
+            # never left for GC to reap (issue #25). Idempotent and non-blocking:
+            # the timeout branch has already cancelled + bounded-joined the worker.
             executor.shutdown(wait=False)
 
     async def awrap_tool_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:  # noqa: ANN401
+        token = CancelToken()
+        reset = set_cancel_token(token)
         try:
             return await asyncio.wait_for(handler(request), timeout=self._timeout_seconds)
         except TimeoutError as exc:  # asyncio.wait_for raises the builtin TimeoutError
-            # The abandoned coroutine/executor task is left to unwind on its own;
-            # the turn is already failing closed, exactly like the sync path.
+            # wait_for already cancels the awaited handler (CancelledError); cancel
+            # the token too so cooperative sync sections inside it also stop.
+            token.cancel()
             raise self._timeout_error(request) from exc
+        finally:
+            reset_cancel_token(reset)
+
+    @staticmethod
+    def _invoke_with_token(
+        token: CancelToken, handler: Callable[[Any], Any], request: Any  # noqa: ANN401
+    ) -> Any:  # noqa: ANN401
+        reset = set_cancel_token(token)
+        try:
+            return handler(request)
+        finally:
+            reset_cancel_token(reset)
+
+    def _await_bounded(self, future: concurrent.futures.Future[Any]) -> bool:
+        """Wait up to the cleanup grace for the worker to finish; True if it did."""
+        done, _ = concurrent.futures.wait([future], timeout=self._cleanup_grace_seconds)
+        return future in done
+
+    def _report_uncancelled_worker(self, request: Any) -> None:  # noqa: ANN401
+        name = request.tool_call.get("name", "<unknown>")
+        _LOGGER.warning(
+            "tool_timeout_uncancelled_worker",
+            extra={
+                "metric": TOOL_TIMEOUT_WORKER_METRIC,
+                "tool": name,
+                "timeout_seconds": self._timeout_seconds,
+                "cleanup_grace_seconds": self._cleanup_grace_seconds,
+                "disposition": "worker_still_running",
+            },
+        )
 
     def _timeout_error(self, request: Any) -> ToolTimeoutError:  # noqa: ANN401
         name = request.tool_call.get("name", "<unknown>")
@@ -207,7 +287,12 @@ def build_agent(
     # §12.4 hard bounds. Both raise, and the graph maps them to a structured
     # failure (TOOL_TIMEOUT / TOKEN_CEILING). No silent truncation, no hung tool.
     # Both implement sync AND async hooks so the bounds hold on the streamed path.
-    middleware.append(PerToolTimeoutMiddleware(settings.per_tool_timeout_seconds))
+    middleware.append(
+        PerToolTimeoutMiddleware(
+            settings.per_tool_timeout_seconds,
+            settings.per_tool_cleanup_grace_seconds,
+        )
+    )
     middleware.append(TokenCeilingMiddleware())
 
     graph = create_agent(

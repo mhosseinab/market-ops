@@ -31,13 +31,24 @@ already declares):
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import httpx
 from pydantic import ValidationError
 
+from llm.config import DEFAULT_DRAFT_TIMEOUT_SECONDS
 from llm.flows.deep_links import approval_control, bulk_control, level2_control
 from llm.flows.models import DraftKind, DraftTicket, ProposalCard
+from llm.orchestrator.cancellation import raise_if_cancelled
+
+# Re-exported for callers that construct the port directly. The single source is
+# ``llm.config.DEFAULT_DRAFT_TIMEOUT_SECONDS``; it fails closed BEFORE the per-tool
+# middleware timeout (an invariant ``Settings`` validates), so the network
+# operation is aborted at the transport (httpx closes the connection) instead of
+# being abandoned on a worker thread (issue #25). Configurable per instance.
+__all__ = ["DEFAULT_DRAFT_TIMEOUT_SECONDS", "DraftUnavailable", "GatewayDraftPort"]
 
 
 class DraftUnavailable(Exception):
@@ -49,19 +60,51 @@ class GatewayDraftPort:
 
     Constructed once with the gateway base URL, the read/Draft-only bearer token,
     and an ``httpx.Client`` (injected for tests). Every call fails closed.
+
+    Every write is bounded, cancellable, and idempotent (issue #25): before a POST
+    is issued ``_post`` consults the request-scoped cancel token
+    (:func:`~llm.orchestrator.cancellation.raise_if_cancelled`), so a call whose
+    per-tool deadline already elapsed aborts BEFORE the write is sent — the token is
+    authoritative, not merely advisory. Each POST then carries a request-scoped
+    ``timeout`` so a hung gateway aborts an in-flight operation (failing closed to
+    no ticket, never a late invisible write), and a STABLE ``Idempotency-Key``
+    derived from the request identity so a retried create deduplicates server-side
+    and can never produce a duplicate Draft.
     """
 
-    def __init__(self, base_url: str, token: str, client: httpx.Client) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        client: httpx.Client,
+        *,
+        timeout_seconds: float = DEFAULT_DRAFT_TIMEOUT_SECONDS,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
         self._client = client
+        self._timeout_seconds = timeout_seconds
 
     def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        headers = {"Accept": "application/json"}
+        # The request-scoped cancel token is authoritative (issue #25): if the
+        # per-tool deadline already cancelled this call, abort BEFORE the write is
+        # sent — fail closed to no ticket, never a late invisible Draft. This is in
+        # addition to the httpx per-request timeout below, which bounds a write
+        # already in flight.
+        raise_if_cancelled()
+        headers = {
+            "Accept": "application/json",
+            "Idempotency-Key": _idempotency_key(path, body),
+        }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         try:
-            resp = self._client.post(self._base_url + path, json=body, headers=headers)
+            resp = self._client.post(
+                self._base_url + path,
+                json=body,
+                headers=headers,
+                timeout=self._timeout_seconds,
+            )
         except httpx.HTTPError as exc:
             raise DraftUnavailable(f"draft transport error on {path}: {exc}") from exc
         if resp.status_code // 100 != 2:
@@ -134,6 +177,24 @@ class GatewayDraftPort:
             )
         except ValidationError as exc:
             raise DraftUnavailable(f"malformed level2 proposal: {exc}") from exc
+
+
+def _idempotency_key(path: str, body: dict[str, Any]) -> str:
+    """A STABLE idempotency key for a Draft create (issue #25).
+
+    Derived deterministically from the endpoint plus the canonical request body, so
+    a retry of the SAME logical create carries the SAME key (the gateway dedups it,
+    preventing a duplicate write) while distinct creates never collide. It is a
+    natural key — pure function of the request — so no client-side state is needed
+    to make a retry safe.
+    """
+    # LOW follow-up (issue #25, deferred): the key has no expiry/nonce dimension,
+    # so replay-safety of a re-attempted create depends entirely on the gateway's
+    # dedup-window TTL. A future revision may fold a bounded time bucket / action
+    # nonce into the derivation. NOT changed here — the current natural key is
+    # correct for stable-retry / distinct-request semantics.
+    canonical = json.dumps({"path": path, "body": body}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _require(data: dict[str, Any], key: str) -> str:
