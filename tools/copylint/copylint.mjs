@@ -33,7 +33,10 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import ts from "typescript";
 
-const PERSIAN = /[؀-ۿ]/;
+// Global + one-or-more so the file-level guard can iterate EVERY run (matchAll)
+// and report the whole token, not just the first character — a single exemption
+// must never suppress the whole file.
+const PERSIAN = /[؀-ۿ]+/g;
 const LETTER = /[A-Za-z؀-ۿ]/;
 
 // JSX attributes whose value is rendered to the user (visible text or announced
@@ -178,10 +181,28 @@ export function lintSource(fileName, text) {
     scriptKind(fileName),
   );
 
+  // Fail CLOSED on unparseable input. A file the TypeScript parser cannot fully
+  // read yields a partial/empty AST, so the structural walk below can silently
+  // miss inline copy (the old regex scanner caught raw text regardless of
+  // parseability). A parse error is therefore a violation, not a clean pass.
+  const found = [];
+  if (sf.parseDiagnostics && sf.parseDiagnostics.length > 0) {
+    const d = sf.parseDiagnostics[0];
+    const { line, character } =
+      typeof d.start === "number"
+        ? sf.getLineAndCharacterOfPosition(d.start)
+        : { line: 0, character: 0 };
+    found.push({
+      line: line + 1,
+      col: character + 1,
+      category: "parse-error",
+      literal: ts.flattenDiagnosticMessageText(d.messageText, "\n"),
+    });
+  }
+
   // Lines carrying a reviewed `copylint-allow: <reason>`. The exemption covers
   // the directive line and the next line (annotate the offending line above).
   const allowedLines = new Set();
-  const found = [];
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     if (!ALLOW_DIRECTIVE.test(lines[i])) continue;
@@ -274,20 +295,25 @@ export function lintSource(fileName, text) {
   visit(sf);
 
   // File-level Persian guard: any Persian/Arabic script in a scanned component
-  // is copy that belongs in the locale pack. Reported once, at first occurrence,
-  // even if it sits somewhere the structural rules above do not reach.
-  const p = PERSIAN.exec(text);
-  if (p) {
-    const before = text.slice(0, p.index);
+  // is copy that belongs in the locale pack, even where the structural rules
+  // above do not reach. EVERY occurrence is inspected independently — a single
+  // reasoned copylint-allow suppresses only the Persian on ITS exempted line and
+  // never short-circuits the rest of the file (mirrors the per-node allowlist).
+  // Reported at most once per non-exempt line so a whole Persian phrase is one
+  // finding, not one per character.
+  const persianReported = new Set();
+  for (const m of text.matchAll(PERSIAN)) {
+    const before = text.slice(0, m.index);
     const line = before.split("\n").length;
-    if (!allowedLines.has(line)) {
-      found.push({
-        line,
-        col: p.index - before.lastIndexOf("\n"),
-        category: "persian",
-        literal: p[0],
-      });
-    }
+    if (allowedLines.has(line)) continue; // reviewed exemption on THIS line only
+    if (persianReported.has(line)) continue; // one finding per line
+    persianReported.add(line);
+    found.push({
+      line,
+      col: m.index - before.lastIndexOf("\n"),
+      category: "persian",
+      literal: m[0],
+    });
   }
 
   found.sort((a, b) => a.line - b.line || a.col - b.col);
@@ -316,6 +342,7 @@ const GUIDANCE = {
   "dom-prop": "inline DOM display literal — assign t(key)",
   persian: "Persian literal in component — move to the locale pack",
   "exemption-without-reason": "copylint-allow needs a reason (copylint-allow: why)",
+  "parse-error": "file does not parse — copy-lint fails closed; fix the syntax",
 };
 
 /** Lint every .ts/.tsx file under the given paths. */

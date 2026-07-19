@@ -52,6 +52,31 @@ for (const rel of NEGATIVE) {
   });
 }
 
+// Finding 1 (safety): a single reasoned copylint-allow on the FIRST Persian line
+// must NOT exempt the rest of the file. The SECOND, non-exempt Persian literal
+// must still report — the guard iterates every occurrence, it never short-
+// circuits on the first match.
+test("copylint-allow on first Persian line does not exempt a later Persian literal", () => {
+  const rel = "positive/PersianMultiExempt.tsx";
+  const violations = lintSource(fixture(rel), readFileSync(fixture(rel), "utf8"));
+  assert.deepEqual(
+    violations.map((v) => v.category),
+    ["persian"],
+  );
+  // The reported literal is the SECOND (non-exempt) Persian token, not the first.
+  assert.equal(violations[0].literal, "متناقض");
+});
+
+// Finding 2 (safety): a file TypeScript cannot fully parse must FAIL CLOSED —
+// parse diagnostics yield a [parse-error] violation, never a clean pass that
+// would let a bare user-facing literal slip through an incomplete AST.
+test("an unparseable file fails closed with a parse-error violation", () => {
+  const rel = "positive/ParseError.tsx";
+  const cats = categories(rel);
+  assert.ok(cats.includes("parse-error"), `expected parse-error, got ${JSON.stringify(cats)}`);
+  assert.ok(cats.length > 0, "unparseable file must not pass clean");
+});
+
 // Diagnostics carry file, 1-based location, category, and the detected literal.
 test("a violation reports file, location, category and the literal", () => {
   const rel = "positive/JsxText.tsx";
