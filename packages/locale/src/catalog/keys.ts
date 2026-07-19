@@ -692,6 +692,12 @@ export const MESSAGE_KEYS = [
   "ext.deepLink.product",
   "ext.deepLink.event",
   "ext.deepLink.chat",
+  // Durable dead-letter recovery (issue #150): count label, per-item operator
+  // actions, and the locale-neutral failure-reason token → copy mapping.
+  "ext.deadLetter.count",
+  "ext.deadLetter.retry",
+  "ext.deadLetter.discard",
+  "ext.deadLetter.reason.maxAttempts",
 ] as const;
 
 export type MessageKey = (typeof MESSAGE_KEYS)[number];

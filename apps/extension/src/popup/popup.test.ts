@@ -15,6 +15,7 @@ function unknownState(): PopupState {
     queuedCount: 0,
     degradation: "not_paired",
     scheduleEnabled: false,
+    deadLetter: [],
   };
 }
 
@@ -26,6 +27,7 @@ function readyState(): PopupState {
     queuedCount: 3,
     degradation: null,
     scheduleEnabled: false,
+    deadLetter: [],
   };
 }
 
@@ -69,5 +71,36 @@ describe("popup — fa-IR catalog copy, no inline literals (S31 carry-forward)",
     expect(input?.placeholder).toBe("کد جفت‌سازی");
     const buttons = Array.from(document.querySelectorAll("button")).map((b) => b.textContent);
     expect(buttons).toContain("جفت‌سازی");
+  });
+
+  it("surfaces the durable dead-letter count + a per-item retry/discard affordance (issue #150, EXT-009)", async () => {
+    const sent: ExtMessage[] = [];
+    const state = readyState();
+    state.deadLetter = [{ dedupKey: "abc12345", failureReason: "max_attempts_exhausted" }];
+    await loadPopup(async (m) => {
+      sent.push(m);
+      return { ok: true, state };
+    });
+
+    // Visible count row + the localized failure reason (never inline English).
+    expect(document.querySelector('[data-field="dead-letter"]')?.textContent).toBe(
+      "بارگذاری‌های ناموفق: 1",
+    );
+    const item = document.querySelector('[data-role="dead-letter-item"]');
+    expect(item?.getAttribute("data-dedup-key")).toBe("abc12345");
+    expect(item?.querySelector('[data-role="dead-letter-reason"]')?.textContent).toBe(
+      "تلاش‌ها به پایان رسید",
+    );
+
+    // Retry and discard are real operator actions addressed by the stable key.
+    const retry = document.querySelector<HTMLButtonElement>('[data-role="dead-letter-retry"]');
+    const discard = document.querySelector<HTMLButtonElement>('[data-role="dead-letter-discard"]');
+    expect(retry?.textContent).toBe("تلاش دوباره");
+    expect(discard?.textContent).toBe("دور انداختن");
+    retry?.click();
+    discard?.click();
+    await Promise.resolve();
+    expect(sent).toContainEqual({ kind: "retryDeadLetter", dedupKey: "abc12345" });
+    expect(sent).toContainEqual({ kind: "discardDeadLetter", dedupKey: "abc12345" });
   });
 });

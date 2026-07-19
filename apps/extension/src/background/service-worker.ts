@@ -83,6 +83,10 @@ async function handle(msg: ExtMessage, sender: chrome.runtime.MessageSender): Pr
       return handleRevoke();
     case "getState":
       return { ok: true, state: await popupState() };
+    case "retryDeadLetter":
+      return handleRetryDeadLetter(msg.dedupKey);
+    case "discardDeadLetter":
+      return handleDiscardDeadLetter(msg.dedupKey);
     case "setOwnedTargets":
       ownedTargets.replaceAll(msg.targets);
       return { ok: true };
@@ -258,6 +262,32 @@ async function handleRevoke(): Promise<ExtResponse> {
   return { ok: true, state: await popupState() };
 }
 
+// Operator recovery for exhausted deliveries (issue #150 / EXT-009). Retry
+// returns a dead-lettered item to the pending queue and re-attempts delivery
+// (flush() self-gates on capability, so a disabled/revoked extension still
+// re-queues but never reaches the server); discard removes it intentionally.
+// Both emit a distinct metric so the recovery action is observable, never a
+// silent mutation.
+async function handleRetryDeadLetter(dedupKey: string): Promise<ExtResponse> {
+  const { moved, shed } = await queue.retryDeadLetter(dedupKey);
+  incr("dead_letter_retry", { outcome: moved ? "moved" : "not_found" });
+  // A retry at the queue cap shifts out the oldest live capture — signal it as
+  // backpressure exactly like the enqueue path, so telemetry can tell a clean
+  // recovery from one that shed a pending capture (issue #150, BLOCKER 2).
+  if (shed) incr("queue_backpressure");
+  if (moved) {
+    await emitQueueDepth();
+    await flush();
+  }
+  return { ok: true, state: await popupState() };
+}
+
+async function handleDiscardDeadLetter(dedupKey: string): Promise<ExtResponse> {
+  const removed = await queue.discardDeadLetter(dedupKey);
+  incr("dead_letter_discard", { outcome: removed ? "removed" : "not_found" });
+  return { ok: true, state: await popupState() };
+}
+
 async function flush(): Promise<void> {
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
   const capability = await getCapability();
@@ -267,6 +297,11 @@ async function flush(): Promise<void> {
     await store.set(KEY_LAST_UPLOAD, new Date().toISOString());
     incr("upload_accepted", {}, res.accepted);
   }
+  // Permanent 4xx drops and exhausted dead-letters are DISTINCT outcomes — each
+  // gets its own metric so the popup + telemetry can tell an intentional drop
+  // from a recoverable, preserved failure (issue #150).
+  if (res.dropped > 0) incr("upload_failed", {}, res.dropped);
+  if (res.deadLettered > 0) incr("upload_dead_letter", {}, res.deadLettered);
   if (res.revoked) {
     // Credential killed server-side: fail closed and surface a disabled state.
     await setCapability("revoked");
@@ -301,5 +336,6 @@ async function popupState(): Promise<PopupState> {
     queuedCount: await queue.count(),
     degradation: degradationReason(capability),
     scheduleEnabled: (await store.get<boolean>(KEY_SCHEDULE_ENABLED)) ?? false,
+    deadLetter: await queue.deadLetterSummaries(),
   };
 }

@@ -17,6 +17,12 @@ export type MetricName =
   | "queue_backpressure"
   | "upload_accepted"
   | "upload_failed"
+  // Exhausted transient delivery moved to the durable dead-letter store (issue
+  // #150) — a THIRD outcome, distinct from queue_backpressure (cap shed) and
+  // upload_failed (permanent 4xx drop).
+  | "upload_dead_letter"
+  | "dead_letter_retry"
+  | "dead_letter_discard"
   | "capability_transition"
   | "on_demand_latency_ms"
   | "watchlist_add"
