@@ -43,6 +43,24 @@ exporters:
     verbosity: normal
 
 service:
+  # The collector's OWN internal telemetry. The 0.119.0 image defaults this
+  # metrics listener to localhost:8888 (feature gate
+  # telemetry.UseLocalHostAsDefaultMetricsAddress), reachable only inside this
+  # container — so the advertised otel-collector-internal Prometheus job stays
+  # DOWN and queue depth / dropped spans / exporter failures are invisible
+  # (issue #153). Bind it to 0.0.0.0:8888 so the Prometheus container can scrape
+  # it over the compose network. This uses the otelconf `readers` form the
+  # 0.119.0 default config itself emits (Pull→Prometheus host/port). It stays
+  # INTERNAL to the compose network — compose.dev.yml publishes no :8888 port —
+  # so nothing is exposed beyond the intended network (issue #10 posture holds).
+  telemetry:
+    metrics:
+      readers:
+        - pull:
+            exporter:
+              prometheus:
+                host: 0.0.0.0
+                port: 8888
   pipelines:
     traces:
       receivers: [otlp]
