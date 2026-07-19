@@ -149,13 +149,19 @@ func TestDeletingConversationLeavesAuditIntact(t *testing.T) {
 	actionID := uuid.New()
 	snapshot, _ := json.Marshal(map[string]string{"k": "v"})
 	if _, err := q.AppendAuditRecord(ctx, db.AppendAuditRecordParams{
-		ActionID:      actionID,
-		EventType:     "draft_created",
-		Actor:         "actor@example.com",
-		ActorRole:     "owner",
-		Surface:       "screens",
-		CardSnapshot:  snapshot,
-		TerminalState: "draft",
+		ActionID:  actionID,
+		EventType: "draft_created",
+		Actor:     "actor@example.com",
+		ActorRole: "owner",
+		Surface:   "screens",
+		// evidence_versions is jsonb NOT NULL DEFAULT '{}' (migration 0013). The
+		// generated INSERT binds this column explicitly, so a nil []byte would
+		// write an EXPLICIT NULL and violate the constraint — pass the empty JSON
+		// object, mirroring every other audit DB fixture (e.g. reconcile,
+		// execution service DB tests).
+		EvidenceVersions: []byte("{}"),
+		CardSnapshot:     snapshot,
+		TerminalState:    "draft",
 	}); err != nil {
 		t.Fatalf("append audit: %v", err)
 	}
