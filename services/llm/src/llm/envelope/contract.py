@@ -29,11 +29,44 @@ from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from llm.envelope.models import EvidenceRef, Money, RawEvidenceValue
+from llm.envelope.models import (
+    _INT64_MAX,
+    _INT64_MIN,
+    EvidenceRef,
+    Money,
+    RawEvidenceValue,
+)
 
 # Inline tables stop at this many rows; beyond it the response summarizes and
 # deep-links instead of dumping rows into chat (CHAT-023).
 MAX_INLINE_ROWS = 20
+
+
+def _require_plain_int64(v: Any, field: str) -> Any:
+    """Reject any non-integer JSON node and enforce the signed int64 bound.
+
+    A structured count is a *plain JSON integer*. A numeric string (``"3"``,
+    ``"3.0"``, or a Python-int-parseable Persian/Arabic-Indic digit string), a
+    bare float, or a bool is a TYPE violation, never a value to coerce — this is
+    quarantine-over-inference (§4.6): the contract fails closed rather than
+    silently guessing the caller meant an integer. Unlike ``Money.mantissa``
+    there is no int64-string wire form for a count, so strings are rejected
+    outright. The int64 range matches ``Money.mantissa`` (the Go-core bound).
+
+    The rejected raw token is never echoed into the message, so a digit can
+    never leak into a user-visible slot via a surfaced error (§4.6 containment).
+    """
+    if isinstance(v, bool):
+        raise ValueError(f"{field} must be an integer, not bool")
+    if isinstance(v, float):
+        raise ValueError(f"{field} must be an integer, never float (§9.1 numeric rule)")
+    if isinstance(v, str):
+        raise ValueError(f"{field} must be a JSON integer, not a string (§4.6 no coercion)")
+    if not isinstance(v, int):
+        raise ValueError(f"{field} must be a plain JSON integer")
+    if not _INT64_MIN <= v <= _INT64_MAX:
+        raise ValueError(f"{field} must be within signed int64 range (§9.1)")
+    return v
 
 
 class Provenance(StrEnum):
@@ -216,13 +249,11 @@ class SourcedValue(BaseModel):
     @field_validator("count", mode="before")
     @classmethod
     def _count_is_integer(cls, v: Any) -> Any:
+        # None means "no count payload"; the exactly-one-payload validator then
+        # decides. Any supplied value must be a plain JSON integer — no coercion.
         if v is None:
             return v
-        if isinstance(v, bool):
-            raise ValueError("count must be an integer, not bool")
-        if isinstance(v, float):
-            raise ValueError("count must be an integer, never float (§9.1 numeric rule)")
-        return v
+        return _require_plain_int64(v, "count")
 
     @model_validator(mode="after")
     def _exactly_one_payload(self) -> SourcedValue:
@@ -352,6 +383,13 @@ class InlineTable(BaseModel):
     total_row_count: int
     summary: str | None = None
     deep_link: str | None = None
+
+    @field_validator("total_row_count", mode="before")
+    @classmethod
+    def _total_row_count_is_integer(cls, v: Any) -> Any:
+        # Populated on the same model/tool decode path as SourcedValue.count;
+        # a numeric string / float would otherwise lax-coerce (issue #57).
+        return _require_plain_int64(v, "total_row_count")
 
 
 class Recommendation(BaseModel):

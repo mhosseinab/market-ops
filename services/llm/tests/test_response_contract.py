@@ -19,6 +19,7 @@ from llm.envelope.contract import (
     UNSCOPED,
     CannotAnswer,
     Claim,
+    InlineTable,
     Provenance,
     ResponseEnvelope,
     SourcedValue,
@@ -216,6 +217,86 @@ def test_sourced_count_rejects_bool() -> None:
             provenance=Provenance.DK_SIGNAL,
             count=True,
         )
+
+
+def test_sourced_count_accepts_json_integer() -> None:
+    """A plain JSON integer is the ONLY valid count wire form — it still parses."""
+    sv = SourcedValue(
+        source=SourceRef(tool="read_observation", response_field="offer.seller_count"),
+        provenance=Provenance.DK_SIGNAL,
+        count=3,
+    )
+    assert sv.count == 3
+    assert sv.is_numeric()
+
+
+def test_sourced_count_rejects_numeric_string() -> None:
+    """A numeric string ("3") must NOT be lax-coerced to an int (§4.6 no coercion)."""
+    with pytest.raises(ValidationError):
+        SourcedValue(
+            source=SourceRef(tool="read_observation", response_field="offer.seller_count"),
+            provenance=Provenance.DK_SIGNAL,
+            count="3",  # type: ignore[arg-type]
+        )
+
+
+def test_sourced_count_rejects_string_float() -> None:
+    """A decimal string ("3.0") is a string, not a JSON integer — rejected."""
+    with pytest.raises(ValidationError):
+        SourcedValue(
+            source=SourceRef(tool="read_observation", response_field="offer.seller_count"),
+            provenance=Provenance.DK_SIGNAL,
+            count="3.0",  # type: ignore[arg-type]
+        )
+
+
+def test_sourced_count_rejects_persian_digit_string() -> None:
+    """Persian ("۳") / Arabic-Indic ("٧٧٧") digit strings are Python-int-parseable
+    but are marketplace text, not a structured count — quarantine over inference."""
+    for raw in ("۳", "٧٧٧"):
+        with pytest.raises(ValidationError):
+            SourcedValue(
+                source=SourceRef(tool="read_observation", response_field="offer.seller_count"),
+                provenance=Provenance.DK_SIGNAL,
+                count=raw,  # type: ignore[arg-type]
+            )
+
+
+def test_sourced_count_rejects_int64_overflow() -> None:
+    """A count beyond signed int64 fails closed, matching Money.mantissa (§9.1)."""
+    with pytest.raises(ValidationError):
+        SourcedValue(
+            source=SourceRef(tool="read_observation", response_field="offer.seller_count"),
+            provenance=Provenance.DK_SIGNAL,
+            count=2**63,  # one past INT64_MAX
+        )
+
+
+def test_sourced_count_rejects_json_null_where_required() -> None:
+    """A JSON null in the count slot means "no count payload" — it must never
+    become 0/valid; the exactly-one-payload rule then rejects the empty value."""
+    with pytest.raises(ValidationError):
+        SourcedValue(
+            source=SourceRef(tool="read_observation", response_field="offer.seller_count"),
+            provenance=Provenance.DK_SIGNAL,
+            count=None,  # no other payload set either
+        )
+
+
+def test_table_total_row_count_rejects_numeric_string() -> None:
+    """total_row_count shares the count decode path: a numeric string is rejected."""
+    with pytest.raises(ValidationError):
+        InlineTable(columns=["sku"], rows=[["A"]], total_row_count="1")  # type: ignore[arg-type]
+
+
+def test_table_total_row_count_rejects_float() -> None:
+    with pytest.raises(ValidationError):
+        InlineTable(columns=["sku"], rows=[["A"]], total_row_count=1.0)  # type: ignore[arg-type]
+
+
+def test_table_total_row_count_rejects_persian_digit_string() -> None:
+    with pytest.raises(ValidationError):
+        InlineTable(columns=["sku"], rows=[["A"]], total_row_count="۱")  # type: ignore[arg-type]
 
 
 def test_sourced_value_requires_exactly_one_payload() -> None:
