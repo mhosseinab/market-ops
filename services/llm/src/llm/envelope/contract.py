@@ -25,7 +25,7 @@ walking validator so the enforcement point is explicit and testable.
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -125,6 +125,38 @@ class AvailabilityCatalog(BaseModel):
     deterministic_calculations: SectionScope = Field(default_factory=SectionScope)
     comparisons: SectionScope = Field(default_factory=SectionScope)
     exposure: SectionScope = Field(default_factory=SectionScope)
+
+
+class _Unscoped:
+    """Sentinel: a CONSCIOUS opt-out of section-scope enforcement (issue #51).
+
+    The live compose boundary makes the :class:`AvailabilityCatalog` mandatory so
+    that forgetting it fails closed (a ``TypeError`` at the call site) rather than
+    silently skipping the section-scope check and reopening the #51 spoof gap. A
+    caller that legitimately has no scope data yet — authored / trusted / eval
+    inputs that predate an authoritative catalog — must opt out EXPLICITLY by
+    passing this singleton (``catalog=UNSCOPED``); it is self-documenting in the
+    call site and impossible to reach by omission.
+
+    Downstream: **S23** wires an authoritative :class:`AvailabilityCatalog` built
+    from validated tool outputs into the live compose path, at which point these
+    conscious opt-outs are replaced by the real per-section availability.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid only
+        return "UNSCOPED"
+
+
+# The one shared trust-all marker. Pass it EXPLICITLY to skip section scoping;
+# passing nothing at the compose boundary is a TypeError (fails closed).
+UNSCOPED: Final[_Unscoped] = _Unscoped()
+
+# What the mandatory compose boundary accepts: a real per-section catalog that is
+# enforced, or the explicit trust-all sentinel. There is deliberately NO ``None``
+# member — omission cannot silently disable scope enforcement.
+CatalogArg = AvailabilityCatalog | _Unscoped
 
 
 class SourcedValue(BaseModel):

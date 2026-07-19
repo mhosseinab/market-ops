@@ -14,6 +14,7 @@ from __future__ import annotations
 import pytest
 from llm.envelope.composer import compose, compose_or_refuse
 from llm.envelope.contract import (
+    UNSCOPED,
     AvailabilityCatalog,
     Calculation,
     CannotAnswer,
@@ -245,12 +246,40 @@ def test_exposure_source_from_another_section_is_rejected() -> None:
     assert "SOURCE_OUT_OF_SECTION" in _codes(env, _catalog())
 
 
-# --- 7. SEAM: catalog absent preserves existing behavior --------------------
+# --- 7. SEAM: the compose boundary makes the catalog MANDATORY (fail closed) --
 
 
-def test_no_catalog_preserves_existing_behavior() -> None:
-    # Without a catalog the section-scope check does not run (existing callers /
-    # trusted authored inputs) — but every OTHER grounding rule still applies.
+def test_compose_without_catalog_fails_closed() -> None:
+    # Omitting the catalog at the LIVE compose boundary must FAIL CLOSED — a
+    # missing required argument (TypeError), never a silent skip of the #51
+    # section-scope check that would let this wrong-section value render grounded.
+    with pytest.raises(TypeError):
+        compose(  # type: ignore[call-arg]
+            observed_facts=[
+                Claim(statement="an offer", evidence=[OBS_EVIDENCE],
+                      value=SourcedValue(source=DK_SRC, provenance=Provenance.OBSERVED,
+                                         money=Money(mantissa=1, currency="IRR")))
+            ],
+        )
+
+
+def test_compose_or_refuse_without_catalog_fails_closed() -> None:
+    # Same non-optional boundary for the fail-closed composer: omitting the
+    # catalog raises rather than degrading to a plausible-looking answer.
+    with pytest.raises(TypeError):
+        compose_or_refuse(  # type: ignore[call-arg]
+            observed_facts=[
+                Claim(statement="an offer", evidence=[OBS_EVIDENCE],
+                      value=SourcedValue(source=DK_SRC, provenance=Provenance.OBSERVED,
+                                         money=Money(mantissa=1, currency="IRR")))
+            ],
+        )
+
+
+def test_explicit_unscoped_opt_out_composes_without_scope_check() -> None:
+    # A trusted/authored input consciously opts out by passing UNSCOPED. The
+    # scope check is skipped (preserving existing behavior) but every OTHER
+    # grounding rule still applies, and no scope codes are emitted.
     env = ResponseEnvelope(
         observed_facts=[
             Claim(statement="an offer", evidence=[OBS_EVIDENCE],
@@ -258,9 +287,21 @@ def test_no_catalog_preserves_existing_behavior() -> None:
                                      money=Money(mantissa=1, currency="IRR")))
         ],
     )
+    # The scope-only codes never appear without a real catalog.
     codes = {v.code for v in find_violations(env)}
     assert "SOURCE_OUT_OF_SECTION" not in codes
     assert "UNSCOPED_EVIDENCE" not in codes
+    # And the composer renders (not a refusal) when UNSCOPED is passed explicitly.
+    result = compose_or_refuse(
+        catalog=UNSCOPED,
+        observed_facts=[
+            Claim(statement="lowest qualifying offer", evidence=[OBS_EVIDENCE],
+                  value=SourcedValue(source=DK_SRC, provenance=Provenance.OBSERVED,
+                                     money=Money(mantissa=990000, currency="IRR")))
+        ],
+    )
+    assert isinstance(result, ResponseEnvelope)
+    assert result.observed_facts[0].statement == "lowest qualifying offer"
 
 
 def test_compose_with_catalog_raises_on_wrong_section() -> None:

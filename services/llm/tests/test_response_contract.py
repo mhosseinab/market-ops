@@ -16,6 +16,7 @@ from llm.envelope.composer import (
     fail_closed,
 )
 from llm.envelope.contract import (
+    UNSCOPED,
     CannotAnswer,
     Claim,
     Provenance,
@@ -45,6 +46,7 @@ def _sourced_money() -> SourcedValue:
 
 def test_compose_places_model_text_only_in_inference() -> None:
     env = compose(
+        catalog=UNSCOPED,
         model_inference="The offer sits just above your floor.",
         observed_facts=[Claim(statement="lowest qualifying offer", evidence=[GOOD_EVIDENCE],
                               value=_sourced_money())],
@@ -57,7 +59,8 @@ def test_compose_places_model_text_only_in_inference() -> None:
 
 def test_compose_raises_on_ungrounded_envelope() -> None:
     with pytest.raises(GroundingError):
-        compose(observed_facts=[Claim(statement="no evidence claim", evidence=[])])
+        compose(catalog=UNSCOPED,
+                observed_facts=[Claim(statement="no evidence claim", evidence=[])])
 
 
 # --- fail closed: missing evidence ⇒ structured refusal with deep link ------
@@ -65,6 +68,7 @@ def test_compose_raises_on_ungrounded_envelope() -> None:
 
 def test_compose_or_refuse_fails_closed_on_missing_evidence() -> None:
     result = compose_or_refuse(
+        catalog=UNSCOPED,
         observed_facts=[Claim(statement="unsupported claim", evidence=[])],
         missing_data=["evidence for the claim"],
     )
@@ -84,6 +88,7 @@ def test_compose_or_refuse_fails_closed_on_fabricated_number() -> None:
         money=Money(mantissa=123456, currency="IRR"),
     )
     result = compose_or_refuse(
+        catalog=UNSCOPED,
         observed_facts=[Claim(statement="made up", evidence=[GOOD_EVIDENCE], value=fabricated)]
     )
     assert isinstance(result, CannotAnswer)
@@ -92,6 +97,7 @@ def test_compose_or_refuse_fails_closed_on_fabricated_number() -> None:
 
 def test_compose_or_refuse_returns_envelope_when_grounded() -> None:
     result = compose_or_refuse(
+        catalog=UNSCOPED,
         model_inference="A short natural-language note.",
         observed_facts=[Claim(statement="ok", evidence=[GOOD_EVIDENCE], value=_sourced_money())],
     )
@@ -107,7 +113,7 @@ def test_compose_or_refuse_fails_closed_on_validation_error(monkeypatch) -> None
         raise AssertionError("unreachable")
 
     monkeypatch.setattr(composer_mod, "compose", _boom)
-    result = composer_mod.compose_or_refuse(model_inference="note")
+    result = composer_mod.compose_or_refuse(catalog=UNSCOPED, model_inference="note")
     assert isinstance(result, CannotAnswer)
     assert "ENVELOPE_MALFORMED" in result.violations
     assert result.deep_link == FALLBACK_DEEP_LINK

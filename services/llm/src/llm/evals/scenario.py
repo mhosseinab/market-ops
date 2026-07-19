@@ -19,9 +19,11 @@ from typing import Any
 
 from llm.envelope.composer import compose_or_refuse
 from llm.envelope.contract import (
+    UNSCOPED,
     AvailabilityCatalog,
     Calculation,
     CannotAnswer,
+    CatalogArg,
     Claim,
     Comparison,
     ExposureTotal,
@@ -125,16 +127,18 @@ def _section_scope(spec: dict[str, Any] | None) -> SectionScope:
     return SectionScope(evidence_ids=list(spec.get("evidence_ids", [])), sources=sources)
 
 
-def _availability(spec: dict[str, Any] | None) -> AvailabilityCatalog | None:
+def _availability(spec: dict[str, Any] | None) -> CatalogArg:
     """Build the per-section availability catalog when a fixture declares one.
 
     A factual fixture MAY carry an ``availability`` block naming the evidence IDs
     and source refs legitimately made available per section (issue #51). When it
-    does, the real composer enforces strict section-scoped membership; when it is
-    absent, existing trusted-fixture behavior is preserved (no scope check).
+    does, the real composer enforces strict section-scoped membership. When it is
+    absent, the fixture is a trusted authored input with no scope data yet, so it
+    CONSCIOUSLY opts out by passing the :data:`UNSCOPED` sentinel — never ``None``
+    (which the mandatory compose boundary rejects as a silent skip).
     """
     if spec is None:
-        return None
+        return UNSCOPED
     return AvailabilityCatalog(
         observed_facts=_section_scope(spec.get("observed_facts")),
         dk_signals=_section_scope(spec.get("dk_signals")),

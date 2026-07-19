@@ -19,6 +19,7 @@ from llm.envelope.contract import (
     AvailabilityCatalog,
     Calculation,
     CannotAnswer,
+    CatalogArg,
     Claim,
     Comparison,
     ExposureTotal,
@@ -48,16 +49,24 @@ def compose(
     comparisons: list[Comparison] | None = None,
     tables: list[InlineTable] | None = None,
     exposure: ExposureTotal | None = None,
-    catalog: AvailabilityCatalog | None = None,
+    catalog: CatalogArg,
 ) -> ResponseEnvelope:
     """Build and VALIDATE a response envelope.
 
     ``model_inference`` is the only slot the model authors; every other argument
-    is typed, sourced data the caller assembled from service responses. When a
-    ``catalog`` (built from validated tool outputs) is supplied, grounding also
-    enforces strict section-scoped membership of every evidence_id and SourceRef
-    (issue #51). Raises :class:`GroundingError` if the result is not grounded —
-    callers that must fail closed use :func:`compose_or_refuse`.
+    is typed, sourced data the caller assembled from service responses.
+
+    ``catalog`` is MANDATORY (issue #51): passing a real
+    :class:`AvailabilityCatalog` (built from validated tool outputs) enforces
+    strict section-scoped membership of every evidence_id and SourceRef; passing
+    the explicit :data:`~llm.envelope.contract.UNSCOPED` sentinel consciously
+    opts a trusted/authored input out of that check. Omitting it is a
+    ``TypeError`` — the boundary cannot silently skip scope enforcement and
+    reopen the #51 spoof gap. **S23** wires an authoritative catalog into the
+    live compose path so the sentinel drops out of production turns.
+
+    Raises :class:`GroundingError` if the result is not grounded — callers that
+    must fail closed use :func:`compose_or_refuse`.
     """
     env = ResponseEnvelope(
         observed_facts=observed_facts or [],
@@ -71,7 +80,10 @@ def compose(
         tables=tables or [],
         exposure=exposure,
     )
-    validate_grounding(env, catalog=catalog)
+    # UNSCOPED is the conscious trust-all opt-out; only a real catalog enforces
+    # section scoping. isinstance narrows cleanly to AvailabilityCatalog | None.
+    scope = catalog if isinstance(catalog, AvailabilityCatalog) else None
+    validate_grounding(env, catalog=scope)
     return env
 
 
@@ -109,12 +121,18 @@ def compose_or_refuse(
     comparisons: list[Comparison] | None = None,
     tables: list[InlineTable] | None = None,
     exposure: ExposureTotal | None = None,
-    catalog: AvailabilityCatalog | None = None,
+    catalog: CatalogArg,
 ) -> ResponseEnvelope | CannotAnswer:
     """Compose a grounded envelope, or fail closed to a structured refusal.
 
+    ``catalog`` is MANDATORY (issue #51): a real
+    :class:`AvailabilityCatalog` enforces section-scoped membership; the explicit
+    :data:`~llm.envelope.contract.UNSCOPED` sentinel consciously opts trusted
+    input out; omitting it is a ``TypeError`` at the call site. **S23** wires an
+    authoritative catalog into the live compose path.
+
     On any grounding violation — including a wrong-section evidence_id/SourceRef
-    when a ``catalog`` is supplied (issue #51) — or any pydantic
+    when a real ``catalog`` is supplied (issue #51) — or any pydantic
     construction/validation error, the plane returns :class:`CannotAnswer` —
     never a degraded, plausible-looking answer — carrying the violation codes and
     any named missing data for audit, plus the deep link to the structured screen.
