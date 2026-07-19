@@ -582,6 +582,10 @@ type Querier interface {
 	ListDedupConflictsByTarget(ctx context.Context, arg ListDedupConflictsByTargetParams) ([]ObservationDedupConflict, error)
 	// The membership of one digest, in insertion order (the shared event ids).
 	ListDigestItems(ctx context.Context, digestID uuid.UUID) ([]NotificationDigestItem, error)
+	// Account-wide set of open|updated market events awaiting a recommendation (PRC-001
+	// runtime producer). evidence_update_count is the monotonic dedup/context token the
+	// producer keys idempotency on. Ordered deterministically so a pass is reproducible.
+	ListEligibleRecommendationEvents(ctx context.Context) ([]ListEligibleRecommendationEventsRow, error)
 	// Load every engaged switch so the observer can evaluate the layered stop in
 	// process (global OR account OR target). Ordered global-first so the most
 	// sweeping stop is visible at the head.

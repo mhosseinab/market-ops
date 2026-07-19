@@ -54,6 +54,14 @@ type ExecutionRunners struct {
 	// market events (and the Today feed is non-empty in real operation). A nil
 	// runner registers a no-op worker (fail closed — no producer, no events).
 	MarketEventProduce RunOnceFunc
+	// RecommendationProduce is the PRC-001 runtime producer pass: it consumes eligible
+	// open|updated market events, resolves their authoritative inputs, assembles the
+	// recommendation, persists its version, and mints the Draft approval card when
+	// approvable — so a running core reaches the S17 approval journey without direct
+	// database/test seeding. A nil runner registers a no-op worker (fail closed — no
+	// producer, no recommendations). Every pass is idempotent per (event, evidence
+	// version), so the periodic re-run never double-produces.
+	RecommendationProduce RunOnceFunc
 	// ExecuteApproved is the durable execution-intent consumer (issue #92, S18):
 	// it drives execution/recommend-only processing for a confirmed card that was
 	// enqueued transactionally at the Approved commit. It is event-driven (one job
@@ -91,6 +99,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewMarketEventProduceWorker(runners.MarketEventProduce, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register market-event producer worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewRecommendationProduceWorker(runners.RecommendationProduce, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register recommendation producer worker: %w", err)
 	}
 	if err := river.AddWorkerSafely(workers, NewExecuteApprovedWorker(runners.ExecuteApproved, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register execute-approved worker: %w", err)
@@ -143,6 +154,16 @@ func periodicJobs() []*river.PeriodicJob {
 		river.NewPeriodicJob(
 			river.PeriodicInterval(5*time.Minute),
 			func() (river.JobArgs, *river.InsertOpts) { return MarketEventProduceArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// Recommendation production (PRC-001). Runs on the same 5-minute cadence, just
+		// after market-event production, with RunOnStart so a booted core turns eligible
+		// events into recommendations/cards immediately. Every pass is idempotent per
+		// (event, evidence version), so frequent re-runs never duplicate a version; an
+		// errored pass is retried by River.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(5*time.Minute),
+			func() (river.JobArgs, *river.InsertOpts) { return RecommendationProduceArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
 	}
