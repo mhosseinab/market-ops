@@ -333,6 +333,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: verify clean-environment task up defaults
         run: bash tools/dev/up_test.sh
+      - name: verify db:reset fail-closed safety guard
+        run: bash tools/dev/db_reset_guard_test.sh
       # biome + per-member typecheck, then vitest, then the web + extension builds.
       - run: task ts:lint
       - run: task ts:test

@@ -91,6 +91,7 @@ tasks:
       - ts:test
     cmds:
       - bash tools/dev/up_test.sh
+      - bash tools/dev/db_reset_guard_test.sh
 
   lint:all:
     desc: Run every language linter in parallel.
@@ -171,12 +172,13 @@ tasks:
       # from there. FORCE terminates open sessions (PostgreSQL 13+). Works against
       # any reachable server — native or the compose Postgres. Then apply the
       # goose schema, River's own migration set, and minimal fixture rows.
+      # Fail-closed safety gate (issue #9): the guard parses DATABASE_URL, rejects
+      # non-allowlisted hosts, protected db names, and prod-like envs, and aborts
+      # here on a non-zero exit BEFORE any psql/DROP runs. It also owns the
+      # DATABASE_URL-unset check. `set -e` propagates its failure out of db:reset.
+      - bash tools/dev/db_reset_guard.sh
       - |
-        if [ -z "${DATABASE_URL:-}" ]; then
-          echo "DATABASE_URL is not set; export it before running db:reset." >&2
-          echo "  e.g. export DATABASE_URL='postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable'" >&2
-          exit 1
-        fi
+        set -e
         # Strip the scheme, then take the path segment (after host[:port]) up to
         # any '?' query string. That segment is the target database name.
         no_scheme="${DATABASE_URL#*://}"
