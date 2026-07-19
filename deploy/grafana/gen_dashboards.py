@@ -215,8 +215,8 @@ def build() -> list[dict]:
         [
             timeseries("Variable cost by kind (§17.3)", [target("sum by (cost_kind) (increase(analytics_cost_minor_units[1h]))", "{{cost_kind}}")],
                        "Every §17.3 variable-cost counter: account, managed SKU, target, fresh observation, briefing, conversation, simulation, approval flow, execution attempt.", unit="none", x=0, y=0),
-            timeseries("Cost per account (24h)", [target("sum by (marketplace_account_id) (increase(analytics_cost_minor_units[24h]))", "{{marketplace_account_id}}")],
-                       "Daily variable cost per account — the daily model-spend budget input.", unit="none", x=12, y=0),
+            timeseries("Variable cost by source surface (24h)", [target("sum by (source_surface) (increase(analytics_cost_minor_units[24h]))", "{{source_surface}}")],
+                       "Daily variable cost by source surface (bounded label). Per-ACCOUNT cost drill-down is intentionally NOT a Prometheus label (tenant UUID = unbounded/tenant-sensitive cardinality, issue #151); daily model-spend budget attribution per account lives in the authorized/persisted analytics query plane, not metrics.", unit="none", x=12, y=0),
         ],
         "Unit economics from §17.3 granular cost counters.",
     ))
