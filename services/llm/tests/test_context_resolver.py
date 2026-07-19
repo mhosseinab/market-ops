@@ -25,6 +25,10 @@ from llm.contextres import (
     resolve,
     resolve_time_range,
 )
+from llm.contextres.resolver import (
+    LABEL_RANGE_UNSUPPORTED,
+    MAX_RELATIVE_DAYS,
+)
 from llm.intents.models import IntentClass
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "evals" / "context"
@@ -616,6 +620,119 @@ def test_resolve_attaches_time_range_when_phrase_present() -> None:
     res = resolve(req)
     assert res.time_range is not None
     assert res.time_range.as_of == "2026-07-17T09:30:00Z"
+
+
+# --- bounded relative-day resolution (#34, PRD §4.6 fail-closed) --------------
+# "last N days" / "N روز گذشته" carries a user-controlled integer. It must be
+# BOUNDED and VALIDATED before int()/timedelta so a huge, zero, or pathologically
+# long digit run fails closed as an explicit typed range — never an uncaught
+# ValueError/OverflowError that 500s the chat turn. resolve_time_range stays a
+# TOTAL pure function (§8.1: always an explicit range + as-of, never open).
+
+_NOW = "2026-07-17T09:30:00Z"
+_KNOWN_TIME_LABELS = {
+    "time.range.today",
+    "time.range.yesterday",
+    "time.range.this_week",
+    "time.range.last_week",
+    "time.range.this_month",
+    "time.range.last_month",
+    "time.range.last_n_days",
+    "time.range.unspecified",
+    LABEL_RANGE_UNSUPPORTED,
+}
+
+# Every family normalize_digits folds, plus Latin — so the property tests exercise
+# arbitrary Unicode digit families after boundary folding (CHAT-081).
+_LATIN = "0123456789"
+_PERSIAN = "۰۱۲۳۴۵۶۷۸۹"
+_ARABIC = "٠١٢٣٤٥٦٧٨٩"
+
+
+@pytest.mark.parametrize(
+    "phrase",
+    [
+        "last 10000000000000 days",  # timedelta OverflowError territory
+        "last 999999999999999999999999 days",  # far past int64
+        "past 366 days",  # just over the supported bound
+        "۱۰۰۰۰۰۰۰۰۰۰۰۰۰ روز گذشته",  # huge Persian-digit N
+        "last 0 days",  # degenerate zero → clarification, not "today"
+        "۰ روز گذشته",  # Persian zero
+        "last " + "9" * 5000 + " days",  # > int↔str 4300-digit limit (ValueError)
+        "۹" * 6000 + " روز اخیر",  # overlong Persian-digit run
+    ],
+)
+def test_out_of_range_relative_days_fail_closed_unsupported(phrase: str) -> None:
+    # No exception may escape (ValueError/OverflowError/date-range) — fail closed.
+    tr = resolve_time_range(phrase, _NOW)
+    assert tr.label_key == LABEL_RANGE_UNSUPPORTED
+    # Explicit, never an open range; anchored at as-of, never an overflowed date.
+    assert tr.as_of == _NOW
+    assert tr.end == _NOW
+    assert tr.start == "2026-07-17T00:00:00Z"
+
+
+def test_unsupported_is_distinct_from_unspecified() -> None:
+    """An out-of-range 'last N days' shape is a DISTINCT typed outcome from an
+    unrecognized phrase — the response layer treats them differently."""
+    unsupported = resolve_time_range("last 5000 days", _NOW)
+    unspecified = resolve_time_range("something odd", _NOW)
+    assert unsupported.label_key == LABEL_RANGE_UNSUPPORTED
+    assert unspecified.label_key == "time.range.unspecified"
+    assert unsupported.label_key != unspecified.label_key
+
+
+def test_valid_minimum_relative_day_resolves_deterministically() -> None:
+    tr = resolve_time_range("last 1 days", _NOW)
+    assert tr.label_key == "time.range.last_n_days"
+    assert tr.start == "2026-07-17T00:00:00Z"  # 1 day inclusive ⇒ today
+    assert tr.end == _NOW
+    assert tr.as_of == _NOW
+
+
+def test_valid_maximum_relative_day_resolves_deterministically() -> None:
+    tr = resolve_time_range(f"last {MAX_RELATIVE_DAYS} days", _NOW)
+    assert tr.label_key == "time.range.last_n_days"
+    # MAX inclusive ⇒ window length MAX-1 days back, well within timedelta limits.
+    expected = "2025-07-18T00:00:00Z"  # 2026-07-17 minus 364 days
+    assert tr.start == expected
+
+
+def test_one_over_maximum_is_unsupported_but_at_boundary_is_valid() -> None:
+    assert resolve_time_range(f"last {MAX_RELATIVE_DAYS} days", _NOW).label_key == (
+        "time.range.last_n_days"
+    )
+    assert resolve_time_range(f"last {MAX_RELATIVE_DAYS + 1} days", _NOW).label_key == (
+        LABEL_RANGE_UNSUPPORTED
+    )
+
+
+@pytest.mark.parametrize("family", [_LATIN, _PERSIAN, _ARABIC])
+@pytest.mark.parametrize("length", [1, 2, 3, 4, 8, 40, 400, 4301, 6000])
+def test_arbitrary_digit_family_and_length_never_raises(family: str, length: int) -> None:
+    """Property: any digit family (post-fold) at any length resolves TOTALLY to a
+    known typed label and never raises. Covers the int↔str >4300 limit and the
+    timedelta overflow band across Latin/Persian/Arabic digits."""
+    digit = family[9]  # '9' in each family
+    for template in (f"last {digit * length} days", f"{digit * length} روز گذشته"):
+        tr = resolve_time_range(template, _NOW)
+        assert tr.label_key in _KNOWN_TIME_LABELS
+        assert tr.as_of == _NOW  # never an overflowed / open range
+
+
+def test_resolve_top_level_never_crashes_on_pathological_time_phrase() -> None:
+    """The full resolver path fails closed too: a huge time phrase yields an
+    unsupported range, not a 500."""
+    req = ResolveRequest(
+        intent=IntentClass.QUESTION,
+        scope=_SCOPE,
+        active_context=_chip(ContextType.PRODUCT, entity_id="e"),
+        time_phrase="last " + "9" * 5000 + " days",
+        now=_NOW,
+    )
+    res = resolve(req)
+    assert res.time_range is not None
+    assert res.time_range.label_key == LABEL_RANGE_UNSUPPORTED
 
 
 # --- fixture-backed containment (CHAT-007) -----------------------------------
