@@ -140,16 +140,20 @@ type EvaluateInput struct {
 	Readiness    cost.State
 }
 
-// Evaluate runs the six stages in order and returns either a Proposal (all hard
-// stages passed, contribution strictly positive) or the ordered Blockers that
-// prevented one. It re-validates the stricter-only cap/cooldown (PRC-004) so a
-// loose Config can never yield a proposal.
+// Evaluate runs the six stages in the mandated fixed order (PRC-003, §9.3):
+// boundary(1) → hard floor(2) → movement cap(3) → cooldown(4) → strategy(5) →
+// objective(6). It returns either a Proposal (all hard stages passed,
+// contribution strictly positive) or the Blockers that prevented one, in mandated
+// order. It re-validates the stricter-only cap/cooldown (PRC-004) so a loose
+// Config can never yield a proposal.
 //
 // The construction guarantees the never-cut ordering invariant: strategy and
 // objective (stages 5–6) only influence the DESIRED price; that desire is then
 // clamped into the feasible window defined by boundary ∩ movement-cap and gated
 // by the hard floor and the zero-cross guard. No stages-5/6 choice can produce an
-// output that violates a hard stage — a fact the property tests prove.
+// output that violates a hard stage, and — critically for issue #61 — no stage-5/6
+// blocker can suppress or preempt an earlier HARD-stage blocker. The property
+// tests prove both facts.
 func Evaluate(in EvaluateInput) (Result, error) {
 	res, err := evaluate(in)
 	if err != nil {
@@ -168,13 +172,40 @@ func Evaluate(in EvaluateInput) (Result, error) {
 // blockers. It is readiness-agnostic; the exported Evaluate stamps the verified
 // readiness onto the result so the approvability gate stays a single source of
 // truth.
+//
+// Precedence policy (issue #61, PRC-003 — a never-cut invariant proven by
+// property test, not review):
+//
+//   - Stages execute literally in mandated order 1→6. The HARD stages (1–4) are
+//     evaluated and accumulated in order; the SUBORDINATE stages (5–6) run ONLY
+//     when every hard stage passed. A stage-5/6 outcome can therefore never
+//     suppress or preempt an earlier hard blocker.
+//   - Stage 1 (boundary) is terminal on failure: without a valid boundary the
+//     feasible window — the shared domain of stages 2–4 — is undefined, so no
+//     later stage is computable. The subordinate contribution oracle is never
+//     invoked in this case.
+//   - The feasible window = boundary ∩ movement is that shared domain. Its
+//     emptiness is authoritatively the movement-cap (stage 3) outcome: with no
+//     feasible price at all, the floor and cooldown stages are inapplicable, and
+//     the contribution oracle is never invoked. Blocker sort order (by Stage)
+//     still guarantees the floor (2) would dominate the cap (3) if both were ever
+//     emitted; by construction they are mutually exclusive.
+//   - Stage 2 (hard floor) feasibility is a property of the max-contribution
+//     feasible price (feasHigh) alone — independent of the subordinate
+//     strategy/objective selection. This is what lets the floor be decided in
+//     mandated order without depending on stages 5–6.
+//   - Stage 4 (cooldown) change-intent is measured against the price the policy
+//     would actually put forward: the floor-resolved final when the floor is
+//     satisfiable (stage 2 passed), else the pure objective target (the account
+//     still attempted a move). It depends only on stages ≤ 4 and the earlier
+//     floor stage — never on a stage AFTER cooldown.
 func evaluate(in EvaluateInput) (Result, error) {
 	if err := in.Config.validate(); err != nil {
 		return Result{}, err
 	}
 	cfg := in.Config
 
-	// Stage 1 — marketplace price boundary.
+	// Stage 1 — marketplace price boundary. Terminal on failure.
 	if !cfg.Boundary.Known {
 		return blocked(StageBoundary, BlockerBoundaryUnknown,
 			"marketplace price boundary is unknown; no executable price exists"), nil
@@ -188,9 +219,9 @@ func evaluate(in EvaluateInput) (Result, error) {
 			"marketplace price boundary is invalid (min exceeds max)"), nil
 	}
 
-	// Stage 3 window — maximum price movement around the current price. The cap
-	// delta is rounded DOWN (toward zero) so the allowed movement never exceeds
-	// the configured cap.
+	// Shared domain — feasible window = boundary ∩ movement (pure Money, no oracle).
+	// The cap delta is rounded DOWN (toward zero) so the allowed movement never
+	// exceeds the configured cap.
 	capDelta, err := in.CurrentPrice.ApplyRate(cfg.MovementCap, money.RoundDown)
 	if err != nil {
 		return Result{}, err
@@ -203,9 +234,6 @@ func evaluate(in EvaluateInput) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-
-	// Feasible window = boundary ∩ movement. An empty intersection means the cap
-	// cannot reach any boundary-valid price (stage 3 blocks).
 	feasLow, err := maxMoney(cfg.Boundary.Min, moveLow)
 	if err != nil {
 		return Result{}, err
@@ -219,51 +247,70 @@ func evaluate(in EvaluateInput) (Result, error) {
 		return Result{}, err
 	}
 	if fcmp > 0 {
+		// Empty window: authoritatively a stage-3 movement-cap failure. Stages 2/4
+		// are inapplicable (no feasible price) and the oracle is never invoked.
 		return blocked(StageMovementCap, BlockerMovementInfeasible,
 			"movement cap admits no price inside the marketplace boundary"), nil
 	}
 
-	// Stage 5 — selected strategy proposes a desired price.
-	if !cfg.StrategyEnabled {
-		return blocked(StageStrategy, BlockerStrategyDisabled,
-			"selected pricing strategy is not enabled"), nil
-	}
+	// The subordinate strategy(5)→objective(6) target is a PURE function of the
+	// config and window (no contribution oracle). Computing it here does not
+	// evaluate the oracle; it only supplies the objective preference the floor may
+	// force up (stage 2 overriding stage 6) and the cooldown change-intent signal.
 	desired, err := strategyDesired(cfg, in.CurrentPrice)
 	if err != nil {
 		return Result{}, err
 	}
-
-	// Stage 6 — objective picks the preferred feasible price.
-	preferred, err := objectivePreferred(cfg, desired, feasLow, feasHigh)
-	if err != nil {
-		return Result{}, err
-	}
-
-	// Stage 2 — hard contribution floor + zero-cross guard, applied to the final.
-	// This is where the ordering is enforced: the hard floor can force the price
-	// UP off the objective's preference (stage 2 overrides stage 6), and if even
-	// the max-contribution feasible price cannot satisfy floor/positivity the
-	// result is a hard-floor blocker — never a below-floor or zero-crossing output.
-	final, finalContrib, floorBlk, err := resolveFloor(cfg, in.Contribution, preferred, feasHigh)
+	target, err := objectivePreferred(cfg, desired, feasLow, feasHigh)
 	if err != nil {
 		return Result{}, err
 	}
 
 	var blockers []Blocker
+
+	// Stage 2 — hard contribution floor + zero-cross guard. Feasibility is decided
+	// over the feasible window; the floor can force the price UP off the objective's
+	// preference (stage 2 overrides stage 6). resolveFloor returns the floor-resolved
+	// final price/contribution and, when no feasible price satisfies floor/positivity,
+	// a hard-floor blocker — never a below-floor or zero-crossing output.
+	final, finalContrib, floorBlk, err := resolveFloor(cfg, in.Contribution, target, feasHigh)
+	if err != nil {
+		return Result{}, err
+	}
 	if floorBlk != nil {
 		blockers = append(blockers, *floorBlk)
 	}
 
-	// Stage 4 — cooldown blocks a price CHANGE while active; a hold is allowed.
-	if cd, err := cooldownBlocker(cfg, in, final); err != nil {
+	// Stage 4 — cooldown blocks a price CHANGE while active; a hold is allowed. The
+	// change-intent is measured against the floor-resolved final when the floor is
+	// satisfiable, else the pure objective target (a move the account still
+	// attempted). This keeps cooldown decidable in mandated order.
+	intent := final
+	if floorBlk != nil {
+		intent = target
+	}
+	if cd, err := cooldownBlocker(cfg, in, intent); err != nil {
 		return Result{}, err
 	} else if cd != nil {
 		blockers = append(blockers, *cd)
 	}
 
+	// If any HARD stage blocked, terminate before the subordinate stages 5–6: their
+	// selection/enablement can never suppress or accompany-past-precedence an earlier
+	// hard blocker (issue #61).
 	if len(blockers) > 0 {
 		return ordered(blockers), nil
 	}
+
+	// Stage 5 — selected pricing strategy must be enabled. Reached only when every
+	// hard stage passed, so a disabled strategy is the authoritative reason no action
+	// is proposed. (Stage 6 objective is already reflected in `final`; it never fails
+	// in P0.)
+	if !cfg.StrategyEnabled {
+		return blocked(StageStrategy, BlockerStrategyDisabled,
+			"selected pricing strategy is not enabled"), nil
+	}
+
 	return Result{Proposed: &Proposal{Price: final, Contribution: finalContrib}}, nil
 }
 
