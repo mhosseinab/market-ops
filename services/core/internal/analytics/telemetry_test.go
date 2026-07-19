@@ -132,17 +132,24 @@ func TestMetricLabels_CardinalityIndependentOfTenant(t *testing.T) {
 	}
 }
 
-// TestMetricLabels_FreeTextBucketedToSentinel proves the cardinality budget holds
-// against free text: an unrecognized name/locale/region/source_surface does NOT
-// mint a new series — it buckets to the sentinel (issue #151 acceptance test 2).
-func TestMetricLabels_FreeTextBucketedToSentinel(t *testing.T) {
+// TestMetricLabels_OpenDimensionsBucketedToSentinel proves the cardinality budget
+// holds for the genuinely OPEN/config/caller-derived dimensions: an unrecognized
+// locale/region/source_surface does NOT mint a new series — it buckets to the
+// sentinel (issue #151 acceptance test 2). name is DELIBERATELY excluded here: it is
+// a closed developer-defined constant and MUST pass through verbatim (see
+// TestMetricLabels_ClosedEventNamePassesThroughVerbatim), so the §18 dashboards can
+// slice `analytics_events by (name)`. This test must FAIL if someone re-adds name
+// bounding, because a bounded name would collapse the closed constant below.
+func TestMetricLabels_OpenDimensionsBucketedToSentinel(t *testing.T) {
 	env := fullEnvelope()
 	env.Locale = "zz-" + uuid.NewString()
 	env.Region = "ZZ-" + uuid.NewString()
 	env.SourceSurface = "surface-" + uuid.NewString()
 
+	const closedName = "recommendation_ranked" // a real closed constant, not free text
+
 	got := collectMetrics(t, func(em *Emitter) {
-		if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyBriefing, Name: "free-text-" + uuid.NewString()}); err != nil {
+		if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: closedName}); err != nil {
 			t.Fatalf("emit: %v", err)
 		}
 		if err := em.RecordCost(context.Background(), env, CostBriefing, 1); err != nil {
@@ -152,18 +159,61 @@ func TestMetricLabels_FreeTextBucketedToSentinel(t *testing.T) {
 
 	for _, dp := range got["analytics.events"] {
 		keys := attrKeySet(dp)
-		for _, k := range []string{"name", "locale", "region", "source_surface"} {
+		for _, k := range []string{"locale", "region", "source_surface"} {
 			if keys[k] != labelSentinel {
-				t.Fatalf("events label %q = %q, want sentinel %q for free-text input", k, keys[k], labelSentinel)
+				t.Fatalf("events label %q = %q, want sentinel %q for out-of-allowlist input", k, keys[k], labelSentinel)
 			}
+		}
+		// name is a closed constant — it must NOT be bucketed to the sentinel.
+		if keys["name"] != closedName {
+			t.Fatalf("events label \"name\" = %q, want closed constant %q emitted verbatim (name must NOT be bounded)", keys["name"], closedName)
 		}
 	}
 	for _, dp := range got["analytics.cost_minor_units"] {
 		keys := attrKeySet(dp)
 		for _, k := range []string{"locale", "region", "source_surface"} {
 			if keys[k] != labelSentinel {
-				t.Fatalf("cost label %q = %q, want sentinel %q for free-text input", k, keys[k], labelSentinel)
+				t.Fatalf("cost label %q = %q, want sentinel %q for out-of-allowlist input", k, keys[k], labelSentinel)
 			}
+		}
+	}
+}
+
+// TestMetricLabels_ClosedEventNamePassesThroughVerbatim is the producer/consumer
+// contract guard for the §18 dashboards (issue #151 area review): every event name
+// is a closed developer-defined constant and MUST reach the metric as its raw value,
+// because checked-in Grafana panels slice `analytics_events by (name)` for the
+// recommendation and conversation families — including the FREE-TEXT-CONTAINMENT
+// panel (dk-chat.json, name=~".*contain.*|.*guidance.*|.*blocked.*"), a never-cut
+// observability boundary. If name were ever bounded to an allowlist+sentinel, these
+// names would collapse to "other" and the containment metric would silently read
+// ZERO — so this test must FAIL the instant name bounding is re-introduced.
+func TestMetricLabels_ClosedEventNamePassesThroughVerbatim(t *testing.T) {
+	env := fullEnvelope()
+
+	// Representative closed names across the families the dashboards slice by (name),
+	// including the containment-panel regex tokens (contain/guidance/blocked).
+	names := []string{
+		"recommendation_ranked",
+		"conversation_started",
+		"free_text_contained",
+		"chat_guidance_shown",
+		"conversation_blocked",
+	}
+
+	for _, name := range names {
+		name := name
+		got := collectMetrics(t, func(em *Emitter) {
+			if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyConversation, Name: name}); err != nil {
+				t.Fatalf("emit %q: %v", name, err)
+			}
+		})
+		dps := got["analytics.events"]
+		if len(dps) != 1 {
+			t.Fatalf("name %q: got %d datapoints, want 1", name, len(dps))
+		}
+		if v := attrKeySet(dps[0])["name"]; v != name {
+			t.Fatalf("events label \"name\" = %q, want %q emitted verbatim (dashboards slice by (name); name must never bucket to sentinel)", v, name)
 		}
 	}
 }
