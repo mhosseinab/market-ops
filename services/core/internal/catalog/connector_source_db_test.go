@@ -19,7 +19,7 @@ import (
 // assert the owned-offer price is stored ONLY as quarantined raw evidence.
 func TestSyncThroughConnectorAndMockDK(t *testing.T) {
 	pool, q := newPool(t)
-	account := seedAccount(t, q)
+	org, account := seedOrgAccount(t, q)
 	ctx := context.Background()
 
 	// Cipher (env-provided key) so Connect can seal tokens.
@@ -48,11 +48,11 @@ func TestSyncThroughConnectorAndMockDK(t *testing.T) {
 		t.Fatalf("dk client: %v", err)
 	}
 	svc := connector.NewService(q, cipher, dk)
-	if _, err := svc.Connect(ctx, account, "auth-code"); err != nil {
+	if _, err := svc.Connect(ctx, org, account, "auth-code"); err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 
-	src := catalog.NewConnectorSource(svc, account)
+	src := catalog.NewConnectorSource(svc, org, account)
 	s := catalog.NewSyncer(pool, src, 1)
 	runID, err := s.Start(ctx, account, catalog.KindInitial)
 	if err != nil {

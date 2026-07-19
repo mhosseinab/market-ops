@@ -20,14 +20,22 @@ var pgxNoRows = pgx.ErrNoRows
 // queries, no more. *db.Queries satisfies it; tests can substitute a fake. This
 // keeps the Service testable without a database while the DB-backed path is
 // exercised end-to-end against native PG16.
+//
+// ORG SCOPING (S8-AUTHZ-001, PRD §4.6 identity quarantine): every connector row
+// lookup and mutation is predicated on BOTH the marketplace account id AND the
+// authenticated organization id. Possession of an account UUID never grants
+// cross-organization access — a foreign account resolves to zero rows, the same
+// fail-closed result as an unknown account. GetOrgMarketplaceAccountID is the
+// ownership guard the Service consults before any DK call or write.
 type Store interface {
+	GetOrgMarketplaceAccountID(ctx context.Context, arg db.GetOrgMarketplaceAccountIDParams) (uuid.UUID, error)
 	UpsertConnectorConnection(ctx context.Context, arg db.UpsertConnectorConnectionParams) (db.ConnectorConnection, error)
-	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (db.ConnectorConnection, error)
-	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (db.ConnectorConnection, error)
+	GetConnectorConnection(ctx context.Context, arg db.GetConnectorConnectionParams) (db.ConnectorConnection, error)
+	DisconnectConnectorConnection(ctx context.Context, arg db.DisconnectConnectorConnectionParams) (db.ConnectorConnection, error)
 	SeedConnectorCapability(ctx context.Context, arg db.SeedConnectorCapabilityParams) error
 	SetConnectorCapabilityStatus(ctx context.Context, arg db.SetConnectorCapabilityStatusParams) (db.ConnectorCapability, error)
-	ResetConnectorCapability(ctx context.Context, marketplaceAccountID uuid.UUID) error
-	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]db.ConnectorCapability, error)
+	ResetConnectorCapability(ctx context.Context, arg db.ResetConnectorCapabilityParams) error
+	ListConnectorCapabilities(ctx context.Context, arg db.ListConnectorCapabilitiesParams) ([]db.ConnectorCapability, error)
 }
 
 // capabilityStatusFrom converts a persisted row into the domain status,

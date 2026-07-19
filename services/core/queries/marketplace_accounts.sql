@@ -11,6 +11,13 @@ WHERE id = $1;
 SELECT * FROM marketplace_accounts
 WHERE organization_id = $1;
 
+-- name: GetOrgMarketplaceAccountID :one
+-- Ownership guard: resolve an account id ONLY when it belongs to the given
+-- organization. A foreign or unknown account id yields no row (pgx.ErrNoRows),
+-- so possession of a UUID never grants cross-organization access (S8-AUTHZ-001).
+SELECT id FROM marketplace_accounts
+WHERE id = sqlc.arg(id) AND organization_id = sqlc.arg(organization_id);
+
 -- name: GetMarketplaceAccountByNativeID :one
 SELECT * FROM marketplace_accounts
 WHERE native_account_id = $1;
