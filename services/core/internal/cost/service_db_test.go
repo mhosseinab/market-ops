@@ -70,11 +70,116 @@ func seedVariant(t *testing.T, q *db.Queries, supplierCode string) (account, var
 
 func countCostProfiles(t *testing.T, pool *pgxpool.Pool, variant uuid.UUID) int {
 	t.Helper()
+	return countRows(t, pool, `SELECT count(*) FROM cost_profiles WHERE variant_id=$1`, variant)
+}
+
+func countSkuRequirements(t *testing.T, pool *pgxpool.Pool, variant uuid.UUID) int {
+	t.Helper()
+	return countRows(t, pool, `SELECT count(*) FROM sku_cost_requirements WHERE variant_id=$1`, variant)
+}
+
+func countMarginReadiness(t *testing.T, pool *pgxpool.Pool, variant uuid.UUID) int {
+	t.Helper()
+	return countRows(t, pool, `SELECT count(*) FROM margin_readiness WHERE variant_id=$1`, variant)
+}
+
+func countRows(t *testing.T, pool *pgxpool.Pool, query string, arg uuid.UUID) int {
+	t.Helper()
 	var n int
-	if err := pool.QueryRow(context.Background(), `SELECT count(*) FROM cost_profiles WHERE variant_id=$1`, variant).Scan(&n); err != nil {
-		t.Fatalf("count cost_profiles: %v", err)
+	if err := pool.QueryRow(context.Background(), query, arg).Scan(&n); err != nil {
+		t.Fatalf("count rows: %v", err)
 	}
 	return n
+}
+
+// TestEnterSingleCostRejectsCrossAccountVariant is the tenant-isolation invariant
+// (§4.6, issue #37): a single-value cost write submitted under account A for a
+// variant owned by account B must fail closed with a distinct mismatch error and
+// write NOTHING — no cost_profiles row, no margin_readiness row for that variant.
+func TestEnterSingleCostRejectsCrossAccountVariant(t *testing.T) {
+	pool, q := newPool(t)
+	svc := cost.NewService(pool)
+	ctx := context.Background()
+
+	accountA, _ := seedVariant(t, q, "SKU-A")
+	_, variantB := seedVariant(t, q, "SKU-B")
+
+	_, err := svc.EnterSingleCost(ctx, cost.SingleCostInput{
+		Account:   accountA,
+		VariantID: variantB,
+		Component: cost.ComponentCOGS,
+		RawValue:  "100",
+	})
+	if !errors.Is(err, cost.ErrAccountVariantMismatch) {
+		t.Fatalf("EnterSingleCost cross-account err = %v, want ErrAccountVariantMismatch", err)
+	}
+	if n := countCostProfiles(t, pool, variantB); n != 0 {
+		t.Fatalf("cross-account write created %d cost profiles for variant B; want 0", n)
+	}
+	if n := countMarginReadiness(t, pool, variantB); n != 0 {
+		t.Fatalf("cross-account write created %d readiness rows for variant B; want 0", n)
+	}
+}
+
+// TestSetSkuApplicableRejectsCrossAccountVariant asserts SKU-applicability writes
+// also resolve the variant's owning account and reject a mismatched supplied
+// account, persisting no sku_cost_requirements row (issue #37).
+func TestSetSkuApplicableRejectsCrossAccountVariant(t *testing.T) {
+	pool, q := newPool(t)
+	svc := cost.NewService(pool)
+	ctx := context.Background()
+
+	accountA, _ := seedVariant(t, q, "SKU-APP-A")
+	_, variantB := seedVariant(t, q, "SKU-APP-B")
+
+	_, err := svc.SetSkuApplicable(ctx, accountA, variantB, []cost.Component{cost.ComponentPackaging})
+	if !errors.Is(err, cost.ErrAccountVariantMismatch) {
+		t.Fatalf("SetSkuApplicable cross-account err = %v, want ErrAccountVariantMismatch", err)
+	}
+	if n := countSkuRequirements(t, pool, variantB); n != 0 {
+		t.Fatalf("cross-account applicability wrote %d sku_cost_requirements for variant B; want 0", n)
+	}
+}
+
+// TestCostWritesAcceptMatchingAccountVariant proves the ownership guard does not
+// break the happy path: a matching account+variant pair still succeeds.
+func TestCostWritesAcceptMatchingAccountVariant(t *testing.T) {
+	pool, q := newPool(t)
+	svc := cost.NewService(pool)
+	ctx := context.Background()
+
+	account, variant := seedVariant(t, q, "SKU-OK")
+
+	if _, err := svc.EnterSingleCost(ctx, cost.SingleCostInput{
+		Account: account, VariantID: variant, Component: cost.ComponentCOGS, RawValue: "100",
+	}); err != nil {
+		t.Fatalf("matching EnterSingleCost: %v", err)
+	}
+	if n := countCostProfiles(t, pool, variant); n != 1 {
+		t.Fatalf("matching write cost profiles = %d, want 1", n)
+	}
+	if _, err := svc.SetSkuApplicable(ctx, account, variant, []cost.Component{cost.ComponentPackaging}); err != nil {
+		t.Fatalf("matching SetSkuApplicable: %v", err)
+	}
+	if n := countSkuRequirements(t, pool, variant); n != 1 {
+		t.Fatalf("matching applicability sku_cost_requirements = %d, want 1", n)
+	}
+}
+
+// TestEnterSingleCostUnknownVariant keeps the not-found path distinct from the
+// mismatch path (unknown variant ⇒ 404 ErrVariantNotFound, not a tenant breach).
+func TestEnterSingleCostUnknownVariant(t *testing.T) {
+	pool, q := newPool(t)
+	svc := cost.NewService(pool)
+	ctx := context.Background()
+
+	account, _ := seedVariant(t, q, "SKU-UNK")
+	_, err := svc.EnterSingleCost(ctx, cost.SingleCostInput{
+		Account: account, VariantID: uuid.New(), Component: cost.ComponentCOGS, RawValue: "100",
+	})
+	if !errors.Is(err, cost.ErrVariantNotFound) {
+		t.Fatalf("unknown variant err = %v, want ErrVariantNotFound", err)
+	}
 }
 
 // TestPreviewDoesNotCommit is the CST-001 core invariant: a preview writes NO

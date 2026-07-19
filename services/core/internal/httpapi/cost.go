@@ -298,6 +298,9 @@ func costStatus(err error) int {
 	switch {
 	case errors.Is(err, cost.ErrBatchNotFound), errors.Is(err, cost.ErrVariantNotFound):
 		return 404
+	case errors.Is(err, cost.ErrAccountVariantMismatch):
+		// Tenant boundary breach: the supplied account does not own the variant.
+		return 403
 	case errors.Is(err, cost.ErrBatchNotPreview), errors.Is(err, cost.ErrUnresolvedDuplicates):
 		return 409
 	case errors.Is(err, cost.ErrNotUTF8), errors.Is(err, cost.ErrEmptyCSV),
@@ -318,6 +321,8 @@ func costErr(err error) gateway.ErrorEnvelope {
 		code = "BATCH_NOT_FOUND"
 	case errors.Is(err, cost.ErrVariantNotFound):
 		code = "VARIANT_NOT_FOUND"
+	case errors.Is(err, cost.ErrAccountVariantMismatch):
+		code = "ACCOUNT_VARIANT_MISMATCH"
 	case errors.Is(err, cost.ErrBatchNotPreview):
 		code = "BATCH_NOT_PREVIEW"
 	case errors.Is(err, cost.ErrUnresolvedDuplicates):

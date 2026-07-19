@@ -30,6 +30,12 @@ var (
 	// ErrVariantNotFound — a single-value entry or readiness recompute references
 	// an unknown variant.
 	ErrVariantNotFound = errors.New("cost: variant not found")
+	// ErrAccountVariantMismatch — a cost write supplied a marketplace account that
+	// does NOT own the referenced variant. Tenant isolation is a never-cut
+	// invariant (§4.6): the variant's owning account is authoritative, so the
+	// write fails closed and persists nothing rather than creating cross-account
+	// cost history or recomputing readiness under the wrong account policy (#37).
+	ErrAccountVariantMismatch = errors.New("cost: account does not own variant")
 )
 
 // Default entry representation when an account has no explicit cost policy. IRR
@@ -319,6 +325,13 @@ func (s *Service) EnterSingleCost(ctx context.Context, in SingleCostInput) (db.C
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := db.New(tx)
 
+	// Tenant boundary: the variant's owning account is authoritative. Reject a
+	// mismatched supplied account inside the write tx BEFORE any insert or
+	// recompute, so a cross-account write persists nothing (#37, §4.6).
+	if err := s.assertVariantOwnedBy(ctx, q, in.Account, in.VariantID); err != nil {
+		return db.CostProfile{}, err
+	}
+
 	pol, err := s.loadPolicy(ctx, q, in.Account)
 	if err != nil {
 		return db.CostProfile{}, err
@@ -509,9 +522,22 @@ func (s *Service) SetAccountPolicy(ctx context.Context, account uuid.UUID, curre
 	return row, nil
 }
 
-// SetSkuApplicable upserts the per-SKU applicable-component set.
+// SetSkuApplicable upserts the per-SKU applicable-component set. The supplied
+// account must own the variant; a mismatch fails closed and writes nothing (#37,
+// §4.6). The ownership read and the upsert share one tx so they are consistent.
 func (s *Service) SetSkuApplicable(ctx context.Context, account, variant uuid.UUID, applicable []Component) (db.SkuCostRequirement, error) {
-	row, err := db.New(s.pool).UpsertSkuCostRequirements(ctx, db.UpsertSkuCostRequirementsParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return db.SkuCostRequirement{}, fmt.Errorf("cost: begin sku applicability tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	if err := s.assertVariantOwnedBy(ctx, q, account, variant); err != nil {
+		return db.SkuCostRequirement{}, err
+	}
+
+	row, err := q.UpsertSkuCostRequirements(ctx, db.UpsertSkuCostRequirementsParams{
 		VariantID:            variant,
 		MarketplaceAccountID: account,
 		ApplicableComponents: marshalComponents(applicable),
@@ -519,7 +545,28 @@ func (s *Service) SetSkuApplicable(ctx context.Context, account, variant uuid.UU
 	if err != nil {
 		return db.SkuCostRequirement{}, fmt.Errorf("cost: set sku applicability: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.SkuCostRequirement{}, fmt.Errorf("cost: commit sku applicability: %w", err)
+	}
 	return row, nil
+}
+
+// assertVariantOwnedBy resolves the variant's owning account and rejects a
+// mismatched supplied account. Unknown variant ⇒ ErrVariantNotFound (404);
+// owner ≠ supplied account ⇒ ErrAccountVariantMismatch (403). It reads through
+// the caller's queries handle so it participates in the caller's write tx.
+func (s *Service) assertVariantOwnedBy(ctx context.Context, q *db.Queries, account, variant uuid.UUID) error {
+	owner, err := q.GetVariantAccountID(ctx, variant)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrVariantNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("cost: resolve variant owner: %w", err)
+	}
+	if owner != account {
+		return fmt.Errorf("cost: %w: account %s variant %s", ErrAccountVariantMismatch, account, variant)
+	}
+	return nil
 }
 
 // --- small mapping helpers -------------------------------------------------
