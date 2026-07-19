@@ -1,0 +1,21 @@
+{
+  "status": 200,
+  "data": {
+    "product": {
+      "id": 900400,
+      "title_fa": "کالای بدون وضعیت",
+      "status": "marketable",
+      "variants": [
+        {
+          "id": 555010,
+          "seller": { "id": 71010, "code": "NOSTAT" },
+          "price": {
+            "selling_price": 450000000,
+            "rrp_price": 500000000,
+            "marketable_stock": 5
+          }
+        }
+      ]
+    }
+  }
+}
