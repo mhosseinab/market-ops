@@ -76,6 +76,36 @@ func (q *Queries) GetOutcomeWindowByAction(ctx context.Context, actionID uuid.UU
 	return i, err
 }
 
+const getOutcomeWindowByActionForAccount = `-- name: GetOutcomeWindowByActionForAccount :one
+SELECT w.id, w.action_id, w.card_id, w.opened_at, w.closes_at, w.created_at
+FROM outcome_windows w
+JOIN approval_cards ac ON ac.id = w.card_id
+WHERE w.action_id = $1 AND ac.marketplace_account_id = $2
+`
+
+type GetOutcomeWindowByActionForAccountParams struct {
+	ActionID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+}
+
+// Tenant-scoped outcome-window fetch (issue #102): outcome_windows carries no
+// account column of its own, so it is scoped through its bound approval_cards row.
+// A window whose card belongs to another account matches no row, so a foreign
+// action's outcome is never disclosed.
+func (q *Queries) GetOutcomeWindowByActionForAccount(ctx context.Context, arg GetOutcomeWindowByActionForAccountParams) (OutcomeWindow, error) {
+	row := q.db.QueryRow(ctx, getOutcomeWindowByActionForAccount, arg.ActionID, arg.MarketplaceAccountID)
+	var i OutcomeWindow
+	err := row.Scan(
+		&i.ID,
+		&i.ActionID,
+		&i.CardID,
+		&i.OpenedAt,
+		&i.ClosesAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const listClosableOutcomeWindows = `-- name: ListClosableOutcomeWindows :many
 SELECT w.id, w.action_id, w.card_id, w.opened_at, w.closes_at, w.created_at FROM outcome_windows w
 LEFT JOIN outcome_results r ON r.window_id = w.id

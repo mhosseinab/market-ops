@@ -139,10 +139,10 @@ func TestEdgeCase_DuplicateEvent_SurfaceShowsOneItem(t *testing.T) {
 // invariant survives transport marshalling and the fail-closed HTTP mapping.
 func TestEdgeCase_UnknownWriteResult_PendingReconciliationBlocksRetry(t *testing.T) {
 	pool, q := newSystemPool(t)
-	card, native := seedApprovedCardSystem(t, pool, q)
+	card, native, org := seedApprovedCardSystem(t, pool, q)
 
 	execSvc := execution.NewService(pool, recommendation.NewService(pool), unknownWriter{}, fixedResolver{card: card, nativeVariant: native})
-	srv, tok := systemOwnerServer(t, WithExecution(execSvc))
+	srv, tok := systemOwnerServerForOrg(t, org, WithExecution(execSvc))
 
 	execBody, _ := json.Marshal(gateway.ExecuteActionRequest{CardId: card.ID})
 	req := httptest.NewRequest(http.MethodPost, "/actions/execute", strings.NewReader(string(execBody)))

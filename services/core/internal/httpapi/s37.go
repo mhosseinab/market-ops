@@ -21,6 +21,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
 	"github.com/mhosseinab/market-ops/services/core/internal/margin"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
+	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
 	"github.com/mhosseinab/market-ops/services/core/internal/policy"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 	"github.com/mhosseinab/market-ops/services/core/internal/watchlist"
@@ -50,7 +51,7 @@ func (s *gatewayServer) GetRecommendationDetail(
 	if s.approval == nil {
 		return gateway.GetRecommendationDetaildefaultJSONResponse{StatusCode: 503, Body: approvalUnavailableErr()}, nil
 	}
-	row, err := s.approval.GetRecommendation(ctx, req.Params.RecommendationId)
+	row, err := s.approval.GetRecommendationForOrg(ctx, orgFromCtx(ctx), req.Params.RecommendationId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return gateway.GetRecommendationDetaildefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
@@ -81,7 +82,7 @@ func (s *gatewayServer) EditApprovalCardPrice(
 	if err != nil {
 		return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 400, Body: invalidArgErr(err.Error())}, nil
 	}
-	card, err := s.approval.EditPrice(ctx, req.Body.CardId, newPrice, time.Now().UTC())
+	card, err := s.approval.EditPriceForOrg(ctx, orgFromCtx(ctx), req.Body.CardId, newPrice, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
@@ -120,9 +121,11 @@ func (s *gatewayServer) PreviewSelectionSet(
 	for _, m := range req.Body.Members {
 		members = append(members, recommendation.PreviewMemberInput{VariantID: m.VariantId, RecommendationID: m.RecommendationId})
 	}
-	result, err := s.approval.PreviewBulkSelection(ctx, req.Body.MarketplaceAccountId, lineage, req.Body.Name, criteria, members)
+	result, err := s.approval.PreviewBulkSelectionForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, lineage, req.Body.Name, criteria, members)
 	if err != nil {
-		if errors.Is(err, recommendation.ErrUnknownMember) {
+		if errors.Is(err, recommendation.ErrUnknownMember) || errors.Is(err, recommendation.ErrAccountNotFound) {
+			// A foreign account or an unknown/mismatched member are indistinguishable
+			// to the caller (no existence oracle) — both are a uniform not-found.
 			return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
 		}
 		return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
@@ -146,8 +149,12 @@ func (s *gatewayServer) ListActions(
 	if req.Params.Limit != nil {
 		limit = *req.Params.Limit
 	}
-	rows, err := s.approval.ListActions(ctx, req.Params.MarketplaceAccountId, stateFilter, limit)
+	rows, err := s.approval.ListActionsForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, stateFilter, limit)
 	if err != nil {
+		if errors.Is(err, recommendation.ErrAccountNotFound) {
+			// A foreign account id is a uniform not-found — never another account's queue.
+			return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
+		}
 		return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 	}
 	// Overlay the execution mode + canonical state per action (issue #106) so the
@@ -157,8 +164,15 @@ func (s *gatewayServer) ListActions(
 	// enrichment, never on the authoritative card state).
 	overlay := map[uuid.UUID]execution.UnifiedAction{}
 	if s.execution != nil {
-		unified, err := s.execution.ListUnifiedByAccount(ctx, req.Params.MarketplaceAccountId, limit)
+		// Scope the overlay to the caller's own account (issue #102): the account id
+		// was already validated by ListActionsForOrg above, so a foreign id can only
+		// surface here as ErrAccountNotFound — mapped to the same uniform not-found,
+		// never another tenant's projection or a 500.
+		unified, err := s.execution.ListUnifiedByAccountForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, limit)
 		if err != nil {
+			if errors.Is(err, execution.ErrAccountNotFound) {
+				return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
+			}
 			return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
 		}
 		for _, u := range unified {
@@ -208,8 +222,11 @@ func (s *gatewayServer) ListOutcomes(
 	if req.Params.Limit != nil {
 		limit = *req.Params.Limit
 	}
-	rows, err := s.outcome.ListByAccount(ctx, req.Params.MarketplaceAccountId, limit)
+	rows, err := s.outcome.ListByAccountForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, limit)
 	if err != nil {
+		if errors.Is(err, outcome.ErrAccountNotFound) {
+			return gateway.ListOutcomesdefaultJSONResponse{StatusCode: 404, Body: outcomeErr(err)}, nil
+		}
 		return gateway.ListOutcomesdefaultJSONResponse{StatusCode: 500, Body: outcomeErr(err)}, nil
 	}
 	items := make([]gateway.OutcomeSummary, 0, len(rows))
@@ -309,8 +326,11 @@ func (s *gatewayServer) GetOperationsQueues(
 	if s.execution == nil {
 		return gateway.GetOperationsQueuesdefaultJSONResponse{StatusCode: 503, Body: executionUnavailableErr()}, nil
 	}
-	rows, err := s.execution.ListPendingReconciliation(ctx, req.Params.MarketplaceAccountId, 0)
+	rows, err := s.execution.ListPendingReconciliationForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, 0)
 	if err != nil {
+		if errors.Is(err, execution.ErrAccountNotFound) {
+			return gateway.GetOperationsQueuesdefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
+		}
 		return gateway.GetOperationsQueuesdefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
 	}
 	pending := make([]gateway.PendingReconciliationAction, 0, len(rows))

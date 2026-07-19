@@ -14,6 +14,16 @@ RETURNING *;
 -- name: GetOutcomeWindowByAction :one
 SELECT * FROM outcome_windows WHERE action_id = $1;
 
+-- name: GetOutcomeWindowByActionForAccount :one
+-- Tenant-scoped outcome-window fetch (issue #102): outcome_windows carries no
+-- account column of its own, so it is scoped through its bound approval_cards row.
+-- A window whose card belongs to another account matches no row, so a foreign
+-- action's outcome is never disclosed.
+SELECT w.*
+FROM outcome_windows w
+JOIN approval_cards ac ON ac.id = w.card_id
+WHERE w.action_id = $1 AND ac.marketplace_account_id = $2;
+
 -- name: ListClosableOutcomeWindows :many
 -- Windows whose seven days have elapsed and that have no computed result yet.
 SELECT w.* FROM outcome_windows w

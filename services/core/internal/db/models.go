@@ -728,12 +728,13 @@ type SelectionSet struct {
 }
 
 type SelectionSetMember struct {
-	ID               uuid.UUID
-	SelectionSetID   uuid.UUID
-	VariantID        uuid.UUID
-	RecommendationID pgtype.UUID
-	Disposition      string
-	CreatedAt        time.Time
+	ID                   uuid.UUID
+	SelectionSetID       uuid.UUID
+	VariantID            uuid.UUID
+	RecommendationID     pgtype.UUID
+	Disposition          string
+	CreatedAt            time.Time
+	MarketplaceAccountID uuid.UUID
 }
 
 type Session struct {

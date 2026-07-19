@@ -263,12 +263,22 @@ type Querier interface {
 	GetAccountCostPolicy(ctx context.Context, marketplaceAccountID uuid.UUID) (AccountCostPolicy, error)
 	GetActionExecution(ctx context.Context, id uuid.UUID) (ActionExecution, error)
 	GetActionExecutionByAction(ctx context.Context, actionID uuid.UUID) (ActionExecution, error)
+	// Tenant-scoped execution fetch (issue #102): action_executions carries no account
+	// column of its own, so it is scoped through its bound approval_cards row. An
+	// execution whose card belongs to another account matches no row (pgx.ErrNoRows),
+	// so a foreign action's execution is never disclosed.
+	GetActionExecutionByActionForAccount(ctx context.Context, arg GetActionExecutionByActionForAccountParams) (ActionExecution, error)
 	GetActionExecutionByKey(ctx context.Context, idempotencyKey string) (ActionExecution, error)
 	// EXECUTABLE-PATH query (CAT-002/OBS-001). Returns the variant's mapping ONLY
 	// when it is Confirmed AND active. A NeedsReview/Rejected/Obsolete mapping yields
 	// no row, so no executable recommendation can be built on an unconfirmed identity.
 	GetActiveConfirmedIdentityForVariant(ctx context.Context, variantID uuid.UUID) (MarketProductIdentity, error)
 	GetApprovalCard(ctx context.Context, id uuid.UUID) (ApprovalCard, error)
+	// Tenant-scoped card fetch (issue #102): resolves a card ONLY when it belongs to
+	// the caller's marketplace account. A card owned by another account matches no row
+	// (pgx.ErrNoRows), so the transport returns the SAME not-found as a genuinely
+	// missing card — a foreign card is never disclosed and never mutated.
+	GetApprovalCardForAccount(ctx context.Context, arg GetApprovalCardForAccountParams) (ApprovalCard, error)
 	GetBriefingByAccountDay(ctx context.Context, arg GetBriefingByAccountDayParams) (Briefing, error)
 	// Read the durable spend for one (account, window) so the scheduler can size the
 	// sweep (Snapshot -> State -> PlanSweep). A missing row means the window is
@@ -301,6 +311,11 @@ type Querier interface {
 	// The greatest-version row for a lineage (the current recommendation).
 	GetCurrentRecommendation(ctx context.Context, lineageID uuid.UUID) (Recommendation, error)
 	GetCurrentSelectionSet(ctx context.Context, lineageID uuid.UUID) (SelectionSet, error)
+	// Tenant-scoped current selection-set version (issue #102): the greatest version
+	// of a lineage ONLY when that lineage belongs to the caller's marketplace account.
+	// A lineage owned by another account matches no row, so a bulk confirmation can
+	// never bind or probe a foreign selection set.
+	GetCurrentSelectionSetForAccount(ctx context.Context, arg GetCurrentSelectionSetForAccountParams) (SelectionSet, error)
 	GetDigestByAccountDay(ctx context.Context, arg GetDigestByAccountDayParams) (NotificationDigest, error)
 	// The digest recipient for an account: the organization's owner user email,
 	// falling back to the earliest user when no owner role exists. Returns no row when
@@ -344,8 +359,23 @@ type Querier interface {
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
 	GetOutcomeResult(ctx context.Context, windowID uuid.UUID) (OutcomeResult, error)
 	GetOutcomeWindowByAction(ctx context.Context, actionID uuid.UUID) (OutcomeWindow, error)
+	// Tenant-scoped outcome-window fetch (issue #102): outcome_windows carries no
+	// account column of its own, so it is scoped through its bound approval_cards row.
+	// A window whose card belongs to another account matches no row, so a foreign
+	// action's outcome is never disclosed.
+	GetOutcomeWindowByActionForAccount(ctx context.Context, arg GetOutcomeWindowByActionForAccountParams) (OutcomeWindow, error)
 	GetRecommendOnlyAction(ctx context.Context, actionID uuid.UUID) (RecommendOnlyAction, error)
+	// Tenant-scoped recommend-only fetch (issue #102 × #106): recommend_only_actions
+	// carries its own account column, so the unified action read predicates on it
+	// directly. A recommend-only action owned by another account matches no row
+	// (pgx.ErrNoRows), so a foreign action is never disclosed through the common read.
+	GetRecommendOnlyActionForAccount(ctx context.Context, arg GetRecommendOnlyActionForAccountParams) (RecommendOnlyAction, error)
 	GetRecommendation(ctx context.Context, id uuid.UUID) (Recommendation, error)
+	// Tenant-scoped recommendation fetch (issue #102): resolves a recommendation ONLY
+	// when it belongs to the caller's marketplace account. A recommendation owned by
+	// another account matches no row, so a foreign recommendation is indistinguishable
+	// from a missing one (no existence oracle) and is never disclosed.
+	GetRecommendationForAccount(ctx context.Context, arg GetRecommendationForAccountParams) (Recommendation, error)
 	GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error)
 	// Resolve a live session to its principal (user + role + organization). Rows
 	// at/after expiry are excluded, so an expired cookie fails closed.
@@ -469,6 +499,10 @@ type Querier interface {
 	// UPDATEd (selection_sets is append-only), so a version's fingerprint is immutable —
 	// binding the version at confirm transitively binds this fingerprint (issue #91).
 	InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error)
+	// marketplace_account_id is the tenant key (issue #102): it MUST equal the owning
+	// selection_set's account and — enforced by migration 0025's composite FKs and the
+	// recommendation-account trigger — the variant's and (when present) the
+	// recommendation's account, so a cross-account member is rejected at the DB.
 	InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error)
 	InsertWatchlistEntry(ctx context.Context, arg InsertWatchlistEntryParams) (WatchlistEntry, error)
 	// The S35 write-verification flag for an account. Returns false when there is no

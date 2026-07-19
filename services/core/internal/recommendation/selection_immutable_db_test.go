@@ -124,8 +124,11 @@ func TestSelectionSet_AddAfterPreviewMintsNewVersionAndInvalidatesN(t *testing.T
 	lineage := setN.Set.LineageID
 
 	// "Add another member" is a rebuild on the same lineage with the enlarged
-	// membership — it mints N+1, never appends to N.
-	_, v2 := seedVariant(t, q)
+	// membership — it mints N+1, never appends to N. The second variant belongs to
+	// the SAME account (a real bulk set is single-tenant); seedSecondVariant keeps it
+	// in `account` so the tenant-bound composite FKs (issue #102, migration 0025) are
+	// satisfied, unlike seedVariant which would mint a foreign account.
+	v2 := seedSecondVariant(t, q, account)
 	rec2 := persistRecommendation(t, svc, account, v2)
 	setN1, err := svc.PreviewBulkSelection(ctx, account, lineage, "scope", nil,
 		[]recommendation.PreviewMemberInput{
