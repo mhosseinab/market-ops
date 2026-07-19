@@ -188,6 +188,12 @@ tasks:
       # durable pending work + age (issue #147), not an increase()-subtraction of two
       # unrelated counters. Self-contained deterministic gate; promtool not wired here.
       - python3 deploy/prometheus/rules/reconciliation_alert_test.py
+      # Collector self-telemetry scrape seam (issue #153): prove the collector's
+      # internal metrics listener binds a compose-reachable interface on exactly
+      # the port the otel-collector-internal job scrapes — not the 0.119.0
+      # loopback default that leaves the target down. Offline config↔target guard;
+      # the live up==1 proof is tools/obs/check_collector_internal.sh (needs dev).
+      - python3 deploy/otel-collector/collector_internal_telemetry_test.py
 
   db:reset:
     desc: Drop + recreate the dev DB, then goose up + river migrate-up + seed fixtures.
