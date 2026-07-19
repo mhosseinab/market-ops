@@ -6,9 +6,5 @@
     "read.cost_readiness",
     "read.current_strategy"
   ],
-  "draft_actions": [
-    "draft.level2_proposal",
-    "draft.recommendation",
-    "draft.selection_set"
-  ]
+  "draft_actions": ["draft.level2_proposal", "draft.recommendation", "draft.selection_set"]
 }
