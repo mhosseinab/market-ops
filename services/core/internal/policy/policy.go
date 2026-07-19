@@ -71,6 +71,19 @@ var (
 	// ErrUnknownObjective — Objective is empty or outside the closed set: an
 	// unknown token fails closed and is NEVER reinterpreted as ObjectiveTrackStrategy.
 	ErrUnknownObjective = policyError("policy: unknown optimization objective (closed set: maximize_contribution, track_strategy)")
+	// ErrMissingReference — Match/Undercut require a non-zero reference price; it is
+	// absent (zero-value Money) or zero-priced (issue #64, §4.6). A missing reference
+	// is NEVER coerced to a zero-value Money that reaches evaluation.
+	ErrMissingReference = policyError("policy: match/undercut strategy requires a non-zero reference price")
+	// ErrReferenceUnitMismatch — the reference currency/exponent differs from the
+	// policy money unit (the contribution floor). Cross-unit money never reaches
+	// Money arithmetic; it fails closed here with a typed error (issue #64, §4.6).
+	ErrReferenceUnitMismatch = policyError("policy: reference price unit must match the contribution floor unit")
+	// ErrUndercutOutOfRange — undercut depth is negative or above the maximum
+	// (0..10000 bp, i.e. 0%..100%). A negative depth would RAISE the desired price
+	// (reversing Undercut); above 100% would drive it below zero. Enforced as
+	// fixed-point basis points — no float on the money path (issue #64, §4.6).
+	ErrUndercutOutOfRange = policyError("policy: undercut basis points out of range [0, 10000]")
 )
 
 // policyError is a tiny sentinel error type (avoids importing errors for New).
@@ -171,6 +184,9 @@ func NewConfig(p ConfigParams) (Config, error) {
 	if err := validateObjective(p.Objective); err != nil {
 		return Config{}, err
 	}
+	if err := validateStrategyParams(p.Strategy, p.Reference, p.UndercutBp, p.ContributionFloor); err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		Boundary:          p.Boundary,
@@ -198,7 +214,62 @@ func (c Config) validate() error {
 	if err := validateStrategy(c.Strategy); err != nil {
 		return err
 	}
-	return validateObjective(c.Objective)
+	if err := validateObjective(c.Objective); err != nil {
+		return err
+	}
+	return validateStrategyParams(c.Strategy, c.Reference, c.UndercutBp, c.ContributionFloor)
+}
+
+// maxUndercutBp bounds the undercut depth to 0..10000 basis points (0%..100%).
+// A negative depth would raise the desired price (reversing Undercut semantics);
+// a depth above 100% would drive the desired price below zero. It is a fixed-point
+// integer bound — never a float on the money path (§4.6).
+const maxUndercutBp int64 = 10000
+
+// validateStrategyParams enforces the strategy-specific parameter contract
+// (issue #64, §4.6 money correctness / quarantine-over-inference). Match and
+// Undercut require a valid, same-unit reference price; Undercut additionally
+// requires a bounded non-negative depth. Hold requires neither (it keeps the
+// current price). Invalid commercial configuration fails closed HERE — before
+// evaluation — so a malformed reference or depth never reaches Money arithmetic
+// or produces a proposal. The policy money unit is the contribution floor.
+func validateStrategyParams(s Strategy, reference money.Money, undercutBp money.BasisPoints, unit money.Money) error {
+	switch s {
+	case StrategyHold:
+		return nil
+	case StrategyMatch:
+		return validateReference(reference, unit)
+	case StrategyUndercut:
+		if err := validateReference(reference, unit); err != nil {
+			return err
+		}
+		return validateUndercutBp(undercutBp)
+	default:
+		// Unknown/empty strategy is handled by validateStrategy (fails closed with
+		// ErrUnknownStrategy); there are no strategy params to check here.
+		return nil
+	}
+}
+
+// validateReference rejects an absent or zero-priced reference (ErrMissingReference)
+// and a reference whose currency/exponent differs from the policy money unit
+// (ErrReferenceUnitMismatch), so cross-unit money never reaches arithmetic.
+func validateReference(reference, unit money.Money) error {
+	if reference.IsZero() {
+		return ErrMissingReference
+	}
+	if reference.Currency() != unit.Currency() || reference.Exponent() != unit.Exponent() {
+		return ErrReferenceUnitMismatch
+	}
+	return nil
+}
+
+// validateUndercutBp bounds the undercut depth to [0, maxUndercutBp].
+func validateUndercutBp(bp money.BasisPoints) error {
+	if bp.Value() < 0 || bp.Value() > maxUndercutBp {
+		return ErrUndercutOutOfRange
+	}
+	return nil
 }
 
 // validateStrategy enforces the closed Strategy set (§4.6 quarantine-over-inference,

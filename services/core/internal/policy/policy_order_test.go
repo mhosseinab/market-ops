@@ -130,13 +130,14 @@ func TestEvaluate_StrategyDisabledBlocksOnlyWhenHardStagesPass(t *testing.T) {
 func TestEvaluate_OracleNotCalledWhenBoundaryTerminates(t *testing.T) {
 	spy := &countingContrib{inner: mkContrib(t, m0(t, 100), 0)}
 	cfg := Config{
-		Boundary:        Boundary{Known: false}, // stage 1 terminates here
-		MovementCap:     DefaultMovementCap(),
-		Cooldown:        DefaultCooldown,
-		Strategy:        StrategyMatch,
-		StrategyEnabled: true,
-		Reference:       m0(t, 1050),
-		Objective:       ObjectiveTrackStrategy,
+		Boundary:          Boundary{Known: false}, // stage 1 terminates here
+		ContributionFloor: m0(t, 0),               // policy money unit (issue #64): Match needs a coherent unit
+		MovementCap:       DefaultMovementCap(),
+		Cooldown:          DefaultCooldown,
+		Strategy:          StrategyMatch,
+		StrategyEnabled:   true,
+		Reference:         m0(t, 1050),
+		Objective:         ObjectiveTrackStrategy,
 	}
 	res, err := Evaluate(EvaluateInput{
 		Config:       cfg,
@@ -161,13 +162,14 @@ func TestEvaluate_OracleNotCalledWhenBoundaryTerminates(t *testing.T) {
 func TestEvaluate_OracleNotCalledWhenWindowEmpty(t *testing.T) {
 	spy := &countingContrib{inner: mkContrib(t, m0(t, 100), 0)}
 	cfg := Config{
-		Boundary:        Boundary{Known: true, Min: m0(t, 1200), Max: m0(t, 1300)},
-		MovementCap:     money.NewBasisPoints(100), // ±1% around 1000 = [990,1010]; ∩ boundary = ∅
-		Cooldown:        DefaultCooldown,
-		Strategy:        StrategyMatch,
-		StrategyEnabled: true,
-		Reference:       m0(t, 1250),
-		Objective:       ObjectiveTrackStrategy,
+		Boundary:          Boundary{Known: true, Min: m0(t, 1200), Max: m0(t, 1300)},
+		ContributionFloor: m0(t, 0),                  // policy money unit (issue #64): Match needs a coherent unit
+		MovementCap:       money.NewBasisPoints(100), // ±1% around 1000 = [990,1010]; ∩ boundary = ∅
+		Cooldown:          DefaultCooldown,
+		Strategy:          StrategyMatch,
+		StrategyEnabled:   true,
+		Reference:         m0(t, 1250),
+		Objective:         ObjectiveTrackStrategy,
 	}
 	res, err := Evaluate(EvaluateInput{
 		Config:       cfg,

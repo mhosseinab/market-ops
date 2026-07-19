@@ -290,7 +290,9 @@ func policyErr(err error) gateway.ErrorEnvelope {
 	code := "POLICY_ERROR"
 	switch {
 	case errors.Is(err, policy.ErrMovementCapTooLoose), errors.Is(err, policy.ErrCooldownTooLoose),
-		errors.Is(err, policy.ErrInvalidMovementCap), errors.Is(err, policy.ErrInvalidCooldown):
+		errors.Is(err, policy.ErrInvalidMovementCap), errors.Is(err, policy.ErrInvalidCooldown),
+		errors.Is(err, policy.ErrMissingReference), errors.Is(err, policy.ErrReferenceUnitMismatch),
+		errors.Is(err, policy.ErrUndercutOutOfRange):
 		code = "POLICY_CONFIG_INVALID"
 	case errors.Is(err, margin.ErrMissingRequiredComponent):
 		code = "COST_INCOMPLETE"
