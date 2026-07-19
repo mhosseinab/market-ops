@@ -40,8 +40,13 @@ const FILTERS: readonly { id: FilterKey; labelKey: MessageKey }[] = [
   { id: "executed", labelKey: "actions.filter.executed" },
 ];
 
-function matchesFilter(state: ExecutionExternalState, filter: FilterKey): boolean {
+function matchesFilter(state: ExecutionExternalState | undefined, filter: FilterKey): boolean {
   if (filter === "all") return true;
+  // A recommend-only action carries no write external state (issue #106): it is
+  // NOT a marketplace write, so the write-oriented filters never match it. The
+  // grouped multi-mode queue (write + recommend-only, by canonical state) is
+  // deferred to the web multi-mode work — see the carry-forward note above.
+  if (state === undefined) return false;
   if (filter === "pending") return state === "pending_reconciliation";
   if (filter === "failed") return state === "failed" || state === "rejected";
   return state === "accepted";
@@ -107,7 +112,16 @@ export function Actions() {
     {
       id: "state",
       header: "actions.col.state",
-      render: (r) => <StatusBadge state={EXTERNAL_TO_STATUS[r.externalState]} />,
+      // A write action renders its EXE-003 external state; a recommend-only action
+      // has none (it never wrote to the marketplace) and is shown unavailable here
+      // until the multi-mode queue renders its EXE-005 state (issue #106, deferred).
+      render: (r) => {
+        return r.externalState ? (
+          <StatusBadge state={EXTERNAL_TO_STATUS[r.externalState]} />
+        ) : (
+          unavailableNode(unavailable)
+        );
+      },
     },
     {
       id: "reconciled",
@@ -235,6 +249,10 @@ export function Actions() {
   );
 
   function detailFor(exec: ActionExecutionView): ReactNode {
+    // No write external state ⇒ a recommend-only action: it made no marketplace
+    // write, so none of the write-result detail panels apply (issue #106). The
+    // EXE-005 recommend-only detail is deferred to the multi-mode queue work.
+    if (!exec.externalState) return null;
     if (exec.externalState === "pending_reconciliation") {
       return (
         <div

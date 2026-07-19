@@ -1,5 +1,6 @@
 """Contains all the data models used in inputs/outputs"""
 
+from .action_canonical_state import ActionCanonicalState
 from .action_execution_view import ActionExecutionView
 from .action_list import ActionList
 from .action_summary import ActionSummary
@@ -161,6 +162,7 @@ from .watchlist_entry import WatchlistEntry
 from .watchlist_view import WatchlistView
 
 __all__ = (
+    "ActionCanonicalState",
     "ActionExecutionView",
     "ActionList",
     "ActionSummary",

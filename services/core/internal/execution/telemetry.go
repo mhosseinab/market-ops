@@ -109,6 +109,20 @@ func (t *telemetry) terminal(ctx context.Context, state ExternalState) {
 	t.terminals.Add(ctx, 1, metric.WithAttributes(attribute.String("external_state", string(state))))
 }
 
+// recommendOnlyTerminal records an EXE-005 recommend-only action reaching a
+// terminal state (issue #106). It shares the terminals counter with the write
+// path (labelled mode=recommend_only + the terminal state) so the unified action
+// lifecycle is observable across both modes on one series, and notes whether the
+// terminal opened an OUT-001 window (externally_executed) or not (lapsed).
+func (t *telemetry) recommendOnlyTerminal(ctx context.Context, state RecommendOnlyState, openedWindow bool) {
+	t.terminals.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("mode", string(ModeRecommendOnly)),
+		attribute.String("external_state", string(state)),
+	))
+	t.logger.InfoContext(ctx, "recommend-only action reached terminal state",
+		"recommend_only_state", string(state), "outcome_window_opened", openedWindow)
+}
+
 func (t *telemetry) recommendOnlyFallback(ctx context.Context, card db.ApprovalCard) {
 	t.recommendOnly.Add(ctx, 1)
 	t.enablementDenie.Add(ctx, 1)

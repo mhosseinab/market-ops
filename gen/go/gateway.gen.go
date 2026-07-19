@@ -19,6 +19,36 @@ import (
 	openapi_types "github.com/oapi-codegen/runtime/types"
 )
 
+// Defines values for ActionCanonicalState.
+const (
+	ActionCanonicalStateAwaiting  ActionCanonicalState = "awaiting"
+	ActionCanonicalStateFailed    ActionCanonicalState = "failed"
+	ActionCanonicalStateLapsed    ActionCanonicalState = "lapsed"
+	ActionCanonicalStateRejected  ActionCanonicalState = "rejected"
+	ActionCanonicalStateSucceeded ActionCanonicalState = "succeeded"
+	ActionCanonicalStateUnknown   ActionCanonicalState = "unknown"
+)
+
+// Valid indicates whether the value is a known member of the ActionCanonicalState enum.
+func (e ActionCanonicalState) Valid() bool {
+	switch e {
+	case ActionCanonicalStateAwaiting:
+		return true
+	case ActionCanonicalStateFailed:
+		return true
+	case ActionCanonicalStateLapsed:
+		return true
+	case ActionCanonicalStateRejected:
+		return true
+	case ActionCanonicalStateSucceeded:
+		return true
+	case ActionCanonicalStateUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for ApprovalInvalidationReason.
 const (
 	ApprovalInvalidationReasonActionMismatch          ApprovalInvalidationReason = "action_mismatch"
@@ -1078,19 +1108,28 @@ func (e UserRole) Valid() bool {
 	}
 }
 
-// ActionExecutionView The single EXE-002 execution record for an action (CHAT-073 read).
+// ActionCanonicalState The mode-independent lifecycle bucket an action is grouped by in the common action API (issue #106). It unifies the write (EXE-003) and recommend-only (EXE-005) result sets so a client can group BOTH modes by one stable key, WITHOUT collapsing the authoritative `mode` distinction — a recommend-only `externally_executed` action shares the `succeeded` bucket with a marketplace-accepted write, but its `mode` stays `recommend_only`, so it is never presented as a marketplace write. `awaiting` = write pending_reconciliation or recommend-only awaiting_external_execution; `succeeded` = write accepted or recommend-only externally_executed; `rejected`/`failed` = write only; `lapsed` = recommend-only only.
+type ActionCanonicalState string
+
+// ActionExecutionView The common action-execution read (CHAT-073), resolving an action in EITHER execution mode (issue #106). For a `write` action `externalState` is the single EXE-002/EXE-003 external result. For a `recommend_only` action `externalState` is ABSENT (a recommend-only action is not a marketplace write) and `recommendOnlyState` carries its EXE-005 state instead. `canonicalState` is the mode-independent lifecycle bucket for grouping.
 type ActionExecutionView struct {
 	ActionId openapi_types.UUID `json:"actionId"`
-	CardId   openapi_types.UUID `json:"cardId"`
+
+	// CanonicalState The mode-independent lifecycle bucket an action is grouped by in the common action API (issue #106). It unifies the write (EXE-003) and recommend-only (EXE-005) result sets so a client can group BOTH modes by one stable key, WITHOUT collapsing the authoritative `mode` distinction — a recommend-only `externally_executed` action shares the `succeeded` bucket with a marketplace-accepted write, but its `mode` stays `recommend_only`, so it is never presented as a marketplace write. `awaiting` = write pending_reconciliation or recommend-only awaiting_external_execution; `succeeded` = write accepted or recommend-only externally_executed; `rejected`/`failed` = write only; `lapsed` = recommend-only only.
+	CanonicalState *ActionCanonicalState `json:"canonicalState,omitempty"`
+	CardId         openapi_types.UUID    `json:"cardId"`
 
 	// ExternalRef The marketplace's handle for the write (e.g. batch id), when present.
 	ExternalRef *string `json:"externalRef,omitempty"`
 
-	// ExternalState The EXE-003 external result of a write. `pending_reconciliation` is the fail-closed state for an UNKNOWN result — never inferred as success/failure.
-	ExternalState ExecutionExternalState `json:"externalState"`
+	// ExternalState The EXE-003 external result. Present ONLY for a `write` action; absent for `recommend_only` (which never performs a marketplace write).
+	ExternalState *ExecutionExternalState `json:"externalState,omitempty"`
 
 	// Mode The execution mode of a completed Execute call. `write` attempted a real external write (write enabled); `recommend_only` tracked the approved action for external matching because writes are OFF (EXE-005).
 	Mode ExecutionMode `json:"mode"`
+
+	// RecommendOnlyState The EXE-005 state. Present ONLY for a `recommend_only` action.
+	RecommendOnlyState *RecommendOnlyState `json:"recommendOnlyState,omitempty"`
 
 	// ReconciledAt When the external result was reconciled to a terminal state.
 	ReconciledAt *time.Time `json:"reconciledAt,omitempty"`
@@ -1101,16 +1140,27 @@ type ActionList struct {
 	Items []ActionSummary `json:"items"`
 }
 
-// ActionSummary One row of the actions queue (PD-3 item 5) — an approval card, unexpanded.
+// ActionSummary One row of the actions queue (PD-3 item 5) — an approval card, unexpanded. When the action has been executed or is tracked recommend-only, the execution overlay is present so the list can group by canonical state WITHOUT deep-link-only discovery (issue #106): `executionMode` names the mode, `canonicalState` the mode-independent lifecycle bucket, and exactly one of `externalState` (write) / `recommendOnlyState` (recommend-only) carries the mode-specific raw state. All overlay fields are absent for a pre-execution card (still Draft/ReadyForReview/AwaitingConfirmation/Approved).
 type ActionSummary struct {
-	CreatedAt      *time.Time         `json:"createdAt,omitempty"`
-	ExpiresAt      time.Time          `json:"expiresAt"`
-	Id             openapi_types.UUID `json:"id"`
-	IdempotencyKey *string            `json:"idempotencyKey,omitempty"`
+	// CanonicalState The mode-independent lifecycle bucket an action is grouped by in the common action API (issue #106). It unifies the write (EXE-003) and recommend-only (EXE-005) result sets so a client can group BOTH modes by one stable key, WITHOUT collapsing the authoritative `mode` distinction — a recommend-only `externally_executed` action shares the `succeeded` bucket with a marketplace-accepted write, but its `mode` stays `recommend_only`, so it is never presented as a marketplace write. `awaiting` = write pending_reconciliation or recommend-only awaiting_external_execution; `succeeded` = write accepted or recommend-only externally_executed; `rejected`/`failed` = write only; `lapsed` = recommend-only only.
+	CanonicalState *ActionCanonicalState `json:"canonicalState,omitempty"`
+	CreatedAt      *time.Time            `json:"createdAt,omitempty"`
+
+	// ExecutionMode The execution mode overlay; absent for a pre-execution card.
+	ExecutionMode *ExecutionMode `json:"executionMode,omitempty"`
+	ExpiresAt     time.Time      `json:"expiresAt"`
+
+	// ExternalState The EXE-003 external result; present ONLY for an executed `write` action.
+	ExternalState  *ExecutionExternalState `json:"externalState,omitempty"`
+	Id             openapi_types.UUID      `json:"id"`
+	IdempotencyKey *string                 `json:"idempotencyKey,omitempty"`
 
 	// Price An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35.
-	Price            MoneyAmount        `json:"price"`
-	RecommendationId openapi_types.UUID `json:"recommendationId"`
+	Price MoneyAmount `json:"price"`
+
+	// RecommendOnlyState The EXE-005 state; present ONLY for a `recommend_only` action.
+	RecommendOnlyState *RecommendOnlyState `json:"recommendOnlyState,omitempty"`
+	RecommendationId   openapi_types.UUID  `json:"recommendationId"`
 
 	// State One node of the §8.4 approval state machine. The set is closed; it is the authoritative lifecycle vocabulary for a card and its history.
 	State   ApprovalState `json:"state"`

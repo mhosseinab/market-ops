@@ -136,6 +136,7 @@ func (r *RecommendOnlyReconciler) transition(ctx context.Context, row db.Recomme
 	if err != nil {
 		return err
 	}
+	// The recommend_only tracking event (retained: the EXE-005 audit surface).
 	if _, err := audit.Append(ctx, q, audit.Event{
 		ActionID: row.ActionID, CardID: row.CardID, AccountID: row.MarketplaceAccountID,
 		Type:         audit.EventRecommendOnly,
@@ -144,7 +145,45 @@ func (r *RecommendOnlyReconciler) transition(ctx context.Context, row db.Recomme
 	}); err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+
+	// EXE-005 externally_executed opens the OUT-001 outcome window ATOMICALLY with
+	// the state change (issue #106) — unifying recommend-only with the write path,
+	// which likewise opens a window at its terminal state. UNIQUE(action_id) makes
+	// the open idempotent (a matcher race / replay opens exactly one window). A
+	// lapse opens NO window: nothing was applied to measure.
+	if to == StateExternallyExecuted {
+		opened := r.now()
+		if _, err := q.OpenOutcomeWindow(ctx, db.OpenOutcomeWindowParams{
+			ActionID: row.ActionID, CardID: pgUUID(row.CardID),
+			OpenedAt: opened, ClosesAt: opened.Add(outcomeWindow),
+		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+	}
+
+	// Every terminal recommend-only transition lands its `terminal` AUD-001 record
+	// ATOMICALLY (fail closed: an audit-append failure rolls the whole transition
+	// back). terminal_state carries the recommend-only terminal value verbatim
+	// (audit_records.terminal_state is free-text) — for a lapse this is the honest
+	// record of the closed window, never a marketplace-write claim (no
+	// external_result event is ever appended for a recommend-only action).
+	if _, err := audit.Append(ctx, q, audit.Event{
+		ActionID: row.ActionID, CardID: row.CardID, AccountID: row.MarketplaceAccountID,
+		Type:          audit.EventTerminal,
+		CardSnapshot:  map[string]any{"recommend_only_state": updated.State},
+		Detail:        map[string]any{"mode": ModeRecommendOnly, "matched_at": matchedAt},
+		TerminalState: string(to),
+	}); err != nil {
+		r.tel.auditWriteFailed(ctx, row.ActionID, err)
+		return err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		r.tel.auditWriteFailed(ctx, row.ActionID, err)
+		return err
+	}
+	r.tel.recommendOnlyTerminal(ctx, to, to == StateExternallyExecuted)
+	return nil
 }
 
 // noOwnedPrices is the fail-closed default source: it returns no owned-offer

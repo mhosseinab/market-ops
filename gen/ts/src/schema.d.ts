@@ -2112,6 +2112,11 @@ export interface components {
          * @enum {string}
          */
         RecommendOnlyState: "" | "awaiting_external_execution" | "externally_executed" | "lapsed";
+        /**
+         * @description The mode-independent lifecycle bucket an action is grouped by in the common action API (issue #106). It unifies the write (EXE-003) and recommend-only (EXE-005) result sets so a client can group BOTH modes by one stable key, WITHOUT collapsing the authoritative `mode` distinction — a recommend-only `externally_executed` action shares the `succeeded` bucket with a marketplace-accepted write, but its `mode` stays `recommend_only`, so it is never presented as a marketplace write. `awaiting` = write pending_reconciliation or recommend-only awaiting_external_execution; `succeeded` = write accepted or recommend-only externally_executed; `rejected`/`failed` = write only; `lapsed` = recommend-only only.
+         * @enum {string}
+         */
+        ActionCanonicalState: "awaiting" | "succeeded" | "rejected" | "failed" | "lapsed" | "unknown";
         /** @description Request to revalidate and execute an approved card (§7.5). */
         ExecuteActionRequest: {
             /** Format: uuid */
@@ -2143,14 +2148,18 @@ export interface components {
             eligible: boolean;
             state?: components["schemas"]["ExecutionExternalState"];
         };
-        /** @description The single EXE-002 execution record for an action (CHAT-073 read). */
+        /** @description The common action-execution read (CHAT-073), resolving an action in EITHER execution mode (issue #106). For a `write` action `externalState` is the single EXE-002/EXE-003 external result. For a `recommend_only` action `externalState` is ABSENT (a recommend-only action is not a marketplace write) and `recommendOnlyState` carries its EXE-005 state instead. `canonicalState` is the mode-independent lifecycle bucket for grouping. */
         ActionExecutionView: {
             /** Format: uuid */
             actionId: string;
             /** Format: uuid */
             cardId: string;
             mode: components["schemas"]["ExecutionMode"];
-            externalState: components["schemas"]["ExecutionExternalState"];
+            canonicalState?: components["schemas"]["ActionCanonicalState"];
+            /** @description The EXE-003 external result. Present ONLY for a `write` action; absent for `recommend_only` (which never performs a marketplace write). */
+            externalState?: components["schemas"]["ExecutionExternalState"];
+            /** @description The EXE-005 state. Present ONLY for a `recommend_only` action. */
+            recommendOnlyState?: components["schemas"]["RecommendOnlyState"];
             /** @description The marketplace's handle for the write (e.g. batch id), when present. */
             externalRef?: string;
             /**
@@ -2403,7 +2412,7 @@ export interface components {
             aggregateImpact?: components["schemas"]["EventExposure"];
             members: components["schemas"]["SelectionSetMemberView"][];
         };
-        /** @description One row of the actions queue (PD-3 item 5) — an approval card, unexpanded. */
+        /** @description One row of the actions queue (PD-3 item 5) — an approval card, unexpanded. When the action has been executed or is tracked recommend-only, the execution overlay is present so the list can group by canonical state WITHOUT deep-link-only discovery (issue #106): `executionMode` names the mode, `canonicalState` the mode-independent lifecycle bucket, and exactly one of `externalState` (write) / `recommendOnlyState` (recommend-only) carries the mode-specific raw state. All overlay fields are absent for a pre-execution card (still Draft/ReadyForReview/AwaitingConfirmation/Approved). */
         ActionSummary: {
             /** Format: uuid */
             id: string;
@@ -2418,6 +2427,13 @@ export interface components {
             expiresAt: string;
             /** Format: date-time */
             createdAt?: string;
+            /** @description The execution mode overlay; absent for a pre-execution card. */
+            executionMode?: components["schemas"]["ExecutionMode"];
+            canonicalState?: components["schemas"]["ActionCanonicalState"];
+            /** @description The EXE-003 external result; present ONLY for an executed `write` action. */
+            externalState?: components["schemas"]["ExecutionExternalState"];
+            /** @description The EXE-005 state; present ONLY for a `recommend_only` action. */
+            recommendOnlyState?: components["schemas"]["RecommendOnlyState"];
         };
         ActionList: {
             items: components["schemas"]["ActionSummary"][];

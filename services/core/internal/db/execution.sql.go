@@ -358,6 +358,57 @@ func (q *Queries) IsWriteVerified(ctx context.Context, marketplaceAccountID uuid
 	return verified, err
 }
 
+const listActionExecutionsByAccount = `-- name: ListActionExecutionsByAccount :many
+SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ac.marketplace_account_id = $1
+ORDER BY ae.created_at DESC
+LIMIT $2
+`
+
+type ListActionExecutionsByAccountParams struct {
+	MarketplaceAccountID uuid.UUID
+	Limit                int32
+}
+
+// Every write-mode action_executions row for an account (issue #106 unified action
+// projection), newest first. Scoped via the bound approval_cards row
+// (action_executions carries no account column of its own). A pure SELECT — the
+// common action API overlays these onto the account's approval cards.
+func (q *Queries) ListActionExecutionsByAccount(ctx context.Context, arg ListActionExecutionsByAccountParams) ([]ActionExecution, error) {
+	rows, err := q.db.Query(ctx, listActionExecutionsByAccount, arg.MarketplaceAccountID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActionExecution{}
+	for rows.Next() {
+		var i ActionExecution
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.ActionID,
+			&i.IdempotencyKey,
+			&i.Mode,
+			&i.ExternalState,
+			&i.ExternalRef,
+			&i.RequestPayload,
+			&i.ResponsePayload,
+			&i.ReconciledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAwaitingRecommendOnlyActions = `-- name: ListAwaitingRecommendOnlyActions :many
 SELECT id, card_id, action_id, marketplace_account_id, variant_id, approved_price_mantissa, approved_price_currency, approved_price_exponent, approved_at, window_expires_at, state, matched_observation_at, created_at, updated_at FROM recommend_only_actions
 WHERE state = 'awaiting_external_execution'
@@ -484,6 +535,56 @@ func (q *Queries) ListPendingReconciliationByAccount(ctx context.Context, arg Li
 			&i.RequestPayload,
 			&i.ResponsePayload,
 			&i.ReconciledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecommendOnlyActionsByAccount = `-- name: ListRecommendOnlyActionsByAccount :many
+SELECT id, card_id, action_id, marketplace_account_id, variant_id, approved_price_mantissa, approved_price_currency, approved_price_exponent, approved_at, window_expires_at, state, matched_observation_at, created_at, updated_at FROM recommend_only_actions
+WHERE marketplace_account_id = $1
+ORDER BY approved_at DESC
+LIMIT $2
+`
+
+type ListRecommendOnlyActionsByAccountParams struct {
+	MarketplaceAccountID uuid.UUID
+	Limit                int32
+}
+
+// Every recommend-only action for an account (issue #106 unified action
+// projection), newest first. recommend_only_actions carries its own account
+// column, so no join is needed. A pure SELECT.
+func (q *Queries) ListRecommendOnlyActionsByAccount(ctx context.Context, arg ListRecommendOnlyActionsByAccountParams) ([]RecommendOnlyAction, error) {
+	rows, err := q.db.Query(ctx, listRecommendOnlyActionsByAccount, arg.MarketplaceAccountID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecommendOnlyAction{}
+	for rows.Next() {
+		var i RecommendOnlyAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.ActionID,
+			&i.MarketplaceAccountID,
+			&i.VariantID,
+			&i.ApprovedPriceMantissa,
+			&i.ApprovedPriceCurrency,
+			&i.ApprovedPriceExponent,
+			&i.ApprovedAt,
+			&i.WindowExpiresAt,
+			&i.State,
+			&i.MatchedObservationAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
 		); err != nil {
