@@ -1,4 +1,5 @@
-import { t } from "../lib/i18n";
+import { formatDate, formatInteger } from "@market-ops/locale";
+import { EXT_LOCALE, t } from "../lib/i18n";
 import type { ExtMessage, ExtResponse } from "../lib/messages";
 import type { PopupState } from "../lib/storage";
 
@@ -8,9 +9,50 @@ import type { PopupState } from "../lib/storage";
 // and forwards; it never computes commercial values. ALL copy flows through the
 // shared fa-IR catalog (LOC boundary) — zero string literals here (S31: closes
 // the S30 carry-forward where the popup rendered hardcoded English).
+//
+// Dynamic VALUES are localized too (issue #160, LOC-005): counts render in the
+// active locale's digit family via `formatInteger`, the last-upload time in the
+// approved Persian display calendar / IR timezone via `formatDate`, and raw
+// technical identifiers (account UUID, ISO instants) are LTR-isolated inside the
+// RTL popup — mirroring the overlay's `ltrToken` and apps/web's `LtrToken` — so
+// the bidi algorithm never reorders their hyphen/segment fragments. Stable raw
+// values are kept in `data-raw` for tests/tooling.
+
+// Presentation options for the user-facing last-upload time. `formatDate`
+// defaults the timezone to the IR region (Asia/Tehran) and the tag carries the
+// Jalali calendar + digit family — no locale/calendar branch lives here.
+const UPLOAD_DATE_OPTS: Intl.DateTimeFormatOptions = {
+  year: "numeric",
+  month: "long",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+};
+
+// The LTR-isolation posture, shared by the overlay/web LtrToken pattern. A plain
+// <style> assignment (identifier, not a quoted copy literal) — copy-lint clean.
+const POPUP_STYLE = `
+  .market-ops-ltr {
+    direction: ltr;
+    unicode-bidi: isolate;
+    display: inline-block;
+  }
+`;
 
 function send(msg: ExtMessage): Promise<ExtResponse> {
   return chrome.runtime.sendMessage(msg) as Promise<ExtResponse>;
+}
+
+// Format a UTC instant in the active locale's display calendar. Returns null on
+// an unparseable instant so the caller falls back to the catalog unavailable
+// state — a bad timestamp is quarantined to the honest "not available" copy,
+// never coerced or shown raw (fail closed, LOC-005 / §4.6).
+function formatUpload(instant: string): string | null {
+  try {
+    return formatDate(instant, EXT_LOCALE, UPLOAD_DATE_OPTS);
+  } catch {
+    return null;
+  }
 }
 
 // A stable degradation token → catalog key map. `degradationReason()` in
@@ -34,8 +76,18 @@ function render(state: PopupState): void {
   if (!root) return;
   root.replaceChildren();
 
+  const style = document.createElement("style");
+  style.textContent = POPUP_STYLE;
+  root.appendChild(style);
+
+  // Account: a UUID is a technical identifier → LTR-isolated so RTL bidi never
+  // reorders its segments; missing ⇒ the catalog unavailable state.
   root.appendChild(
-    row("account", t("ext.popup.account"), state.marketplaceAccountId ?? t("common.notAvailable")),
+    valueRow(
+      "account",
+      t("ext.popup.account"),
+      state.marketplaceAccountId ? ltrTokenValue(state.marketplaceAccountId) : unavailableValue(),
+    ),
   );
   root.appendChild(
     row(
@@ -44,17 +96,36 @@ function render(state: PopupState): void {
       state.capability === "ready" ? t("ext.popup.on") : t("ext.popup.off"),
     ),
   );
+  // Last upload: user-facing time in the approved Persian display calendar; the
+  // raw ISO instant is retained in data-raw. An unparseable/absent instant ⇒
+  // the catalog unavailable state (never a raw ISO on the Persian surface).
+  const upload = state.lastUploadAt ? formatUpload(state.lastUploadAt) : null;
   root.appendChild(
-    row("last-upload", t("ext.popup.lastUpload"), state.lastUploadAt ?? t("common.notAvailable")),
+    valueRow(
+      "last-upload",
+      t("ext.popup.lastUpload"),
+      upload !== null ? localeValue(upload, state.lastUploadAt as string) : unavailableValue(),
+    ),
   );
-  root.appendChild(row("queued", t("ext.popup.queued"), String(state.queuedCount)));
+  // Queued count: the active locale's digit family (Persian for fa-IR).
+  root.appendChild(
+    valueRow(
+      "queued",
+      t("ext.popup.queued"),
+      localeValue(formatInteger(state.queuedCount, EXT_LOCALE), String(state.queuedCount)),
+    ),
+  );
 
   // Durable dead-letter (issue #150 / EXT-009): a VISIBLE count plus a per-item
   // recovery affordance — exhausted uploads are never silently erased. Rendered
   // only when there is something to recover.
   if (state.deadLetter.length > 0) {
     root.appendChild(
-      row("dead-letter", t("ext.deadLetter.count"), String(state.deadLetter.length)),
+      row(
+        "dead-letter",
+        t("ext.deadLetter.count"),
+        formatInteger(state.deadLetter.length, EXT_LOCALE),
+      ),
     );
     for (const item of state.deadLetter) {
       const el = document.createElement("div");
@@ -153,6 +224,52 @@ function row(field: string, label: string, value: string): HTMLElement {
   el.dataset.field = field;
   el.textContent = `${label}: ${value}`;
   return el;
+}
+
+// A row whose VALUE is a dedicated element (localized copy or an LTR-isolated
+// technical token) rather than plain text — so a technical identifier can be
+// bidi-isolated from the RTL label without a locale/direction branch in the
+// caller. Keeps the stable `data-field` for tooling.
+function valueRow(field: string, label: string, value: HTMLElement): HTMLElement {
+  const el = document.createElement("div");
+  el.dataset.role = "row";
+  el.dataset.field = field;
+  const labelEl = document.createElement("span");
+  labelEl.dataset.role = "row-label";
+  labelEl.textContent = `${label}: `;
+  el.appendChild(labelEl);
+  el.appendChild(value);
+  return el;
+}
+
+// A user-facing localized value (Persian digits / display calendar): RTL copy,
+// with the stable raw value preserved in `data-raw` for tests/tooling.
+function localeValue(display: string, raw: string): HTMLElement {
+  const el = document.createElement("span");
+  el.dataset.role = "row-value";
+  el.dataset.raw = raw;
+  el.textContent = display;
+  return el;
+}
+
+// A raw technical identifier (UUID, native id): LTR-isolated (`dir=ltr` +
+// `unicode-bidi:isolate`) so the RTL bidi algorithm never reorders its
+// hyphen/segment fragments — mirroring the overlay's ltrToken and apps/web's
+// LtrToken. The raw value is both the display and `data-raw`.
+function ltrTokenValue(raw: string): HTMLElement {
+  const el = document.createElement("span");
+  el.dataset.role = "row-value";
+  el.className = "market-ops-ltr";
+  el.dir = "ltr";
+  el.dataset.raw = raw;
+  el.textContent = raw;
+  return el;
+}
+
+// The catalog-backed "not available" value — Persian copy (never an LTR token),
+// with an empty `data-raw` marking the absence for tooling.
+function unavailableValue(): HTMLElement {
+  return localeValue(t("common.notAvailable"), "");
 }
 
 function button(label: string, onClick: () => void | Promise<void>): HTMLButtonElement {
