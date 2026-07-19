@@ -436,9 +436,15 @@ func (s *Service) recompute(ctx context.Context, q *db.Queries, account, variant
 	}
 	components := make(map[Component]ComponentPresence, len(profiles))
 	for _, p := range profiles {
+		// Carry the in-force version's source through as provenance. The exact
+		// source is effective-dated on the version, so a historical recompute
+		// (CST-002) reproduces the provenance that was in force then, never the
+		// current one. Authoritative provenance is only consulted for components
+		// that require it (commission, §9.2).
 		components[Component(p.Component)] = ComponentPresence{
-			Present: true,
-			Stale:   p.StaleAfter.Valid && !p.StaleAfter.Time.After(now),
+			Present:       true,
+			Stale:         p.StaleAfter.Valid && !p.StaleAfter.Time.After(now),
+			Authoritative: IsAuthoritativeSource(p.Source),
 		}
 	}
 
