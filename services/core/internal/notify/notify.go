@@ -23,6 +23,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -107,8 +108,9 @@ type DeliverResult struct {
 
 // Store is the append-only in-app notification store.
 type Store struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
+	pool   *pgxpool.Pool
+	now    func() time.Time
+	logger *slog.Logger
 }
 
 // NewStore builds a notification store over the pool.
@@ -122,14 +124,37 @@ func (s *Store) WithClock(now func() time.Time) *Store {
 	return s
 }
 
+// WithLogger attaches a structured logger so a fail-closed schema rejection is
+// logged (in addition to the returned typed error and the metric). A nil logger is
+// a no-op — the typed error is the primary observable signal.
+func (s *Store) WithLogger(l *slog.Logger) *Store {
+	s.logger = l
+	return s
+}
+
 // Deliver delivers one notification idempotently (NOT-001). bypass_digest is
 // derived from the category, so an execution/safety failure ALWAYS bypasses the
 // digest and a market event NEVER does. On a dedup collision it returns the
 // existing row with Delivered=false — duplicate delivery creates no product event.
 func (s *Store) Deliver(ctx context.Context, p DeliverParams) (DeliverResult, error) {
 	if !p.Category.Valid() || !validSeverity[p.Severity] ||
-		p.DedupKey == "" || p.TitleKey == "" || p.EventID == uuid.Nil {
+		p.DedupKey == "" || p.EventID == uuid.Nil {
 		return DeliverResult{}, ErrInvalidNotification
+	}
+	// Enforce the closed message-catalog contract BEFORE persistence (issue #126):
+	// title/body keys must be in the closed set, be deliverable under the category,
+	// and have their EXACT declared slots satisfied. Fail closed with a typed error
+	// (Unwraps ErrInvalidNotification), emit the rejection metric, and log — no
+	// arbitrary key or free-text slot map ever reaches the append-only store.
+	if verr := validateShape(p.Category, p.TitleKey, p.BodyKey, p.BodyParams); verr != nil {
+		recordRejection(ctx, verr)
+		if s.logger != nil {
+			s.logger.WarnContext(ctx, "notification delivery rejected: invalid message shape",
+				"account_id", p.Account, "dedup_key", p.DedupKey, "category", string(p.Category),
+				"surface", verr.Surface, "reason", string(verr.Reason),
+				"title_key", p.TitleKey, "body_key", p.BodyKey, "slot", verr.Slot)
+		}
+		return DeliverResult{}, verr
 	}
 	params, err := marshalParams(p.BodyParams)
 	if err != nil {

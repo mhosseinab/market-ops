@@ -2,6 +2,7 @@ package notify
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -53,6 +54,151 @@ var packs = map[string]map[string]string{
 		KeyItemExecutionFail:  "Execution failure for action {action}",
 		KeyItemSafetyFail:     "Safety stop: {reason}",
 	},
+}
+
+// MessageSchema is the closed contract for ONE catalog key (issue #126): the EXACT
+// set of named slots its template declares, and the notification categories the key
+// may be delivered under. It is the single Go-side source of truth for the
+// notification message shape — the store validates every delivery against it, the
+// digest isolates rows that violate it, and a schema<->template consistency test
+// proves each locale pack's literal placeholders equal Slots. It is intentionally a
+// plain data structure so a future generator can emit the TypeScript mirror + a
+// shared generated-schema CI check (deferred to the web/locale plane, S22 — no TS
+// notify catalog exists yet).
+type MessageSchema struct {
+	// Slots is the exact set of named {slot} placeholders the template declares.
+	// An empty/nil Slots means the template takes no slots (e.g. the digest footer).
+	Slots []string
+	// Categories is the set of notification categories this key may title/body. An
+	// empty set marks a digest-FRAME key: rendered internally by the digest, never
+	// deliverable as a notification title/body key.
+	Categories []Category
+}
+
+// allowsCategory reports whether this key is deliverable under cat.
+func (s MessageSchema) allowsCategory(cat Category) bool {
+	for _, c := range s.Categories {
+		if c == cat {
+			return true
+		}
+	}
+	return false
+}
+
+// messageSchemas is the closed message-catalog schema: exactly the keys packs
+// defines, each mapped to its declared slots and deliverable categories. Item keys
+// bind 1:1 to a category; frame keys are not deliverable. This map and packs are
+// kept in lockstep by TestSchema_MatchesTemplatePlaceholders.
+var messageSchemas = map[string]MessageSchema{
+	KeyDigestSubject:      {Slots: []string{"count"}},
+	KeyDigestIntro:        {Slots: []string{"count"}},
+	KeyDigestBriefingLink: {Slots: []string{"url"}},
+	KeyDigestFooter:       {Slots: nil},
+	KeyItemMarketEvent:    {Slots: []string{"variant"}, Categories: []Category{CategoryMarketEvent}},
+	KeyItemExecutionFail:  {Slots: []string{"action"}, Categories: []Category{CategoryExecutionFailure}},
+	KeyItemSafetyFail:     {Slots: []string{"reason"}, Categories: []Category{CategorySafetyFailure}},
+}
+
+// ValidationReason is the bounded vocabulary describing WHY a message key/param set
+// was rejected. It is emitted verbatim as a metric attribute (bounded cardinality)
+// and carried on MessageValidationError — the same field names in tests and prod.
+type ValidationReason string
+
+const (
+	// ReasonUnknownKey — the key is empty or absent from the closed schema.
+	ReasonUnknownKey ValidationReason = "unknown_key"
+	// ReasonCategoryMismatch — the key exists but is not deliverable under the
+	// notification's category (including a frame key used as a notification key).
+	ReasonCategoryMismatch ValidationReason = "category_mismatch"
+	// ReasonMissingSlot — a slot the template declares has no matching param.
+	ReasonMissingSlot ValidationReason = "missing_slot"
+	// ReasonUnexpectedSlot — a param names a slot the template does not declare.
+	ReasonUnexpectedSlot ValidationReason = "unexpected_slot"
+)
+
+// MessageValidationError is the typed, fail-closed rejection raised when a delivery
+// (or a persisted digest row) violates the closed message schema. It Unwraps to
+// ErrInvalidNotification so existing errors.Is checks keep matching, while carrying
+// the machine-readable Reason/Surface/Key/Slot for metrics and logs. Key/Slot are
+// LTR technical identifiers (catalog keys, slot names) — never localized copy, so
+// this error is safe to log (LOC-001: no Persian copy as a diagnostic identifier).
+type MessageValidationError struct {
+	Reason  ValidationReason
+	Surface string // "title" | "body"
+	Key     string
+	Slot    string // set for slot reasons
+}
+
+func (e *MessageValidationError) Error() string {
+	if e.Slot != "" {
+		return fmt.Sprintf("notify: %s %s key %q slot %q", e.Surface, e.Reason, e.Key, e.Slot)
+	}
+	return fmt.Sprintf("notify: %s %s key %q", e.Surface, e.Reason, e.Key)
+}
+
+// Unwrap ties every message-schema violation to the ErrInvalidNotification umbrella.
+func (e *MessageValidationError) Unwrap() error { return ErrInvalidNotification }
+
+// validateMessageKey checks one key against the closed schema for a category and
+// the supplied params' slot NAMES (values are data, never validated). It fails
+// closed with a typed *MessageValidationError; nil means the key/params are valid.
+// Surface is filled by the caller (title/body).
+func validateMessageKey(key string, cat Category, params map[string]string) *MessageValidationError {
+	schema, ok := messageSchemas[key]
+	if !ok {
+		return &MessageValidationError{Reason: ReasonUnknownKey, Key: key}
+	}
+	if !schema.allowsCategory(cat) {
+		return &MessageValidationError{Reason: ReasonCategoryMismatch, Key: key}
+	}
+	declared := make(map[string]bool, len(schema.Slots))
+	for _, s := range schema.Slots {
+		declared[s] = true
+	}
+	// Reject EXTRA slots: any param not declared by the template.
+	for name := range params {
+		if !declared[name] {
+			return &MessageValidationError{Reason: ReasonUnexpectedSlot, Key: key, Slot: name}
+		}
+	}
+	// Reject MISSING slots: any declared slot with no matching param.
+	for _, s := range schema.Slots {
+		if _, ok := params[s]; !ok {
+			return &MessageValidationError{Reason: ReasonMissingSlot, Key: key, Slot: s}
+		}
+	}
+	return nil
+}
+
+// validateShape enforces the full closed contract for one notification: both the
+// title key AND the body key must be in the closed set, be deliverable under the
+// category, and have their EXACT declared slots satisfied by the shared params
+// (order irrelevant; both missing and extra slots rejected). It fails closed with a
+// typed error that Unwraps to ErrInvalidNotification. No free text escapes into copy.
+func validateShape(cat Category, titleKey, bodyKey string, params map[string]string) *MessageValidationError {
+	if e := validateMessageKey(titleKey, cat, params); e != nil {
+		e.Surface = "title"
+		return e
+	}
+	if e := validateMessageKey(bodyKey, cat, params); e != nil {
+		e.Surface = "body"
+		return e
+	}
+	return nil
+}
+
+// placeholderRE matches a {name} named slot in a template (LOC-002 convention).
+var placeholderRE = regexp.MustCompile(`\{([a-zA-Z0-9_]+)\}`)
+
+// templateSlots extracts the named slots a template literally declares. It backs
+// the schema<->template consistency test so a Go-side drift is caught at test time.
+func templateSlots(tmpl string) []string {
+	m := placeholderRE.FindAllStringSubmatch(tmpl, -1)
+	out := make([]string, 0, len(m))
+	for _, g := range m {
+		out = append(out, g[1])
+	}
+	return out
 }
 
 // ErrUnknownLocale is returned when no pack exists for a locale. Fail closed — a
