@@ -13,6 +13,7 @@ import {
   outcomeClosed,
   previewWithDuplicate,
   readinessMissing,
+  recommendationDetail,
   sessionOwner,
   target,
 } from "./fixtures";
@@ -94,6 +95,7 @@ export const handlers = [
     }),
   ),
 
+  http.get(`${B}/recommendations/detail`, () => HttpResponse.json(recommendationDetail)),
   http.get(`${B}/approvals/card`, () => HttpResponse.json(approvalCardAwaiting)),
   http.post(`${B}/approvals/confirm`, () => HttpResponse.json(confirmApproved)),
 

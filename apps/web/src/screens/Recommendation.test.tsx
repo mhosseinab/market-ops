@@ -8,7 +8,8 @@ import { Providers } from "../app/Providers";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ContributionBreakdown } from "../components/ContributionBreakdown";
 import { StateMachineView } from "../components/StateMachineView";
-import type { Contribution } from "../data/types";
+import { renderAmount } from "../data/format";
+import type { Contribution, MoneyAmount } from "../data/types";
 import {
   ACCOUNT_ID,
   ACTION_ID,
@@ -16,10 +17,18 @@ import {
   approvalCardV2,
   CARD_ID,
   confirmApproved,
+  recommendationDetail,
+  recommendationDetailBlocked,
 } from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
+
+const rial = faIR["unit.rial"];
+
+/** The exact grouped amount MoneyView renders for a payload money value. */
+const grouped = (m: MoneyAmount | undefined) =>
+  renderAmount(m as MoneyAmount, DEFAULT_LOCALE).amount;
 
 afterEach(() => {
   document.documentElement.removeAttribute("dir");
@@ -217,23 +226,112 @@ describe("Recommendation screen", () => {
     expect(await screen.findByTestId("permission-denied")).toBeInTheDocument();
   });
 
-  it("presents every PRC-001 field either present or unavailable-with-reason", async () => {
-    renderRoute(`/recommendation?cardId=${CARD_ID}`);
-    // Present: proposed price + the versioned inputs.
-    expect((await screen.findAllByText(faIR["rec.price.proposed"])).length).toBeGreaterThan(0);
-    expect(
-      screen.getByText(faIR["rec.inputs.parameterVersion"].replace("{version}", "4")),
-    ).toBeInTheDocument();
-    // Unavailable-with-reason (never blank): objective is not surfaced by the contract.
-    const unavailable = faIR["rec.unavailable"].replace(
-      "{reason}",
-      faIR["rec.unavailable.reason.notSurfaced"],
-    );
-    expect(screen.getAllByText(unavailable).length).toBeGreaterThan(0);
-  });
-
   it("shows the no-card empty state when no card is selected", async () => {
     renderRoute("/recommendation");
     expect(await screen.findByText(faIR["rec.noCard"])).toBeInTheDocument();
+  });
+});
+
+// ── Authoritative PRC-001 binding (issue #89 / getRecommendationDetail) ───────
+describe("Recommendation screen — authoritative RecommendationDetail binding", () => {
+  it("renders every PRC-001 field from the server detail payload, not a placeholder", async () => {
+    renderRoute(`/recommendation?cardId=${CARD_ID}`);
+
+    // Objective from the payload (not "unavailable").
+    expect(
+      await screen.findByText(faIR["rec.objective.maximize_contribution"]),
+    ).toBeInTheDocument();
+
+    // Current price rendered through MoneyView — exact grouped amount + unit key.
+    expect(screen.getByTestId("prc-currentPrice")).toHaveTextContent(
+      grouped(recommendationDetail.currentPrice),
+    );
+    expect(screen.getByTestId("prc-currentPrice")).toHaveTextContent(rial);
+
+    // Proposed price + both contributions come from the detail, not the card only.
+    expect(screen.getByTestId("prc-proposedPrice")).toHaveTextContent(
+      grouped(recommendationDetail.proposedPrice),
+    );
+    expect(screen.getByTestId("prc-currentContribution")).toHaveTextContent(
+      grouped(recommendationDetail.currentContribution),
+    );
+
+    // Allowed range bounds, both through MoneyView.
+    expect(screen.getByTestId("prc-allowedRange")).toHaveTextContent(
+      grouped(recommendationDetail.allowedRange?.min),
+    );
+    expect(screen.getByTestId("prc-allowedRange")).toHaveTextContent(
+      grouped(recommendationDetail.allowedRange?.max),
+    );
+
+    // Evidence quality + margin readiness rendered as their canonical badges.
+    expect(screen.getByTestId("prc-quality")).toHaveTextContent(faIR["state.verified"]);
+    expect(screen.getByTestId("prc-readiness")).toHaveTextContent(faIR["readiness.complete"]);
+
+    // Assumptions rendered verbatim from the payload.
+    expect(screen.getByText("commission_rate_stable")).toBeInTheDocument();
+
+    // §9.2 contribution deductions rendered via ContributionBreakdown.
+    expect(screen.getByTestId("contribution-breakdown")).toBeInTheDocument();
+    expect(screen.getByText(faIR["costComponent.commission"])).toBeInTheDocument();
+
+    // No blockers → the explicit "none" state (never blank).
+    expect(screen.getByTestId("prc-blockers")).toHaveTextContent(faIR["rec.blockers.none"]);
+  });
+
+  it("renders blockers in the payload's policy order and never reorders them", async () => {
+    server.use(
+      http.get(`${BASE}/recommendations/detail`, () =>
+        HttpResponse.json(recommendationDetailBlocked),
+      ),
+    );
+    renderRoute(`/recommendation?cardId=${CARD_ID}`);
+
+    const list = await screen.findByTestId("rec-blockers");
+    const items = list.querySelectorAll("li");
+    expect(items).toHaveLength(2);
+    // Exact order preserved: boundary_unknown before cost_missing.
+    expect(items[0]).toHaveTextContent("boundary_unknown");
+    expect(items[1]).toHaveTextContent("cost_missing");
+  });
+
+  it("renders optional-absent fields as structured unavailable-with-reason (never blank)", async () => {
+    server.use(
+      http.get(`${BASE}/recommendations/detail`, () =>
+        HttpResponse.json(recommendationDetailBlocked),
+      ),
+    );
+    renderRoute(`/recommendation?cardId=${CARD_ID}`);
+
+    // proposedPrice is absent in this payload → unavailable-with-reason "absent".
+    const absent = faIR["rec.unavailable"].replace(
+      "{reason}",
+      faIR["rec.unavailable.reason.absent"],
+    );
+    expect((await screen.findAllByText(absent)).length).toBeGreaterThan(0);
+
+    // An UNKNOWN allowed range gets its own boundary reason, not a fabricated value.
+    const boundary = faIR["rec.unavailable"].replace(
+      "{reason}",
+      faIR["rec.unavailable.reason.boundaryUnknown"],
+    );
+    expect(screen.getByTestId("prc-allowedRange")).toHaveTextContent(boundary);
+
+    // Simulation-only records say so explicitly (never executed).
+    expect(screen.getByTestId("prc-simulation")).toHaveTextContent(faIR["rec.simulation.on"]);
+  });
+
+  it("degrades to the approval card when the detail read fails (screens-only fallback)", async () => {
+    server.use(
+      http.get(`${BASE}/recommendations/detail`, () =>
+        HttpResponse.json({ code: "internal", message: "boom" }, { status: 500 }),
+      ),
+    );
+    renderRoute(`/recommendation?cardId=${CARD_ID}`);
+
+    // The authoritative fields degrade with a retry, but the control still works.
+    expect(await screen.findByTestId("rec-detail-degraded")).toBeInTheDocument();
+    expect(screen.getByTestId("confirm-approval")).toBeInTheDocument();
+    expect(screen.getByTestId("rec-detail-retry")).toBeInTheDocument();
   });
 });
