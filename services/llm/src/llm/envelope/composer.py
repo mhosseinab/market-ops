@@ -152,18 +152,24 @@ def compose_or_refuse(
             catalog=catalog,
         )
     except GroundingError as exc:
+        # Containment (issue #52, §4.6): the rejected envelope's free text —
+        # including ``missing_data`` — is unvalidated model-visible content that
+        # may carry the very ungrounded numbers that triggered rejection. The
+        # refusal MUST NOT echo it back. Discard the rejected content entirely;
+        # surface only the fixed safe message, the canonical reason key, the deep
+        # link, and the grounding CODES (never ``Violation.detail``, which names
+        # the offending field). ``missing`` stays empty on the refusal path.
         return fail_closed(
             message="the assistant cannot answer from the available evidence; "
             "use the structured screen",
-            missing=list(missing_data or []),
             violations=_violation_summary(exc.violations),
         )
     except ValidationError:
         # A malformed envelope (e.g. a bad SourcedValue payload) must also fail
         # closed rather than propagate — never degrade to a guess (§12.2 item 6).
+        # Same containment rule: the rejected input is discarded, not echoed.
         return fail_closed(
             message="the assistant cannot answer from the available evidence; "
             "use the structured screen",
-            missing=list(missing_data or []),
             violations=["ENVELOPE_MALFORMED"],
         )
