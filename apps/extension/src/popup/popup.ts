@@ -22,6 +22,13 @@ const DEGRADATION_KEY = {
   capture_disabled: "ext.degradation.captureDisabled",
 } as const;
 
+// A dead-letter failure-reason token → catalog key map (issue #150). The reason
+// is a LOCALE-NEUTRAL token from the queue; this is the ONLY place it becomes
+// display copy, and it goes through the catalog, never inline text.
+const DEAD_LETTER_REASON_KEY = {
+  max_attempts_exhausted: "ext.deadLetter.reason.maxAttempts",
+} as const;
+
 function render(state: PopupState): void {
   const root = document.getElementById("root");
   if (!root) return;
@@ -41,6 +48,45 @@ function render(state: PopupState): void {
     row("last-upload", t("ext.popup.lastUpload"), state.lastUploadAt ?? t("common.notAvailable")),
   );
   root.appendChild(row("queued", t("ext.popup.queued"), String(state.queuedCount)));
+
+  // Durable dead-letter (issue #150 / EXT-009): a VISIBLE count plus a per-item
+  // recovery affordance — exhausted uploads are never silently erased. Rendered
+  // only when there is something to recover.
+  if (state.deadLetter.length > 0) {
+    root.appendChild(
+      row("dead-letter", t("ext.deadLetter.count"), String(state.deadLetter.length)),
+    );
+    for (const item of state.deadLetter) {
+      const el = document.createElement("div");
+      el.dataset.role = "dead-letter-item";
+      // The dedup key is a technical identifier (LTR-isolated data attribute),
+      // used to address the operator action — never rendered as copy.
+      el.dataset.dedupKey = item.dedupKey;
+      const reasonKey =
+        DEAD_LETTER_REASON_KEY[item.failureReason as keyof typeof DEAD_LETTER_REASON_KEY];
+      const reason = document.createElement("span");
+      reason.dataset.role = "dead-letter-reason";
+      reason.textContent = reasonKey ? t(reasonKey) : item.failureReason;
+      el.appendChild(reason);
+
+      const retryBtn = button(t("ext.deadLetter.retry"), async () => {
+        await send({ kind: "retryDeadLetter", dedupKey: item.dedupKey });
+        await refresh();
+      });
+      retryBtn.dataset.role = "dead-letter-retry";
+      el.appendChild(retryBtn);
+
+      const discardBtn = button(t("ext.deadLetter.discard"), async () => {
+        await send({ kind: "discardDeadLetter", dedupKey: item.dedupKey });
+        await refresh();
+      });
+      discardBtn.dataset.role = "dead-letter-discard";
+      el.appendChild(discardBtn);
+
+      root.appendChild(el);
+    }
+  }
+
   if (state.degradation) {
     const key = DEGRADATION_KEY[state.degradation as keyof typeof DEGRADATION_KEY];
     const note = document.createElement("p");

@@ -54,6 +54,11 @@ export function chromeLocalStore(): KeyValueStore {
 export const KEY_CAPABILITY = "capability";
 export const KEY_CREDENTIAL = "credential";
 export const KEY_QUEUE = "queue";
+// Durable dead-letter store (issue #150): exhausted transient failures are moved
+// HERE, never deleted as if accepted. A separate key from KEY_QUEUE so pending
+// delivery and the operator-recoverable failure record are inspected + mutated
+// independently, and so a dead-letter item never re-enters an automatic flush.
+export const KEY_DEADLETTER = "deadLetter";
 export const KEY_LAST_UPLOAD = "lastUploadAt";
 
 // The ONLY fields of a stored capture credential. EXT-001: the extension holds a
@@ -126,6 +131,33 @@ export interface QueuedItem {
   enqueuedAt: string;
 }
 
+// The reason an item was dead-lettered. A stable, LOCALE-NEUTRAL token (never
+// display copy) — the popup maps it to catalog copy. Additive within the schema
+// major; a new reason is a new token, never a reworded existing one.
+export type DeadLetterReason = "max_attempts_exhausted";
+
+// A durably preserved delivery that exhausted its bounded retry budget (issue
+// #150). It is NOT accepted evidence and NOT a permanent client rejection — it
+// is retained, inspectable, and operator-recoverable. JSON-safe so it persists
+// byte-identically across an MV3 worker restart, and it keeps the ORIGINAL
+// dedupKey so a later retry stays server-idempotent (crash-after-upload replay).
+export interface DeadLetterItem {
+  dedupKey: string;
+  capture: CaptureUpload;
+  attempts: number;
+  enqueuedAt: string;
+  deadLetteredAt: string;
+  failureReason: DeadLetterReason;
+}
+
+// A compact, popup-facing view of one dead-letter item: the stable id needed to
+// address a retry/discard action + its locale-neutral reason token. Carries no
+// PII and no marketplace free text (the capture is allow-listed by construction).
+export interface DeadLetterSummary {
+  dedupKey: string;
+  failureReason: DeadLetterReason;
+}
+
 // The popup-facing kill-switch/degradation snapshot (EXT-009). Persisted-derived,
 // never a silent no-op: disabling produces a visibly disabled state.
 export interface PopupState {
@@ -136,4 +168,8 @@ export interface PopupState {
   degradation: string | null;
   // EXT-012 opt-in toggle for bounded scheduled refresh (server-allocated).
   scheduleEnabled: boolean;
+  // Durable dead-letter (issue #150): exhausted deliveries the operator can
+  // retry or discard. A non-empty list is a VISIBLE, real degradation surface
+  // (EXT-009) — never a silent drop.
+  deadLetter: DeadLetterSummary[];
 }

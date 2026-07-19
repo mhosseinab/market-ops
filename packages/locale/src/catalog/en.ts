@@ -649,4 +649,8 @@ export const en: Catalog = {
   "ext.deepLink.product": "Open product",
   "ext.deepLink.event": "Open event",
   "ext.deepLink.chat": "Ask in chat",
+  "ext.deadLetter.count": "Failed uploads",
+  "ext.deadLetter.retry": "Retry",
+  "ext.deadLetter.discard": "Discard",
+  "ext.deadLetter.reason.maxAttempts": "Retries exhausted",
 };

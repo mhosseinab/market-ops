@@ -210,6 +210,32 @@ describe("service worker — EXT-009 kill switch: capability gates nav-shim/watc
     });
   });
 
+  it("surfaces the durable dead-letter store in popup state and lets the operator discard/retry it (issue #150)", async () => {
+    storage.set(KEY_CAPABILITY, "ready");
+    storage.set("deadLetter", [
+      {
+        dedupKey: "dead-1",
+        capture: { targetId: "t", capturedAt: "2026-07-18T10:00:00Z" },
+        attempts: 5,
+        enqueuedAt: "2026-07-18T09:00:00Z",
+        deadLetteredAt: "2026-07-18T10:00:00Z",
+        failureReason: "max_attempts_exhausted",
+      },
+    ]);
+
+    // getState exposes it as a VISIBLE recovery surface (never a silent drop).
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.deadLetter).toEqual([
+      { dedupKey: "dead-1", failureReason: "max_attempts_exhausted" },
+    ]);
+
+    // Discard is an explicit, observable operator action — removes it durably.
+    const discarded = await send({ kind: "discardDeadLetter", dedupKey: "dead-1" });
+    if (!("state" in discarded)) throw new Error("expected state");
+    expect(discarded.state.deadLetter).toEqual([]);
+  });
+
   it("revoke clears the Confirmed-owned-target index too — a stale target never survives revocation", async () => {
     storage.set(KEY_CAPABILITY, "ready");
     await send({ kind: "revoke" });

@@ -647,4 +647,8 @@ export const faIR: Catalog = {
   "ext.deepLink.product": "باز کردن کالا",
   "ext.deepLink.event": "باز کردن رویداد",
   "ext.deepLink.chat": "پرسش در گفتگو",
+  "ext.deadLetter.count": "بارگذاری‌های ناموفق",
+  "ext.deadLetter.retry": "تلاش دوباره",
+  "ext.deadLetter.discard": "دور انداختن",
+  "ext.deadLetter.reason.maxAttempts": "تلاش‌ها به پایان رسید",
 };

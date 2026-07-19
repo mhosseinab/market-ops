@@ -33,6 +33,12 @@ export type ExtMessage =
   | { kind: "setEnabled"; enabled: boolean }
   | { kind: "revoke" }
   | { kind: "getState" }
+  // Operator recovery for the durable dead-letter store (issue #150): retry
+  // returns an exhausted item to the pending queue; discard removes it
+  // intentionally. Both are addressed by the item's stable dedup key and are
+  // observable, never a silent mutation.
+  | { kind: "retryDeadLetter"; dedupKey: string }
+  | { kind: "discardDeadLetter"; dedupKey: string }
   | { kind: "setOwnedTargets"; targets: OwnedTarget[] };
 
 export type ExtResponse =
