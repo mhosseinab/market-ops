@@ -41,6 +41,7 @@ OPS_SCREEN = HERE.parent.parent / "apps" / "web" / "src" / "screens" / "Operatio
 #   S18 execution telemetry  (internal/execution/telemetry.go)
 #   S19 analytics/cost pipe   (internal/analytics/telemetry.go)
 #   S33 gateway RED seam      (internal/httpapi/telemetry.go)
+#   catalog sync-streak seam  (internal/catalog/telemetry.go — issue #146)
 REAL_BASE = {
     "execution_write_attempts",
     "execution_dedup_hits",
@@ -53,6 +54,12 @@ REAL_BASE = {
     "analytics_events",
     "analytics_cost_minor_units",
     "http_server_request_duration",
+    # Bounded gauge: current consecutive catalog-sync failures per account/connector,
+    # reset to 0 on a successful sync; backs ConnectorSyncFailureStreak (§20.1).
+    "connector_sync_failure_streak",
+    # Counter: terminal catalog-sync attempts by disposition (success/http_4xx/
+    # http_5xx/transport/typed); the by-disposition evidence for the streak.
+    "connector_sync_results",
 }
 # Histogram expansion suffixes Prometheus adds for a float histogram.
 HIST_SUFFIXES = ("_bucket", "_sum", "_count")
@@ -91,7 +98,7 @@ def metric_names(expr: str) -> set[str]:
             continue
         # label-ish bare identifiers used in by()/legend are not metric selectors;
         # only flag tokens that look like our namespaced series.
-        if "_" in tok and (tok.startswith(("execution_", "analytics_", "http_", "otelcol_"))):
+        if "_" in tok and (tok.startswith(("execution_", "analytics_", "http_", "connector_", "otelcol_"))):
             names.add(tok)
     return names
 

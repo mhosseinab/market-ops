@@ -171,6 +171,10 @@ tasks:
             sys.exit(1)
         PY
       - python3 deploy/grafana/validate_dashboards.py
+      # §20.1 connector-sync trip wire: prove ConnectorSyncFailureStreak expresses
+      # TRUE consecutive-streak semantics (issue #146), not a rolling-window count.
+      # promtool is not wired here, so this is a self-contained deterministic gate.
+      - python3 deploy/prometheus/rules/streak_alert_test.py
 
   db:reset:
     desc: Drop + recreate the dev DB, then goose up + river migrate-up + seed fixtures.

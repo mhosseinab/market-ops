@@ -8,8 +8,15 @@
 
 ## Symptom
 
-- Alert `ConnectorSyncFailureStreak` firing: ≥3 5xx on `/connector/refresh` or
-  `/connector/connect` in 15m (docs/14: three consecutive non-200 canary responses).
+- Alert `ConnectorSyncFailureStreak` firing: the `connector_sync_failure_streak`
+  gauge reached ≥3 for an account/connector (docs/14: three consecutive non-200
+  canary responses). The gauge is the CURRENT count of consecutive catalog syncs
+  that failed at the authoritative sync lifecycle boundary — NOT credential
+  connect/refresh HTTP traffic. Any non-200/typed/transport sync failure advances
+  it; a single successful sync resets it to zero, so a firing alert means three
+  syncs failed in a row with no success between them. Restart-safe: the streak is
+  re-derived from durable sync-run state on process start. `for: 2m` is a small
+  stability delay, not part of the streak count.
 - Operations → "Failed sync" queue count ≥ 1 (connection state ≠ `connected`).
 - Initial import missing the §17.2 target (95% within 4h for 5,000 SKUs) or
   incremental sync exceeding P95 15m.
@@ -22,9 +29,11 @@ queue mapping, and the telemetry landing zone — not the connector business log
 
 ## Diagnosis
 
-1. Confirm scope on `DK · SLO / RED overview`: is the error rate isolated to the
-   `/connector/*` routes, or is the whole gateway degraded? Whole-gateway ⇒ treat
-   as a core incident, not a connector one.
+1. Identify the failing disposition from `connector_sync_results` (labels:
+   `account_id`, `disposition` = http_4xx | http_5xx | transport | typed). Confirm
+   scope on `DK · SLO / RED overview`: is the failure isolated to one account's
+   sync, or is the whole gateway degraded? Whole-gateway ⇒ treat as a core
+   incident, not a connector one.
 2. Check the connection state: Operations → "Failed sync" shows non-`connected`.
    A quarantined identity is never retried past its window (never-cut) — verify the
    failure is a sync error, not an intentional quarantine.
@@ -37,8 +46,9 @@ queue mapping, and the telemetry landing zone — not the connector business log
 
 ## Recovery
 
-1. **Transient DK/auth error:** connector retries under its own backoff. Confirm
-   the streak clears on the RED error panel; the queue count returns to 0.
+1. **Transient DK/auth error:** connector retries under its own backoff. A single
+   successful sync resets `connector_sync_failure_streak` to zero; confirm the gauge
+   returns to 0 and the queue count returns to 0.
 2. **Expired/invalid credential:** re-run the connector connect flow (Operations →
    "Failed sync" → Open queue → onboarding). Capabilities re-probe to Unknown and
    re-resolve — no dependent UI enables until a capability is Supported.
