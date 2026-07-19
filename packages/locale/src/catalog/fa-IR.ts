@@ -49,6 +49,8 @@ export const faIR: Catalog = {
   "route.bulk.sub": "تایید و اجرای گروهی",
   "route.diagnostics.title": "عیب‌یابی",
   "route.diagnostics.sub": "کیفیت آگهی و تصویر",
+  "route.runbook.title": "دفترچه راهنما",
+  "route.runbook.sub": "روال بازیابی عملیات",
 
   "topbar.theme.toggle": "روشن یا تیره",
   "topbar.density.toggle": "فشردگی نمایش",
@@ -608,6 +610,10 @@ export const faIR: Catalog = {
   "settings.level.l3": "سطح ۳ — تغییر فقط توسط مالک",
 
   "operations.runbook": "دفترچه راهنما",
+  "runbook.viewer.heading": "دفترچه راهنمای بازیابی",
+  "runbook.viewer.slugLabel": "شناسه دفترچه راهنما",
+  "runbook.viewer.notFound.title": "دفترچه راهنما یافت نشد",
+  "runbook.viewer.notFound.body": "برای این پیوند دفترچه راهنمایی ثبت نشده است.",
   "operations.openQueue": "باز کردن صف ←",
   "operations.internalOnly.title": "فقط کاربران داخلی",
   "operations.internalOnly.body": "این نما نیازمند نقش داخلی است.",

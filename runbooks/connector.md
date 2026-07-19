@@ -2,7 +2,7 @@
 
 **Failure domain:** DK Seller connector (ACC-001, sync/import lifecycle).
 **Owning Operations queue (OPS-002):** `operations.queue.failedSync`
-(Operations screen → "Failed sync"; web deep link `/docs/runbooks/connector-sync`).
+(Operations screen → "Failed sync"; web deep link `/operations/runbooks/connector-sync`).
 **Alert:** `ConnectorSyncFailureStreak` (`deploy/prometheus/rules/dk-p0-alerts.yml`).
 **Dashboards:** `DK · Activation & first value`, `DK · SLO / RED overview (§17.2)`.
 
