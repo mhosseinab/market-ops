@@ -54,6 +54,12 @@ type ExecutionRunners struct {
 	// market events (and the Today feed is non-empty in real operation). A nil
 	// runner registers a no-op worker (fail closed — no producer, no events).
 	MarketEventProduce RunOnceFunc
+	// ExecuteApproved is the durable execution-intent consumer (issue #92, S18):
+	// it drives execution/recommend-only processing for a confirmed card that was
+	// enqueued transactionally at the Approved commit. It is event-driven (one job
+	// per confirmation), NOT periodic. A nil runner fails CLOSED (the worker retries
+	// rather than silently dropping the durable intent); production always wires it.
+	ExecuteApproved ExecuteApprovedFunc
 }
 
 // NewWorkers builds the worker registry for the core binary. Every worker the
@@ -78,6 +84,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewMarketEventProduceWorker(runners.MarketEventProduce, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register market-event producer worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewExecuteApprovedWorker(runners.ExecuteApproved, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register execute-approved worker: %w", err)
 	}
 	return workers, nil
 }

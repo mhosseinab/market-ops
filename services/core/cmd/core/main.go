@@ -16,8 +16,10 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/riverqueue/river"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/analytics"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
 	"github.com/mhosseinab/market-ops/services/core/internal/briefing"
 	"github.com/mhosseinab/market-ops/services/core/internal/catalog"
@@ -310,8 +312,8 @@ func run() error {
 		// closed (never Supported).
 		writer := execution.NewHTTPWriter("", "", nil)
 		resolver := execution.NewDefaultResolver(pool, nil)
-		serverOpts = append(serverOpts, httpapi.WithExecution(
-			execution.NewService(pool, recSvc, writer, resolver).WithLogger(logger)))
+		execSvc := execution.NewService(pool, recSvc, writer, resolver).WithLogger(logger)
+		serverOpts = append(serverOpts, httpapi.WithExecution(execSvc))
 		serverOpts = append(serverOpts, httpapi.WithOutcome(outcome.NewService(pool)))
 		logger.Info("execution service wired (dark; writes OFF until S35)")
 
@@ -323,7 +325,7 @@ func run() error {
 		// Measurable — the honest fail-closed behaviour until the verified pipelines land.
 		matcher := execution.NewRecommendOnlyReconciler(pool, nil)
 		closer := outcome.NewCloser(pool, nil)
-		stopJobs, jobsErr := startJobPipeline(ctx, logger, pool, jobs.ExecutionRunners{
+		stopJobs, jobsClient, jobsErr := startJobPipeline(ctx, logger, pool, jobs.ExecutionRunners{
 			RecommendOnlyMatch: func(c context.Context) (int, error) {
 				s, err := matcher.RunOnce(c)
 				return s.ExternallyExecuted + s.Lapsed, err
@@ -338,12 +340,32 @@ func run() error {
 				m, err := eventProducer.RunOnce(c)
 				return m.Produced + m.Deduped + m.Resolved + m.Expired, err
 			},
+			// Durable execution-intent consumer (issue #92): each confirmation enqueues
+			// one execute_approved intent transactionally with the Approved commit; this
+			// worker drives execution.Execute for it exactly-once-effectively. In the
+			// dark posture the resolver has no live signal sources, so Execute returns
+			// ErrSignalsStatic — the intent is PARKED (JobSnooze) without burning a retry
+			// attempt and resumes automatically once S35 wires the live resolver. Writes
+			// stay OFF; nothing about S35's verified parameters is hardcoded here.
+			ExecuteApproved: func(c context.Context, args jobs.ExecuteApprovedArgs) error {
+				_, err := execSvc.Execute(c, args.CardID, audit.Actor{
+					ID: "execution_worker", Role: "system", Surface: "system",
+				})
+				if errors.Is(err, execution.ErrSignalsStatic) {
+					return river.JobSnooze(executionDarkSnooze)
+				}
+				return err
+			},
 		}, catalogDeps)
 		if jobsErr != nil {
 			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)
 		} else {
 			defer stopJobs()
-			logger.Info("job pipeline started (recommend-only matcher, outcome close, daily briefing)")
+			// Wire the durable execution dispatcher now that the River client exists, so
+			// a confirmation atomically enqueues its execution intent (issue #92). Set
+			// before the HTTP server serves — no concurrent access to the field.
+			recSvc.SetExecutionDispatcher(recommendation.NewJobDispatcher(jobsClient))
+			logger.Info("job pipeline started (recommend-only matcher, outcome close, daily briefing, execution dispatch)")
 		}
 	} else {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
@@ -430,37 +452,43 @@ func digestRunner(svc *notify.DigestService) jobs.RunOnceFunc {
 	return svc.GenerateAll
 }
 
+// executionDarkSnooze is how long a durable execution intent is parked while the
+// execution plane is dark (no live resolver, writes OFF pre-S35). Snoozing does not
+// consume a retry attempt, so the intent survives indefinitely and resumes once the
+// live resolver is wired — it is never discarded and never silently lost (issue #92).
+const executionDarkSnooze = 15 * time.Minute
+
 // startJobPipeline ensures River's schema, registers the workers (heartbeat +
 // periodic execution passes), and starts the client. It returns a stop function
 // that drains the client on shutdown. It fails soft: a wiring error is returned so
 // the caller can log it and keep serving screens (the periodic passes are
 // advisory, never on the approval/write critical path).
-func startJobPipeline(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, runners jobs.ExecutionRunners, catalogDeps *catalog.WorkerDeps) (func(), error) {
+func startJobPipeline(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, runners jobs.ExecutionRunners, catalogDeps *catalog.WorkerDeps) (func(), *jobs.Client, error) {
 	if err := jobs.Migrate(ctx, pool); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	workers, err := jobs.NewWorkers(logger, runners)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	// Register the catalog-sync workers on the SAME registry so a running sync emits
 	// the §20.1 connector_sync_failure_streak gauge (issue #146). Nil-safe: without a
 	// wired connector there is no catalogDeps and the workers stay unregistered.
 	if catalogDeps != nil {
 		if err := catalog.RegisterWorkers(workers, *catalogDeps); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	client, err := jobs.NewClient(pool, workers, logger)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := client.Start(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	return func() {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = client.Stop(stopCtx)
-	}, nil
+	}, client, nil
 }

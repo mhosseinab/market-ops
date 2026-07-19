@@ -23,16 +23,39 @@ import (
 // state is mutated — the machine fails closed.
 var ErrRejectedTransition = errors.New("recommendation: approval state transition rejected")
 
+// ExecutionDispatcher durably enqueues the server-side execution intent for a card
+// that has just committed Approved (issue #92, S18 EXE-* / AUD-001). Its enqueue
+// runs INSIDE the confirm transaction (tx), so the intent commits ATOMICALLY with
+// the Approved state: a rollback discards BOTH, and a committed Approved always
+// carries its durable intent. An acknowledged confirmation therefore never depends
+// on a second client request to reach revalidation / recommend-only processing.
+type ExecutionDispatcher interface {
+	DispatchApprovedTx(ctx context.Context, tx pgx.Tx, card db.ApprovalCard) error
+}
+
 // Service persists recommendations and approval cards and drives the §8.4 state
 // machine over the store. It keeps the pure domain (internal/approval,
 // internal/recommendation domain types) free of DB concerns; all persistence and
 // append-only discipline live here.
 type Service struct {
-	pool *pgxpool.Pool
+	pool       *pgxpool.Pool
+	dispatcher ExecutionDispatcher
 }
 
-// NewService builds a recommendation/approval Service bound to the pool.
+// NewService builds a recommendation/approval Service bound to the pool. The
+// execution dispatcher is optional (nil until wired via SetExecutionDispatcher):
+// without it, a confirmation still commits Approved but enqueues no durable intent
+// — the pre-#92 behaviour, kept for the Draft-only chat plane and tests.
 func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
+
+// SetExecutionDispatcher wires the durable execution-intent dispatcher (issue #92).
+// It is called once during startup, AFTER the River client exists and BEFORE the
+// HTTP server serves, so there is no concurrent access to the field. It returns the
+// Service for chaining.
+func (s *Service) SetExecutionDispatcher(d ExecutionDispatcher) *Service {
+	s.dispatcher = d
+	return s
+}
 
 // CreateCard persists an approvable recommendation's initial Draft card and
 // appends its first §8.4 history row ([*] → Draft). The recommendation must be
@@ -366,6 +389,18 @@ func (s *Service) ConfirmIndividual(ctx context.Context, cardID uuid.UUID, prese
 	advanced, err := s.AdvanceTx(ctx, q, requested.ID, approval.StateAwaitingConfirmation, res.Card.State, confirmReason(res.Reason))
 	if err != nil {
 		return ConfirmOutcome{}, err
+	}
+	// Durable execution dispatch (issue #92): only a genuinely Approved card enqueues
+	// the execution intent, and it enqueues on THIS transaction (tx) so the intent
+	// commits atomically with the Approved state. A dispatch failure rolls the whole
+	// confirmation back (fail closed): neither Approved nor an intent is committed, so
+	// the card can be re-confirmed rather than being left Approved with no processing.
+	// A superseded/invalidated outcome never reaches here (it returned above), so a
+	// stale control never dispatches (APR-001).
+	if res.Card.State == approval.StateApproved && s.dispatcher != nil {
+		if err := s.dispatcher.DispatchApprovedTx(ctx, tx, advanced); err != nil {
+			return ConfirmOutcome{}, err
+		}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return ConfirmOutcome{}, err
