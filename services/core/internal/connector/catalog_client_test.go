@@ -3,6 +3,7 @@ package connector
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -136,17 +137,19 @@ func TestDKClientFetchVariantsPageMalformedJSON(t *testing.T) {
 // TestDKClientFetchVariantsPageValidPageStillSucceeds is the regression guard
 // that a well-formed page (including a legitimately empty catalog page with
 // total_rows=0) is still accepted with its pager honoured verbatim (no coercion).
+// The single-page case here doubles as a valid short final page: page 1 of 1 with
+// total_rows=1 and exactly the remainder (1) item.
 func TestDKClientFetchVariantsPageValidPageStillSucceeds(t *testing.T) {
-	t.Run("populated page", func(t *testing.T) {
+	t.Run("populated single page", func(t *testing.T) {
 		body := `{"status":"ok","data":{"items":[` +
 			`{"product_id":100,"id":1000,"product_variant_id":1,"price_sale":111000}],` +
-			`"pager":{"page":1,"total_pages":2,"total_rows":3}}}`
+			`"pager":{"page":1,"total_pages":1,"total_rows":1}}}`
 		dk := newRawVariantsClient(t, body)
 		page, err := dk.FetchVariantsPage(context.Background(), "tok", 1, 50)
 		if err != nil {
 			t.Fatalf("valid page rejected: %v", err)
 		}
-		if page.Page != 1 || page.TotalPages != 2 || page.TotalRows != 3 {
+		if page.Page != 1 || page.TotalPages != 1 || page.TotalRows != 1 {
 			t.Fatalf("pager not honoured: %+v", page)
 		}
 		if len(page.Items) != 1 {
@@ -170,4 +173,122 @@ func TestDKClientFetchVariantsPageValidPageStillSucceeds(t *testing.T) {
 			t.Fatalf("empty page not honoured: %+v", page)
 		}
 	})
+}
+
+// twoValidItems is a helper returning JSON for `n` valid, distinctly-identified
+// variant items (n<=3) for building coherent multi-item pages.
+func validItemsJSON(ids ...int64) string {
+	out := ""
+	for i, id := range ids {
+		if i > 0 {
+			out += ","
+		}
+		out += fmt.Sprintf(`{"product_id":%d,"id":%d,"product_variant_id":%d}`, 100+id, 1000+id, id)
+	}
+	return out
+}
+
+// TestDKClientFetchVariantsPageCardinalityValidBoundaries proves the two
+// legitimate cardinality boundaries still succeed once the coherent-contract
+// check is in force: a FULL non-final page (exactly `size` items) and a SHORT
+// final page (exact remainder), plus the zero-row catalog page.
+func TestDKClientFetchVariantsPageCardinalityValidBoundaries(t *testing.T) {
+	t.Run("full non-final page", func(t *testing.T) {
+		// size=2, total_rows=3, total_pages=2; page 1 is non-final => exactly 2 items.
+		body := `{"data":{"items":[` + validItemsJSON(1, 2) + `],"pager":{"page":1,"total_pages":2,"total_rows":3}}}`
+		dk := newRawVariantsClient(t, body)
+		page, err := dk.FetchVariantsPage(context.Background(), "tok", 1, 2)
+		if err != nil {
+			t.Fatalf("valid full non-final page rejected: %v", err)
+		}
+		if page.Page != 1 || page.TotalPages != 2 || page.TotalRows != 3 || len(page.Items) != 2 {
+			t.Fatalf("full non-final page not honoured: %+v", page)
+		}
+	})
+	t.Run("short final page remainder", func(t *testing.T) {
+		// size=2, total_rows=3, total_pages=2; page 2 is final => remainder 1 item.
+		body := `{"data":{"items":[` + validItemsJSON(3) + `],"pager":{"page":2,"total_pages":2,"total_rows":3}}}`
+		dk := newRawVariantsClient(t, body)
+		page, err := dk.FetchVariantsPage(context.Background(), "tok", 2, 2)
+		if err != nil {
+			t.Fatalf("valid short final page rejected: %v", err)
+		}
+		if page.Page != 2 || page.TotalPages != 2 || page.TotalRows != 3 || len(page.Items) != 1 {
+			t.Fatalf("short final page not honoured: %+v", page)
+		}
+	})
+	t.Run("zero-row catalog page", func(t *testing.T) {
+		body := `{"data":{"items":[],"pager":{"page":1,"total_pages":1,"total_rows":0}}}`
+		dk := newRawVariantsClient(t, body)
+		page, err := dk.FetchVariantsPage(context.Background(), "tok", 1, 50)
+		if err != nil {
+			t.Fatalf("zero-row page rejected: %v", err)
+		}
+		if page.TotalRows != 0 || len(page.Items) != 0 {
+			t.Fatalf("zero-row page not honoured: %+v", page)
+		}
+	})
+}
+
+// TestDKClientFetchVariantsPagePagerPageMismatch proves a response whose echoed
+// pager.page does not equal the requested page is rejected — a replayed/cached
+// page cannot be accepted as progress under a different requested page (issue
+// #197 case 1). The replayed page-1 body is otherwise fully coherent for page 1.
+func TestDKClientFetchVariantsPagePagerPageMismatch(t *testing.T) {
+	// Request page 2 (size 2, total_rows 4 => 2 pages). DK replays a valid copy of
+	// page 1: echoed page=1 with its 2 coherent items.
+	body := `{"data":{"items":[` + validItemsJSON(1, 2) + `],"pager":{"page":1,"total_pages":2,"total_rows":4}}}`
+	dk := newRawVariantsClient(t, body)
+	page, err := dk.FetchVariantsPage(context.Background(), "tok", 2, 2)
+	if err == nil {
+		t.Fatalf("want page-mismatch error, got nil (page=%+v)", page)
+	}
+	var pe *VariantsPayloadError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want *VariantsPayloadError, got %T: %v", err, err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("rejected page must carry no items, got %d", len(page.Items))
+	}
+}
+
+// TestDKClientFetchVariantsPageCardinalityTruncated proves a nonempty page whose
+// item count contradicts total_rows/total_pages/size is rejected — a truncated
+// body with valid JSON cannot complete a partial import (issue #197 case 2).
+func TestDKClientFetchVariantsPageCardinalityTruncated(t *testing.T) {
+	// Request page 1 size 50: pager claims a single full page of 50 rows, but the
+	// body carries only one valid item (proxy/body truncation with valid JSON).
+	body := `{"data":{"items":[` + validItemsJSON(1) + `],"pager":{"page":1,"total_pages":1,"total_rows":50}}}`
+	dk := newRawVariantsClient(t, body)
+	page, err := dk.FetchVariantsPage(context.Background(), "tok", 1, 50)
+	if err == nil {
+		t.Fatalf("want cardinality error, got nil (page=%+v)", page)
+	}
+	var pe *VariantsPayloadError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want *VariantsPayloadError, got %T: %v", err, err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("rejected page must carry no items, got %d", len(page.Items))
+	}
+}
+
+// TestDKClientFetchVariantsPagePaginationTotalPagesInconsistent proves total_pages
+// is validated against the DK pager contract total_pages == ceil(total_rows/size):
+// a total_pages that disagrees with total_rows and the requested size is rejected.
+func TestDKClientFetchVariantsPagePaginationTotalPagesInconsistent(t *testing.T) {
+	// size 50, total_rows 1 => ceil = 1 page, but pager claims 2. One coherent item.
+	body := `{"data":{"items":[` + validItemsJSON(1) + `],"pager":{"page":1,"total_pages":2,"total_rows":1}}}`
+	dk := newRawVariantsClient(t, body)
+	page, err := dk.FetchVariantsPage(context.Background(), "tok", 1, 50)
+	if err == nil {
+		t.Fatalf("want total_pages inconsistency error, got nil (page=%+v)", page)
+	}
+	var pe *VariantsPayloadError
+	if !errors.As(err, &pe) {
+		t.Fatalf("want *VariantsPayloadError, got %T: %v", err, err)
+	}
+	if len(page.Items) != 0 {
+		t.Fatalf("rejected page must carry no items, got %d", len(page.Items))
+	}
 }
