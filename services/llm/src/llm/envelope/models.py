@@ -9,23 +9,48 @@ number — so the model can never emit an authoritative float.
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_serializer,
+    field_validator,
+)
 
 # ISO-4217 alpha-3 currency code (LTR technical identifier).
 CurrencyCode = Annotated[str, StringConstraints(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")]
 
+# Signed base-10 decimal on the wire — mirrors the gateway MoneyAmount contract
+# (#73, §15.1). Anchored, no whitespace, no sign-only, no Latin/Persian noise.
+_MANTISSA_WIRE = re.compile(r"^-?[0-9]+$")
+
+# The mantissa is an int64 in the Go core Money; the wire form must fail closed
+# outside that range (quarantine over inference — never coerce), matching the
+# gateway's strconv decode.
+_INT64_MIN = -(2**63)
+_INT64_MAX = 2**63 - 1
+
 
 class Money(BaseModel):
-    """A money amount, integer-only (PRD §9.1 — no float on any money path).
+    """A money amount, exact-integer (PRD §9.1 — no float on any money path).
 
     ``value == mantissa * 10**exponent`` in ``currency``. This mirrors the Go
-    core's ``Money{mantissa int64, currency, exponent int8}``; the LLM plane
-    never computes an authoritative amount — it only relays engine outputs in
-    this shape. Floats are structurally impossible: both numeric fields are
-    ``int`` and the validator rejects any non-integer input.
+    core's ``Money{mantissa int64, currency, exponent int8}`` and the gateway
+    ``MoneyAmount`` contract; the LLM plane never computes an authoritative
+    amount — it only relays engine outputs in this shape.
+
+    ``mantissa`` is held internally as an exact Python ``int`` but serialized to
+    the JSON / SSE wire as a signed base-10 decimal STRING (``^-?[0-9]+`` within
+    int64 range), identical to the gateway ``MoneyAmount.mantissa`` (#73, §15.1).
+    A JS ``JSON.parse`` of the ``final`` frame therefore sees a string, so any
+    int64 above 2^53 survives without JS-number precision loss. Floats are
+    structurally impossible: the validator rejects any non-integer input and any
+    non-decimal / out-of-int64-range string, failing closed rather than coercing.
     """
 
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -34,15 +59,40 @@ class Money(BaseModel):
     currency: CurrencyCode
     exponent: int = 0
 
-    @field_validator("mantissa", "exponent", mode="before")
+    @field_validator("mantissa", mode="before")
     @classmethod
-    def _reject_float(cls, v: Any) -> Any:
+    def _coerce_mantissa(cls, v: Any) -> Any:
         # bool is an int subclass but never a money component; reject it too.
         if isinstance(v, bool):
-            raise ValueError("money components must be integers, not bool")
+            raise ValueError("mantissa must be an integer, not bool")
         if isinstance(v, float):
-            raise ValueError("money components must be integers, never float (§9.1)")
+            raise ValueError("mantissa must be an integer, never float (§9.1)")
+        if isinstance(v, str):
+            # Accept the wire form; fail closed on anything non-decimal.
+            if not _MANTISSA_WIRE.fullmatch(v):
+                raise ValueError("mantissa string must match ^-?[0-9]+$ (§9.1, #73)")
+            v = int(v)
+        if not isinstance(v, int):
+            raise ValueError("mantissa must be an integer or signed-decimal string")
+        if not _INT64_MIN <= v <= _INT64_MAX:
+            raise ValueError("mantissa must be within signed int64 range (§9.1)")
         return v
+
+    @field_validator("exponent", mode="before")
+    @classmethod
+    def _reject_float_exponent(cls, v: Any) -> Any:
+        # bool is an int subclass but never a money component; reject it too.
+        if isinstance(v, bool):
+            raise ValueError("exponent must be an integer, not bool")
+        if isinstance(v, float):
+            raise ValueError("exponent must be an integer, never float (§9.1)")
+        return v
+
+    @field_serializer("mantissa", when_used="json")
+    def _serialize_mantissa(self, v: int) -> str:
+        # Wire form matches the gateway MoneyAmount contract: signed decimal
+        # STRING, so no plane emits a lossy JS-number mantissa (#73, §15.1).
+        return str(v)
 
 
 class RawEvidenceValue(BaseModel):
