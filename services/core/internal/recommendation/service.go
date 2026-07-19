@@ -190,8 +190,20 @@ func (s *Service) GetRecommendation(ctx context.Context, id uuid.UUID) (db.Recom
 // variant (§16 "Reopen mapping; expire dependent recommendation"). It is the S11
 // identity-reopen consumer: a reopened mapping means the recommendation's identity
 // is no longer confirmed, so any card whose control could still authorize a write
-// (AwaitingConfirmation, Revalidating — the states with a defined → Invalidated
-// edge) is moved to Invalidated. It returns the number of cards invalidated.
+// must be driven to Invalidated so a stale approval can never execute against a
+// changed identity (§4.6 identity-quarantine + approval-versioning; fail closed).
+//
+// The §8.4 table (internal/approval) gives most live states a direct → Invalidated
+// edge (AwaitingConfirmation, Revalidating). Approved has NO direct edge; per the
+// verbatim diagram it reaches Invalidated only via Revalidating, so an Approved
+// dependent is invalidated by composing Approved → Revalidating → Invalidated in
+// ONE transaction (both FROM-guarded hops + both append-only history rows commit
+// atomically — issue #86). Draft/Ready carry no → Invalidated edge and are left as
+// is: they bear no activatable control, so they cannot authorize a write.
+//
+// It returns the number of cards invalidated. Re-delivery is idempotent: an
+// already-Invalidated card is terminal and no longer returned by the live query,
+// and any card that raced to another state is skipped cleanly (ErrRejectedTransition).
 func (s *Service) ExpireDependentForVariant(ctx context.Context, variant uuid.UUID, reason string) (int, error) {
 	cards, err := db.New(s.pool).ListLiveCardsForVariant(ctx, variant)
 	if err != nil {
@@ -200,18 +212,55 @@ func (s *Service) ExpireDependentForVariant(ctx context.Context, variant uuid.UU
 	invalidated := 0
 	for _, c := range cards {
 		from := approval.State(c.State)
-		if !approval.CanTransition(from, approval.StateInvalidated) {
-			continue // draft/ready/approved carry no direct → Invalidated edge (§8.4).
-		}
-		if _, err := s.Advance(ctx, c.ID, from, approval.StateInvalidated, reason); err != nil {
+		if err := s.invalidateDependent(ctx, c.ID, from, reason); err != nil {
 			if errors.Is(err, ErrRejectedTransition) {
-				continue // raced to another state; skip.
+				continue // no defined path from this state, or raced away; skip.
 			}
 			return invalidated, err
 		}
 		invalidated++
 	}
 	return invalidated, nil
+}
+
+// invalidateDependent drives a single dependent card from `from` to Invalidated
+// along a §8.4-defined path, failing closed if no such path exists. An Approved
+// card has no direct → Invalidated edge, so it is advanced through Revalidating in
+// one transaction (both hops atomic). States with a direct edge take the single
+// hop. States with neither (Draft/Ready) return ErrRejectedTransition and are
+// skipped by the caller.
+func (s *Service) invalidateDependent(ctx context.Context, cardID uuid.UUID, from approval.State, reason string) error {
+	if from == approval.StateApproved {
+		return s.invalidateApprovedCard(ctx, cardID, reason)
+	}
+	if !approval.CanTransition(from, approval.StateInvalidated) {
+		return ErrRejectedTransition // draft/ready carry no direct → Invalidated edge (§8.4).
+	}
+	_, err := s.Advance(ctx, cardID, from, approval.StateInvalidated, reason)
+	return err
+}
+
+// invalidateApprovedCard invalidates an Approved dependent by composing the two
+// §8.4 edges Approved → Revalidating → Invalidated in a SINGLE transaction: both
+// FROM-guarded UPDATEs and both append-only history rows commit atomically, so the
+// card can never be observed stuck in Revalidating and a partial failure rolls the
+// whole invalidation back (issue #86). The diagram is unchanged — no new
+// Approved → Invalidated edge is introduced.
+func (s *Service) invalidateApprovedCard(ctx context.Context, cardID uuid.UUID, reason string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	if _, err := s.AdvanceTx(ctx, q, cardID, approval.StateApproved, approval.StateRevalidating, reason); err != nil {
+		return err
+	}
+	if _, err := s.AdvanceTx(ctx, q, cardID, approval.StateRevalidating, approval.StateInvalidated, reason); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // ConfirmOutcome is the result of activating an individual structured control.
