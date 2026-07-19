@@ -320,6 +320,53 @@ func (q *Queries) DowngradeObservedOffersForDrift(ctx context.Context, targetID 
 	return result.RowsAffected(), nil
 }
 
+const getObservationForAccount = `-- name: GetObservationForAccount :one
+SELECT id, marketplace_account_id, target_id, quality, freshness_deadline,
+       captured_at, evidence_ref
+FROM observations
+WHERE id = $1 AND marketplace_account_id = $2
+LIMIT 1
+`
+
+type GetObservationForAccountParams struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+}
+
+type GetObservationForAccountRow struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	TargetID             uuid.UUID
+	Quality              string
+	FreshnessDeadline    time.Time
+	CapturedAt           time.Time
+	EvidenceRef          string
+}
+
+// ACCOUNT-SCOPED single-observation load for the S15 event-evidence derivation
+// (#70, evidence-quality never-cut §4.6). The event boundary must DERIVE its quality
+// and provenance from a real, account-bound observation rather than trust a caller-
+// supplied token, so RecordFor loads the cited observation inside the SAME account-
+// scoped transaction as the event write and copies the quality/ref AS-IS. The predicate
+// is (id, marketplace_account_id): a random or foreign-account id resolves to NO row
+// (fail closed, no cross-tenant existence oracle). observations is PARTITIONED with PK
+// (id, captured_at) so id is not independently unique across partitions; LIMIT 1
+// returns the single logical row (id is a gen_random_uuid, unique in practice).
+func (q *Queries) GetObservationForAccount(ctx context.Context, arg GetObservationForAccountParams) (GetObservationForAccountRow, error) {
+	row := q.db.QueryRow(ctx, getObservationForAccount, arg.ID, arg.MarketplaceAccountID)
+	var i GetObservationForAccountRow
+	err := row.Scan(
+		&i.ID,
+		&i.MarketplaceAccountID,
+		&i.TargetID,
+		&i.Quality,
+		&i.FreshnessDeadline,
+		&i.CapturedAt,
+		&i.EvidenceRef,
+	)
+	return i, err
+}
+
 const getObservationTarget = `-- name: GetObservationTarget :one
 SELECT id, marketplace_account_id, identity_id, variant_id, native_variant_id, native_product_id, tier, cadence_seconds, freshness_deadline_seconds, active, created_at, updated_at FROM observation_targets WHERE id = $1
 `

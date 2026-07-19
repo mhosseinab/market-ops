@@ -36,6 +36,27 @@ var ErrAccountNotFound = errors.New("event: account not found")
 // one — no cross-tenant existence oracle.
 var ErrEventNotFound = errors.New("event: event not found")
 
+// ErrEvidenceRequiresObservation is returned when a candidate self-certifies a
+// CORROBORATED quality (verified/supported) without citing a backing observation
+// (issue #70, evidence-quality never-cut §4.6). Those states are earned from real,
+// account-bound observation evidence — never asserted by an untrusted caller. The four
+// dormant legs and any direct caller may persist only a non-corroborated state without
+// an observation.
+var ErrEvidenceRequiresObservation = errors.New("event: verified/supported evidence requires a backing observation")
+
+// ErrEvidenceObservationNotFound is returned when a candidate cites an observation id
+// that does not resolve WITHIN THE OWNING ACCOUNT (issue #70). A random/non-existent id
+// and one owned by a DIFFERENT account are indistinguishable — the load is account-
+// scoped, so possession of an observation UUID is never a cross-tenant existence oracle.
+// Fail closed: no provenance ⇒ no event.
+var ErrEvidenceObservationNotFound = errors.New("event: cited evidence observation not found for account")
+
+// ErrEvidenceFieldInapplicable is returned when a cited observation is not about the
+// event's observation target (issue #70). Evidence captured for a different target/
+// variant can never back this event, so a corroborated quality can never be derived
+// from it — fail closed rather than borrow a foreign subject's quality.
+var ErrEvidenceFieldInapplicable = errors.New("event: cited observation does not apply to the event target")
+
 // Service records detected events, dedups within the open lifecycle window
 // (EVT-003), maintains the versioned materiality thresholds (EVT-002), computes
 // the ranked Today feed (EVT-004), and stores relevance feedback (EVT-005). It
@@ -141,9 +162,40 @@ func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate)
 		return RecordResult{}, ErrInvalidCandidate
 	}
 	if c.Consumption != nil {
+		// The consumed path already commits load+validate+write in ONE transaction.
 		return s.recordConsumed(ctx, account, c)
 	}
+	if c.Evidence.ObservationID != uuid.Nil {
+		// A cited observation must be loaded, ownership/freshness/field-applicability
+		// validated, and its quality/provenance copied into the event in ONE account-
+		// scoped transaction (issue #70). Wrap the pooled write so the load and the write
+		// cannot straddle a concurrent change.
+		return s.writeEventTx(ctx, account, c)
+	}
+	// No cited observation: writeEvent's derivation rejects a self-certified verified/
+	// supported quality before any DB write, so the pooled handle is safe here.
 	return s.writeEvent(ctx, db.New(s.pool), account, c)
+}
+
+// writeEventTx runs writeEvent inside a single account-scoped transaction so the
+// observation load+validate and the event upsert commit atomically (issue #70): the
+// derived quality/provenance can never be computed against an observation that changed
+// between the load and the write. A derivation or write failure rolls the whole tx back
+// (fail closed), leaving no partially-applied event.
+func (s *Service) writeEventTx(ctx context.Context, account uuid.UUID, c Candidate) (RecordResult, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return RecordResult{}, fmt.Errorf("event: begin write tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	res, err := s.writeEvent(ctx, db.New(tx), account, c)
+	if err != nil {
+		return RecordResult{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return RecordResult{}, fmt.Errorf("event: commit write tx: %w", err)
+	}
+	return res, nil
 }
 
 // writeEvent performs the #68 monotonic open-or-update against any db.Queries (pool-
@@ -164,28 +216,38 @@ func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate)
 // did not converge it returns an error, rolling the consume tx back for a safe replay
 // (fail closed) rather than committing a half-applied cursor.
 func (s *Service) writeEvent(ctx context.Context, q *db.Queries, account uuid.UUID, c Candidate) (RecordResult, error) {
+	// Evidence quality and confidence are DERIVED from account-bound observation
+	// evidence, never trusted from the caller (issue #70). This runs on the same q the
+	// upsert uses, so for a cited observation the load and the write share one account-
+	// scoped transaction; it fails closed on a missing/foreign/inapplicable observation.
+	derivedQuality, evidenceRef, err := s.deriveEvidence(ctx, q, account, c)
+	if err != nil {
+		return RecordResult{}, err
+	}
 	detail, err := marshalDetail(c.Evidence.Detail)
 	if err != nil {
 		return RecordResult{}, err
 	}
 	params := db.RecordEventParams{
-		MarketplaceAccountID:  account,
-		VariantID:             c.Variant,
-		TargetID:              optionalUUID(c.Target),
-		EventType:             string(c.Type),
-		Severity:              string(c.Severity),
-		DedupKey:              c.DedupKey,
-		ThresholdID:           optionalUUID(c.ThresholdID),
-		ThresholdVersion:      optionalInt4(c.ThresholdVersion, c.ThresholdID != uuid.Nil),
-		ExposureKnown:         c.Exposure.Known(),
-		ExposureMantissa:      exposureMantissa(c.Exposure),
-		ExposureCurrency:      exposureCurrency(c.Exposure),
-		ExposureExponent:      exposureExponent(c.Exposure),
-		ConfidenceBp:          int32(c.Confidence.Value()),
+		MarketplaceAccountID: account,
+		VariantID:            c.Variant,
+		TargetID:             optionalUUID(c.Target),
+		EventType:            string(c.Type),
+		Severity:             string(c.Severity),
+		DedupKey:             c.DedupKey,
+		ThresholdID:          optionalUUID(c.ThresholdID),
+		ThresholdVersion:     optionalInt4(c.ThresholdVersion, c.ThresholdID != uuid.Nil),
+		ExposureKnown:        c.Exposure.Known(),
+		ExposureMantissa:     exposureMantissa(c.Exposure),
+		ExposureCurrency:     exposureCurrency(c.Exposure),
+		ExposureExponent:     exposureExponent(c.Exposure),
+		// Confidence is recomputed from the DERIVED quality only AFTER provenance
+		// validation — a self-certified 'verified' can no longer buy maximum Today rank.
+		ConfidenceBp:          int32(confidenceOf(derivedQuality).Value()),
 		UrgencyBp:             int32(c.Urgency.Value()),
 		EvidenceObservationID: optionalUUID(c.Evidence.ObservationID),
-		EvidenceQuality:       string(c.Evidence.Quality),
-		EvidenceRef:           c.Evidence.Ref,
+		EvidenceQuality:       string(derivedQuality),
+		EvidenceRef:           evidenceRef,
 		EvidenceDetail:        detail,
 		FirstDetectedAt:       c.DetectedAt,
 		ExpiresAt:             c.ExpiresAt,
@@ -224,6 +286,64 @@ func (s *Service) writeEvent(ctx context.Context, q *db.Queries, account uuid.UU
 		// so the dedup key is now free. Retry: the next upsert opens a fresh event.
 	}
 	return RecordResult{}, errors.New("event: record did not converge; dedup key churned concurrently")
+}
+
+// deriveEvidence resolves the quality and provenance an event may persist from an
+// account-bound observation, never from the caller's asserted token (issue #70,
+// evidence-quality never-cut §4.6). It returns the persisted quality and evidence ref:
+//
+//   - NO cited observation: a CORROBORATED state (verified/supported) cannot be self-
+//     asserted — those require a real eligible observation, so it fails closed
+//     (ErrEvidenceRequiresObservation). A non-corroborated state (unverified/conflicted/
+//     stale/unavailable) is a legitimate self-assertion and passes through, with the
+//     caller's own evidence ref (there is no observation to copy from).
+//   - A cited observation is loaded ACCOUNT-SCOPED on q (the same handle the upsert
+//     uses, so load+write share one transaction). A missing/foreign id fails closed
+//     (ErrEvidenceObservationNotFound); an observation about a different target fails
+//     closed (ErrEvidenceFieldInapplicable). The persisted quality is COPIED AS-IS from
+//     the observation's quality column (never upgraded), overriding any caller token,
+//     except that a value past its freshness deadline AT DETECTION can no longer present
+//     as verified/supported and is capped to Stale (OBS-004: a historical value never
+//     silently becomes current). The evidence ref is copied from the observation.
+func (s *Service) deriveEvidence(ctx context.Context, q *db.Queries, account uuid.UUID, c Candidate) (Quality, string, error) {
+	if c.Evidence.ObservationID == uuid.Nil {
+		if c.Evidence.Quality == QualityVerified || c.Evidence.Quality == QualitySupported {
+			return "", "", ErrEvidenceRequiresObservation
+		}
+		return c.Evidence.Quality, c.Evidence.Ref, nil
+	}
+
+	obs, err := q.GetObservationForAccount(ctx, db.GetObservationForAccountParams{
+		ID:                   c.Evidence.ObservationID,
+		MarketplaceAccountID: account,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", ErrEvidenceObservationNotFound
+	}
+	if err != nil {
+		return "", "", err
+	}
+
+	// Field-applicability: the observation must be about the event's target when the
+	// event cites one. Evidence about a different target is a foreign subject.
+	if c.Target != uuid.Nil && obs.TargetID != c.Target {
+		return "", "", ErrEvidenceFieldInapplicable
+	}
+
+	derived := Quality(obs.Quality)
+	if !derived.Valid() {
+		// The stored quality must be one of the six §10.3 states; anything else is a
+		// corrupt evidence row and must not become an event.
+		return "", "", ErrInvalidCandidate
+	}
+
+	// Freshness gate (OBS-004): an observation whose deadline had passed at detection can
+	// never yield a corroborated (current) state. Cap to Stale; other states copy as-is.
+	if !obs.FreshnessDeadline.After(c.DetectedAt) &&
+		(derived == QualityVerified || derived == QualitySupported) {
+		derived = QualityStale
+	}
+	return derived, obs.EvidenceRef, nil
 }
 
 // recordConsumed writes a candidate derived from an observation stream (issue #212)

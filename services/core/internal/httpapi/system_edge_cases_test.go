@@ -89,10 +89,15 @@ func TestEdgeCase_DuplicateEvent_SurfaceShowsOneItem(t *testing.T) {
 	evtSvc := event.NewService(pool)
 	now := time.Now().UTC()
 
+	// This gateway-surface dedup test asserts one Today item after two detections; it
+	// does not test evidence corroboration, so it uses a non-corroborated 'unverified'
+	// quality — the only quality a candidate may carry without a backing observation
+	// (issue #70). Corroborated verified/supported derivation is covered by the event
+	// package's evidence-provenance tests.
 	first, ok := event.DetectWinningState(event.WinningStateInput{
 		Variant: variant, WasWinning: true, IsWinning: false,
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: event.QualitySupported, Ref: "r1"},
+		Evidence: event.Evidence{Quality: event.QualityUnverified, Ref: "r1"},
 		Now:      now, TTL: time.Hour,
 	})
 	if !ok {
@@ -104,7 +109,7 @@ func TestEdgeCase_DuplicateEvent_SurfaceShowsOneItem(t *testing.T) {
 	second, ok := event.DetectWinningState(event.WinningStateInput{
 		Variant: variant, WasWinning: true, IsWinning: false,
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: event.QualityVerified, Ref: "r2"},
+		Evidence: event.Evidence{Quality: event.QualityUnverified, Ref: "r2"},
 		Now:      now.Add(10 * time.Minute), TTL: time.Hour,
 	})
 	if !ok {

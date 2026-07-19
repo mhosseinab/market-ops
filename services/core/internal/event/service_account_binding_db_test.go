@@ -167,8 +167,10 @@ func cleanupSharedKeyEvents(t *testing.T, pool *pgxpool.Pool, accounts ...uuid.U
 // sharedKeyCandidate builds a candidate for a variant with an EXPLICIT dedup key, so
 // two accounts can be driven with a byte-identical dedup_key even though their
 // variants (and thus a detector-derived key) would differ. This isolates the
-// tenant-scoping guarantee: the storage-level dedup_key is the same string.
-func sharedKeyCandidate(variant uuid.UUID, key, ref string, now time.Time) event.Candidate {
+// tenant-scoping guarantee: the storage-level dedup_key is the same string. It CITES a
+// same-account backing observation obs (issue #70) so the corroborated 'supported'
+// quality is derived from real, account-bound evidence rather than self-asserted.
+func sharedKeyCandidate(variant, obs uuid.UUID, key, ref string, now time.Time) event.Candidate {
 	return event.Candidate{
 		Type:       event.TypeWinningState,
 		Variant:    variant,
@@ -177,7 +179,7 @@ func sharedKeyCandidate(variant uuid.UUID, key, ref string, now time.Time) event
 		Exposure:   event.UnknownExposure(),
 		Confidence: money.NewBasisPoints(8000),
 		Urgency:    money.NewBasisPoints(6000),
-		Evidence:   event.Evidence{Quality: event.QualitySupported, Ref: ref},
+		Evidence:   event.Evidence{ObservationID: obs, Quality: event.QualitySupported, Ref: ref},
 		DetectedAt: now,
 		ExpiresAt:  now.Add(time.Hour),
 	}
@@ -190,15 +192,18 @@ func sharedKeyCandidate(variant uuid.UUID, key, ref string, now time.Time) event
 func TestDedupCoexistsAcrossAccounts(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	accountA, variantA := seedVariant(t, q)
-	accountB, variantB := seedVariant(t, q)
+	accountA, variantA, targetA, nvA := seedTarget(t, pool, q)
+	accountB, variantB, targetB, nvB := seedTarget(t, pool, q)
 	cleanupSharedKeyEvents(t, pool, accountA, accountB)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
+	obsA := seedEvidenceObs(t, q, accountA, targetA, nvA, "supported", "rA", now, now.Add(6*time.Hour))
+	obsB := seedEvidenceObs(t, q, accountB, targetB, nvB, "supported", "rB", now, now.Add(6*time.Hour))
+
 	const sharedKey = "winning_state:shared-tenant-key"
-	candA := sharedKeyCandidate(variantA, sharedKey, "rA", now)
-	candB := sharedKeyCandidate(variantB, sharedKey, "rB", now)
+	candA := sharedKeyCandidate(variantA, obsA, sharedKey, "rA", now)
+	candB := sharedKeyCandidate(variantB, obsB, sharedKey, "rB", now)
 
 	rA, err := svc.RecordFor(ctx, accountA, candA)
 	if err != nil {
@@ -231,15 +236,18 @@ func TestDedupCoexistsAcrossAccounts(t *testing.T) {
 func TestConditionClearIsAccountScoped(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	accountA, variantA := seedVariant(t, q)
-	accountB, variantB := seedVariant(t, q)
+	accountA, variantA, targetA, nvA := seedTarget(t, pool, q)
+	accountB, variantB, targetB, nvB := seedTarget(t, pool, q)
 	cleanupSharedKeyEvents(t, pool, accountA, accountB)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
+	obsA := seedEvidenceObs(t, q, accountA, targetA, nvA, "supported", "rA", now, now.Add(6*time.Hour))
+	obsB := seedEvidenceObs(t, q, accountB, targetB, nvB, "supported", "rB", now, now.Add(6*time.Hour))
+
 	const sharedKey = "winning_state:shared-tenant-key"
-	candA := sharedKeyCandidate(variantA, sharedKey, "rA", now)
-	candB := sharedKeyCandidate(variantB, sharedKey, "rB", now)
+	candA := sharedKeyCandidate(variantA, obsA, sharedKey, "rA", now)
+	candB := sharedKeyCandidate(variantB, obsB, sharedKey, "rB", now)
 	if _, err := svc.RecordFor(ctx, accountA, candA); err != nil {
 		t.Fatalf("record A: %v", err)
 	}

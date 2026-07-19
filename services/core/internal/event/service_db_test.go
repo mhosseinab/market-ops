@@ -110,14 +110,19 @@ func irrDB(t *testing.T, mantissa int64) money.Money {
 func TestDedupUpdatesOpenRecordZeroDuplicates(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
+
+	// Two backing observations the two detections cite; the event's stored quality/ref
+	// are derived from them (issue #70), so a repeated detection refreshes to r2.
+	obs1 := seedEvidenceObs(t, q, account, target, nv, "supported", "r1", now, now.Add(6*time.Hour))
+	obs2 := seedEvidenceObs(t, q, account, target, nv, "verified", "r2", now.Add(10*time.Minute), now.Add(6*time.Hour))
 
 	first, _ := event.DetectWinningState(event.WinningStateInput{
 		Variant: variant, WasWinning: true, IsWinning: false,
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: event.QualitySupported, Ref: "r1"},
+		Evidence: event.Evidence{ObservationID: obs1, Quality: event.QualitySupported, Ref: "r1"},
 		Now:      now, TTL: time.Hour,
 	})
 	r1, err := svc.RecordFor(ctx, account, first)
@@ -132,7 +137,7 @@ func TestDedupUpdatesOpenRecordZeroDuplicates(t *testing.T) {
 	second, _ := event.DetectWinningState(event.WinningStateInput{
 		Variant: variant, WasWinning: true, IsWinning: false,
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: event.QualityVerified, Ref: "r2"},
+		Evidence: event.Evidence{ObservationID: obs2, Quality: event.QualityVerified, Ref: "r2"},
 		Now:      now.Add(10 * time.Minute), TTL: time.Hour,
 	})
 	r2, err := svc.RecordFor(ctx, account, second)
@@ -211,14 +216,15 @@ func TestUnknownExposurePersistsAsNull(t *testing.T) {
 func TestKnownExposureFloorEvent(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
+	obs := seedEvidenceObs(t, q, account, target, nv, "verified", "r", now, now.Add(6*time.Hour))
 	cand, ok, err := event.DetectContributionFloor(event.ContributionFloorInput{
-		Variant: variant, Readiness: cost.StateComplete, HasContribution: true,
+		Variant: variant, Target: target, Readiness: cost.StateComplete, HasContribution: true,
 		Contribution: irrDB(t, 60), Floor: irrDB(t, 100),
-		Evidence: event.Evidence{Quality: event.QualityVerified, Ref: "r"},
+		Evidence: event.Evidence{ObservationID: obs, Quality: event.QualityVerified, Ref: "r"},
 		Now:      now, TTL: time.Hour,
 	})
 	if err != nil || !ok {
@@ -243,7 +249,7 @@ func TestKnownExposureFloorEvent(t *testing.T) {
 func TestThresholdVersionReproducibility(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	base := time.Now().UTC().Add(-24 * time.Hour)
 
@@ -281,12 +287,14 @@ func TestThresholdVersionReproducibility(t *testing.T) {
 	}
 
 	// An event that fired against the late version records exactly that version.
+	fireNow := time.Now().UTC()
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "r", fireNow, fireNow.Add(6*time.Hour))
 	cand, _ := event.DetectCompetitorPrice(event.CompetitorPriceInput{
-		Variant: variant, OfferIdentity: "s1", Unit: "IRR",
+		Variant: variant, Target: target, OfferIdentity: "s1", Unit: "IRR",
 		PrevValue: "1000000", CurrValue: "1060000",
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: event.QualitySupported, Ref: "r"},
-		Now:      time.Now().UTC(), TTL: time.Hour, Threshold: late,
+		Evidence: event.Evidence{ObservationID: obs, Quality: event.QualitySupported, Ref: "r"},
+		Now:      fireNow, TTL: time.Hour, Threshold: late,
 	})
 	res, err := svc.RecordFor(ctx, account, cand)
 	if err != nil {
@@ -303,14 +311,15 @@ func TestThresholdVersionReproducibility(t *testing.T) {
 func TestResolveFreesDedupKey(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "r", now, now.Add(6*time.Hour))
 	cand, _ := event.DetectWinningState(event.WinningStateInput{
-		Variant: variant, WasWinning: true, IsWinning: false,
+		Variant: variant, Target: target, WasWinning: true, IsWinning: false,
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: event.QualitySupported, Ref: "r"},
+		Evidence: event.Evidence{ObservationID: obs, Quality: event.QualitySupported, Ref: "r"},
 		Now:      now, TTL: time.Hour,
 	})
 	r1, err := svc.RecordFor(ctx, account, cand)
@@ -335,14 +344,17 @@ func TestResolveFreesDedupKey(t *testing.T) {
 func TestExpireSweep(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	past := time.Now().UTC().Add(-2 * time.Hour)
 	svc := event.NewService(pool).WithClock(func() time.Time { return time.Now().UTC() })
 
+	// Captured at `past` with a 6h window, so the evidence is fresh at detection (past)
+	// even though the EVENT expires 1h in the past.
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "r", past, past.Add(6*time.Hour))
 	cand, _ := event.DetectWinningState(event.WinningStateInput{
-		Variant: variant, WasWinning: true, IsWinning: false,
+		Variant: variant, Target: target, WasWinning: true, IsWinning: false,
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: event.QualitySupported, Ref: "r"},
+		Evidence: event.Evidence{ObservationID: obs, Quality: event.QualitySupported, Ref: "r"},
 		Now:      past, TTL: time.Hour, // expires 1h in the past
 	})
 	if _, err := svc.RecordFor(ctx, account, cand); err != nil {
@@ -366,14 +378,15 @@ func TestExpireSweep(t *testing.T) {
 func TestRelevanceFeedbackAppendOnly(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "r", now, now.Add(6*time.Hour))
 	cand, _ := event.DetectWinningState(event.WinningStateInput{
-		Variant: variant, WasWinning: true, IsWinning: false,
+		Variant: variant, Target: target, WasWinning: true, IsWinning: false,
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: event.QualitySupported, Ref: "r"},
+		Evidence: event.Evidence{ObservationID: obs, Quality: event.QualitySupported, Ref: "r"},
 		Now:      now, TTL: time.Hour,
 	})
 	res, err := svc.RecordFor(ctx, account, cand)

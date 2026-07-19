@@ -79,12 +79,17 @@ func openLostWinning(t *testing.T, svc *event.Service, account, variant uuid.UUI
 	if err != nil {
 		t.Fatalf("money: %v", err)
 	}
+	// This determinism test ranks by distinct EXPOSURES, not evidence quality, so it
+	// uses a non-corroborated 'unverified' quality — the only quality a candidate may
+	// carry without a backing observation (issue #70). Corroborated verified/supported
+	// is derived from real account-bound observations and is covered by the event
+	// package's evidence-provenance tests, not reproduced here.
 	c, ok := event.DetectWinningState(event.WinningStateInput{
 		Variant:    variant,
 		WasWinning: true,
 		IsWinning:  false,
 		Exposure:   event.KnownExposure(m),
-		Evidence:   event.Evidence{Quality: event.QualityVerified, Ref: "r"},
+		Evidence:   event.Evidence{Quality: event.QualityUnverified, Ref: "r"},
 		Now:        now,
 		TTL:        time.Hour,
 	})
