@@ -109,17 +109,15 @@ export function useChatDock(): ChatDockRuntime {
               break;
           }
         }
-        // If the stream closed without a `final`/`failure` frame, settle the
-        // message as complete rather than leaving it forever "streaming".
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantId && m.role === "assistant" && m.status === "streaming"
-              ? { ...m, status: "complete" }
-              : m,
-          ),
-        );
+        // The generator only returns normally AFTER yielding one validated
+        // terminal frame (which set complete/failed above). A truncated, malformed,
+        // or terminal-less stream throws a typed ChatStreamError instead — never
+        // silently completing the turn (issue #116).
       } catch {
-        patchAssistant(assistantId, { status: "failed" });
+        // Transport seam failure: keep any partial streamed text but mark the turn
+        // failed and flag it as a transport failure so the dock renders the
+        // incomplete notice — no completed envelope/cards are ever attached.
+        patchAssistant(assistantId, { status: "failed", transportFailed: true });
       } finally {
         setIsRunning(false);
       }

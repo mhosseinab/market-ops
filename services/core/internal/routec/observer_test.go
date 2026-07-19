@@ -133,6 +133,118 @@ func (s *seqFetcher) calls() int {
 	return s.n
 }
 
+// staticSource returns a fixed, stably-ordered target list for a tier — the
+// scheduler-order input RunSweep plans against (mirrors ListActiveTargetsByTier's
+// stable ORDER BY account, native_variant_id).
+type staticSource struct {
+	tier    observation.Tier
+	targets []routec.TargetRef
+}
+
+func (s *staticSource) TargetsByTier(_ context.Context, tier observation.Tier) ([]routec.TargetRef, error) {
+	if tier != s.tier {
+		return nil, nil
+	}
+	return s.targets, nil
+}
+
+// urlFetcher returns a per-URL scripted body (so each on-identity product id gets
+// its own marketable payload) and records the URLs it was asked for.
+type urlFetcher struct {
+	mu     sync.Mutex
+	bodies map[string][]byte
+	urls   []string
+}
+
+func (f *urlFetcher) Fetch(_ context.Context, req routec.FetchRequest) (routec.FetchResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.urls = append(f.urls, req.URL)
+	return routec.FetchResult{StatusCode: 200, Body: f.bodies[req.URL], Signal: routec.SignalOK, Bytes: 10}, nil
+}
+
+// marketableBody builds a minimal marketable product-detail payload for a product
+// id and variant id with a positive price so it parses, passes the canary, and
+// matches the scheduled identity.
+func marketableBody(productID, variantID int64) []byte {
+	return []byte(fmt.Sprintf(
+		`{"status":200,"data":{"product":{"id":%d,"status":"marketable","variants":[`+
+			`{"id":%d,"status":"marketable","seller":{"id":1,"code":"X"},`+
+			`"price":{"selling_price":450000000,"rrp_price":450000000}}]}}}`,
+		productID, variantID))
+}
+
+// TestRunSweepRotatesAcrossConstrainedSweeps is the issue #50 consumer-seam
+// regression: with a RECURRING tight per-account budget, RunSweep must not fetch
+// the same prefix of targets every sweep and starve the tail. Across a bounded
+// number of budget-constrained sweeps every eligible target is observed — the
+// scheduler threads a fairness cursor so freshness is not systematically biased.
+func TestRunSweepRotatesAcrossConstrainedSweeps(t *testing.T) {
+	account := uuid.New()
+	const n = 5
+	targets := make([]routec.TargetRef, n)
+	for i := range targets {
+		targets[i] = routec.TargetRef{
+			Account:         account,
+			TargetID:        uuid.New(),
+			NativeVariantID: int64(555000 + i),
+			NativeProductID: int64(900000 + i),
+			Tier:            observation.TierStandard,
+		}
+	}
+
+	// Each target must fetch a body carrying ITS OWN product id, or the identity
+	// quarantine (§4.6) would pause extraction after the first mismatch and no
+	// rotation could be observed. A per-URL body keyed by product id keeps every
+	// fetch a clean, on-identity success.
+	bodies := map[string][]byte{}
+	for _, tr := range targets {
+		bodies[routec.ProductURL(tr.NativeProductID)] = marketableBody(tr.NativeProductID, tr.NativeVariantID)
+	}
+	f := &urlFetcher{bodies: bodies}
+	ing := &fakeIngestor{}
+
+	// Budget: 2 requests per window; advance the clock a full window between sweeps
+	// so each sweep gets fresh headroom of 2 (a recurring tight budget).
+	cfg := routec.DefaultConfig()
+	cfg.RequestBudget = 2
+	cfg.BudgetWindow = time.Hour
+	clock := time.Unix(1_700_000_000, 0).UTC()
+	obs := routec.NewObserver(cfg, routec.ObserverDeps{
+		Fetcher:    f,
+		Ingestor:   ing,
+		Kill:       routec.NewMemKillSwitchStore(),
+		Downgrader: &fakeDowngrader{},
+		Source:     &staticSource{tier: observation.TierStandard, targets: targets},
+		Now:        func() time.Time { return clock },
+	})
+
+	fetched := map[int64]int{}
+	// ceil(5/2) = 3 sweeps must cover all five product ids at least once.
+	for sweep := 0; sweep < 3; sweep++ {
+		before := len(f.urls)
+		summary, err := obs.RunSweep(context.Background(), observation.TierStandard)
+		if err != nil {
+			t.Fatalf("sweep %d: %v", sweep, err)
+		}
+		if summary.Trimmed != n-2 {
+			t.Fatalf("sweep %d: trimmed=%d want %d (only 2 of %d admitted per tight sweep)", sweep, summary.Trimmed, n-2, n)
+		}
+		for _, u := range f.urls[before:] {
+			for _, tr := range targets {
+				if u == routec.ProductURL(tr.NativeProductID) {
+					fetched[tr.NativeProductID]++
+				}
+			}
+		}
+		clock = clock.Add(cfg.BudgetWindow) // roll the budget window
+	}
+
+	if len(fetched) != n {
+		t.Fatalf("prefix starvation across sweeps: only %d of %d targets ever fetched (want all)", len(fetched), n)
+	}
+}
+
 func testTarget() routec.TargetRef {
 	return routec.TargetRef{
 		Account:         uuid.New(),

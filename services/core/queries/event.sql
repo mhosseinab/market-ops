@@ -130,6 +130,15 @@ SELECT * FROM market_events
 WHERE marketplace_account_id = $1 AND state IN ('open', 'updated')
 ORDER BY last_evidence_at DESC, id;
 
+-- name: ListEligibleRecommendationEvents :many
+-- Account-wide set of open|updated market events awaiting a recommendation (PRC-001
+-- runtime producer). evidence_update_count is the monotonic dedup/context token the
+-- producer keys idempotency on. Ordered deterministically so a pass is reproducible.
+SELECT id, marketplace_account_id, variant_id, evidence_update_count
+FROM market_events
+WHERE state IN ('open', 'updated')
+ORDER BY marketplace_account_id, id;
+
 -- name: ResolveEvent :one
 -- Lifecycle transition (§15.1): the triggering condition cleared, so the event is
 -- resolved. This leaves the partial-unique predicate, freeing the dedup_key so a
@@ -181,6 +190,22 @@ UPDATE market_events SET
     resolved_at = $3,
     updated_at  = now()
 WHERE marketplace_account_id = $1 AND dedup_key = $2 AND state IN ('open', 'updated');
+
+-- name: InsertInputTransition :execrows
+-- APPEND-ONLY ingestion-idempotency claim (issue #212). Records that one consumed
+-- input transition (the prev+curr observation evidence identity) has been ingested.
+-- ON CONFLICT DO NOTHING makes it idempotent: 1 row affected ⇒ a fresh consumption
+-- (write the event); 0 rows ⇒ the transition was already consumed (skip — never a
+-- second event). Called inside the SAME transaction as the event write and cursor
+-- advance so ingestion dedup, the event, and the durable position commit atomically.
+-- This is a SEPARATE concern from lifecycle dedup (dedup_key): once consumed here a
+-- transition can never re-open an event even after resolve/expire frees its
+-- lifecycle identity.
+INSERT INTO event_input_transitions (
+    input_key, marketplace_account_id, target_id, native_seller_id, offer_identity,
+    prev_observation_id, curr_observation_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (input_key) DO NOTHING;
 
 -- name: InsertRelevanceFeedback :one
 -- APPEND-ONLY relevance history (EVT-005). Each vote is a new row; a mute is a

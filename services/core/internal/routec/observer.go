@@ -119,6 +119,42 @@ func (r *breakerRegistry) get(account uuid.UUID) *Breaker {
 	return b
 }
 
+// sweepCursorKey identifies the rotation cursor for one (tier, account) pair.
+type sweepCursorKey struct {
+	tier    observation.Tier
+	account uuid.UUID
+}
+
+// cursorRegistry holds the fairness rotation cursor per (tier, account) so a
+// recurring tight budget rotates through the whole eligible list instead of
+// re-selecting the same prefix every sweep (issue #50). It is process-local and
+// synchronized, mirroring breakerRegistry: it survives across sweeps within a
+// process (persistent progress), and on restart simply restarts the rotation from
+// a deterministic offset — bounded fairness is preserved either way because the
+// cursor only chooses a starting point in a stable, unchanged order. It never
+// gates admission (budget/breaker/kill do that), so a lost cursor can never
+// overshoot a safety ceiling — at worst it re-observes an already-fresh prefix.
+type cursorRegistry struct {
+	mu sync.Mutex
+	m  map[sweepCursorKey]int
+}
+
+func newCursorRegistry() *cursorRegistry {
+	return &cursorRegistry{m: make(map[sweepCursorKey]int)}
+}
+
+func (r *cursorRegistry) get(tier observation.Tier, account uuid.UUID) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.m[sweepCursorKey{tier: tier, account: account}]
+}
+
+func (r *cursorRegistry) set(tier observation.Tier, account uuid.UUID, cursor int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.m[sweepCursorKey{tier: tier, account: account}] = cursor
+}
+
 // Observer is the Route C controlled-observation engine. It composes the
 // fetcher, concurrency limiter, per-account budget and breaker, layered kill
 // switch, drift guard, and observation store into one guarded pipeline. Each
@@ -129,6 +165,7 @@ type Observer struct {
 	limiter    *Limiter
 	budget     BudgetReserver
 	breakers   *breakerRegistry
+	cursors    *cursorRegistry
 	drift      *DriftGuard
 	ingestor   Ingestor
 	downgrader DriftDowngrader
@@ -193,6 +230,7 @@ func NewObserver(cfg Config, deps ObserverDeps) *Observer {
 		limiter:    NewLimiter(cfg.PerAccountConcurrency, cfg.PerHostConcurrency),
 		budget:     budget,
 		breakers:   newBreakerRegistry(cfg.Breaker, now),
+		cursors:    newCursorRegistry(),
 		drift:      drift,
 		ingestor:   deps.Ingestor,
 		downgrader: deps.Downgrader,
@@ -504,7 +542,14 @@ func (o *Observer) RunSweep(ctx context.Context, tier observation.Tier) (SweepSu
 			summary.Errors++
 			continue
 		}
-		plan := PlanSweep(tier, ids, countCap, st)
+		// Thread the per-(tier, account) rotation cursor so a recurring tight budget
+		// rotates through the whole eligible list instead of starving the tail (issue
+		// #50). The cursor is advanced and persisted for the next sweep BEFORE
+		// observing, so a mid-sweep error still moves the rotation forward rather than
+		// re-selecting the same prefix next time.
+		cursor := o.cursors.get(tier, account)
+		plan := PlanSweep(tier, ids, countCap, st, cursor)
+		o.cursors.set(tier, account, plan.NextCursor)
 		summary.Trimmed += plan.Trimmed
 		for _, id := range plan.TargetIDs {
 			out, oerr := o.ObserveTarget(ctx, snap, byID[id])

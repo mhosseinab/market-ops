@@ -22,6 +22,12 @@ type Querier interface {
 	// Persist page progress after a page is fully applied. next_page is the resume
 	// cursor an interrupted import continues from; counters accumulate.
 	AdvanceCatalogSyncRun(ctx context.Context, arg AdvanceCatalogSyncRunParams) (CatalogSyncRun, error)
+	// Advance (or create) a stream's durable consumer position. MONOTONIC: an existing
+	// cursor moves forward only when the incoming (captured_at, observation_id) is
+	// strictly greater, so an out-of-order or replayed advance never rewinds the
+	// stream. Called inside the SAME transaction as the event write + ledger insert so
+	// the position, the event, and the ingestion-idempotency record commit atomically.
+	AdvanceObservationCursor(ctx context.Context, arg AdvanceObservationCursorParams) error
 	// Per-account aggregate of the DURABLE pending_reconciliation set (EXE-003, §20.1):
 	// the current count of parked-unknown write results and the OLDEST park instant.
 	// This is the authoritative backlog measurement — the same durable rows
@@ -441,6 +447,16 @@ type Querier interface {
 	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
 	// INSERT; there is deliberately no UPDATE/DELETE query.
 	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)
+	// APPEND-ONLY ingestion-idempotency claim (issue #212). Records that one consumed
+	// input transition (the prev+curr observation evidence identity) has been ingested.
+	// ON CONFLICT DO NOTHING makes it idempotent: 1 row affected ⇒ a fresh consumption
+	// (write the event); 0 rows ⇒ the transition was already consumed (skip — never a
+	// second event). Called inside the SAME transaction as the event write and cursor
+	// advance so ingestion dedup, the event, and the durable position commit atomically.
+	// This is a SEPARATE concern from lifecycle dedup (dedup_key): once consumed here a
+	// transition can never re-open an event even after resolve/expire frees its
+	// lifecycle identity.
+	InsertInputTransition(ctx context.Context, arg InsertInputTransitionParams) (int64, error)
 	// Level-2 reversible-config proposal queries (PRD §8.3 CHAT-061/062).
 	// level2_proposals is APPEND-ONLY: INSERT/SELECT only. The proposal write and its
 	// AUD-001 audit row are committed in ONE transaction by the service (fail-closed
@@ -566,6 +582,10 @@ type Querier interface {
 	ListDedupConflictsByTarget(ctx context.Context, arg ListDedupConflictsByTargetParams) ([]ObservationDedupConflict, error)
 	// The membership of one digest, in insertion order (the shared event ids).
 	ListDigestItems(ctx context.Context, digestID uuid.UUID) ([]NotificationDigestItem, error)
+	// Account-wide set of open|updated market events awaiting a recommendation (PRC-001
+	// runtime producer). evidence_update_count is the monotonic dedup/context token the
+	// producer keys idempotency on. Ordered deterministically so a pass is reproducible.
+	ListEligibleRecommendationEvents(ctx context.Context) ([]ListEligibleRecommendationEventsRow, error)
 	// Load every engaged switch so the observer can evaluate the layered stop in
 	// process (global OR account OR target). Ordered global-first so the most
 	// sweeping stop is visible at the head.
@@ -594,6 +614,9 @@ type Querier interface {
 	ListNeedsReviewQueue(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListNeedsReviewQueueRow, error)
 	// The in-app notification feed for an account, newest first.
 	ListNotifications(ctx context.Context, marketplaceAccountID uuid.UUID) ([]Notification, error)
+	// Every durable stream cursor for a target, so the producer can seed each stream's
+	// pairing anchor ("before") from the last consumed observation's raw value.
+	ListObservationCursorsByTarget(ctx context.Context, targetID uuid.UUID) ([]ObservationConsumerCursor, error)
 	ListObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservationTarget, error)
 	// Append-only evidence, newest first (bounded by the caller).
 	ListObservationsByTarget(ctx context.Context, arg ListObservationsByTargetParams) ([]Observation, error)
@@ -635,6 +658,20 @@ type Querier interface {
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)
 	ListSelectionSetMembers(ctx context.Context, selectionSetID uuid.UUID) ([]SelectionSetMember, error)
+	// Durable forward drain for the market-event producer (issue #212). Returns the
+	// target's append-only observations that lie STRICTLY AFTER each stream's durable
+	// consumer cursor, oldest-first per stream. A stream is (native_seller_id,
+	// offer_identity); the LEFT JOIN gives the stream's cursor (NULL when never
+	// consumed) and the (captured_at, id) tie-break makes "after" deterministic for
+	// equal timestamps. Ordered by (native_seller_id, offer_identity, captured_at, id)
+	// so the caller groups by stream and walks each in captured order; LIMIT bounds the
+	// per-pass work and the cursor provides continuation across passes (no fixed
+	// latest-N window). Seller identity is part of the stream key, so a reused offer
+	// identity across two sellers is TWO streams and is never paired.
+	// The owned seller's own stream is excluded here (sqlc.arg(owned_seller)) so it
+	// never consumes the per-pass page budget — EVT-001 type 2 is a COMPETITOR movement,
+	// and the caller has already validated owned_seller as an authoritative decimal id.
+	ListUnconsumedObservationsByTarget(ctx context.Context, arg ListUnconsumedObservationsByTargetParams) ([]ListUnconsumedObservationsByTargetRow, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
 	// Candidate-generation source (rule-based exact-native-id). Returns variants that
 	// have no pending (NeedsReview) or Confirmed mapping, so generation is idempotent
@@ -780,6 +817,14 @@ type Querier interface {
 	// Record a probe result. Only a probe calls this; status is set explicitly and
 	// last_verified_at stamps when it was determined. ORG-SCOPED.
 	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
+	// Bind (or clear, with NULL) the account's AUTHORITATIVE owned DK seller identity
+	// (issue #212). Populated by account provisioning/sync (S10) from the DK seller
+	// profile; the column CHECK rejects a non-decimal value. The market-event
+	// ObservationSource excludes the account's OWN offer by comparing an observation's
+	// native_seller_id against THIS validated id — never the free-form native_account_id
+	// handle. A NULL owned_seller_id is an unresolved identity and the source fails
+	// closed (quarantines the account) rather than guessing.
+	SetOwnedSellerID(ctx context.Context, arg SetOwnedSellerIDParams) (MarketplaceAccount, error)
 	// Advance a recommend-only action to a terminal EXE-005 state. FROM-guarded on
 	// the awaiting state so a resolved action is not re-resolved.
 	SetRecommendOnlyState(ctx context.Context, arg SetRecommendOnlyStateParams) (RecommendOnlyAction, error)

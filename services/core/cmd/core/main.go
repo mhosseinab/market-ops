@@ -213,6 +213,21 @@ func run() error {
 		serverOpts = append(serverOpts, httpapi.WithGatewayToken(cfg.LLMGatewayToken))
 		logger.Info("approval + Draft-only service wired")
 
+		// The runtime recommendation/approval-card producer (PRC-001, complete-seam
+		// rule): it consumes eligible open|updated market events, resolves their
+		// authoritative inputs, assembles the recommendation, persists a version, and
+		// mints the Draft approval card when approvable — so a running core reaches the
+		// S17 approval journey without direct database/test seeding. Scheduled below as a
+		// periodic River pass; every pass is idempotent per (event, evidence version).
+		// The InputResolver ships DARK (NewDarkInputResolver fails closed with
+		// ErrInputsUnavailable), the recommendation-plane analogue of the execution
+		// plane's dark resolver: eligible events are consumed and PARKED (observable)
+		// rather than approved on non-live truth. The live authoritative resolver is
+		// wired under the same gated enablement as the execution write path (S35 verified
+		// parameters); until then the producer never fabricates or infers an input.
+		recProducer := recommendation.NewProducer(recSvc, recommendation.NewEventSource(pool), recommendation.NewDarkInputResolver(), logger)
+		logger.Info("recommendation producer wired (dark; parks events until the live resolver lands with S35)")
+
 		// Wire the identity-mapping plane (CAT-002, journey 4, §16). It serves the
 		// /identity/* queue + confirm/reject/defer routes and owns the reopen path. On
 		// reopen it enqueues a DURABLE mapping_reopened intent transactionally with the
@@ -368,6 +383,15 @@ func run() error {
 				// returned count is the total lifecycle work done this pass.
 				m, err := eventProducer.RunOnce(c)
 				return m.Produced + m.Deduped + m.Resolved + m.Expired, err
+			},
+			RecommendationProduce: func(c context.Context) (int, error) {
+				// One pass consumes eligible market events and persists their
+				// recommendations/cards idempotently (PRC-001). In the dark posture the
+				// resolver parks every event; once the live resolver lands the same pass
+				// produces approvable recommendations + cards with no further wiring. The
+				// returned count is the recommendations persisted this pass.
+				m, err := recProducer.RunOnce(c)
+				return m.Produced + m.Blocked, err
 			},
 			// Durable execution-intent consumer (issue #92): each confirmation enqueues
 			// one execute_approved intent transactionally with the Approved commit; this

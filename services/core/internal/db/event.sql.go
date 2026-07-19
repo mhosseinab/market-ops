@@ -261,6 +261,49 @@ func (q *Queries) GetOpenEventByDedupKey(ctx context.Context, arg GetOpenEventBy
 	return i, err
 }
 
+const insertInputTransition = `-- name: InsertInputTransition :execrows
+INSERT INTO event_input_transitions (
+    input_key, marketplace_account_id, target_id, native_seller_id, offer_identity,
+    prev_observation_id, curr_observation_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (input_key) DO NOTHING
+`
+
+type InsertInputTransitionParams struct {
+	InputKey             string
+	MarketplaceAccountID uuid.UUID
+	TargetID             uuid.UUID
+	NativeSellerID       string
+	OfferIdentity        string
+	PrevObservationID    uuid.UUID
+	CurrObservationID    uuid.UUID
+}
+
+// APPEND-ONLY ingestion-idempotency claim (issue #212). Records that one consumed
+// input transition (the prev+curr observation evidence identity) has been ingested.
+// ON CONFLICT DO NOTHING makes it idempotent: 1 row affected ⇒ a fresh consumption
+// (write the event); 0 rows ⇒ the transition was already consumed (skip — never a
+// second event). Called inside the SAME transaction as the event write and cursor
+// advance so ingestion dedup, the event, and the durable position commit atomically.
+// This is a SEPARATE concern from lifecycle dedup (dedup_key): once consumed here a
+// transition can never re-open an event even after resolve/expire frees its
+// lifecycle identity.
+func (q *Queries) InsertInputTransition(ctx context.Context, arg InsertInputTransitionParams) (int64, error) {
+	result, err := q.db.Exec(ctx, insertInputTransition,
+		arg.InputKey,
+		arg.MarketplaceAccountID,
+		arg.TargetID,
+		arg.NativeSellerID,
+		arg.OfferIdentity,
+		arg.PrevObservationID,
+		arg.CurrObservationID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const insertMaterialityThreshold = `-- name: InsertMaterialityThreshold :one
 
 INSERT INTO materiality_thresholds (
@@ -397,6 +440,48 @@ func (q *Queries) InsertRelevanceFeedbackForOrg(ctx context.Context, arg InsertR
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const listEligibleRecommendationEvents = `-- name: ListEligibleRecommendationEvents :many
+SELECT id, marketplace_account_id, variant_id, evidence_update_count
+FROM market_events
+WHERE state IN ('open', 'updated')
+ORDER BY marketplace_account_id, id
+`
+
+type ListEligibleRecommendationEventsRow struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	EvidenceUpdateCount  int32
+}
+
+// Account-wide set of open|updated market events awaiting a recommendation (PRC-001
+// runtime producer). evidence_update_count is the monotonic dedup/context token the
+// producer keys idempotency on. Ordered deterministically so a pass is reproducible.
+func (q *Queries) ListEligibleRecommendationEvents(ctx context.Context) ([]ListEligibleRecommendationEventsRow, error) {
+	rows, err := q.db.Query(ctx, listEligibleRecommendationEvents)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEligibleRecommendationEventsRow{}
+	for rows.Next() {
+		var i ListEligibleRecommendationEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.MarketplaceAccountID,
+			&i.VariantID,
+			&i.EvidenceUpdateCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listMaterialityThresholds = `-- name: ListMaterialityThresholds :many

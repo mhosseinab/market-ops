@@ -23,6 +23,21 @@ function FailureView({ failure }: { failure: ChatFailure }) {
   );
 }
 
+// A client-side TRANSPORT failure (issue #116): the stream was truncated, carried
+// a malformed frame, or ended without a validated terminal. The turn is shown as
+// unmistakably incomplete — no completed envelope/cards — and the operator is
+// pointed to the screens-only fallback, which is always fully functional (§8).
+function TransportFailureView() {
+  const t = useT();
+  return (
+    <div className="chat-failure" data-testid="chat-transport-failure">
+      <p className="chat-failure__title">{t("chat.failure.title")}</p>
+      <p className="chat-failure__body">{t("chat.failure.transportBody")}</p>
+      <DeepLinkButton link={{ to: "/today" }} labelKey="chat.deepLink" />
+    </div>
+  );
+}
+
 export function DockMessageView({ message }: { message: MessageState }) {
   const isUser = message.role === "user";
   return (
@@ -50,6 +65,9 @@ export function DockMessageView({ message }: { message: MessageState }) {
           }
           if (part.name === "failure") {
             return <FailureView key={key} failure={part.data as ChatFailure} />;
+          }
+          if (part.name === "incomplete") {
+            return <TransportFailureView key={key} />;
           }
         }
         return null;

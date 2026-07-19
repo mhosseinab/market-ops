@@ -9,12 +9,13 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 const createMarketplaceAccount = `-- name: CreateMarketplaceAccount :one
 INSERT INTO marketplace_accounts (organization_id, native_account_id, display_name)
 VALUES ($1, $2, $3)
-RETURNING id, organization_id, native_account_id, display_name, created_at, updated_at
+RETURNING id, organization_id, native_account_id, display_name, created_at, updated_at, owned_seller_id
 `
 
 type CreateMarketplaceAccountParams struct {
@@ -33,12 +34,13 @@ func (q *Queries) CreateMarketplaceAccount(ctx context.Context, arg CreateMarket
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OwnedSellerID,
 	)
 	return i, err
 }
 
 const getMarketplaceAccount = `-- name: GetMarketplaceAccount :one
-SELECT id, organization_id, native_account_id, display_name, created_at, updated_at FROM marketplace_accounts
+SELECT id, organization_id, native_account_id, display_name, created_at, updated_at, owned_seller_id FROM marketplace_accounts
 WHERE id = $1
 `
 
@@ -52,12 +54,13 @@ func (q *Queries) GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (Mark
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OwnedSellerID,
 	)
 	return i, err
 }
 
 const getMarketplaceAccountByNativeID = `-- name: GetMarketplaceAccountByNativeID :one
-SELECT id, organization_id, native_account_id, display_name, created_at, updated_at FROM marketplace_accounts
+SELECT id, organization_id, native_account_id, display_name, created_at, updated_at, owned_seller_id FROM marketplace_accounts
 WHERE native_account_id = $1
 `
 
@@ -71,12 +74,13 @@ func (q *Queries) GetMarketplaceAccountByNativeID(ctx context.Context, nativeAcc
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OwnedSellerID,
 	)
 	return i, err
 }
 
 const getMarketplaceAccountByOrganization = `-- name: GetMarketplaceAccountByOrganization :one
-SELECT id, organization_id, native_account_id, display_name, created_at, updated_at FROM marketplace_accounts
+SELECT id, organization_id, native_account_id, display_name, created_at, updated_at, owned_seller_id FROM marketplace_accounts
 WHERE organization_id = $1
 `
 
@@ -90,6 +94,7 @@ func (q *Queries) GetMarketplaceAccountByOrganization(ctx context.Context, organ
 		&i.DisplayName,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OwnedSellerID,
 	)
 	return i, err
 }
@@ -139,4 +144,39 @@ func (q *Queries) ListMarketplaceAccountIDs(ctx context.Context) ([]uuid.UUID, e
 		return nil, err
 	}
 	return items, nil
+}
+
+const setOwnedSellerID = `-- name: SetOwnedSellerID :one
+UPDATE marketplace_accounts SET
+    owned_seller_id = $2,
+    updated_at      = now()
+WHERE id = $1
+RETURNING id, organization_id, native_account_id, display_name, created_at, updated_at, owned_seller_id
+`
+
+type SetOwnedSellerIDParams struct {
+	ID            uuid.UUID
+	OwnedSellerID pgtype.Text
+}
+
+// Bind (or clear, with NULL) the account's AUTHORITATIVE owned DK seller identity
+// (issue #212). Populated by account provisioning/sync (S10) from the DK seller
+// profile; the column CHECK rejects a non-decimal value. The market-event
+// ObservationSource excludes the account's OWN offer by comparing an observation's
+// native_seller_id against THIS validated id — never the free-form native_account_id
+// handle. A NULL owned_seller_id is an unresolved identity and the source fails
+// closed (quarantines the account) rather than guessing.
+func (q *Queries) SetOwnedSellerID(ctx context.Context, arg SetOwnedSellerIDParams) (MarketplaceAccount, error) {
+	row := q.db.QueryRow(ctx, setOwnedSellerID, arg.ID, arg.OwnedSellerID)
+	var i MarketplaceAccount
+	err := row.Scan(
+		&i.ID,
+		&i.OrganizationID,
+		&i.NativeAccountID,
+		&i.DisplayName,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OwnedSellerID,
+	)
+	return i, err
 }

@@ -3,10 +3,12 @@ package event_test
 import (
 	"context"
 	"os"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
@@ -14,6 +16,22 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
+
+// setOwnedSeller binds (or clears, when sellerID is empty) the account's
+// authoritative owned DK seller identity (owned_seller_id). marketplace_accounts is
+// not an append-only table, so this write mirrors what provisioning/sync (S10) does.
+func setOwnedSeller(t *testing.T, q *db.Queries, account uuid.UUID, sellerID string) {
+	t.Helper()
+	owned := pgtype.Text{}
+	if sellerID != "" {
+		owned = pgtype.Text{String: sellerID, Valid: true}
+	}
+	if _, err := q.SetOwnedSellerID(context.Background(), db.SetOwnedSellerIDParams{
+		ID: account, OwnedSellerID: owned,
+	}); err != nil {
+		t.Fatalf("set owned_seller_id: %v", err)
+	}
+}
 
 // newPool connects to DATABASE_URL (schema applied via `task db:reset`). Skips
 // when unset so the suite still runs where no Postgres is provisioned.
@@ -47,6 +65,12 @@ func seedVariant(t *testing.T, q *db.Queries) (account, variant uuid.UUID) {
 	if err != nil {
 		t.Fatalf("create account: %v", err)
 	}
+	// Provision the account's AUTHORITATIVE owned DK seller identity (issue #212):
+	// a validated decimal Seller.ID string — the exact representation Route C writes
+	// to native_seller_id. This is what account provisioning/sync (S10) must bind;
+	// the owned-offer exclusion compares against THIS, not the native_account_id
+	// handle. A fresh value per account keeps it distinct across the shared test DB.
+	setOwnedSeller(t, q, acct.ID, strconv.FormatInt(int64(uuid.New().ID()), 10))
 	nativeProduct := int64(uuid.New().ID())
 	nativeVariant := int64(uuid.New().ID())
 	prod, err := q.UpsertProduct(ctx, db.UpsertProductParams{

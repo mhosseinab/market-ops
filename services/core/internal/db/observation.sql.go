@@ -13,6 +13,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const advanceObservationCursor = `-- name: AdvanceObservationCursor :exec
+INSERT INTO observation_consumer_cursors (
+    target_id, marketplace_account_id, native_seller_id, offer_identity,
+    last_observation_id, last_captured_at, last_price_raw_value
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (target_id, native_seller_id, offer_identity) DO UPDATE SET
+    last_observation_id  = EXCLUDED.last_observation_id,
+    last_captured_at     = EXCLUDED.last_captured_at,
+    last_price_raw_value = EXCLUDED.last_price_raw_value,
+    updated_at           = now()
+WHERE (EXCLUDED.last_captured_at, EXCLUDED.last_observation_id)
+    > (observation_consumer_cursors.last_captured_at, observation_consumer_cursors.last_observation_id)
+`
+
+type AdvanceObservationCursorParams struct {
+	TargetID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	NativeSellerID       string
+	OfferIdentity        string
+	LastObservationID    uuid.UUID
+	LastCapturedAt       time.Time
+	LastPriceRawValue    string
+}
+
+// Advance (or create) a stream's durable consumer position. MONOTONIC: an existing
+// cursor moves forward only when the incoming (captured_at, observation_id) is
+// strictly greater, so an out-of-order or replayed advance never rewinds the
+// stream. Called inside the SAME transaction as the event write + ledger insert so
+// the position, the event, and the ingestion-idempotency record commit atomically.
+func (q *Queries) AdvanceObservationCursor(ctx context.Context, arg AdvanceObservationCursorParams) error {
+	_, err := q.db.Exec(ctx, advanceObservationCursor,
+		arg.TargetID,
+		arg.MarketplaceAccountID,
+		arg.NativeSellerID,
+		arg.OfferIdentity,
+		arg.LastObservationID,
+		arg.LastCapturedAt,
+		arg.LastPriceRawValue,
+	)
+	return err
+}
+
 const claimDedupKey = `-- name: ClaimDedupKey :one
 WITH ins AS (
     INSERT INTO observation_dedup (dedup_key, target_id, route, offer_identity, evidence_hash)
@@ -746,6 +788,42 @@ func (q *Queries) ListInWindowRouteValues(ctx context.Context, arg ListInWindowR
 	return items, nil
 }
 
+const listObservationCursorsByTarget = `-- name: ListObservationCursorsByTarget :many
+SELECT target_id, marketplace_account_id, native_seller_id, offer_identity, last_observation_id, last_captured_at, last_price_raw_value, updated_at FROM observation_consumer_cursors
+WHERE target_id = $1
+`
+
+// Every durable stream cursor for a target, so the producer can seed each stream's
+// pairing anchor ("before") from the last consumed observation's raw value.
+func (q *Queries) ListObservationCursorsByTarget(ctx context.Context, targetID uuid.UUID) ([]ObservationConsumerCursor, error) {
+	rows, err := q.db.Query(ctx, listObservationCursorsByTarget, targetID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ObservationConsumerCursor{}
+	for rows.Next() {
+		var i ObservationConsumerCursor
+		if err := rows.Scan(
+			&i.TargetID,
+			&i.MarketplaceAccountID,
+			&i.NativeSellerID,
+			&i.OfferIdentity,
+			&i.LastObservationID,
+			&i.LastCapturedAt,
+			&i.LastPriceRawValue,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listObservationTargets = `-- name: ListObservationTargets :many
 SELECT id, marketplace_account_id, identity_id, variant_id, native_variant_id, native_product_id, tier, cadence_seconds, freshness_deadline_seconds, active, created_at, updated_at FROM observation_targets
 WHERE marketplace_account_id = $1 AND active = true
@@ -887,6 +965,84 @@ func (q *Queries) ListObservedOffers(ctx context.Context, marketplaceAccountID u
 			&i.EndedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnconsumedObservationsByTarget = `-- name: ListUnconsumedObservationsByTarget :many
+SELECT o.id, o.captured_at, o.native_seller_id, o.offer_identity,
+       o.price_raw_value, o.price_raw_unit, o.quality, o.evidence_ref
+FROM observations o
+LEFT JOIN observation_consumer_cursors c
+       ON c.target_id = o.target_id
+      AND c.native_seller_id = o.native_seller_id
+      AND c.offer_identity = o.offer_identity
+WHERE o.target_id = $1
+  AND o.native_seller_id <> $2
+  AND (
+        c.last_captured_at IS NULL
+     OR o.captured_at > c.last_captured_at
+     OR (o.captured_at = c.last_captured_at AND o.id > c.last_observation_id)
+      )
+ORDER BY o.native_seller_id, o.offer_identity, o.captured_at, o.id
+LIMIT $3
+`
+
+type ListUnconsumedObservationsByTargetParams struct {
+	TargetID    uuid.UUID
+	OwnedSeller string
+	PageLimit   int32
+}
+
+type ListUnconsumedObservationsByTargetRow struct {
+	ID             uuid.UUID
+	CapturedAt     time.Time
+	NativeSellerID string
+	OfferIdentity  string
+	PriceRawValue  string
+	PriceRawUnit   string
+	Quality        string
+	EvidenceRef    string
+}
+
+// Durable forward drain for the market-event producer (issue #212). Returns the
+// target's append-only observations that lie STRICTLY AFTER each stream's durable
+// consumer cursor, oldest-first per stream. A stream is (native_seller_id,
+// offer_identity); the LEFT JOIN gives the stream's cursor (NULL when never
+// consumed) and the (captured_at, id) tie-break makes "after" deterministic for
+// equal timestamps. Ordered by (native_seller_id, offer_identity, captured_at, id)
+// so the caller groups by stream and walks each in captured order; LIMIT bounds the
+// per-pass work and the cursor provides continuation across passes (no fixed
+// latest-N window). Seller identity is part of the stream key, so a reused offer
+// identity across two sellers is TWO streams and is never paired.
+// The owned seller's own stream is excluded here (sqlc.arg(owned_seller)) so it
+// never consumes the per-pass page budget — EVT-001 type 2 is a COMPETITOR movement,
+// and the caller has already validated owned_seller as an authoritative decimal id.
+func (q *Queries) ListUnconsumedObservationsByTarget(ctx context.Context, arg ListUnconsumedObservationsByTargetParams) ([]ListUnconsumedObservationsByTargetRow, error) {
+	rows, err := q.db.Query(ctx, listUnconsumedObservationsByTarget, arg.TargetID, arg.OwnedSeller, arg.PageLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUnconsumedObservationsByTargetRow{}
+	for rows.Next() {
+		var i ListUnconsumedObservationsByTargetRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.CapturedAt,
+			&i.NativeSellerID,
+			&i.OfferIdentity,
+			&i.PriceRawValue,
+			&i.PriceRawUnit,
+			&i.Quality,
+			&i.EvidenceRef,
 		); err != nil {
 			return nil, err
 		}
