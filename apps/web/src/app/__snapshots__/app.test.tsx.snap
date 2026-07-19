@@ -102,13 +102,16 @@ exports[`app shell boots RTL, fa-IR > matches the RTL shell snapshot 1`] = `
         </span>
       </div>
       <span
-        class="connection-pill tone-pos"
+        aria-label="وضعیت اتصال: اتصال قطع شده"
+        class="connection-pill tone-risk"
+        data-health="disconnected"
+        role="status"
       >
         <span
           aria-hidden="true"
           class="badge__dot"
         />
-        اتصال سالم
+        اتصال قطع شده
       </span>
       <button
         class="top-bar__control"

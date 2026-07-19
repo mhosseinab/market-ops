@@ -62,6 +62,10 @@ export const MESSAGE_KEYS = [
   "topbar.chat.toggle",
   "topbar.connection.healthy",
   "topbar.connection.degraded",
+  "topbar.connection.disconnected",
+  "topbar.connection.probing",
+  "topbar.connection.unknown",
+  "topbar.connection.aria",
   "topbar.briefingUnseen",
 
   // Canonical observation / execution state terms (PRD §11.4 — VERBATIM)
