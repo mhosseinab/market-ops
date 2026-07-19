@@ -77,15 +77,17 @@ def test_currency_scorer_quarantines_ambiguous_units() -> None:
 def test_context_scorer_catches_a_kind_mismatch() -> None:
     # A card-leading intent with two candidates MUST picker; label it resolved and
     # the scorer counts a mismatch.
+    prov = {"organization_id": "org-1", "account_id": "acc-1"}
     row = {
         "id": "ctx1",
         "intent": "PrepareAction",
+        "scope": {"organization_id": "org-1", "account_id": "acc-1"},
         "active_context": None,
         "references": [{"context_type": "Product", "entity_id": "", "raw": "mug"}],
         "candidates": {
             "mug": [
-                {"context_type": "Product", "entity_id": "a", "raw": "mug", "label": "Mug A"},
-                {"context_type": "Product", "entity_id": "b", "raw": "mug", "label": "Mug B"},
+                {"context_type": "Product", "entity_id": "a", "raw": "mug", **prov},
+                {"context_type": "Product", "entity_id": "b", "raw": "mug", **prov},
             ]
         },
         "now": "2026-07-17T09:30:00Z",

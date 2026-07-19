@@ -21,11 +21,13 @@ from llm.contextres.models import (
     EntityCandidate,
     EntityRef,
     PickerOption,
+    RequestScope,
     Resolution,
     ResolutionKind,
     ResolveRequest,
     TimeRange,
     missing_card_version_reason,
+    scope_mismatch_reason,
 )
 from llm.contextres.resolver import resolve, resolve_time_range
 
@@ -37,6 +39,7 @@ __all__ = [
     "EntityCandidate",
     "EntityRef",
     "PickerOption",
+    "RequestScope",
     "Resolution",
     "ResolutionKind",
     "ResolveRequest",
@@ -44,4 +47,5 @@ __all__ = [
     "missing_card_version_reason",
     "resolve",
     "resolve_time_range",
+    "scope_mismatch_reason",
 ]

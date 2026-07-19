@@ -29,6 +29,7 @@ from llm.contextres.models import (
     ResolveRequest,
     TimeRange,
     missing_card_version_reason,
+    scope_mismatch_reason,
 )
 from llm.intents.normalize import normalize_digits
 
@@ -54,6 +55,22 @@ def resolve(req: ResolveRequest) -> Resolution:
             options=[],
             time_range=time_range,
             reason="no_active_context",
+        )
+
+    # Tenant isolation first (PRD §12, §4.6): the active chip may only resolve if
+    # its authoritative organization/account provenance is present and inside the
+    # authenticated request scope. A stale or cross-tenant chip fails closed rather
+    # than binding the wrong tenant — provenance is never manufactured.
+    scope_reason = scope_mismatch_reason(
+        req.active_context.organization_id,
+        req.active_context.account_id,
+        req.scope,
+    )
+    if scope_reason is not None:
+        return Resolution(
+            kind=ResolutionKind.NOT_FOUND,
+            time_range=time_range,
+            reason=scope_reason,
         )
 
     if card_leading and req.active_context.context_type not in CARD_CAPABLE_CONTEXTS:
@@ -106,6 +123,24 @@ def _resolve_with_references(
     ref = req.references[0]
     candidates = req.candidates.get(ref.raw, [])
 
+    # Tenant isolation before anything else (PRD §12, §4.6): validate EVERY
+    # candidate's authoritative organization/account provenance against the
+    # authenticated request scope. If any candidate is out of scope (or lacks
+    # provenance), fail closed — a mixed set spanning two tenants must never
+    # resolve directly, and a cross-tenant entry must never leak into a picker.
+    for candidate in candidates:
+        scope_reason = scope_mismatch_reason(
+            candidate.organization_id,
+            candidate.account_id,
+            req.scope,
+        )
+        if scope_reason is not None:
+            return Resolution(
+                kind=ResolutionKind.NOT_FOUND,
+                time_range=time_range,
+                reason=scope_reason,
+            )
+
     if len(candidates) == 1:
         candidate = candidates[0]
         if card_leading:
@@ -126,7 +161,7 @@ def _resolve_with_references(
         # Unambiguous explicit reference overrides any compatible active context.
         return Resolution(
             kind=ResolutionKind.RESOLVED,
-            chip=_chip_from_entity(candidate, req.account_id),
+            chip=_chip_from_entity(candidate),
             time_range=time_range,
             reason="explicit_reference_override",
         )
@@ -149,16 +184,19 @@ def _resolve_with_references(
     )
 
 
-def _chip_from_entity(entity: EntityCandidate, account_id: str | None) -> ContextChip:
+def _chip_from_entity(entity: EntityCandidate) -> ContextChip:
     """Build the active chip a resolved candidate activates.
 
-    Account provenance and both versions are carried from the authoritative
-    candidate byte-for-byte (§8.1); the candidate's own ``account_id`` wins over
-    the request account when present.
+    Organization/account provenance and both versions are carried from the
+    authoritative candidate byte-for-byte (§8.1). Provenance is NEVER manufactured
+    from the request scope: the candidate reached here only after passing
+    :func:`scope_mismatch_reason`, so its own tenant identifiers are present and
+    in-scope, and they are the only source of the chip's tenant.
     """
     return ContextChip(
         context_type=entity.context_type,
-        account_id=entity.account_id or account_id,
+        organization_id=entity.organization_id,
+        account_id=entity.account_id,
         entity_id=entity.entity_id,
         context_version=entity.context_version,
         recommendation_version=entity.recommendation_version,

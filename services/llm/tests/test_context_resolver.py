@@ -18,6 +18,7 @@ from llm.contextres import (
     ContextType,
     EntityCandidate,
     EntityRef,
+    RequestScope,
     Resolution,
     ResolutionKind,
     ResolveRequest,
@@ -28,6 +29,12 @@ from llm.intents.models import IntentClass
 
 _FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "evals" / "context"
 
+# The authenticated tenant every single-tenant case runs under. Candidates and
+# active-context chips carry this same provenance so they validate in-scope.
+_ORG = "org-1"
+_ACCOUNT = "acc-1"
+_SCOPE = RequestScope(organization_id=_ORG, account_id=_ACCOUNT)
+
 
 # --- rule table --------------------------------------------------------------
 
@@ -36,20 +43,33 @@ def _ref(ctype: ContextType, eid: str, raw: str) -> EntityRef:
     return EntityRef(context_type=ctype, entity_id=eid, raw=raw)
 
 
+def _chip(ctype: ContextType, **kw: object) -> ContextChip:
+    """An active-context chip with in-scope tenant provenance unless overridden."""
+    fields: dict[str, object] = {"organization_id": _ORG, "account_id": _ACCOUNT}
+    fields.update(kw)
+    return ContextChip(context_type=ctype, **fields)  # type: ignore[arg-type]
+
+
 def _cand(
     ctype: ContextType,
     eid: str,
     raw: str,
     *,
-    account_id: str | None = None,
+    organization_id: str | None = _ORG,
+    account_id: str | None = _ACCOUNT,
     context_version: str | None = None,
     recommendation_version: str | None = None,
 ) -> EntityCandidate:
-    """An authoritative candidate as a read tool would return it (with provenance)."""
+    """An authoritative candidate as a read tool would return it (with provenance).
+
+    Organization/account default to the in-scope tenant; the cross-tenant negative
+    tests pass a foreign organization/account (or ``None``) explicitly.
+    """
     return EntityCandidate(
         context_type=ctype,
         entity_id=eid,
         raw=raw,
+        organization_id=organization_id,
         account_id=account_id,
         context_version=context_version,
         recommendation_version=recommendation_version,
@@ -59,8 +79,8 @@ def _cand(
 def test_unambiguous_explicit_reference_resolves_and_overrides() -> None:
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
-        account_id="acc-1",
-        active_context=ContextChip(context_type=ContextType.GLOBAL_ACCOUNT, account_id="acc-1"),
+        scope=_SCOPE,
+        active_context=_chip(ContextType.GLOBAL_ACCOUNT),
         references=[_ref(ContextType.PRODUCT, "", "SKU-9931")],
         candidates={
             "SKU-9931": [_cand(ContextType.PRODUCT, "p-9931", "SKU-9931", context_version="cv-7")]
@@ -77,6 +97,7 @@ def test_unambiguous_explicit_reference_resolves_and_overrides() -> None:
 def test_ambiguous_reference_pickers_and_creates_no_card() -> None:
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
         references=[_ref(ContextType.PRODUCT, "", "کفش")],
         candidates={
             "کفش": [
@@ -94,6 +115,7 @@ def test_ambiguous_reference_pickers_and_creates_no_card() -> None:
 def test_multiple_explicit_references_picker() -> None:
     req = ResolveRequest(
         intent=IntentClass.REVIEW_ACTION,
+        scope=_SCOPE,
         references=[
             _ref(ContextType.PRODUCT, "p1", "SKU-1"),
             _ref(ContextType.PRODUCT, "p2", "SKU-2"),
@@ -107,7 +129,8 @@ def test_multiple_explicit_references_picker() -> None:
 def test_card_leading_with_account_context_pickers() -> None:
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
-        active_context=ContextChip(context_type=ContextType.GLOBAL_ACCOUNT, account_id="acc-1"),
+        scope=_SCOPE,
+        active_context=_chip(ContextType.GLOBAL_ACCOUNT),
     )
     res = resolve(req)
     assert res.kind is ResolutionKind.PICKER
@@ -115,27 +138,26 @@ def test_card_leading_with_account_context_pickers() -> None:
 
 
 def test_card_leading_with_specific_context_resolves() -> None:
-    chip = ContextChip(
-        context_type=ContextType.PRODUCT,
-        account_id="acc-1",
+    chip = _chip(
+        ContextType.PRODUCT,
         entity_id="e-9",
         context_version="cv-9",
     )
-    req = ResolveRequest(intent=IntentClass.PREPARE_ACTION, active_context=chip)
+    req = ResolveRequest(intent=IntentClass.PREPARE_ACTION, scope=_SCOPE, active_context=chip)
     res = resolve(req)
     assert res.kind is ResolutionKind.RESOLVED
     assert res.chip == chip
 
 
 def test_question_resolves_against_active_context() -> None:
-    chip = ContextChip(context_type=ContextType.PRODUCT, entity_id="e-3")
-    req = ResolveRequest(intent=IntentClass.QUESTION, active_context=chip)
+    chip = _chip(ContextType.PRODUCT, entity_id="e-3")
+    req = ResolveRequest(intent=IntentClass.QUESTION, scope=_SCOPE, active_context=chip)
     res = resolve(req)
     assert res.kind is ResolutionKind.RESOLVED
 
 
 def test_no_context_and_no_reference_pickers() -> None:
-    req = ResolveRequest(intent=IntentClass.QUESTION)
+    req = ResolveRequest(intent=IntentClass.QUESTION, scope=_SCOPE)
     res = resolve(req)
     assert res.kind is ResolutionKind.PICKER
     assert res.reason == "no_active_context"
@@ -144,6 +166,7 @@ def test_no_context_and_no_reference_pickers() -> None:
 def test_reference_matching_nothing_is_not_found() -> None:
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
         references=[_ref(ContextType.PRODUCT, "", "SKU-0000")],
         candidates={"SKU-0000": []},
     )
@@ -161,7 +184,7 @@ def test_reference_matching_nothing_is_not_found() -> None:
 def test_explicit_reference_preserves_context_version_for_product() -> None:
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
-        account_id="acc-1",
+        scope=_SCOPE,
         references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
         candidates={"SKU-1": [_cand(ContextType.PRODUCT, "p-1", "SKU-1", context_version="cv-42")]},
     )
@@ -174,7 +197,7 @@ def test_explicit_reference_preserves_context_version_for_product() -> None:
 def test_explicit_reference_preserves_both_versions_for_recommendation() -> None:
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
-        account_id="acc-1",
+        scope=_SCOPE,
         references=[_ref(ContextType.RECOMMENDATION, "", "REC-1")],
         candidates={
             "REC-1": [
@@ -195,10 +218,12 @@ def test_explicit_reference_preserves_both_versions_for_recommendation() -> None
     assert res.chip.recommendation_version == "rv-3"
 
 
-def test_candidate_account_provenance_overrides_request_account() -> None:
+def test_resolved_chip_carries_candidate_tenant_provenance() -> None:
+    """The emitted chip's organization/account come only from the authoritative,
+    in-scope candidate — never manufactured from the request scope."""
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
-        account_id="acc-req",
+        scope=_SCOPE,
         references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
         candidates={
             "SKU-1": [
@@ -206,7 +231,8 @@ def test_candidate_account_provenance_overrides_request_account() -> None:
                     ContextType.PRODUCT,
                     "p-1",
                     "SKU-1",
-                    account_id="acc-prov",
+                    organization_id=_ORG,
+                    account_id=_ACCOUNT,
                     context_version="cv-1",
                 )
             ]
@@ -214,13 +240,14 @@ def test_candidate_account_provenance_overrides_request_account() -> None:
     )
     res = resolve(req)
     assert res.chip is not None
-    assert res.chip.account_id == "acc-prov"
+    assert res.chip.organization_id == _ORG
+    assert res.chip.account_id == _ACCOUNT
 
 
 def test_card_leading_explicit_reference_missing_context_version_fails_closed() -> None:
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
-        account_id="acc-1",
+        scope=_SCOPE,
         references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
         candidates={"SKU-1": [_cand(ContextType.PRODUCT, "p-1", "SKU-1")]},  # no version
     )
@@ -233,7 +260,7 @@ def test_card_leading_explicit_reference_missing_context_version_fails_closed() 
 def test_card_leading_recommendation_missing_recommendation_version_fails_closed() -> None:
     req = ResolveRequest(
         intent=IntentClass.PREPARE_ACTION,
-        account_id="acc-1",
+        scope=_SCOPE,
         references=[_ref(ContextType.RECOMMENDATION, "", "REC-1")],
         candidates={
             "REC-1": [
@@ -251,7 +278,7 @@ def test_non_card_leading_reference_without_version_still_resolves() -> None:
     """Navigation creates no card, so an absent version is not fail-closed."""
     req = ResolveRequest(
         intent=IntentClass.NAVIGATION,
-        account_id="acc-1",
+        scope=_SCOPE,
         references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
         candidates={"SKU-1": [_cand(ContextType.PRODUCT, "p-1", "SKU-1")]},
     )
@@ -262,14 +289,15 @@ def test_non_card_leading_reference_without_version_still_resolves() -> None:
 
 
 def test_active_context_card_leading_preserves_versions() -> None:
-    chip = ContextChip(
-        context_type=ContextType.RECOMMENDATION,
-        account_id="acc-1",
+    chip = _chip(
+        ContextType.RECOMMENDATION,
         entity_id="r-1",
         context_version="cv-2",
         recommendation_version="rv-5",
     )
-    res = resolve(ResolveRequest(intent=IntentClass.REVIEW_ACTION, active_context=chip))
+    res = resolve(
+        ResolveRequest(intent=IntentClass.REVIEW_ACTION, scope=_SCOPE, active_context=chip)
+    )
     assert res.kind is ResolutionKind.RESOLVED
     assert res.chip is not None
     assert res.chip.context_version == "cv-2"
@@ -278,21 +306,24 @@ def test_active_context_card_leading_preserves_versions() -> None:
 
 def test_active_context_card_leading_missing_context_version_fails_closed() -> None:
     """A stale active chip (version dropped on re-fetch) must not lead a card."""
-    chip = ContextChip(context_type=ContextType.PRODUCT, account_id="acc-1", entity_id="e-9")
-    res = resolve(ResolveRequest(intent=IntentClass.PREPARE_ACTION, active_context=chip))
+    chip = _chip(ContextType.PRODUCT, entity_id="e-9")
+    res = resolve(
+        ResolveRequest(intent=IntentClass.PREPARE_ACTION, scope=_SCOPE, active_context=chip)
+    )
     assert res.kind is ResolutionKind.NOT_FOUND
     assert res.chip is None
     assert res.reason == "missing_context_version"
 
 
 def test_active_context_recommendation_missing_recommendation_version_fails_closed() -> None:
-    chip = ContextChip(
-        context_type=ContextType.RECOMMENDATION,
-        account_id="acc-1",
+    chip = _chip(
+        ContextType.RECOMMENDATION,
         entity_id="r-1",
         context_version="cv-2",
     )
-    res = resolve(ResolveRequest(intent=IntentClass.PREPARE_ACTION, active_context=chip))
+    res = resolve(
+        ResolveRequest(intent=IntentClass.PREPARE_ACTION, scope=_SCOPE, active_context=chip)
+    )
     assert res.kind is ResolutionKind.NOT_FOUND
     assert res.chip is None
     assert res.reason == "missing_recommendation_version"
@@ -300,8 +331,8 @@ def test_active_context_recommendation_missing_recommendation_version_fails_clos
 
 def test_active_context_question_without_version_still_resolves() -> None:
     """A read-only Question resolves against a versionless chip (no card bound)."""
-    chip = ContextChip(context_type=ContextType.PRODUCT, account_id="acc-1", entity_id="e-9")
-    res = resolve(ResolveRequest(intent=IntentClass.QUESTION, active_context=chip))
+    chip = _chip(ContextType.PRODUCT, entity_id="e-9")
+    res = resolve(ResolveRequest(intent=IntentClass.QUESTION, scope=_SCOPE, active_context=chip))
     assert res.kind is ResolutionKind.RESOLVED
 
 
@@ -310,12 +341,240 @@ def test_exactly_one_active_context_on_resolve() -> None:
     resolved = resolve(
         ResolveRequest(
             intent=IntentClass.QUESTION,
-            active_context=ContextChip(context_type=ContextType.PRODUCT, entity_id="e"),
+            scope=_SCOPE,
+            active_context=_chip(ContextType.PRODUCT, entity_id="e"),
         )
     )
     assert resolved.chip is not None and resolved.options == []
-    picker = resolve(ResolveRequest(intent=IntentClass.QUESTION))
+    picker = resolve(ResolveRequest(intent=IntentClass.QUESTION, scope=_SCOPE))
     assert picker.chip is None
+
+
+# --- organization / account provenance containment (#32, PRD §12, §4.6) ------
+# Tenant isolation: a candidate or active context assembled from organization/
+# account A must NEVER resolve under a request authenticated for B. Every
+# provenance field is validated against the request scope BEFORE resolution;
+# a mismatch (or missing provenance) fails closed with a stable reason token,
+# and provenance is never manufactured from the request scope.
+
+_OTHER_ORG = "org-2"
+_OTHER_ACCOUNT = "acc-2"
+
+
+def test_explicit_reference_cross_account_candidate_fails_closed() -> None:
+    """A candidate owned by another account never resolves under this scope."""
+    req = ResolveRequest(
+        intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,  # org-1 / acc-1
+        references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
+        candidates={
+            "SKU-1": [
+                _cand(
+                    ContextType.PRODUCT,
+                    "p-1",
+                    "SKU-1",
+                    account_id=_OTHER_ACCOUNT,  # foreign account, valid version
+                    context_version="cv-1",
+                )
+            ]
+        },
+    )
+    res = resolve(req)
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None  # never a relabeled chip in the caller's tenant
+    assert res.reason == "account_scope_mismatch"
+
+
+def test_explicit_reference_cross_organization_candidate_fails_closed() -> None:
+    """A candidate from another organization never resolves under this scope."""
+    req = ResolveRequest(
+        intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
+        references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
+        candidates={
+            "SKU-1": [
+                _cand(
+                    ContextType.PRODUCT,
+                    "p-1",
+                    "SKU-1",
+                    organization_id=_OTHER_ORG,  # foreign organization
+                    context_version="cv-1",
+                )
+            ]
+        },
+    )
+    res = resolve(req)
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None
+    assert res.reason == "organization_scope_mismatch"
+
+
+def test_explicit_reference_candidate_without_account_is_not_manufactured() -> None:
+    """A candidate lacking account provenance fails closed — it must NOT inherit
+    the request account (the old ``entity.account_id or account_id`` bug)."""
+    req = ResolveRequest(
+        intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
+        references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
+        candidates={
+            "SKU-1": [
+                _cand(
+                    ContextType.PRODUCT,
+                    "p-1",
+                    "SKU-1",
+                    account_id=None,  # missing provenance
+                    context_version="cv-1",
+                )
+            ]
+        },
+    )
+    res = resolve(req)
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None  # not a chip stamped with acc-1
+    assert res.reason == "missing_account_provenance"
+
+
+def test_explicit_reference_candidate_without_organization_fails_closed() -> None:
+    req = ResolveRequest(
+        intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
+        references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
+        candidates={
+            "SKU-1": [
+                _cand(
+                    ContextType.PRODUCT,
+                    "p-1",
+                    "SKU-1",
+                    organization_id=None,
+                    context_version="cv-1",
+                )
+            ]
+        },
+    )
+    res = resolve(req)
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None
+    assert res.reason == "missing_organization_provenance"
+
+
+def test_mixed_candidate_set_across_two_accounts_never_resolves() -> None:
+    """A candidate list spanning two accounts fails closed — it never silently
+    filters to the in-scope entry, nor leaks the foreign one into a picker."""
+    req = ResolveRequest(
+        intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
+        references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
+        candidates={
+            "SKU-1": [
+                _cand(ContextType.PRODUCT, "in-scope", "SKU-1", context_version="cv-a"),
+                _cand(
+                    ContextType.PRODUCT,
+                    "foreign",
+                    "SKU-1",
+                    account_id=_OTHER_ACCOUNT,
+                    context_version="cv-b",
+                ),
+            ]
+        },
+    )
+    res = resolve(req)
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None
+    assert res.options == []  # no picker option built from a cross-tenant set
+    assert res.reason == "account_scope_mismatch"
+
+
+def test_mixed_candidate_set_across_two_organizations_never_resolves() -> None:
+    req = ResolveRequest(
+        intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
+        references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
+        candidates={
+            "SKU-1": [
+                _cand(ContextType.PRODUCT, "in-scope", "SKU-1", context_version="cv-a"),
+                _cand(
+                    ContextType.PRODUCT,
+                    "foreign",
+                    "SKU-1",
+                    organization_id=_OTHER_ORG,
+                    context_version="cv-b",
+                ),
+            ]
+        },
+    )
+    res = resolve(req)
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None
+    assert res.options == []
+    assert res.reason == "organization_scope_mismatch"
+
+
+def test_active_context_cross_account_fails_closed() -> None:
+    """A restored active chip from another account must not resolve or bind."""
+    chip = _chip(
+        ContextType.PRODUCT,
+        account_id=_OTHER_ACCOUNT,
+        entity_id="e-9",
+        context_version="cv-9",
+    )
+    res = resolve(ResolveRequest(intent=IntentClass.QUESTION, scope=_SCOPE, active_context=chip))
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None
+    assert res.reason == "account_scope_mismatch"
+
+
+def test_active_context_cross_organization_fails_closed() -> None:
+    chip = _chip(
+        ContextType.PRODUCT,
+        organization_id=_OTHER_ORG,
+        entity_id="e-9",
+        context_version="cv-9",
+    )
+    res = resolve(
+        ResolveRequest(intent=IntentClass.PREPARE_ACTION, scope=_SCOPE, active_context=chip)
+    )
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None
+    assert res.reason == "organization_scope_mismatch"
+
+
+def test_active_context_missing_organization_provenance_fails_closed() -> None:
+    """A chip lacking organization provenance fails closed rather than resolving
+    on account alone — scope is validated before card-version binding."""
+    chip = ContextChip(
+        context_type=ContextType.PRODUCT,
+        account_id=_ACCOUNT,  # no organization_id
+        entity_id="e-9",
+        context_version="cv-9",
+    )
+    res = resolve(ResolveRequest(intent=IntentClass.QUESTION, scope=_SCOPE, active_context=chip))
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.chip is None
+    assert res.reason == "missing_organization_provenance"
+
+
+def test_cross_account_scope_check_precedes_card_version_check() -> None:
+    """Tenant isolation is evaluated before the card-version gate: a foreign
+    candidate that also lacks a version reports the scope mismatch, not the
+    version — the scope guard is unconditional and first."""
+    req = ResolveRequest(
+        intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
+        references=[_ref(ContextType.PRODUCT, "", "SKU-1")],
+        candidates={
+            "SKU-1": [
+                _cand(
+                    ContextType.PRODUCT,
+                    "p-1",
+                    "SKU-1",
+                    account_id=_OTHER_ACCOUNT,  # foreign AND no version
+                )
+            ]
+        },
+    )
+    res = resolve(req)
+    assert res.kind is ResolutionKind.NOT_FOUND
+    assert res.reason == "account_scope_mismatch"
 
 
 # --- time-range resolution ---------------------------------------------------
@@ -349,7 +608,8 @@ def test_time_range_is_explicit_with_as_of(
 def test_resolve_attaches_time_range_when_phrase_present() -> None:
     req = ResolveRequest(
         intent=IntentClass.QUESTION,
-        active_context=ContextChip(context_type=ContextType.PRODUCT, entity_id="e"),
+        scope=_SCOPE,
+        active_context=_chip(ContextType.PRODUCT, entity_id="e"),
         time_phrase="۷ روز گذشته",
         now="2026-07-17T09:30:00Z",
     )
@@ -370,7 +630,7 @@ def _request_from_case(case: dict[str, Any]) -> ResolveRequest:
     return ResolveRequest.model_validate(
         {
             "intent": case["intent"],
-            "account_id": "acc-1",
+            "scope": case["scope"],
             "active_context": case["active_context"],
             "references": case["references"],
             "candidates": case["candidates"],
