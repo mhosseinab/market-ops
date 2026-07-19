@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "data": {
+    "product": {
+      "id": 900401,
+      "title_fa": "کالای با وضعیت خالی",
+      "status": "marketable",
+      "variants": [
+        {
+          "id": 555011,
+          "status": "   ",
+          "seller": { "id": 71011, "code": "BLANK1" },
+          "price": {
+            "selling_price": 450000000,
+            "rrp_price": 500000000,
+            "marketable_stock": 5
+          }
+        }
+      ]
+    }
+  }
+}

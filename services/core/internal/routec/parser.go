@@ -146,19 +146,25 @@ func ParseProductDetail(body []byte) (ParsedProduct, error) {
 }
 
 // mapAvailability maps DK's variant status onto the normalized availability
-// (docs/11: map `ناموجود`/out_of_stock together; never infer from price). A
-// missing/unknown status defaults to in-stock only when a price is present; the
-// caller's drift check catches a marketable-without-price contradiction.
+// (docs/11: map `ناموجود`/out_of_stock together; never infer from price). It
+// FAILS CLOSED (CLAUDE.md §4.6 quarantine-over-inference, Unknown-never-enables):
+// only an ALLOW-LISTED recognized positive token ("marketable") may assert a
+// purchasable state. A missing (nil), blank/whitespace-only, or novel/unmapped
+// token yields TempUnavail — the unavailable/unverified outcome — and NEVER a
+// stock claim the source evidence does not contain. This never infers stock from
+// a present price. A novel token is preserved as raw evidence by the caller
+// (variantJSON.Status) for §10.4 drift review; it is intentionally NOT a hard
+// ErrParseDrift so an unavailable OUTCOME is still produced.
 func mapAvailability(status *string) observation.Availability {
 	if status == nil {
-		return observation.InStock
+		return observation.TempUnavail
 	}
 	switch strings.TrimSpace(*status) {
-	case "out_of_stock":
-		return observation.OutOfStock
 	case "marketable":
 		return observation.InStock
+	case "out_of_stock":
+		return observation.OutOfStock
 	default:
-		return observation.InStock
+		return observation.TempUnavail
 	}
 }

@@ -99,6 +99,43 @@ func TestParseDriftMissingProduct(t *testing.T) {
 	}
 }
 
+// TestUnknownAvailabilityFailsClosed is the issue #46 regression guard: a
+// variant whose source status is missing (absent field), blank/whitespace-only,
+// or a novel unrecognized token MUST fail closed to observation.TempUnavail
+// (unavailable/unverified) and MUST NEVER be promoted to a purchasable state
+// (InStock/Limited). Only an allow-listed positive token may assert stock
+// (CLAUDE.md §4.6 quarantine-over-inference; docs/11 "do not infer from price").
+func TestUnknownAvailabilityFailsClosed(t *testing.T) {
+	cases := []struct {
+		name    string
+		fixture string
+	}{
+		{"missing/absent status field", "availability_missing.json"},
+		{"blank/whitespace-only status", "availability_blank.json"},
+		{"novel/unmapped status token", "availability_novel.json"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed, err := routec.ParseProductDetail(golden(t, tc.fixture))
+			if err != nil {
+				// Fail-closed to an unavailable OUTCOME is mandatory; a novel
+				// token must not become a hard parse-abort error (§10.4).
+				t.Fatalf("unknown availability must produce an outcome, not an error: %v", err)
+			}
+			if len(parsed.Offers) != 1 {
+				t.Fatalf("offers: got %d want 1", len(parsed.Offers))
+			}
+			got := parsed.Offers[0].Availability
+			if got == observation.InStock || got == observation.Limited {
+				t.Fatalf("unknown availability leaked a purchasable state %q (manufactured stock claim)", got)
+			}
+			if got != observation.TempUnavail {
+				t.Fatalf("availability: got %q want %q (fail closed)", got, observation.TempUnavail)
+			}
+		})
+	}
+}
+
 // TestCanaryDistributionZeroPriced asserts the value/unit distribution check
 // flags an all-zero-priced marketable payload as drift.
 func TestCanaryDistributionZeroPriced(t *testing.T) {

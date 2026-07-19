@@ -1,0 +1,22 @@
+{
+  "status": 200,
+  "data": {
+    "product": {
+      "id": 900402,
+      "title_fa": "کالای با وضعیت ناشناخته",
+      "status": "marketable",
+      "variants": [
+        {
+          "id": 555012,
+          "status": "preorder_backordered_soon",
+          "seller": { "id": 71012, "code": "NOVEL1" },
+          "price": {
+            "selling_price": 450000000,
+            "rrp_price": 500000000,
+            "marketable_stock": 5
+          }
+        }
+      ]
+    }
+  }
+}
