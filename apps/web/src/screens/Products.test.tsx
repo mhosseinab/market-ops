@@ -2,7 +2,8 @@ import { faIR } from "@market-ops/locale";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
-import { ACCOUNT_ID, readinessMissing } from "../test/msw/fixtures";
+import type { CatalogProductRow, ObservedOffer } from "../data/types";
+import { catalogProductRow, offer, readinessMissing } from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
@@ -12,123 +13,165 @@ afterEach(() => {
   document.documentElement.removeAttribute("lang");
 });
 
-// The PAGE_SIZE the screen bounds each readiness fan-out to (mirrors the module
-// constant in Products.tsx). Kept here so the test asserts the real bound.
-const PAGE_SIZE = 50;
-
-/** N deterministic observation targets with distinct ids for query-key isolation. */
-function makeTargets(n: number) {
+/** N canonical product rows with distinct ids and native identifiers. */
+function makeRows(n: number, base = 0): CatalogProductRow[] {
   return Array.from({ length: n }, (_, i) => ({
-    id: `t-${i}`,
-    marketplaceAccountId: ACCOUNT_ID,
-    identityId: `id-${i}`,
-    // Distinct variantId per target so each readiness query has its own key.
-    variantId: `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`,
-    // Distinct, sequential native IDs — the LTR search haystack + visibility marker.
-    nativeVariantId: 5000000 + i,
-    nativeProductId: 9000000 + i,
-    tier: "standard" as const,
-    cadenceSeconds: 3600,
-    freshnessDeadlineSeconds: 3600,
-    active: true,
+    ...catalogProductRow,
+    variantId: `00000000-0000-0000-0000-${String(base + i).padStart(12, "0")}`,
+    nativeVariantId: 5000000 + base + i,
+    nativeProductId: 9000000 + base + i,
+    marketOffers: [],
   }));
 }
 
-/**
- * Install a variant-aware `/cost/readiness` handler that COUNTS requests, so a
- * test can prove the per-row fan-out is BOUNDED (page-sized), not one-per-target.
- * `failFor` lets a test force a partial batch failure on specific variantIds.
- */
-function countingReadiness(failFor: (variantId: string) => boolean = () => false) {
-  const counter = { count: 0 };
+/** Variant-aware readiness handler returning Missing for every variant. */
+function installReadiness() {
   server.use(
     http.get(`${BASE}/cost/readiness`, ({ request }) => {
-      counter.count += 1;
       const variantId = new URL(request.url).searchParams.get("variantId") ?? "";
-      if (failFor(variantId)) return new HttpResponse(null, { status: 500 });
       return HttpResponse.json({ ...readinessMissing, variantId });
     }),
   );
-  return counter;
 }
 
 describe("Products workspace", () => {
-  it("renders readiness + quality badges and the bulk entry point", async () => {
+  it("renders canonical rows with mapping state, watched flag, and a deterministic market price", async () => {
+    installReadiness();
     renderRoute("/products");
 
-    // Market quality (Verified) from the observed offer.
-    expect(await screen.findByText(faIR["state.verified"])).toBeInTheDocument();
-    // Margin readiness (Missing) — scoped to the table (it is also a filter chip).
+    // "Watched" is an unambiguous marker of the canonical row rendering (the row is
+    // NOT an observation target). Await it, then assert the rest.
+    await screen.findByText(faIR["mapping.watched"]);
     const table = document.querySelector(".data-table") as HTMLElement;
-    expect(within(table).getByText(faIR["readiness.missing"])).toBeInTheDocument();
-    // Bulk entry stub deep-links to the (S28) bulk screen.
+    expect(within(table).getByText(faIR["mapping.watched"])).toBeInTheDocument();
+    // Confirmed mapping badge + Verified quality badge share the Persian glossary
+    // word "تاییدشده", so both render it: at least two occurrences in the row.
+    expect(within(table).getAllByText(faIR["mapping.confirmed"]).length).toBeGreaterThanOrEqual(2);
+    // Market price cell shows the offer identity AND its raw price (money quarantine).
+    expect(within(table).getByText("8842213:seller-1")).toBeInTheDocument();
+    expect(within(table).getByText("14,350,000")).toBeInTheDocument();
+    // Native IDs render as RAW LTR identifiers (fa-IR default): no grouping/conversion.
+    expect(within(table).getByText("7719004")).toBeInTheDocument();
+    expect(within(table).getByText("8842213")).toBeInTheDocument();
+    expect(within(table).queryByText("۷٬۷۱۹٬۰۰۴")).toBeNull();
+    // Bulk entry point present.
     expect(screen.getByTestId("bulk-entry")).toBeInTheDocument();
-
-    // Native IDs render as RAW LTR identifiers (fa-IR default): no thousands
-    // separators and no Persian-digit conversion — they must match DK verbatim.
-    expect(within(table).getByText("7719004")).toBeInTheDocument(); // nativeProductId
-    expect(within(table).getByText("8842213")).toBeInTheDocument(); // nativeVariantId
-    expect(within(table).queryByText("7,719,004")).toBeNull(); // never grouped
-    expect(within(table).queryByText("۷٬۷۱۹٬۰۰۴")).toBeNull(); // never Persian digits
   });
 
-  it("bounds readiness fan-out to one page even with many targets (#75)", async () => {
+  it("surfaces multiple competitor offers individually with identity, in deterministic order", async () => {
+    installReadiness();
+    // The read model already orders offers by offerIdentity ascending, so the FIRST
+    // shown is 'a-seller' regardless of input order.
+    const offers: ObservedOffer[] = [
+      { ...offer, offerIdentity: "a-seller", price: { text: "10", value: "10", unit: "IRR" } },
+      { ...offer, offerIdentity: "z-seller", price: { text: "99", value: "99", unit: "IRR" } },
+    ];
     server.use(
-      http.get(`${BASE}/observation/targets`, () => HttpResponse.json({ items: makeTargets(120) })),
+      http.get(`${BASE}/catalog/products`, () =>
+        HttpResponse.json({ items: [{ ...catalogProductRow, marketOffers: offers }] }),
+      ),
     );
-    const readiness = countingReadiness();
     renderRoute("/products");
 
-    // Wait for the table (first page) to render.
-    await screen.findByText("5000000"); // page-1 target 0 nativeVariantId
-
-    // The fan-out is BOUNDED: at most one page of readiness calls, never 120.
-    await waitFor(() => expect(readiness.count).toBeGreaterThan(0));
-    expect(readiness.count).toBeLessThanOrEqual(PAGE_SIZE);
-    // A target on a later page must NOT have been fetched on initial render.
-    expect(screen.queryByText("5000060")).toBeNull(); // page-2 target 60
+    // The primary (identity-labelled) offer is the first ordered one, with a count.
+    await screen.findByText("a-seller");
+    const table = document.querySelector(".data-table") as HTMLElement;
+    expect(within(table).getByText("a-seller")).toBeInTheDocument();
+    expect(within(table).getByText("10")).toBeInTheDocument();
+    expect(
+      within(table).getByText(faIR["products.market.multiple"].replace("{count}", "۲")),
+    ).toBeInTheDocument();
   });
 
-  it("fetches only the next batch when advancing a page (#75)", async () => {
+  it("shows unmapped and unwatched states for synced variants without an active target", async () => {
+    installReadiness();
     server.use(
-      http.get(`${BASE}/observation/targets`, () => HttpResponse.json({ items: makeTargets(120) })),
+      http.get(`${BASE}/catalog/products`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              ...catalogProductRow,
+              variantId: "aaaaaaaa-0000-0000-0000-000000000001",
+              nativeVariantId: 1,
+              mappingState: "unmapped",
+              watched: false,
+              marketOffers: [],
+            },
+          ],
+        }),
+      ),
     );
-    const readiness = countingReadiness();
     renderRoute("/products");
 
-    await screen.findByText("5000000"); // page 1 visible
-    await waitFor(() => expect(readiness.count).toBeGreaterThan(0));
-    const afterPage1 = readiness.count;
-    expect(afterPage1).toBeLessThanOrEqual(PAGE_SIZE);
+    await screen.findByText(faIR["mapping.unmapped"]);
+    const table = document.querySelector(".data-table") as HTMLElement;
+    expect(within(table).getByText(faIR["mapping.unmapped"])).toBeInTheDocument();
+    expect(within(table).getByText(faIR["mapping.unwatched"])).toBeInTheDocument();
+  });
 
-    // Advance to page 2.
+  it("advances pages via the server cursor", async () => {
+    installReadiness();
+    let call = 0;
+    server.use(
+      http.get(`${BASE}/catalog/products`, ({ request }) => {
+        const cursor = new URL(request.url).searchParams.get("cursor");
+        call += 1;
+        if (!cursor) {
+          // First page: full, with a next cursor.
+          return HttpResponse.json({ items: makeRows(1, 0), nextCursor: "5000000" });
+        }
+        // Second page: terminal, no next cursor.
+        return HttpResponse.json({ items: makeRows(1, 60), nextCursor: null });
+      }),
+    );
+    renderRoute("/products");
+
+    await screen.findByText("5000000"); // page-1 native variant id
+    expect(screen.queryByText("5000060")).toBeNull();
+
     fireEvent.click(screen.getByTestId("products-next-page"));
 
-    // Page-2 target becomes visible; page-1-only target leaves the table.
-    await screen.findByText("5000050"); // page 2 target 50
+    await screen.findByText("5000060"); // page-2 native variant id
     expect(screen.queryByText("5000000")).toBeNull();
-
-    // Only the next batch was fetched — the increase is page-bounded, not 120.
-    await waitFor(() => expect(readiness.count).toBeGreaterThan(afterPage1));
-    expect(readiness.count - afterPage1).toBeLessThanOrEqual(PAGE_SIZE);
+    await waitFor(() => expect(call).toBeGreaterThanOrEqual(2));
+    // At the terminal page the Next button is disabled (no next cursor).
+    expect(screen.getByTestId("products-next-page")).toBeDisabled();
   });
 
-  it("shows an actionable section error on partial readiness failure without dropping rows (#75)", async () => {
+  it("shows an actionable section error on partial readiness failure without dropping rows", async () => {
     server.use(
-      http.get(`${BASE}/observation/targets`, () => HttpResponse.json({ items: makeTargets(10) })),
+      http.get(`${BASE}/catalog/products`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              ...catalogProductRow,
+              variantId: "00000000-0000-0000-0000-000000000000",
+              nativeVariantId: 5000000,
+              marketOffers: [],
+            },
+            {
+              ...catalogProductRow,
+              variantId: "00000000-0000-0000-0000-000000000001",
+              nativeVariantId: 5000001,
+              marketOffers: [],
+            },
+          ],
+        }),
+      ),
+      http.get(`${BASE}/cost/readiness`, ({ request }) => {
+        const variantId = new URL(request.url).searchParams.get("variantId") ?? "";
+        if (variantId === "00000000-0000-0000-0000-000000000000") {
+          return new HttpResponse(null, { status: 500 });
+        }
+        return HttpResponse.json({ ...readinessMissing, variantId });
+      }),
     );
-    // Fail readiness for target 0 only; the rest succeed.
-    const failedVariant = `00000000-0000-0000-0000-${String(0).padStart(12, "0")}`;
-    countingReadiness((variantId) => variantId === failedVariant);
     renderRoute("/products");
 
-    // The successful rows still render — the table is not thrown away.
-    await screen.findByText("5000001"); // target 1 (succeeded) visible
-    expect(screen.getByText("5000000")).toBeInTheDocument(); // failed row still shown
-
-    // An actionable section-level error with a retry affordance is present.
+    // Both rows still render — the table is not thrown away.
+    await screen.findByText("5000001");
+    expect(screen.getByText("5000000")).toBeInTheDocument();
     const sectionError = await screen.findByTestId("products-readiness-error");
-    expect(sectionError).toBeInTheDocument();
     expect(
       within(sectionError).getByRole("button", { name: faIR["action.retry"] }),
     ).toBeInTheDocument();

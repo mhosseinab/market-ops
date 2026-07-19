@@ -38,6 +38,10 @@ function unwrap<T>(result: { data?: T; error?: unknown }): T {
 
 export const queryKeys = {
   connectorStatus: (accountId: string) => ["connector-status", accountId] as const,
+  catalogProducts: (accountId: string, cursor: string) =>
+    ["catalog-products", accountId, cursor] as const,
+  catalogProduct: (accountId: string, variantId: string) =>
+    ["catalog-product", accountId, variantId] as const,
   targets: (accountId: string) => ["observation-targets", accountId] as const,
   offers: (accountId: string) => ["observed-offers", accountId] as const,
   observations: (targetId: string) => ["observations", targetId] as const,
@@ -62,6 +66,44 @@ export function useConnectorStatus() {
       unwrap(
         await gateway.GET("/connector/status", {
           params: { query: { marketplaceAccountId } },
+        }),
+      ),
+  });
+}
+
+// The canonical Products read model (S26, PRD §6.1). Rows come from Product/
+// Variant/Owned Offer entities — never observation targets. Pagination is by the
+// stable native_variant_id cursor the server returns; the screen advances it.
+export function useCatalogProducts(cursor: string | null) {
+  const { marketplaceAccountId } = useAccount();
+  return useQuery({
+    queryKey: queryKeys.catalogProducts(marketplaceAccountId, cursor ?? ""),
+    queryFn: async () =>
+      unwrap(
+        await gateway.GET("/catalog/products", {
+          params: {
+            query: {
+              marketplaceAccountId,
+              ...(cursor ? { cursor } : {}),
+            },
+          },
+        }),
+      ),
+  });
+}
+
+// The single-variant canonical Product row backing Product detail (S26).
+export function useCatalogProduct(variantId: string | undefined) {
+  const { marketplaceAccountId } = useAccount();
+  return useQuery({
+    enabled: Boolean(variantId),
+    queryKey: queryKeys.catalogProduct(marketplaceAccountId, variantId ?? ""),
+    queryFn: async () =>
+      unwrap(
+        await gateway.GET("/catalog/product", {
+          params: {
+            query: { marketplaceAccountId, variantId: variantId as string },
+          },
         }),
       ),
   });

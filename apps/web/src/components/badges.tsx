@@ -163,6 +163,26 @@ export function CapabilityBadge({ state }: { state: CapabilityState }) {
   return <Badge tone={m.tone} label={t(m.key)} shape="square" />;
 }
 
+// ── Identity mapping state (CAT-002; S26 Products read model) ───────────────
+// The mapping state of a synced variant. A row that is not `confirmed` (and
+// watched) can never drive an executable recommendation; the badge only reports
+// the state. `unmapped` means the variant has no Market Product Identity yet.
+export type MappingStateName = "confirmed" | "needs_review" | "rejected" | "obsolete" | "unmapped";
+
+const MAPPING: Record<MappingStateName, { tone: Tone; key: MessageKey }> = {
+  confirmed: { tone: "tone-pos", key: "mapping.confirmed" },
+  needs_review: { tone: "tone-warn", key: "mapping.needsReview" },
+  rejected: { tone: "tone-risk", key: "mapping.rejected" },
+  obsolete: { tone: "tone-ink2", key: "mapping.obsolete" },
+  unmapped: { tone: "tone-muted", key: "mapping.unmapped" },
+};
+
+export function MappingBadge({ state }: { state: MappingStateName }) {
+  const t = useT();
+  const m = MAPPING[state];
+  return <Badge tone={m.tone} label={t(m.key)} shape="square" />;
+}
+
 // ── Cost-import row disposition (CST-001) ───────────────────────────────────
 export type DispositionState = "accept" | "reject" | "duplicate";
 

@@ -280,6 +280,33 @@ func (e CaptureUploadSubRoute) Valid() bool {
 	}
 }
 
+// Defines values for CatalogMappingState.
+const (
+	CatalogMappingStateConfirmed   CatalogMappingState = "confirmed"
+	CatalogMappingStateNeedsReview CatalogMappingState = "needs_review"
+	CatalogMappingStateObsolete    CatalogMappingState = "obsolete"
+	CatalogMappingStateRejected    CatalogMappingState = "rejected"
+	CatalogMappingStateUnmapped    CatalogMappingState = "unmapped"
+)
+
+// Valid indicates whether the value is a known member of the CatalogMappingState enum.
+func (e CatalogMappingState) Valid() bool {
+	switch e {
+	case CatalogMappingStateConfirmed:
+		return true
+	case CatalogMappingStateNeedsReview:
+		return true
+	case CatalogMappingStateObsolete:
+		return true
+	case CatalogMappingStateRejected:
+		return true
+	case CatalogMappingStateUnmapped:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CatalogSyncState.
 const (
 	CatalogSyncStateCompleted CatalogSyncState = "completed"
@@ -961,6 +988,24 @@ func (e OutcomeSummaryResult) Valid() bool {
 	}
 }
 
+// Defines values for OwnedOfferUnavailableReason.
+const (
+	CapabilityNotSupported OwnedOfferUnavailableReason = "capability_not_supported"
+	NoOwnedOffer           OwnedOfferUnavailableReason = "no_owned_offer"
+)
+
+// Valid indicates whether the value is a known member of the OwnedOfferUnavailableReason enum.
+func (e OwnedOfferUnavailableReason) Valid() bool {
+	switch e {
+	case CapabilityNotSupported:
+		return true
+	case NoOwnedOffer:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for PolicyBlockerCode.
 const (
 	BoundaryInvalid         PolicyBlockerCode = "boundary_invalid"
@@ -1428,6 +1473,41 @@ type CaptureUploadSourceType string
 
 // CaptureUploadSubRoute Route B sub-route (PRD §7.3 OBS-005).
 type CaptureUploadSubRoute string
+
+// CatalogMappingState The identity MAPPING STATE of a synced variant (CAT-002). `unmapped` means the variant has NO Market Product Identity row at all. A row that is not `confirmed` (and watched) can never drive an executable recommendation.
+type CatalogMappingState string
+
+// CatalogProductPage One page of canonical Product rows, ordered by native_variant_id ascending.
+type CatalogProductPage struct {
+	Items []CatalogProductRow `json:"items"`
+
+	// NextCursor Cursor for the next page (native_variant_id of the last row); null at end.
+	NextCursor *string `json:"nextCursor,omitempty"`
+}
+
+// CatalogProductRow One canonical Product-workspace row (PRD §6.1), built from Product + Variant (+ Listing/Owned Offer), joined with identity mapping state and observation evidence. NEVER synthesized from an observation target.
+type CatalogProductRow struct {
+	// MappingState The identity MAPPING STATE of a synced variant (CAT-002). `unmapped` means the variant has NO Market Product Identity row at all. A row that is not `confirmed` (and watched) can never drive an executable recommendation.
+	MappingState CatalogMappingState `json:"mappingState"`
+
+	// MarketOffers The variant's current competitor Observed Offers, surfaced INDIVIDUALLY with identity and ordered deterministically by offerIdentity ascending (money quarantine forbids numeric price ranking). Empty when the variant is not watched or has no current offer.
+	MarketOffers    []ObservedOffer `json:"marketOffers"`
+	NativeProductId int64           `json:"nativeProductId"`
+	NativeVariantId int64           `json:"nativeVariantId"`
+
+	// OwnedOffer The variant's owned offer (PRD §6.1), CAPABILITY-GATED on owned_offer_read (§15.2). Price is raw evidence only (money quarantine §9.1) and is present ONLY when capability is `supported` AND an owned offer exists; otherwise `unavailableReason` explains why and no price/stock is fabricated.
+	OwnedOffer   OwnedOfferView     `json:"ownedOffer"`
+	ProductId    openapi_types.UUID `json:"productId"`
+	ProductTitle string             `json:"productTitle"`
+
+	// SupplierCode Seller SKU (LTR technical identifier).
+	SupplierCode string             `json:"supplierCode"`
+	VariantId    openapi_types.UUID `json:"variantId"`
+	VariantTitle string             `json:"variantTitle"`
+
+	// Watched True only for an active Confirmed identity with an active observation target (OBS-001).
+	Watched bool `json:"watched"`
+}
 
 // CatalogSyncState Durable state of the latest catalog synchronization run (ACC-004/ACC-005). This is EVIDENCE of completed work, distinct from `catalog_read` capability support (which only means the operation is allowed). `none` means no sync has ever run for the account.
 type CatalogSyncState string
@@ -2254,6 +2334,30 @@ type OutcomeView struct {
 	Result *OutcomeResultView `json:"result,omitempty"`
 }
 
+// OwnedOfferUnavailableReason Why owned-offer data is not rendered. `capability_not_supported`: the owned_offer_read capability is not Supported (Unknown/Unsupported/Degraded) — §15.2 fail closed. `no_owned_offer`: capability is Supported but no owned offer has been synced for the variant.
+type OwnedOfferUnavailableReason string
+
+// OwnedOfferView The variant's owned offer (PRD §6.1), CAPABILITY-GATED on owned_offer_read (§15.2). Price is raw evidence only (money quarantine §9.1) and is present ONLY when capability is `supported` AND an owned offer exists; otherwise `unavailableReason` explains why and no price/stock is fabricated.
+type OwnedOfferView struct {
+	// Capability Capability status (PRD §15.2). Starts Unknown; becomes Supported only after a probe confirms behavior. Unknown never enables dependent UI.
+	Capability ConnectorCapabilityState `json:"capability"`
+
+	// Present Whether a canonical owned offer exists AND is renderable (capability Supported).
+	Present bool `json:"present"`
+
+	// Price Raw price evidence; null unless capability Supported and an owned offer exists.
+	Price *RawAmount `json:"price,omitempty"`
+
+	// SellerStock Owned seller stock count; null when absent or gated.
+	SellerStock *int64 `json:"sellerStock,omitempty"`
+
+	// UnavailableReason Set when present is false; null when the owned offer renders.
+	UnavailableReason *OwnedOfferUnavailableReason `json:"unavailableReason,omitempty"`
+
+	// WarehouseStock Owned warehouse stock count; null when absent or gated.
+	WarehouseStock *int64 `json:"warehouseStock,omitempty"`
+}
+
 // PairingClaimRequest The pairing code the extension exchanges for a capture credential.
 type PairingClaimRequest struct {
 	Code string `json:"code"`
@@ -2700,6 +2804,27 @@ type GetBriefingParams struct {
 	BusinessDay openapi_types.Date `form:"businessDay" json:"businessDay"`
 }
 
+// GetCatalogProductParams defines parameters for GetCatalogProduct.
+type GetCatalogProductParams struct {
+	// MarketplaceAccountId Marketplace account that must own the variant.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+
+	// VariantId The variant whose canonical Product row is requested.
+	VariantId openapi_types.UUID `form:"variantId" json:"variantId"`
+}
+
+// ListCatalogProductsParams defines parameters for ListCatalogProducts.
+type ListCatalogProductsParams struct {
+	// MarketplaceAccountId Marketplace account whose products are requested.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+
+	// Cursor Opaque forward cursor: the native_variant_id of the last row of the previous page (exclusive). Omit for the first page.
+	Cursor *string `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Limit Max rows to return (default 50, capped at 200 — the §4.5 target ceiling).
+	Limit *int `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
 // GetConnectorStatusParams defines parameters for GetConnectorStatus.
 type GetConnectorStatusParams struct {
 	// MarketplaceAccountId Marketplace account whose connector status is requested.
@@ -2936,6 +3061,12 @@ type ServerInterface interface {
 	// GetBriefing Get the stored daily briefing for a business day (CHAT-010).
 	// (GET /briefing)
 	GetBriefing(w http.ResponseWriter, r *http.Request, params GetBriefingParams)
+	// GetCatalogProduct Read one canonical Product row for a variant.
+	// (GET /catalog/product)
+	GetCatalogProduct(w http.ResponseWriter, r *http.Request, params GetCatalogProductParams)
+	// ListCatalogProducts List the account's canonical Products (SKU workspace rows).
+	// (GET /catalog/products)
+	ListCatalogProducts(w http.ResponseWriter, r *http.Request, params ListCatalogProductsParams)
 	// Chat Converse with the LLM plane over a Server-Sent Events stream.
 	// (POST /chat)
 	Chat(w http.ResponseWriter, r *http.Request)
@@ -3359,6 +3490,111 @@ func (siw *ServerInterfaceWrapper) GetBriefing(w http.ResponseWriter, r *http.Re
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetBriefing(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// GetCatalogProduct operation middleware
+func (siw *ServerInterfaceWrapper) GetCatalogProduct(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params GetCatalogProductParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "variantId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "variantId", r.URL.Query(), &params.VariantId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "variantId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "variantId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.GetCatalogProduct(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListCatalogProducts operation middleware
+func (siw *ServerInterfaceWrapper) ListCatalogProducts(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListCatalogProductsParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "cursor" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "cursor", r.URL.Query(), &params.Cursor, runtime.BindQueryParameterOptions{Type: "string", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "cursor"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "cursor", Err: err})
+		}
+		return
+	}
+
+	// ------------- Optional query parameter "limit" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, false, "limit", r.URL.Query(), &params.Limit, runtime.BindQueryParameterOptions{Type: "integer", Format: ""})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "limit"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "limit", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListCatalogProducts(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4546,6 +4782,8 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/confirm", wrapper.ConfirmIdentity)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/reject", wrapper.RejectIdentity)
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/defer", wrapper.DeferIdentity)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/catalog/products", wrapper.ListCatalogProducts)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/catalog/product", wrapper.GetCatalogProduct)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/targets", wrapper.ListObservationTargets)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/observed-offers", wrapper.ListObservedOffers)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/observations", wrapper.ListObservations)
@@ -5071,6 +5309,84 @@ type GetBriefingdefaultJSONResponse struct {
 }
 
 func (response GetBriefingdefaultJSONResponse) VisitGetBriefingResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetCatalogProductRequestObject struct {
+	Params GetCatalogProductParams
+}
+
+type GetCatalogProductResponseObject interface {
+	VisitGetCatalogProductResponse(w http.ResponseWriter) error
+}
+
+type GetCatalogProduct200JSONResponse CatalogProductRow
+
+func (response GetCatalogProduct200JSONResponse) VisitGetCatalogProductResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type GetCatalogProductdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response GetCatalogProductdefaultJSONResponse) VisitGetCatalogProductResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListCatalogProductsRequestObject struct {
+	Params ListCatalogProductsParams
+}
+
+type ListCatalogProductsResponseObject interface {
+	VisitListCatalogProductsResponse(w http.ResponseWriter) error
+}
+
+type ListCatalogProducts200JSONResponse CatalogProductPage
+
+func (response ListCatalogProducts200JSONResponse) VisitListCatalogProductsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListCatalogProductsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListCatalogProductsdefaultJSONResponse) VisitListCatalogProductsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -6988,6 +7304,12 @@ type StrictServerInterface interface {
 	// GetBriefing Get the stored daily briefing for a business day (CHAT-010).
 	// (GET /briefing)
 	GetBriefing(ctx context.Context, request GetBriefingRequestObject) (GetBriefingResponseObject, error)
+	// GetCatalogProduct Read one canonical Product row for a variant.
+	// (GET /catalog/product)
+	GetCatalogProduct(ctx context.Context, request GetCatalogProductRequestObject) (GetCatalogProductResponseObject, error)
+	// ListCatalogProducts List the account's canonical Products (SKU workspace rows).
+	// (GET /catalog/products)
+	ListCatalogProducts(ctx context.Context, request ListCatalogProductsRequestObject) (ListCatalogProductsResponseObject, error)
 	// Chat Converse with the LLM plane over a Server-Sent Events stream.
 	// (POST /chat)
 	Chat(ctx context.Context, request ChatRequestObject) (ChatResponseObject, error)
@@ -7498,6 +7820,58 @@ func (sh *strictHandler) GetBriefing(w http.ResponseWriter, r *http.Request, par
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetBriefingResponseObject); ok {
 		if err := validResponse.VisitGetBriefingResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// GetCatalogProduct operation middleware
+func (sh *strictHandler) GetCatalogProduct(w http.ResponseWriter, r *http.Request, params GetCatalogProductParams) {
+	var request GetCatalogProductRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.GetCatalogProduct(ctx, request.(GetCatalogProductRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "GetCatalogProduct")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(GetCatalogProductResponseObject); ok {
+		if err := validResponse.VisitGetCatalogProductResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListCatalogProducts operation middleware
+func (sh *strictHandler) ListCatalogProducts(w http.ResponseWriter, r *http.Request, params ListCatalogProductsParams) {
+	var request ListCatalogProductsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListCatalogProducts(ctx, request.(ListCatalogProductsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListCatalogProducts")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListCatalogProductsResponseObject); ok {
+		if err := validResponse.VisitListCatalogProductsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

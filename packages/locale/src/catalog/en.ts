@@ -234,6 +234,7 @@ export const en: Catalog = {
   "products.col.product": "Product",
   "products.col.sku": "SKU",
   "products.col.tier": "Watch tier",
+  "products.col.mapping": "Mapping",
   "products.col.readiness": "Margin readiness",
   "products.col.quality": "Market quality",
   "products.col.marketPrice": "Market price",
@@ -245,9 +246,18 @@ export const en: Catalog = {
   "products.readiness.error.title": "Some margin readiness could not be loaded",
   "products.readiness.error.body":
     "Readiness for {count} products on this page failed to load. Other rows are shown; retry to load the rest.",
+  "products.market.multiple": "{count} offers",
   "tier.priority": "Priority",
   "tier.standard": "Standard",
   "tier.background": "Background",
+
+  "mapping.confirmed": "Confirmed",
+  "mapping.needsReview": "Needs review",
+  "mapping.rejected": "Rejected",
+  "mapping.obsolete": "Obsolete",
+  "mapping.unmapped": "Unmapped",
+  "mapping.watched": "Watched",
+  "mapping.unwatched": "Not watched",
 
   "product.section.ownedOffer": "My offer",
   "product.section.snapshot": "Market snapshot",
@@ -256,6 +266,15 @@ export const en: Catalog = {
   "product.section.diagnostics": "Listing & image diagnostics",
   "product.ownedOffer.unavailable":
     "My price is unavailable — needs the owned-offer read capability.",
+  "product.ownedOffer.reason.capabilityNotSupported":
+    "My offer is unavailable — the owned-offer read capability is not supported.",
+  "product.ownedOffer.reason.noOwnedOffer": "No owned offer has been synced for this variant.",
+  "product.ownedOffer.price": "My price",
+  "product.ownedOffer.sellerStock": "Seller stock",
+  "product.ownedOffer.warehouseStock": "Warehouse stock",
+  "product.section.mapping": "Identity mapping",
+  "product.mapping.state": "Mapping state",
+  "product.mapping.watch": "Observation",
   "product.contribution.title": "Contribution",
   "product.contribution.placeholder": "Contribution appears once margin readiness is complete.",
   "product.marketPrice": "Market price",

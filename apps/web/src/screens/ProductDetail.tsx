@@ -5,7 +5,9 @@ import { AppLink } from "../components/AppLink";
 import { Banner } from "../components/Banner";
 import {
   AvailabilityBadge,
+  CapabilityBadge,
   FreshnessPill,
+  MappingBadge,
   QualityBadge,
   ReadinessBadge,
 } from "../components/badges";
@@ -16,13 +18,18 @@ import { ViewState } from "../components/ViewState";
 import { formatCount, formatInstant } from "../data/format";
 import { freshnessState } from "../data/freshness";
 import {
+  useCatalogProduct,
   useCostProfiles,
   useMarginReadiness,
   useObservations,
   useObservationTargets,
-  useObservedOffers,
 } from "../data/hooks";
-import type { CostComponent, CostProfileVersion } from "../data/types";
+import type {
+  CostComponent,
+  CostProfileVersion,
+  ObservedOffer,
+  OwnedOfferView,
+} from "../data/types";
 
 const COST_COMPONENTS: readonly CostComponent[] = [
   "cogs",
@@ -46,12 +53,33 @@ const COMPONENT_LABEL: Record<CostComponent, MessageKey> = {
   returns: "costComponent.returns",
 };
 
-// Product detail (design screen 8). Owned offer is explicitly unavailable (no
-// owned-offer capability yet — never fabricated); market snapshot, stock, and
-// versioned cost profile render observed/derived data; contribution is a
-// placeholder until readiness is Complete (only Complete is executable);
-// diagnostics is read-only and names the observed field + rule (parser) version
-// from the newest observation evidence.
+// The reason an owned offer is not rendered (capability gated or absent) maps to a
+// canonical copy key — never free text. `capability_not_supported` covers every
+// non-Supported capability state (Unknown never enables the price).
+function ownedReasonKey(owned: OwnedOfferView): MessageKey {
+  switch (owned.unavailableReason) {
+    case "capability_not_supported":
+      return "product.ownedOffer.reason.capabilityNotSupported";
+    case "no_owned_offer":
+      return "product.ownedOffer.reason.noOwnedOffer";
+    default:
+      return "product.ownedOffer.unavailable";
+  }
+}
+
+// The deterministic market snapshot for a variant: the first current competitor
+// offer by offerIdentity ascending (money quarantine forbids numeric ranking).
+function primaryOffer(offers: readonly ObservedOffer[]): ObservedOffer | undefined {
+  return offers[0];
+}
+
+// Product detail (design screen 8). Sourced from the CANONICAL product row
+// (Product/Variant/Owned Offer), NOT an observation target — so a synced but
+// unwatched/unmapped variant still renders. The owned offer is capability-gated
+// (owned_offer_read, §15.2): its data renders only when Supported, otherwise a
+// reason is shown — never a fabricated price. Market snapshot, cost profile, and
+// diagnostics render observed/derived evidence; contribution is a placeholder
+// until readiness is Complete.
 export function ProductDetail() {
   const t = useT();
   const { locale } = useLocale();
@@ -59,16 +87,21 @@ export function ProductDetail() {
     select: (s) => (s.location.search as { variantId?: string }).variantId,
   });
 
-  const targetsQuery = useObservationTargets();
-  const offersQuery = useObservedOffers();
+  const productQuery = useCatalogProduct(variantId);
+  const product = productQuery.data;
   const readinessQuery = useMarginReadiness(variantId);
   const profilesQuery = useCostProfiles(variantId);
 
+  // Observation evidence (diagnostics) is keyed by the variant's target, which
+  // exists only for a watched (active Confirmed) variant. It is EVIDENCE only —
+  // its absence never hides the canonical product.
+  const targetsQuery = useObservationTargets();
   const target = targetsQuery.data?.items.find((tg) => tg.variantId === variantId);
-  const offer = offersQuery.data?.items.find((o) => o.targetId === target?.id);
   const observationsQuery = useObservations(target?.id);
   const latestObservation = observationsQuery.data?.items[0];
+
   const readiness = readinessQuery.data;
+  const offer = product ? primaryOffer(product.marketOffers) : undefined;
   const profileByComponent = new Map<CostComponent, CostProfileVersion>();
   for (const p of profilesQuery.data?.items ?? []) profileByComponent.set(p.component, p);
 
@@ -79,15 +112,15 @@ export function ProductDetail() {
           {t("product.back")}
         </AppLink>
         {/* Native product ID is a technical identifier: raw + LTR-isolated. */}
-        {target ? <LtrToken text={String(target.nativeProductId)} /> : null}
+        {product ? <LtrToken text={String(product.nativeProductId)} /> : null}
       </div>
 
       <ViewState
-        pending={targetsQuery.isPending}
-        error={targetsQuery.isError}
-        onRetry={() => void targetsQuery.refetch()}
+        pending={productQuery.isPending}
+        error={productQuery.isError}
+        onRetry={() => void productQuery.refetch()}
       >
-        {!variantId || !target ? (
+        {!variantId || !product ? (
           <div className="screen-empty">
             <p>{t("product.noTarget")}</p>
           </div>
@@ -108,7 +141,56 @@ export function ProductDetail() {
 
             <div className="screen__grid">
               <Section titleKey="product.section.ownedOffer">
-                <p className="muted">{t("product.ownedOffer.unavailable")}</p>
+                {product.ownedOffer.present && product.ownedOffer.price ? (
+                  <div className="kv">
+                    <div className="kv__row">
+                      <span>{t("product.ownedOffer.price")}</span>
+                      <LtrToken text={product.ownedOffer.price.text} />
+                    </div>
+                    {typeof product.ownedOffer.sellerStock === "number" ? (
+                      <div className="kv__row">
+                        <span>{t("product.ownedOffer.sellerStock")}</span>
+                        <span>
+                          {t("product.stock.signal", {
+                            count: formatCount(product.ownedOffer.sellerStock, locale),
+                          })}
+                        </span>
+                      </div>
+                    ) : null}
+                    {typeof product.ownedOffer.warehouseStock === "number" ? (
+                      <div className="kv__row">
+                        <span>{t("product.ownedOffer.warehouseStock")}</span>
+                        <span>
+                          {t("product.stock.signal", {
+                            count: formatCount(product.ownedOffer.warehouseStock, locale),
+                          })}
+                        </span>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="kv">
+                    <div className="kv__row">
+                      <CapabilityBadge state={product.ownedOffer.capability} />
+                    </div>
+                    <p className="muted">{t(ownedReasonKey(product.ownedOffer))}</p>
+                  </div>
+                )}
+              </Section>
+
+              <Section titleKey="product.section.mapping">
+                <div className="kv">
+                  <div className="kv__row">
+                    <span>{t("product.mapping.state")}</span>
+                    <MappingBadge state={product.mappingState} />
+                  </div>
+                  <div className="kv__row">
+                    <span>{t("product.mapping.watch")}</span>
+                    <span className="muted">
+                      {t(product.watched ? "mapping.watched" : "mapping.unwatched")}
+                    </span>
+                  </div>
+                </div>
               </Section>
 
               <Section titleKey="product.section.snapshot">
@@ -116,7 +198,10 @@ export function ProductDetail() {
                   <div className="kv">
                     <div className="kv__row">
                       <span>{t("product.marketPrice")}</span>
-                      <LtrToken text={offer.price.text} />
+                      <span className="inline-badges">
+                        <LtrToken text={offer.offerIdentity} />
+                        <LtrToken text={offer.price.text} />
+                      </span>
                     </div>
                     <div className="kv__row">
                       <span>{t("product.listPrice")}</span>

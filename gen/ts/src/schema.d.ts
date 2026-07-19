@@ -284,6 +284,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/catalog/products": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the account's canonical Products (SKU workspace rows).
+         * @description The account-scoped, cursor-paginated Products read model (PRD §6.1 CAT UI / journey 1). Each row is built from the CANONICAL Product/Variant/ Listing/Owned Offer entities — NEVER inferred from an observation target (a target is a dependent projection, not inventory). Every synced variant appears with its explicit identity MAPPING STATE (confirmed / needs_review / rejected / obsolete / unmapped) and whether it is WATCHED (an active Confirmed identity with an active observation target, OBS-001). Owned-offer data is CAPABILITY-GATED (owned_offer_read, §15.2): rendered only when Supported, otherwise a machine-readable reason is carried so the UI shows WHY it is unavailable — Unknown never enables dependent UI. The market snapshot is the target's current Observed Offers surfaced INDIVIDUALLY with their offer identity, ordered deterministically by offerIdentity ascending (a stable, non-money key). Money quarantine (§9.1) forbids numeric price ranking, so offers are NEVER collapsed into an anonymous lowest-competitor price. Pagination is by the stable native_variant_id key (never a mutable updated_at). Account scope fails closed cross-account.
+         */
+        get: operations["listCatalogProducts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/catalog/product": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one canonical Product row for a variant.
+         * @description The single-variant canonical Product read backing Product detail (PRD §6.1). Same canonical, capability-gated row as listCatalogProducts, scoped to one variant. Owned-offer data renders only when owned_offer_read is Supported; otherwise a reason is carried (Unknown never enables). Account scope fails closed cross-account; an unknown or foreign variant is 404.
+         */
+        get: operations["getCatalogProduct"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/observation/targets": {
         parameters: {
             query?: never;
@@ -1482,6 +1522,63 @@ export interface components {
         /** @description The account's current Observed Offers. */
         ObservedOfferList: {
             items: components["schemas"]["ObservedOffer"][];
+        };
+        /**
+         * @description The identity MAPPING STATE of a synced variant (CAT-002). `unmapped` means the variant has NO Market Product Identity row at all. A row that is not `confirmed` (and watched) can never drive an executable recommendation.
+         * @enum {string}
+         */
+        CatalogMappingState: "confirmed" | "needs_review" | "rejected" | "obsolete" | "unmapped";
+        /**
+         * @description Why owned-offer data is not rendered. `capability_not_supported`: the owned_offer_read capability is not Supported (Unknown/Unsupported/Degraded) — §15.2 fail closed. `no_owned_offer`: capability is Supported but no owned offer has been synced for the variant.
+         * @enum {string}
+         */
+        OwnedOfferUnavailableReason: "capability_not_supported" | "no_owned_offer";
+        /** @description The variant's owned offer (PRD §6.1), CAPABILITY-GATED on owned_offer_read (§15.2). Price is raw evidence only (money quarantine §9.1) and is present ONLY when capability is `supported` AND an owned offer exists; otherwise `unavailableReason` explains why and no price/stock is fabricated. */
+        OwnedOfferView: {
+            capability: components["schemas"]["ConnectorCapabilityState"];
+            /** @description Whether a canonical owned offer exists AND is renderable (capability Supported). */
+            present: boolean;
+            /** @description Set when present is false; null when the owned offer renders. */
+            unavailableReason?: components["schemas"]["OwnedOfferUnavailableReason"] | null;
+            /** @description Raw price evidence; null unless capability Supported and an owned offer exists. */
+            price?: components["schemas"]["RawAmount"] | null;
+            /**
+             * Format: int64
+             * @description Owned seller stock count; null when absent or gated.
+             */
+            sellerStock?: number | null;
+            /**
+             * Format: int64
+             * @description Owned warehouse stock count; null when absent or gated.
+             */
+            warehouseStock?: number | null;
+        };
+        /** @description One canonical Product-workspace row (PRD §6.1), built from Product + Variant (+ Listing/Owned Offer), joined with identity mapping state and observation evidence. NEVER synthesized from an observation target. */
+        CatalogProductRow: {
+            /** Format: uuid */
+            variantId: string;
+            /** Format: uuid */
+            productId: string;
+            /** Format: int64 */
+            nativeVariantId: number;
+            /** Format: int64 */
+            nativeProductId: number;
+            variantTitle: string;
+            productTitle: string;
+            /** @description Seller SKU (LTR technical identifier). */
+            supplierCode: string;
+            mappingState: components["schemas"]["CatalogMappingState"];
+            /** @description True only for an active Confirmed identity with an active observation target (OBS-001). */
+            watched: boolean;
+            ownedOffer: components["schemas"]["OwnedOfferView"];
+            /** @description The variant's current competitor Observed Offers, surfaced INDIVIDUALLY with identity and ordered deterministically by offerIdentity ascending (money quarantine forbids numeric price ranking). Empty when the variant is not watched or has no current offer. */
+            marketOffers: components["schemas"]["ObservedOffer"][];
+        };
+        /** @description One page of canonical Product rows, ordered by native_variant_id ascending. */
+        CatalogProductPage: {
+            items: components["schemas"]["CatalogProductRow"][];
+            /** @description Cursor for the next page (native_variant_id of the last row); null at end. */
+            nextCursor?: string | null;
         };
         /** @description One append-only observation evidence row (PRD §7.3 OBS-002). Carries the full evidence envelope; historical rows never silently become current. */
         Observation: {
@@ -3109,6 +3206,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MarketProductIdentity"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listCatalogProducts: {
+        parameters: {
+            query: {
+                /** @description Marketplace account whose products are requested. */
+                marketplaceAccountId: string;
+                /** @description Opaque forward cursor: the native_variant_id of the last row of the previous page (exclusive). Omit for the first page. */
+                cursor?: string;
+                /** @description Max rows to return (default 50, capped at 200 — the §4.5 target ceiling). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description One page of canonical Product rows. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogProductPage"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getCatalogProduct: {
+        parameters: {
+            query: {
+                /** @description Marketplace account that must own the variant. */
+                marketplaceAccountId: string;
+                /** @description The variant whose canonical Product row is requested. */
+                variantId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The canonical Product row for the variant. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CatalogProductRow"];
                 };
             };
             /** @description Unexpected error. */

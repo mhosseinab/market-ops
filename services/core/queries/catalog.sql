@@ -166,3 +166,107 @@ SELECT count(*) FROM owned_offers WHERE marketplace_account_id = $1;
 
 -- name: CountCatalogSnapshots :one
 SELECT count(*) FROM catalog_payload_snapshots WHERE marketplace_account_id = $1;
+
+-- name: ListCatalogProducts :many
+-- Account-scoped, cursor-paginated Products READ MODEL (S26, CAT UI / PRD §6.1).
+-- The row SOURCE is the canonical `variants` table (JOINed to its `products`), so
+-- every synced variant appears exactly once — a Product/Owned Offer row is NEVER
+-- synthesized from an observation target (a target is a dependent projection, not
+-- inventory). Identity mapping state, the observation target, and the owned offer
+-- are LEFT-joined as ATTRIBUTES of the canonical variant:
+--   * ident: the single most-relevant Market Product Identity per variant (active
+--     first, else the newest inactive), so rejected/obsolete variants still surface
+--     their explicit state; a variant with no identity row reports mapping_state
+--     NULL (the handler maps NULL -> 'unmapped').
+--   * tgt: an ACTIVE observation target (OBS-001) — watched = (tgt.id IS NOT NULL).
+--   * oo: the canonical owned offer (money-quarantined raw price evidence only).
+-- CROSS-ACCOUNT FAIL-CLOSED: the driving filter is v.marketplace_account_id = $1,
+-- and every LEFT JOIN additionally pins marketplace_account_id to the same account,
+-- so a row belonging to another account can never attach or leak. Pagination is by
+-- the STABLE native_variant_id key ($2 exclusive lower bound), never a mutable
+-- updated_at.
+SELECT
+    v.id                              AS variant_id,
+    v.product_id                      AS product_id,
+    v.native_variant_id               AS native_variant_id,
+    v.native_product_id               AS native_product_id,
+    v.title                           AS variant_title,
+    v.supplier_code                   AS supplier_code,
+    p.title                           AS product_title,
+    COALESCE(ident.state, '')            AS mapping_state,
+    tgt.id                            AS target_id,
+    (tgt.id IS NOT NULL)::boolean     AS watched,
+    (oo.id IS NOT NULL)::boolean      AS owned_present,
+    COALESCE(oo.price_raw_text, '')   AS owned_price_text,
+    COALESCE(oo.price_raw_value, '')  AS owned_price_value,
+    COALESCE(oo.price_raw_unit, '')   AS owned_price_unit,
+    oo.seller_stock                   AS owned_seller_stock,
+    oo.warehouse_stock                AS owned_warehouse_stock
+FROM variants v
+JOIN products p
+    ON p.id = v.product_id
+    AND p.marketplace_account_id = v.marketplace_account_id
+LEFT JOIN LATERAL (
+    SELECT mpi.state
+    FROM market_product_identities mpi
+    WHERE mpi.variant_id = v.id
+      AND mpi.marketplace_account_id = v.marketplace_account_id
+    ORDER BY mpi.active DESC, mpi.updated_at DESC, mpi.id DESC
+    LIMIT 1
+) ident ON true
+LEFT JOIN observation_targets tgt
+    ON tgt.variant_id = v.id
+    AND tgt.marketplace_account_id = v.marketplace_account_id
+    AND tgt.active = true
+LEFT JOIN owned_offers oo
+    ON oo.variant_id = v.id
+    AND oo.marketplace_account_id = v.marketplace_account_id
+WHERE v.marketplace_account_id = $1
+  AND v.native_variant_id > $2
+ORDER BY v.native_variant_id
+LIMIT $3;
+
+-- name: GetCatalogProductForVariant :one
+-- Single-variant canonical Product row backing Product detail (S26, PRD §6.1).
+-- Same canonical projection as ListCatalogProducts, scoped to ONE variant. Both
+-- the account AND the variant id must match (cross-account fail-closed): a foreign
+-- or unknown variant returns no row (pgx.ErrNoRows -> 404), never another account's
+-- data.
+SELECT
+    v.id                              AS variant_id,
+    v.product_id                      AS product_id,
+    v.native_variant_id               AS native_variant_id,
+    v.native_product_id               AS native_product_id,
+    v.title                           AS variant_title,
+    v.supplier_code                   AS supplier_code,
+    p.title                           AS product_title,
+    COALESCE(ident.state, '')            AS mapping_state,
+    tgt.id                            AS target_id,
+    (tgt.id IS NOT NULL)::boolean     AS watched,
+    (oo.id IS NOT NULL)::boolean      AS owned_present,
+    COALESCE(oo.price_raw_text, '')   AS owned_price_text,
+    COALESCE(oo.price_raw_value, '')  AS owned_price_value,
+    COALESCE(oo.price_raw_unit, '')   AS owned_price_unit,
+    oo.seller_stock                   AS owned_seller_stock,
+    oo.warehouse_stock                AS owned_warehouse_stock
+FROM variants v
+JOIN products p
+    ON p.id = v.product_id
+    AND p.marketplace_account_id = v.marketplace_account_id
+LEFT JOIN LATERAL (
+    SELECT mpi.state
+    FROM market_product_identities mpi
+    WHERE mpi.variant_id = v.id
+      AND mpi.marketplace_account_id = v.marketplace_account_id
+    ORDER BY mpi.active DESC, mpi.updated_at DESC, mpi.id DESC
+    LIMIT 1
+) ident ON true
+LEFT JOIN observation_targets tgt
+    ON tgt.variant_id = v.id
+    AND tgt.marketplace_account_id = v.marketplace_account_id
+    AND tgt.active = true
+LEFT JOIN owned_offers oo
+    ON oo.variant_id = v.id
+    AND oo.marketplace_account_id = v.marketplace_account_id
+WHERE v.marketplace_account_id = $1
+  AND v.id = $2;

@@ -5,25 +5,19 @@ import { useMemo, useState } from "react";
 import { useLocale, useT } from "../app/i18n";
 import { gateway } from "../app/query";
 import { AppLink } from "../components/AppLink";
-import { QualityBadge, ReadinessBadge } from "../components/badges";
+import { MappingBadge, QualityBadge, ReadinessBadge } from "../components/badges";
 import { type Column, DataTable } from "../components/DataTable";
 import { LtrToken } from "../components/LtrToken";
 import { FilterChips } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
 import { formatCount } from "../data/format";
-import { queryKeys, useObservationTargets, useObservedOffers } from "../data/hooks";
+import { queryKeys, useCatalogProducts } from "../data/hooks";
 import type {
+  CatalogProductRow,
   MarginReadiness,
   MarginReadinessState,
-  ObservationTarget,
   ObservedOffer,
 } from "../data/types";
-
-const TIER_LABEL: Record<ObservationTarget["tier"], MessageKey> = {
-  priority: "tier.priority",
-  standard: "tier.standard",
-  background: "tier.background",
-};
 
 const READINESS_FILTERS: readonly { id: MarginReadinessState; labelKey: MessageKey }[] = [
   { id: "complete", labelKey: "readiness.complete" },
@@ -33,86 +27,102 @@ const READINESS_FILTERS: readonly { id: MarginReadinessState; labelKey: MessageK
 ];
 
 // Readiness is fetched per variant (the P0 contract exposes no batch/paginated
-// readiness endpoint). At the 5,000-SKU account envelope (PRD §17.1) a per-row
-// fan-out would fire thousands of concurrent /cost/readiness calls, blowing the
-// §17.2 P95<2s common-view target and amplifying transient failures. We therefore
-// bound the fan-out to ONE PAGE: readiness is only requested for the current
-// page's targets. 50 is a deliberate, bounded batch — large enough to fill the
-// common viewport in one fetch, small enough to keep concurrency and P95 in check.
-const PAGE_SIZE = 50;
-
+// readiness endpoint). The Products read model is SERVER-paginated, so the fan-out
+// is naturally bounded to the current page's rows — never the whole catalog.
 interface Row {
-  readonly target: ObservationTarget;
-  readonly offer?: ObservedOffer;
+  readonly product: CatalogProductRow;
   readonly readiness?: MarginReadiness;
 }
 
-// Cell renderers as named components so each table `render` arrow returns a
-// single element (keeps copy-lint's JSX-text heuristic and biome's line-break
-// style from fighting over inline ternaries). Em dash is a non-linguistic glyph.
+// The contract-defined market snapshot: marketOffers are the variant's current
+// competitor Observed Offers, surfaced INDIVIDUALLY and ordered deterministically
+// by offerIdentity ascending (money quarantine forbids numeric price ranking).
+// The cell shows the first offer WITH its identity and a count when more exist —
+// never an anonymous "most recently updated" price.
+function primaryOffer(product: CatalogProductRow): ObservedOffer | undefined {
+  return product.marketOffers[0];
+}
+
+function QualityCell({ product }: { product: CatalogProductRow }) {
+  const offer = primaryOffer(product);
+  if (!offer) return <LtrToken text="—" />;
+  return <QualityBadge state={offer.quality} />;
+}
+
+function MarketPriceCell({ product }: { product: CatalogProductRow }) {
+  const t = useT();
+  const { locale } = useLocale();
+  const offer = primaryOffer(product);
+  if (!offer) return <LtrToken text="—" />;
+  return (
+    <span className="inline-badges">
+      <LtrToken text={offer.offerIdentity} />
+      <LtrToken text={offer.price.text} />
+      {product.marketOffers.length > 1 ? (
+        <span className="muted">
+          {t("products.market.multiple", {
+            count: formatCount(product.marketOffers.length, locale),
+          })}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+function MappingCell({ product }: { product: CatalogProductRow }) {
+  const t = useT();
+  return (
+    <span className="inline-badges">
+      <MappingBadge state={product.mappingState} />
+      <span className="muted">{t(product.watched ? "mapping.watched" : "mapping.unwatched")}</span>
+    </span>
+  );
+}
+
 function ReadinessCell({ value }: { value?: MarginReadiness }) {
   if (!value) return <LtrToken text="—" />;
   return <ReadinessBadge state={value.state} />;
 }
 
-function QualityCell({ offer }: { offer?: ObservedOffer }) {
-  if (!offer) return <LtrToken text="—" />;
-  return <QualityBadge state={offer.quality} />;
-}
-
-function PriceCell({ offer }: { offer?: ObservedOffer }) {
-  if (!offer) return <LtrToken text="—" />;
-  return <LtrToken text={offer.price.text} />;
-}
-
-// Products workspace (design screen 7). Rows are the account's observation
-// targets — the observable products — joined with the current observed offer
-// (market quality + raw price evidence) and per-variant margin readiness. Search
-// matches the LTR technical identifiers (digits normalized at the input
-// boundary); readiness filter chips narrow the list. Data only — no money or
-// readiness is recomputed here.
+// Products workspace (design screen 7). Rows are the account's CANONICAL products
+// (Product/Variant/Owned Offer), NOT observation targets — every synced variant
+// appears with its explicit identity mapping state and whether it is watched. The
+// market snapshot uses the contract-defined deterministic offer ordering, and
+// margin readiness is fetched per row. Data only — no money is recomputed here.
 export function Products() {
   const t = useT();
   const { locale } = useLocale();
-  const targetsQuery = useObservationTargets();
-  const offersQuery = useObservedOffers();
+  // Cursor stack: each entry is the cursor used to fetch a page; [] is the first
+  // page. `push` on Next (server's nextCursor), `pop` on Previous.
+  const [cursorStack, setCursorStack] = useState<string[]>([]);
+  const currentCursor =
+    cursorStack.length > 0 ? (cursorStack[cursorStack.length - 1] ?? null) : null;
+  const productsQuery = useCatalogProducts(currentCursor);
   const [search, setSearch] = useState("");
   const [readinessFilter, setReadinessFilter] = useState<MarginReadinessState | null>(null);
-  const [page, setPage] = useState(0);
 
-  const targets = useMemo(() => targetsQuery.data?.items ?? [], [targetsQuery.data]);
+  const products = useMemo(() => productsQuery.data?.items ?? [], [productsQuery.data]);
+  const nextCursor = productsQuery.data?.nextCursor ?? null;
 
-  // 1) Filter by the search box FIRST — it matches the LTR native identifiers on
-  // the target itself (no readiness needed), so search narrows the full set before
-  // any readiness fan-out. Digits normalize at the input boundary.
-  const filteredTargets = useMemo(() => {
+  // Search matches the LTR native identifiers on the current page only. The P0
+  // read model has no server-side search param, and the page is already bounded
+  // by the cursor, so this narrows the LOADED page (carry-forward, documented).
+  const filtered = useMemo(() => {
     const normalizedSearch = normalizeDigits(search.trim());
-    if (normalizedSearch === "") return targets;
-    return targets.filter((tg) =>
-      `${tg.nativeVariantId} ${tg.nativeProductId}`.includes(normalizedSearch),
+    if (normalizedSearch === "") return products;
+    return products.filter((p) =>
+      `${p.nativeVariantId} ${p.nativeProductId}`.includes(normalizedSearch),
     );
-  }, [targets, search]);
+  }, [products, search]);
 
-  const pageCount = Math.max(1, Math.ceil(filteredTargets.length / PAGE_SIZE));
-
-  // 2) Paginate the filtered set. Clamp the page defensively (data can shrink
-  // between renders) so the slice is always in range.
-  const safePage = Math.min(page, pageCount - 1);
-  const pageTargets = useMemo(
-    () => filteredTargets.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE),
-    [filteredTargets, safePage],
-  );
-
-  // 3) Fan out readiness for the CURRENT PAGE ONLY — this bounds concurrent
-  // /cost/readiness calls to at most PAGE_SIZE per view. Already-fetched pages stay
-  // cached by queryKey, so paging back is free and paging forward fetches only the
-  // next visible batch. Do NOT widen the QueryClient `retry: 1` default here.
+  // Fan out readiness for the current page's variants only (server pagination
+  // already bounds the page). Already-fetched variants stay cached by queryKey.
   const readinessQueries = useQueries({
-    queries: pageTargets.map((tg) => ({
-      queryKey: queryKeys.readiness(tg.variantId),
+    queries: filtered.map((p) => ({
+      queryKey: queryKeys.readiness(p.variantId),
       queryFn: async (): Promise<MarginReadiness> => {
         const res = await gateway.GET("/cost/readiness", {
-          params: { query: { variantId: tg.variantId } },
+          params: { query: { variantId: p.variantId } },
         });
         if (res.error || !res.data) throw new Error("readiness_failed");
         return res.data;
@@ -120,53 +130,29 @@ export function Products() {
     })),
   });
 
-  // Aggregate the page's readiness error states for the "Partial batch failure"
-  // section state (STATE_MATRIX). A single failed row must not throw away the
-  // table; the successful rows still render and only the failed queries retry.
   const failedReadiness = readinessQueries.filter((q) => q.isError);
 
-  const offerByTarget = useMemo(() => {
-    const map = new Map<string, ObservedOffer>();
-    for (const o of offersQuery.data?.items ?? []) {
-      if (!map.has(o.targetId)) map.set(o.targetId, o);
-    }
-    return map;
-  }, [offersQuery.data]);
-
   const rows: Row[] = useMemo(() => {
-    return (
-      pageTargets
-        .map((target, i) => ({
-          target,
-          offer: offerByTarget.get(target.id),
-          readiness: readinessQueries[i]?.data,
-        }))
-        // The readiness filter is CARRY-FORWARD: the P0 gateway exposes no
-        // server-side readiness filter param, and readiness is only loaded for the
-        // current page (bounded fan-out), so the chip narrows the LOADED page rows
-        // only — it is not a whole-catalog filter (carry-forward for
-        // api_data_contracts, mirroring BulkApproval.tsx's documented gaps).
-        .filter((row) => !readinessFilter || row.readiness?.state === readinessFilter)
-    );
-  }, [pageTargets, offerByTarget, readinessQueries, readinessFilter]);
+    return filtered
+      .map((product, i) => ({ product, readiness: readinessQueries[i]?.data }))
+      .filter((row) => !readinessFilter || row.readiness?.state === readinessFilter);
+  }, [filtered, readinessQueries, readinessFilter]);
 
   const columns: readonly Column<Row>[] = [
     {
       id: "product",
       header: "products.col.product",
-      // Native IDs are technical identifiers, not quantities: raw + LTR-isolated
-      // (no grouping / digit conversion). Displayed value == the search haystack.
-      render: (r) => <LtrToken text={String(r.target.nativeProductId)} />,
+      render: (r) => <LtrToken text={String(r.product.nativeProductId)} />,
     },
     {
       id: "sku",
       header: "products.col.sku",
-      render: (r) => <LtrToken text={String(r.target.nativeVariantId)} />,
+      render: (r) => <LtrToken text={String(r.product.nativeVariantId)} />,
     },
     {
-      id: "tier",
-      header: "products.col.tier",
-      render: (r) => t(TIER_LABEL[r.target.tier]),
+      id: "mapping",
+      header: "products.col.mapping",
+      render: (r) => <MappingCell product={r.product} />,
     },
     {
       id: "readiness",
@@ -176,24 +162,26 @@ export function Products() {
     {
       id: "quality",
       header: "products.col.quality",
-      render: (r) => <QualityCell offer={r.offer} />,
+      render: (r) => <QualityCell product={r.product} />,
     },
     {
       id: "price",
       header: "products.col.marketPrice",
-      render: (r) => <PriceCell offer={r.offer} />,
+      render: (r) => <MarketPriceCell product={r.product} />,
     },
     {
       id: "open",
       header: "products.col.open",
       align: "end",
       render: (r) => (
-        <AppLink to="/product" search={{ variantId: r.target.variantId }} className="link">
+        <AppLink to="/product" search={{ variantId: r.product.variantId }} className="link">
           {t("products.open")}
         </AppLink>
       ),
     },
   ];
+
+  const pageNumber = cursorStack.length + 1;
 
   return (
     <div className="screen">
@@ -202,10 +190,7 @@ export function Products() {
           className="toolbar__search"
           placeholder={t("products.search.placeholder")}
           value={search}
-          onChange={(e) => {
-            setSearch(e.target.value);
-            setPage(0);
-          }}
+          onChange={(e) => setSearch(e.target.value)}
           aria-label={t("products.search.placeholder")}
         />
         <AppLink to="/bulk" className="btn btn--secondary" testId="bulk-entry">
@@ -224,19 +209,18 @@ export function Products() {
         ]}
         onToggle={(id) => {
           setReadinessFilter(id === "all" ? null : (id as MarginReadinessState));
-          setPage(0);
         }}
       />
 
       <p className="muted">
-        {t("products.count", { count: formatCount(filteredTargets.length, locale) })}
+        {t("products.count", { count: formatCount(filtered.length, locale) })}
       </p>
 
       <ViewState
-        pending={targetsQuery.isPending}
-        error={targetsQuery.isError}
-        isEmpty={targets.length === 0}
-        onRetry={() => void targetsQuery.refetch()}
+        pending={productsQuery.isPending}
+        error={productsQuery.isError}
+        isEmpty={products.length === 0}
+        onRetry={() => void productsQuery.refetch()}
       >
         {failedReadiness.length > 0 ? (
           <div className="view-error" role="alert" data-testid="products-readiness-error">
@@ -250,8 +234,6 @@ export function Products() {
               type="button"
               className="btn btn--secondary"
               onClick={() => {
-                // Retry ONLY the failed readiness queries — no whole-table refetch,
-                // no retry storm (the QueryClient `retry: 1` default is unchanged).
                 for (const q of failedReadiness) void q.refetch();
               }}
             >
@@ -260,36 +242,29 @@ export function Products() {
           </div>
         ) : null}
 
-        <DataTable columns={columns} rows={rows} rowKey={(r) => r.target.id} />
+        <DataTable columns={columns} rows={rows} rowKey={(r) => r.product.variantId} />
 
-        <nav
-          className="pagination"
-          aria-label={t("products.pagination.page", {
-            page: formatCount(safePage + 1, locale),
-            total: formatCount(pageCount, locale),
-          })}
-        >
+        <nav className="pagination" aria-label={t("products.pagination.next")}>
           <button
             type="button"
             className="btn btn--secondary"
             data-testid="products-prev-page"
-            disabled={safePage <= 0}
-            onClick={() => setPage((p) => Math.max(0, p - 1))}
+            disabled={cursorStack.length === 0}
+            onClick={() => setCursorStack((s) => s.slice(0, -1))}
           >
             {t("products.pagination.prev")}
           </button>
           <span className="muted" data-testid="products-page-indicator">
-            {t("products.pagination.page", {
-              page: formatCount(safePage + 1, locale),
-              total: formatCount(pageCount, locale),
-            })}
+            {formatCount(pageNumber, locale)}
           </span>
           <button
             type="button"
             className="btn btn--secondary"
             data-testid="products-next-page"
-            disabled={safePage >= pageCount - 1}
-            onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
+            disabled={nextCursor === null}
+            onClick={() => {
+              if (nextCursor !== null) setCursorStack((s) => [...s, nextCursor]);
+            }}
           >
             {t("products.pagination.next")}
           </button>
