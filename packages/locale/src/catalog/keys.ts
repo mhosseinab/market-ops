@@ -411,6 +411,8 @@ export const MESSAGE_KEYS = [
   "event.evidence.inferenceNote",
   "event.threshold",
   "event.evidenceRef",
+  "event.observedType",
+  "event.observedObservation",
   "event.firstDetected",
   "event.lastEvidence",
   "event.expires",

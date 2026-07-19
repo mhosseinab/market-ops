@@ -376,6 +376,8 @@ export const faIR: Catalog = {
   "event.evidence.inferenceNote": "استنتاج مدل، نه واقعیت مشاهده‌شده",
   "event.threshold": "نسخهٔ آستانهٔ مادیت: {version}",
   "event.evidenceRef": "ارجاع شواهد",
+  "event.observedType": "وضعیت مشاهده‌شده",
+  "event.observedObservation": "مشاهدهٔ استنادشده",
   "event.firstDetected": "نخستین تشخیص",
   "event.lastEvidence": "آخرین شواهد",
   "event.expires": "انقضا",

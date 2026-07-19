@@ -27,9 +27,9 @@
       "edge_case": "Missing or stale COGS",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/cost", "name": "TestDeriveReadiness_TransitionTable"},
-        {"package": "./internal/cost", "name": "TestReadinessAllFourStatesViaDB"},
-        {"package": "./internal/cost", "name": "TestGetReadiness_AgesIntoStale_Issue39"}
+        { "package": "./internal/cost", "name": "TestDeriveReadiness_TransitionTable" },
+        { "package": "./internal/cost", "name": "TestReadinessAllFourStatesViaDB" },
+        { "package": "./internal/cost", "name": "TestGetReadiness_AgesIntoStale_Issue39" }
       ]
     },
     {
@@ -37,10 +37,10 @@
       "edge_case": "Unknown commission or boundary",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/cost", "name": "TestDeriveReadiness_CommissionProvenance"},
-        {"package": "./internal/cost", "name": "TestCommissionProvenanceGatesCompleteViaDB"},
-        {"package": "./internal/policy", "name": "TestEvaluate_BoundaryUnknownBlocks"},
-        {"package": "./internal/margin", "name": "TestContribution_MissingRequiredBlocks"}
+        { "package": "./internal/cost", "name": "TestDeriveReadiness_CommissionProvenance" },
+        { "package": "./internal/cost", "name": "TestCommissionProvenanceGatesCompleteViaDB" },
+        { "package": "./internal/policy", "name": "TestEvaluate_BoundaryUnknownBlocks" },
+        { "package": "./internal/margin", "name": "TestContribution_MissingRequiredBlocks" }
       ]
     },
     {
@@ -48,10 +48,10 @@
       "edge_case": "Ambiguous money unit",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/observation", "name": "TestDeriveQuality"},
-        {"package": "./internal/observation", "name": "TestUnknownStateFailsClosed"},
-        {"package": "./internal/event", "name": "TestRankMixedCurrencyQuarantine"},
-        {"package": "./internal/event", "name": "TestRankerEmitsQuarantineTelemetry"}
+        { "package": "./internal/observation", "name": "TestDeriveQuality" },
+        { "package": "./internal/observation", "name": "TestUnknownStateFailsClosed" },
+        { "package": "./internal/event", "name": "TestRankMixedCurrencyQuarantine" },
+        { "package": "./internal/event", "name": "TestRankerEmitsQuarantineTelemetry" }
       ]
     },
     {
@@ -59,10 +59,13 @@
       "edge_case": "Multiple matching variants",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/identity", "name": "TestGenerateCandidatesExactNativeIDIdempotent"},
-        {"package": "./internal/identity", "name": "TestUnconfirmedNeverFeedsExecutablePath"},
-        {"package": "./internal/identity", "name": "TestOneActiveConfirmedPerVariant"},
-        {"package": "./internal/observation", "name": "TestUnconfirmedIdentityCannotCreateTarget"}
+        {
+          "package": "./internal/identity",
+          "name": "TestGenerateCandidatesExactNativeIDIdempotent"
+        },
+        { "package": "./internal/identity", "name": "TestUnconfirmedNeverFeedsExecutablePath" },
+        { "package": "./internal/identity", "name": "TestOneActiveConfirmedPerVariant" },
+        { "package": "./internal/observation", "name": "TestUnconfirmedIdentityCannotCreateTarget" }
       ]
     },
     {
@@ -70,12 +73,21 @@
       "edge_case": "Product merge/split/redirect",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/identity", "name": "TestReopenFlipsStateAndEmitsInvalidation"},
-        {"package": "./internal/identity", "name": "TestReopenDispatch_DurableIntentEnqueuedAtomically"},
-        {"package": "./internal/recommendation", "name": "TestReopenExpirer_InvalidatesLiveCard"},
-        {"package": "./internal/recommendation", "name": "TestReopenExpirer_InvalidatesApprovedCard"},
-        {"package": "./internal/recommendation", "name": "TestReopenExpirer_InvalidatesRevalidatingCard"},
-        {"package": "./internal/routec", "name": "TestReopenRetiresTargets"}
+        { "package": "./internal/identity", "name": "TestReopenFlipsStateAndEmitsInvalidation" },
+        {
+          "package": "./internal/identity",
+          "name": "TestReopenDispatch_DurableIntentEnqueuedAtomically"
+        },
+        { "package": "./internal/recommendation", "name": "TestReopenExpirer_InvalidatesLiveCard" },
+        {
+          "package": "./internal/recommendation",
+          "name": "TestReopenExpirer_InvalidatesApprovedCard"
+        },
+        {
+          "package": "./internal/recommendation",
+          "name": "TestReopenExpirer_InvalidatesRevalidatingCard"
+        },
+        { "package": "./internal/routec", "name": "TestReopenRetiresTargets" }
       ]
     },
     {
@@ -83,7 +95,10 @@
       "edge_case": "Offer disappears",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/observation", "name": "TestDisappearanceClosesWithEndTimeNeverZero"}
+        {
+          "package": "./internal/observation",
+          "name": "TestDisappearanceClosesWithEndTimeNeverZero"
+        }
       ]
     },
     {
@@ -91,26 +106,24 @@
       "edge_case": "Temporary unavailability",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/observation", "name": "TestEmptyPriceIngestsUnavailable"},
-        {"package": "./internal/routec", "name": "TestParseUnavailableGolden"},
-        {"package": "./internal/routec", "name": "TestUnknownAvailabilityFailsClosed"}
+        { "package": "./internal/observation", "name": "TestEmptyPriceIngestsUnavailable" },
+        { "package": "./internal/routec", "name": "TestParseUnavailableGolden" },
+        { "package": "./internal/routec", "name": "TestUnknownAvailabilityFailsClosed" }
       ]
     },
     {
       "id": "promotion_affects_effective_price",
       "edge_case": "Promotion affects effective price",
       "classification": "go_gate",
-      "tests": [
-        {"package": "./internal/routec", "name": "TestParseMarketableGolden"}
-      ]
+      "tests": [{ "package": "./internal/routec", "name": "TestParseMarketableGolden" }]
     },
     {
       "id": "routes_disagree",
       "edge_case": "Routes disagree",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/observation", "name": "TestRouteDisagreementConflicted"},
-        {"package": "./internal/observation", "name": "TestStalePriorRouteDoesNotVerify"}
+        { "package": "./internal/observation", "name": "TestRouteDisagreementConflicted" },
+        { "package": "./internal/observation", "name": "TestStalePriorRouteDoesNotVerify" }
       ]
     },
     {
@@ -120,7 +133,10 @@
       "plane": "ts",
       "owner": "chrome_extension",
       "plane_tests": [
-        {"file": "apps/extension/src/lib/queue.test.ts", "marker": "idempotent offline retry (OBS-008"}
+        {
+          "file": "apps/extension/src/lib/queue.test.ts",
+          "marker": "idempotent offline retry (OBS-008"
+        }
       ],
       "note": "Extension-offline capture behavior (queue survives offline, replays until accepted, no data loss) is proven by the extension plane's own vitest suite, executed in the `ts` CI job. Route C freshness is server-scheduled and structurally independent of extension liveness (no Route C code path reads extension state), so there is no Go-core reproduction for this row."
     },
@@ -129,9 +145,9 @@
       "edge_case": "Route C blocked",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/routec", "name": "TestBreakerOpensOnEachConfiguredThreshold"},
-        {"package": "./internal/routec", "name": "TestObserveTargetRetryStopsWhenBreakerOpens"},
-        {"package": "./internal/routec", "name": "TestObserveTargetDoesNotRetryBlockSignal"}
+        { "package": "./internal/routec", "name": "TestBreakerOpensOnEachConfiguredThreshold" },
+        { "package": "./internal/routec", "name": "TestObserveTargetRetryStopsWhenBreakerOpens" },
+        { "package": "./internal/routec", "name": "TestObserveTargetDoesNotRetryBlockSignal" }
       ]
     },
     {
@@ -139,8 +155,11 @@
       "edge_case": "Manual DK price change",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/reconcile", "name": "TestInvalidateStaleCardsForVariant"},
-        {"package": "./internal/reconcile", "name": "TestReconcilePending_ResolvesToTerminalAndOpensWindow"}
+        { "package": "./internal/reconcile", "name": "TestInvalidateStaleCardsForVariant" },
+        {
+          "package": "./internal/reconcile",
+          "name": "TestReconcilePending_ResolvesToTerminalAndOpensWindow"
+        }
       ]
     },
     {
@@ -148,9 +167,15 @@
       "edge_case": "Boundary/cost/evidence changes after card",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/execution", "name": "TestEvaluateGates_InjectedChangePerGate"},
-        {"package": "./internal/execution", "name": "TestEvaluateGates_EvidenceVersionChangeBlocks"},
-        {"package": "./internal/recommendation", "name": "TestConfirmIndividual_EveryDimensionInvalidatesControl"}
+        { "package": "./internal/execution", "name": "TestEvaluateGates_InjectedChangePerGate" },
+        {
+          "package": "./internal/execution",
+          "name": "TestEvaluateGates_EvidenceVersionChangeBlocks"
+        },
+        {
+          "package": "./internal/recommendation",
+          "name": "TestConfirmIndividual_EveryDimensionInvalidatesControl"
+        }
       ]
     },
     {
@@ -158,9 +183,15 @@
       "edge_case": "Partial bulk failure",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/recommendation", "name": "TestConfirmBulkSelection_SupersededMemberInvalidatedButOthersAuthorized"},
-        {"package": "./internal/recommendation", "name": "TestConfirmBulkSelection_BlockedMemberNeverExecutes"},
-        {"package": "./internal/httpapi", "name": "TestConfirmBulkApproval_MapsPerItemResults"}
+        {
+          "package": "./internal/recommendation",
+          "name": "TestConfirmBulkSelection_SupersededMemberInvalidatedButOthersAuthorized"
+        },
+        {
+          "package": "./internal/recommendation",
+          "name": "TestConfirmBulkSelection_BlockedMemberNeverExecutes"
+        },
+        { "package": "./internal/httpapi", "name": "TestConfirmBulkApproval_MapsPerItemResults" }
       ]
     },
     {
@@ -168,9 +199,18 @@
       "edge_case": "Unknown write result",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/httpapi", "name": "TestEdgeCase_UnknownWriteResult_PendingReconciliationBlocksRetry"},
-        {"package": "./internal/execution", "name": "TestClassify_UnknownFailsClosedToPendingReconciliation"},
-        {"package": "./internal/execution", "name": "TestExecute_UnknownResultParksPendingAndRetryRejected"}
+        {
+          "package": "./internal/httpapi",
+          "name": "TestEdgeCase_UnknownWriteResult_PendingReconciliationBlocksRetry"
+        },
+        {
+          "package": "./internal/execution",
+          "name": "TestClassify_UnknownFailsClosedToPendingReconciliation"
+        },
+        {
+          "package": "./internal/execution",
+          "name": "TestExecute_UnknownResultParksPendingAndRetryRejected"
+        }
       ]
     },
     {
@@ -178,8 +218,11 @@
       "edge_case": "Duplicate event",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/httpapi", "name": "TestEdgeCase_DuplicateEvent_SurfaceShowsOneItem"},
-        {"package": "./internal/event", "name": "TestDedupUpdatesOpenRecordZeroDuplicates"}
+        {
+          "package": "./internal/httpapi",
+          "name": "TestEdgeCase_DuplicateEvent_SurfaceShowsOneItem"
+        },
+        { "package": "./internal/event", "name": "TestDedupUpdatesOpenRecordZeroDuplicates" }
       ]
     },
     {
@@ -187,7 +230,7 @@
       "edge_case": "No events",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/httpapi", "name": "TestEdgeCase_NoEvents_ExplicitNoActionState"}
+        { "package": "./internal/httpapi", "name": "TestEdgeCase_NoEvents_ExplicitNoActionState" }
       ]
     },
     {
@@ -195,8 +238,8 @@
       "edge_case": "New SKU without history",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/routec", "name": "TestRouteCAloneNeverManufacturesVerified"},
-        {"package": "./internal/observation", "name": "TestConsequenceMatrix"}
+        { "package": "./internal/routec", "name": "TestRouteCAloneNeverManufacturesVerified" },
+        { "package": "./internal/observation", "name": "TestConsequenceMatrix" }
       ]
     },
     {
@@ -204,8 +247,8 @@
       "edge_case": "Duplicate cost rows",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/cost", "name": "TestDuplicateRowsBlockCommit"},
-        {"package": "./internal/cost", "name": "TestPreviewDoesNotCommit"}
+        { "package": "./internal/cost", "name": "TestDuplicateRowsBlockCommit" },
+        { "package": "./internal/cost", "name": "TestPreviewDoesNotCommit" }
       ]
     },
     {
@@ -220,8 +263,14 @@
       "edge_case": "Conversation restored",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/recommendation", "name": "TestConfirmIndividual_ExpiredRecordsNoConfirmationAudit"},
-        {"package": "./internal/conversation", "name": "TestConversationContinuesAcrossRequestsAndPersistsRetention"}
+        {
+          "package": "./internal/recommendation",
+          "name": "TestConfirmIndividual_ExpiredRecordsNoConfirmationAudit"
+        },
+        {
+          "package": "./internal/conversation",
+          "name": "TestConversationContinuesAcrossRequestsAndPersistsRetention"
+        }
       ]
     },
     {
@@ -229,8 +278,11 @@
       "edge_case": "Chat/model outage",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/httpapi", "name": "TestChatKillSwitchGlobalLeavesScreensFunctional"},
-        {"package": "./internal/httpapi", "name": "TestChatFailsClosedWhenLLMUnwired"}
+        {
+          "package": "./internal/httpapi",
+          "name": "TestChatKillSwitchGlobalLeavesScreensFunctional"
+        },
+        { "package": "./internal/httpapi", "name": "TestChatFailsClosedWhenLLMUnwired" }
       ]
     },
     {
@@ -238,8 +290,8 @@
       "edge_case": "Briefing failure",
       "classification": "go_gate",
       "tests": [
-        {"package": "./internal/httpapi", "name": "TestBriefingRoute_ServesAndFailsClosed"},
-        {"package": "./internal/briefing", "name": "TestBriefingEventsEqualTodayFeed"}
+        { "package": "./internal/httpapi", "name": "TestBriefingRoute_ServesAndFailsClosed" },
+        { "package": "./internal/briefing", "name": "TestBriefingEventsEqualTodayFeed" }
       ]
     },
     {

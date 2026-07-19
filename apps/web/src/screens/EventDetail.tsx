@@ -13,6 +13,7 @@ import { LtrToken } from "../components/LtrToken";
 import { MoneyView } from "../components/MoneyView";
 import { Section } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
+import { deriveEventEvidence } from "../data/eventEvidence";
 import { ageMinutes, formatInstant } from "../data/format";
 import { freshnessStateFromAge } from "../data/freshness";
 import { useEvent } from "../data/hooks";
@@ -30,6 +31,16 @@ const EVENT_TYPE_NUM: Record<EventType, BadgeType> = {
   seller_count: 3,
   suppression_boundary: 4,
   contribution_floor: 5,
+};
+
+// The observed market condition, as a text label — the authoritative observed fact
+// the event cites (issue #97). Mirrors the EventTypeBadge tone map.
+const EVENT_TYPE_TEXT: Record<EventType, MessageKey> = {
+  winning_state: "eventType.buyBox",
+  competitor_price: "eventType.competitorOffer",
+  seller_count: "eventType.sellerCount",
+  suppression_boundary: "eventType.priceBoundary",
+  contribution_floor: "eventType.marginFloor",
 };
 
 const SEVERITY_LABEL: Record<EventSeverity, MessageKey> = {
@@ -106,6 +117,12 @@ export function EventDetail() {
                     <dt>{t("event.severity.info")}</dt>
                     <dd>{t(SEVERITY_LABEL[event.severity])}</dd>
                   </div>
+                  {/* The deterministic ranking rule — calculation/ranking logic, never
+                      model inference (issue #97). It lives with the ranking factors. */}
+                  <div className="kv__row">
+                    <dt>{t("today.rationale")}</dt>
+                    <dd className="muted">{t("today.rationale.body")}</dd>
+                  </div>
                 </dl>
               </Section>
 
@@ -136,44 +153,70 @@ export function EventDetail() {
             </div>
 
             <Section titleKey="event.section.evidence">
-              <div className="evidence-grid">
-                <EvidencePanel kind="observed">
-                  <dl className="kv">
-                    <div className="kv__row">
-                      <dt>{t("event.evidenceRef")}</dt>
-                      <dd>
-                        {event.evidenceRef ? (
-                          <LtrToken text={event.evidenceRef} />
-                        ) : (
-                          <span className="muted">{t("common.notAvailable")}</span>
-                        )}
-                      </dd>
-                    </div>
-                    <div className="kv__row">
-                      <dt>{t("rec.field.quality")}</dt>
-                      <dd>
-                        <QualityBadge state={event.evidenceQuality as QualityState} />
-                      </dd>
-                    </div>
-                  </dl>
-                </EvidencePanel>
+              {(() => {
+                // Each panel renders ONLY authoritative data of its own provenance
+                // category (issue #97). A field never appears under a category it
+                // does not belong to; absent categories stay explicitly unavailable.
+                const evidence = deriveEventEvidence(event);
+                return (
+                  <div className="evidence-grid">
+                    <EvidencePanel kind="observed">
+                      <dl className="kv">
+                        <div className="kv__row">
+                          <dt>{t("event.observedType")}</dt>
+                          <dd>{t(EVENT_TYPE_TEXT[evidence.observed.type])}</dd>
+                        </div>
+                        <div className="kv__row">
+                          <dt>{t("event.observedObservation")}</dt>
+                          <dd>
+                            {evidence.observed.observationId ? (
+                              <LtrToken text={evidence.observed.observationId} />
+                            ) : (
+                              <span className="muted">{t("common.notAvailable")}</span>
+                            )}
+                          </dd>
+                        </div>
+                      </dl>
+                    </EvidencePanel>
 
-                <EvidencePanel kind="dk">
-                  <p className="muted">
-                    {typeof event.thresholdVersion === "number"
-                      ? t("event.threshold", { version: event.thresholdVersion })
-                      : t("common.notAvailable")}
-                  </p>
-                </EvidencePanel>
+                    <EvidencePanel kind="dk">
+                      <dl className="kv">
+                        <div className="kv__row">
+                          <dt>{t("event.evidenceRef")}</dt>
+                          <dd>
+                            {evidence.dk.evidenceRef ? (
+                              <LtrToken text={evidence.dk.evidenceRef} />
+                            ) : (
+                              <span className="muted">{t("common.notAvailable")}</span>
+                            )}
+                          </dd>
+                        </div>
+                        <div className="kv__row">
+                          <dt>{t("rec.field.quality")}</dt>
+                          <dd>
+                            <QualityBadge state={evidence.dk.quality as QualityState} />
+                          </dd>
+                        </div>
+                      </dl>
+                    </EvidencePanel>
 
-                <EvidencePanel kind="config">
-                  <p className="muted">{t("common.notAvailable")}</p>
-                </EvidencePanel>
+                    <EvidencePanel kind="config">
+                      <p className="muted">
+                        {evidence.config.thresholdVersion !== null
+                          ? t("event.threshold", { version: evidence.config.thresholdVersion })
+                          : t("common.notAvailable")}
+                      </p>
+                    </EvidencePanel>
 
-                <EvidencePanel kind="inference">
-                  <p className="muted">{t("today.rationale.body")}</p>
-                </EvidencePanel>
-              </div>
+                    <EvidencePanel kind="inference">
+                      {/* The MarketEvent contract carries no model inference; the panel
+                          stays explicitly unavailable rather than borrow a deterministic
+                          rule or a convenient field (issue #97). */}
+                      <p className="muted">{t("common.notAvailable")}</p>
+                    </EvidencePanel>
+                  </div>
+                );
+              })()}
             </Section>
 
             <div className="toolbar">
