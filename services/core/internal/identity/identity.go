@@ -67,15 +67,31 @@ func systemActor() Actor { return Actor(uuid.Nil) }
 // reopen operations against the pool, writing the append-only audit and (on
 // reopen) the append-only invalidation event in the same transaction.
 type Service struct {
-	pool *pgxpool.Pool
-	sink EventSink
+	pool       *pgxpool.Pool
+	sink       EventSink
+	dispatcher ReopenDispatcher
 }
 
 // NewService builds a Service. A nil sink uses NoopSink; the durable event row
 // is written regardless, so a subscriber wired later (S17) loses nothing.
+//
+// The durable reopen dispatcher is optional here (wired via SetReopenDispatcher once
+// the River client exists). When wired (production), a reopen enqueues its durable
+// delivery intent transactionally and the in-process sink is NOT used — the River job
+// is the delivery guarantee (issue #49). Without a dispatcher (legacy/tests), the
+// in-process sink is the delivery path.
 func NewService(pool *pgxpool.Pool, sink EventSink) *Service {
 	if sink == nil {
 		sink = NoopSink{}
 	}
 	return &Service{pool: pool, sink: sink}
+}
+
+// SetReopenDispatcher wires the durable reopen-invalidation dispatcher (issue #49). It
+// is called once during startup, AFTER the River client exists and BEFORE the HTTP
+// server serves, so there is no concurrent access to the field. It returns the Service
+// for chaining.
+func (s *Service) SetReopenDispatcher(d ReopenDispatcher) *Service {
+	s.dispatcher = d
+	return s
 }

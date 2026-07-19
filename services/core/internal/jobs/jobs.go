@@ -60,6 +60,13 @@ type ExecutionRunners struct {
 	// per confirmation), NOT periodic. A nil runner fails CLOSED (the worker retries
 	// rather than silently dropping the durable intent); production always wires it.
 	ExecuteApproved ExecuteApprovedFunc
+	// MappingReopened is the durable identity-reopen consumer (issue #49, S14): it
+	// drives ExpireDependentForVariant (+ observation-target retirement) for a
+	// mapping reopened transactionally with its append-only event row. It is
+	// event-driven (one job per reopen), NOT periodic. A nil runner fails CLOSED (the
+	// worker retries rather than silently dropping the durable intent); production
+	// always wires it, so a committed reopen is never permanently lost.
+	MappingReopened MappingReopenedFunc
 }
 
 // NewWorkers builds the worker registry for the core binary. Every worker the
@@ -87,6 +94,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewExecuteApprovedWorker(runners.ExecuteApproved, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register execute-approved worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewMappingReopenedWorker(runners.MappingReopened, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register mapping-reopened worker: %w", err)
 	}
 	return workers, nil
 }

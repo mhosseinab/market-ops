@@ -32,6 +32,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/execution"
 	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
 	"github.com/mhosseinab/market-ops/services/core/internal/httpapi"
+	"github.com/mhosseinab/market-ops/services/core/internal/identity"
 	"github.com/mhosseinab/market-ops/services/core/internal/jobs"
 	applog "github.com/mhosseinab/market-ops/services/core/internal/log"
 	"github.com/mhosseinab/market-ops/services/core/internal/notify"
@@ -40,6 +41,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
 	"github.com/mhosseinab/market-ops/services/core/internal/pairing"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
+	"github.com/mhosseinab/market-ops/services/core/internal/routec"
 	"github.com/mhosseinab/market-ops/services/core/internal/watchlist"
 )
 
@@ -211,6 +213,19 @@ func run() error {
 		serverOpts = append(serverOpts, httpapi.WithGatewayToken(cfg.LLMGatewayToken))
 		logger.Info("approval + Draft-only service wired")
 
+		// Wire the identity-mapping plane (CAT-002, journey 4, §16). It serves the
+		// /identity/* queue + confirm/reject/defer routes and owns the reopen path. On
+		// reopen it enqueues a DURABLE mapping_reopened intent transactionally with the
+		// state change + append-only event row (issue #49), so a committed reopen is
+		// never permanently lost; the dispatcher is set below once the River client
+		// exists. The reopen consumers (dependent-recommendation expiry + observation-
+		// target retirement) are both idempotent, driven by the durable worker.
+		identitySvc := identity.NewService(pool, nil)
+		serverOpts = append(serverOpts, httpapi.WithIdentity(identitySvc))
+		reopenExpirer := recommendation.NewReopenExpirer(recSvc)
+		targetRetirer := routec.NewTargetRetirer(pool)
+		logger.Info("identity-mapping service wired")
+
 		// Wire the S37 consolidated PD-3 guardrail + EXT-007 watchlist services.
 		// Guardrail writes are Owner-only (L3) with an atomic AUD-001 audit
 		// append; watchlist adds are server-cap-enforced and audited the same way.
@@ -370,6 +385,26 @@ func run() error {
 				}
 				return err
 			},
+			// Durable identity-reopen consumer (issue #49): each reopen enqueues one
+			// mapping_reopened intent transactionally with the append-only event row; this
+			// worker drives the idempotent consumers (dependent-recommendation expiry +
+			// observation-target retirement) exactly-once-effectively. Reconstructs the
+			// event from the JSON-safe args (plan §4.8). A consumer error is returned so
+			// River retries — a committed reopen is never lost to a transient failure.
+			MappingReopened: func(c context.Context, args jobs.MappingReopenedArgs) error {
+				ev := identity.MappingReopenedEvent{
+					EventID:    args.EventID,
+					AccountID:  args.AccountID,
+					VariantID:  args.VariantID,
+					IdentityID: args.IdentityID,
+					Reason:     identity.ReopenReason(args.Reason),
+					DedupKey:   args.DedupKey,
+				}
+				if err := reopenExpirer.MappingReopened(c, ev); err != nil {
+					return err
+				}
+				return targetRetirer.MappingReopened(c, ev)
+			},
 		}, catalogDeps)
 		if jobsErr != nil {
 			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)
@@ -379,7 +414,11 @@ func run() error {
 			// a confirmation atomically enqueues its execution intent (issue #92). Set
 			// before the HTTP server serves — no concurrent access to the field.
 			recSvc.SetExecutionDispatcher(recommendation.NewJobDispatcher(jobsClient))
-			logger.Info("job pipeline started (recommend-only matcher, outcome close, daily briefing, execution dispatch)")
+			// Wire the durable reopen dispatcher now that the River client exists, so a
+			// reopen atomically enqueues its durable delivery intent (issue #49). Set
+			// before the HTTP server serves — no concurrent access to the field.
+			identitySvc.SetReopenDispatcher(identity.NewJobReopenDispatcher(jobsClient))
+			logger.Info("job pipeline started (recommend-only matcher, outcome close, daily briefing, execution dispatch, reopen dispatch)")
 		}
 	} else {
 		logger.Warn("DATABASE_URL unset; auth and connector routes not wired (public routes only)")
