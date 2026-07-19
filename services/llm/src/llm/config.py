@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     per_tool_call_run_limit: int = 4
     # Per-tool timeout (seconds).
     per_tool_timeout_seconds: float = 15.0
+    # Bounded cleanup grace after a per-tool timeout: the window the middleware
+    # waits for a cancelled tool's worker to unwind before reporting it as an
+    # uncancelled-worker incident (issue #25). Cooperative tools exit well within
+    # this; it never becomes the containment boundary.
+    per_tool_cleanup_grace_seconds: float = 1.0
     # Single §12.4 transient retry at the node level — never stacked.
     node_transient_retries: int = 1
 

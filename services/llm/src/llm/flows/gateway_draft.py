@@ -31,6 +31,8 @@ already declares):
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any
 
 import httpx
@@ -38,6 +40,12 @@ from pydantic import ValidationError
 
 from llm.flows.deep_links import approval_control, bulk_control, level2_control
 from llm.flows.models import DraftKind, DraftTicket, ProposalCard
+
+# Default per-request deadline for a Draft write. It fails closed BEFORE the
+# per-tool middleware timeout, so the network operation is aborted at the
+# transport (httpx closes the connection) instead of being abandoned on a worker
+# thread (issue #25). Configurable per instance.
+DEFAULT_DRAFT_TIMEOUT_SECONDS = 10.0
 
 
 class DraftUnavailable(Exception):
@@ -49,19 +57,41 @@ class GatewayDraftPort:
 
     Constructed once with the gateway base URL, the read/Draft-only bearer token,
     and an ``httpx.Client`` (injected for tests). Every call fails closed.
+
+    Every write is bounded and idempotent (issue #25): each POST carries a
+    request-scoped ``timeout`` so a hung gateway aborts the in-flight operation
+    (failing closed to no ticket, never a late invisible write), and a STABLE
+    ``Idempotency-Key`` derived from the request identity so a retried create
+    deduplicates server-side and can never produce a duplicate Draft.
     """
 
-    def __init__(self, base_url: str, token: str, client: httpx.Client) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        token: str,
+        client: httpx.Client,
+        *,
+        timeout_seconds: float = DEFAULT_DRAFT_TIMEOUT_SECONDS,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._token = token
         self._client = client
+        self._timeout_seconds = timeout_seconds
 
     def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        headers = {"Accept": "application/json"}
+        headers = {
+            "Accept": "application/json",
+            "Idempotency-Key": _idempotency_key(path, body),
+        }
         if self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         try:
-            resp = self._client.post(self._base_url + path, json=body, headers=headers)
+            resp = self._client.post(
+                self._base_url + path,
+                json=body,
+                headers=headers,
+                timeout=self._timeout_seconds,
+            )
         except httpx.HTTPError as exc:
             raise DraftUnavailable(f"draft transport error on {path}: {exc}") from exc
         if resp.status_code // 100 != 2:
@@ -134,6 +164,19 @@ class GatewayDraftPort:
             )
         except ValidationError as exc:
             raise DraftUnavailable(f"malformed level2 proposal: {exc}") from exc
+
+
+def _idempotency_key(path: str, body: dict[str, Any]) -> str:
+    """A STABLE idempotency key for a Draft create (issue #25).
+
+    Derived deterministically from the endpoint plus the canonical request body, so
+    a retry of the SAME logical create carries the SAME key (the gateway dedups it,
+    preventing a duplicate write) while distinct creates never collide. It is a
+    natural key — pure function of the request — so no client-side state is needed
+    to make a retry safe.
+    """
+    canonical = json.dumps({"path": path, "body": body}, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def _require(data: dict[str, Any], key: str) -> str:
