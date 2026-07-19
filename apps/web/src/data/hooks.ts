@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { gateway } from "../app/query";
 import { useAccount } from "./account";
+import { type ErrorEnvelope, GatewayError } from "./errors";
 import type {
   ActionExecutionView,
   ApprovalBinding,
@@ -24,13 +25,14 @@ import type {
 
 // TanStack Query hooks over the GENERATED gateway client. Every hook is a thin,
 // read-what-the-API-returns wrapper; no money/policy/readiness is recomputed
-// here. openapi-fetch returns `{ data, error }`; `unwrap` turns a structured
-// error envelope into a thrown error so Query surfaces the error state.
+// here. openapi-fetch returns `{ data, error, response }`; `unwrap` reifies a
+// structured error envelope into a `GatewayError` (carrying HTTP status, machine
+// `code`, and correlation `requestId`) so Query/mutation consumers can render an
+// ACTIONABLE, LOCALIZED error surface rather than a silent fallback (issue #82).
 
-function unwrap<T>(result: { data?: T; error?: unknown }): T {
+function unwrap<T>(result: { data?: T; error?: unknown; response?: Response }): T {
   if (result.error) {
-    const env = result.error as { code?: string; message?: string };
-    throw new Error(env.message ?? env.code ?? "request_failed");
+    throw new GatewayError(result.error as ErrorEnvelope, result.response?.status);
   }
   if (result.data === undefined) throw new Error("empty_response");
   return result.data;
@@ -344,18 +346,13 @@ export function useConfirmApproval(cardId: string | undefined) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: async (binding: ApprovalBinding): Promise<ApprovalConfirmResult> => {
-      // Unlike other reads, the confirm surface must branch on the machine-readable
-      // error code (permission-denied vs idempotency/duplicate), so preserve it on
-      // the thrown error rather than collapsing to a message string.
+      // The confirm surface branches on the machine-readable error code
+      // (permission-denied vs idempotency/duplicate); GatewayError carries `code`
+      // (plus status/requestId) so the shared error surface can render it too.
       const res = await gateway.POST("/approvals/confirm", {
         body: { cardId: cardId as string, binding },
       });
-      if (res.error) {
-        const env = res.error as { code?: string; message?: string };
-        throw Object.assign(new Error(env.message ?? env.code ?? "confirm_failed"), {
-          code: env.code,
-        });
-      }
+      if (res.error) throw new GatewayError(res.error as ErrorEnvelope, res.response?.status);
       if (res.data === undefined) throw new Error("empty_response");
       return res.data;
     },
@@ -432,12 +429,7 @@ export function useRetryAction() {
   return useMutation({
     mutationFn: async (actionId: string): Promise<RetryActionResult> => {
       const res = await gateway.POST("/actions/retry", { body: { actionId } });
-      if (res.error) {
-        const env = res.error as { code?: string; message?: string };
-        throw Object.assign(new Error(env.message ?? env.code ?? "retry_failed"), {
-          code: env.code,
-        });
-      }
+      if (res.error) throw new GatewayError(res.error as ErrorEnvelope, res.response?.status);
       if (res.data === undefined) throw new Error("empty_response");
       return res.data;
     },

@@ -177,6 +177,90 @@ describe("Cost import — preview before commit (CST-001)", () => {
     expect(bodies.at(-1)?.filename).toBeUndefined();
   });
 
+  // ── issue #82: mutation-error surfaces ─────────────────────────────────────
+
+  it("surfaces a retryable preview error and keeps the entered CSV (#82)", async () => {
+    let previewCalls = 0;
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, () => {
+        previewCalls += 1;
+        return previewCalls === 1
+          ? HttpResponse.json({ code: "PREVIEW_FAILED", requestId: "req-prev" }, { status: 500 })
+          : HttpResponse.json(previewClean);
+      }),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    await screen.findByTestId("preview-error");
+    expect(screen.getByText(faIR["cost.preview.error"])).toBeInTheDocument();
+    // Input preserved: the entered CSV survives the failure.
+    expect((screen.getByTestId("cost-csv") as HTMLTextAreaElement).value).toBe(CSV);
+
+    // Preview mutates no state → a direct retry re-runs and now succeeds.
+    fireEvent.click(screen.getByTestId("preview-error-retry"));
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+  });
+
+  it("does NOT offer a naive retry for an ambiguous commit failure; re-preview is the only path (#82)", async () => {
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)),
+      http.post(`${BASE}/cost/import/commit`, () =>
+        HttpResponse.json({ code: "COMMIT_UNKNOWN", requestId: "req-commit" }, { status: 500 }),
+      ),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+    fireEvent.click(commitBtn);
+
+    // The ambiguous outcome is surfaced with NO retry control and the commit
+    // button is withdrawn (acceptance 3 — retry absent until state re-fetched).
+    await screen.findByTestId("commit-error");
+    expect(screen.getByText(faIR["cost.commit.error"])).toBeInTheDocument();
+    expect(screen.queryByTestId("commit-error-retry")).toBeNull();
+    expect(screen.queryByTestId("cost-commit")).toBeNull();
+
+    // Dismiss clears the stale preview: the only way back to a commit control is a
+    // fresh preview (a re-fetch of current state).
+    fireEvent.click(screen.getByTestId("commit-error-dismiss"));
+    await waitFor(() => expect(screen.queryByTestId("commit-error")).toBeNull());
+    expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+  });
+
+  it("surfaces a single-value entry error while preserving the entered value (#82)", async () => {
+    server.use(
+      http.post(`${BASE}/cost/value`, () =>
+        HttpResponse.json({ code: "SKU_NOT_FOUND" }, { status: 400 }),
+      ),
+    );
+    renderRoute("/cost");
+
+    await screen.findByTestId("cost-csv");
+    fireEvent.change(screen.getByTestId("single-value"), { target: { value: "8900000" } });
+    // The variant field is required to enable submit.
+    const variant = screen
+      .getByText(faIR["cost.single.variant"])
+      .closest("label")
+      ?.querySelector("input") as HTMLInputElement;
+    fireEvent.change(variant, { target: { value: "v-1" } });
+    fireEvent.click(screen.getByTestId("single-submit"));
+
+    await screen.findByTestId("single-error");
+    expect(screen.getByText(faIR["cost.single.error"])).toBeInTheDocument();
+    // Input preserved: the entered amount survives the failure.
+    expect((screen.getByTestId("single-value") as HTMLInputElement).value).toBe("8900000");
+  });
+
   // Acceptance criterion 5 (issue #79): reverting the textarea to the original
   // value does NOT revive a stale committable batch. Any source change clears
   // the preview; a committable control returns only through an explicit preview.

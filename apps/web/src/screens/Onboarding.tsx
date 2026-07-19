@@ -4,6 +4,7 @@ import { useLocale, useT } from "../app/i18n";
 import { Banner } from "../components/Banner";
 import { CapabilityBadge } from "../components/badges";
 import { CapabilityGate } from "../components/CapabilityGate";
+import { MutationError } from "../components/MutationError";
 import { Section } from "../components/primitives";
 import { type Step, Stepper, type StepState } from "../components/Stepper";
 import { ViewState } from "../components/ViewState";
@@ -212,6 +213,18 @@ export function Onboarding() {
                     </button>
                   )}
                 </CapabilityGate>
+                {/* Sync is idempotent (the server collapses a duplicate while a
+                    run is in-flight), so a failed start offers a direct retry. */}
+                {syncCatalog.isError ? (
+                  <MutationError
+                    testId="sync-error"
+                    error={syncCatalog.error}
+                    guidanceKey="onboarding.sync.error"
+                    onDismiss={() => syncCatalog.reset()}
+                    onRetry={() => syncCatalog.mutate()}
+                    retryPending={syncCatalog.isPending}
+                  />
+                ) : null}
               </Section>
             </div>
 
@@ -266,6 +279,18 @@ export function Onboarding() {
                 <p className="blocker-note" role="alert" data-testid="connect-error">
                   {t("onboarding.connect.error")}
                 </p>
+              ) : null}
+              {/* Disconnect purges tokens idempotently (ACC-003): a failed attempt
+                  leaves the connection unchanged, so a direct retry is safe. */}
+              {disconnect.isError ? (
+                <MutationError
+                  testId="disconnect-error"
+                  error={disconnect.error}
+                  guidanceKey="onboarding.disconnect.error"
+                  onDismiss={() => disconnect.reset()}
+                  onRetry={() => disconnect.mutate()}
+                  retryPending={disconnect.isPending}
+                />
               ) : null}
               <button
                 type="button"

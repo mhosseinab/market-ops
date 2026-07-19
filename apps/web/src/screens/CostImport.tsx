@@ -7,6 +7,7 @@ import { DispositionBadge } from "../components/badges";
 import { type Column, DataTable } from "../components/DataTable";
 import { LtrToken } from "../components/LtrToken";
 import { MoneyView } from "../components/MoneyView";
+import { MutationError } from "../components/MutationError";
 import { Section, StatCard } from "../components/primitives";
 import { formatCount } from "../data/format";
 import { useCostImportCommit, useCostImportPreview, useSingleCostEntry } from "../data/hooks";
@@ -150,6 +151,22 @@ export function CostImport() {
         >
           {t("cost.preview.title")}
         </button>
+        {/* Preview mutates no state (it re-evaluates the CSV against current
+            catalog/cost state), so a failed preview offers a direct retry that
+            re-runs on the still-present file. */}
+        {preview.isError ? (
+          <MutationError
+            testId="preview-error"
+            error={preview.error}
+            guidanceKey="cost.preview.error"
+            onDismiss={() => preview.reset()}
+            onRetry={() => {
+              commit.reset();
+              preview.mutate({ csv, ...(filename ? { filename } : {}) });
+            }}
+            retryPending={preview.isPending}
+          />
+        ) : null}
       </Section>
 
       {batch ? (
@@ -180,7 +197,22 @@ export function CostImport() {
             </p>
           ) : null}
 
-          {commit.data ? (
+          {commit.isError ? (
+            // A commit outcome is AMBIGUOUS on failure (it may or may not have
+            // applied): NO one-click retry (acceptance 3). Dismiss clears the
+            // stale preview so the ONLY path to commit again is a fresh preview —
+            // a re-fetch of current state (CST-001; §4.6 stale card never left
+            // clickable). The commit control is hidden while this shows.
+            <MutationError
+              testId="commit-error"
+              error={commit.error}
+              guidanceKey="cost.commit.error"
+              onDismiss={() => {
+                commit.reset();
+                preview.reset();
+              }}
+            />
+          ) : commit.data ? (
             <p className="success-note">
               {t("cost.committed", { count: formatCount(commit.data.committedRows, locale) })}
             </p>
@@ -282,6 +314,18 @@ function SingleCostForm({ initialVariant }: { initialVariant: string }) {
             component: t(COMPONENT_LABEL[entry.data.component]),
           })}
         </p>
+      ) : null}
+      {/* Recording a value APPENDS a version; a failed attempt keeps the entered
+          value/unit (input preserved) and the Record control is the explicit
+          re-submit — no one-click retry that could double-append on an ambiguous
+          outcome. */}
+      {entry.isError ? (
+        <MutationError
+          testId="single-error"
+          error={entry.error}
+          guidanceKey="cost.single.error"
+          onDismiss={() => entry.reset()}
+        />
       ) : null}
       <button
         type="button"

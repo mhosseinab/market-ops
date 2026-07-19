@@ -230,6 +230,34 @@ describe("Onboarding / catalog sync (issue #76, ACC-004/ACC-005)", () => {
     }
   });
 
+  it("surfaces a localized, retryable error when the idempotent sync start fails (#82)", async () => {
+    let syncCalls = 0;
+    server.use(
+      http.get(`${BASE}/connector/status`, () => HttpResponse.json(connectorSupported)),
+      http.post(`${BASE}/connector/catalog/sync`, () => {
+        syncCalls += 1;
+        return HttpResponse.json(
+          { code: "SYNC_UNAVAILABLE", requestId: "req-sync-1" },
+          { status: 500 },
+        );
+      }),
+    );
+    renderRoute("/onboarding");
+
+    const syncBtn = await screen.findByTestId("sync-catalog");
+    await waitFor(() => expect(syncBtn).toBeEnabled());
+    fireEvent.click(syncBtn);
+
+    // Failure is surfaced with the sync guidance + the correlation id (not silent).
+    await screen.findByTestId("sync-error");
+    expect(screen.getByText(faIR["onboarding.sync.error"])).toBeInTheDocument();
+    expect(screen.getByText("req-sync-1")).toBeInTheDocument();
+
+    // Sync is idempotent, so a direct retry is offered and issues another start.
+    fireEvent.click(screen.getByTestId("sync-error-retry"));
+    await waitFor(() => expect(syncCalls).toBe(2));
+  });
+
   it("NEGATIVE: a non-Supported catalog_read issues ZERO sync requests", async () => {
     let syncRequests = 0;
     // Connected but catalog_read Degraded — the gate must keep the control disabled.
@@ -254,5 +282,31 @@ describe("Onboarding / catalog sync (issue #76, ACC-004/ACC-005)", () => {
     // A disabled control never initiates a sync (Unknown/Unsupported/Degraded).
     await new Promise((r) => setTimeout(r, 20));
     expect(syncRequests).toBe(0);
+  });
+});
+
+describe("Onboarding / disconnect failure (issue #82)", () => {
+  it("surfaces a localized permission error when disconnect is forbidden, preserving the auth code", async () => {
+    server.use(
+      http.get(`${BASE}/connector/status`, () => HttpResponse.json(connectorSupported)),
+      http.post(`${BASE}/connector/disconnect`, () =>
+        HttpResponse.json({ code: "FORBIDDEN" }, { status: 403 }),
+      ),
+    );
+    renderRoute("/onboarding");
+
+    // Enter an authorization code first; a failed disconnect must not lose it.
+    const input = await screen.findByTestId("auth-code-input");
+    fireEvent.change(input, { target: { value: "keep-this-code" } });
+
+    fireEvent.click(await screen.findByText(faIR["onboarding.action.disconnect"]));
+
+    await screen.findByTestId("disconnect-error");
+    expect(screen.getByText(faIR["mutationError.title.forbidden"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["onboarding.disconnect.error"])).toBeInTheDocument();
+    // Input preserved (acceptance): the authorization code survives the failure.
+    expect((screen.getByTestId("auth-code-input") as HTMLInputElement).value).toBe(
+      "keep-this-code",
+    );
   });
 });
