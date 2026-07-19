@@ -476,6 +476,13 @@ type Querier interface {
 	// becomes eligible again for a fresh candidate.
 	ListVariantsWithoutActiveIdentity(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListVariantsWithoutActiveIdentityRow, error)
 	ListWatchlistEntries(ctx context.Context, marketplaceAccountID uuid.UUID) ([]WatchlistEntry, error)
+	// Serialize every writer that mints or advances a card in one lineage (APR-001
+	// authoritative-current resolution): a transaction-scoped advisory lock keyed on
+	// the lineage id. Both a price edit (new card version) and an individual confirm
+	// take it, so a stale confirm cannot race a mint and approve a superseded control
+	// — whichever transaction acquires the lock first fully serializes the other.
+	// Released automatically at transaction end (commit or rollback).
+	LockApprovalLineage(ctx context.Context, lineageID uuid.UUID) error
 	// Commit a preview batch. The WHERE clause is a guard: only a batch that is still
 	// in 'preview' AND carries NO unresolved duplicate conflict (§16) may be
 	// committed. A batch that is already committed/cancelled, or that still has

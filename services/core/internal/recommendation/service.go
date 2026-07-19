@@ -70,6 +70,15 @@ func (s *Service) mintDraftCard(ctx context.Context, recID, lineage, account uui
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := db.New(tx)
 
+	// Take the lineage lock BEFORE minting the next version, so a concurrent
+	// individual confirm (which locks the same lineage) serializes against this
+	// mint: it either sees the pre-mint current version or waits for this new
+	// version to commit — a stale control can never approve across the race
+	// (APR-001 authoritative-current resolution).
+	if err := q.LockApprovalLineage(ctx, lineage); err != nil {
+		return db.ApprovalCard{}, err
+	}
+
 	card, err := q.InsertApprovalCard(ctx, db.InsertApprovalCardParams{
 		RecommendationID:     recID,
 		MarketplaceAccountID: account,
@@ -214,28 +223,102 @@ type ConfirmOutcome struct {
 }
 
 // ConfirmIndividual activates the structured control on a card (§8.4 /
-// APR-001). It reconstructs the card's authoritative binding from the store,
-// re-verifies the PRESENTED control's binding against it at instant now, and
-// persists the resulting §8.4 state: Approved (match), Invalidated (a bound
-// version changed), or Expired (lapsed). A card that is not control-bearing (not
-// AwaitingConfirmation, or a simulation) is refused with approval.ErrNoControl —
-// free text can never reach Approved. Execution stays in S18: an Approved card
-// reports ExecutionPending true and performs no write.
+// APR-001). In ONE transaction it LOCKS the card's recommendation/card lineage,
+// resolves the AUTHORITATIVE CURRENT card for that lineage, and only then
+// advances the requested card — so a control can never approve a version that a
+// later card (e.g. a price edit, CHAT-044) has already superseded.
+//
+//   - If the requested card is NOT the current lineage version, it is superseded:
+//     it is driven to Invalidated (ReasonSuperseded) with NO execution intent. An
+//     exactly-replayed stale binding therefore fails closed instead of approving.
+//   - If it IS current, the PRESENTED binding is re-verified against the card's
+//     authoritative binding at instant now and persisted as Approved (match),
+//     Invalidated (a bound version changed), or Expired (lapsed).
+//
+// A card that is not control-bearing (not AwaitingConfirmation, or a simulation)
+// is refused with approval.ErrNoControl — free text can never reach Approved.
+// Execution stays in S18: an Approved card reports ExecutionPending true and
+// performs no write. The lineage lock is shared with the Draft-minting path
+// (mintDraftCard), so a concurrent version mint and a confirm serialize and a
+// stale approval can never win the race.
 func (s *Service) ConfirmIndividual(ctx context.Context, cardID uuid.UUID, presented approval.Binding, now time.Time) (ConfirmOutcome, error) {
-	row, err := db.New(s.pool).GetApprovalCard(ctx, cardID)
+	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return ConfirmOutcome{}, err
 	}
-	card, err := cardFromDB(row)
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	requested, err := q.GetApprovalCard(ctx, cardID)
+	if err != nil {
+		return ConfirmOutcome{}, err // pgx.ErrNoRows for an unknown card.
+	}
+
+	// Serialize every writer on this lineage (mint vs confirm) before reading the
+	// authoritative current version, so the decision below cannot race a mint.
+	if err := q.LockApprovalLineage(ctx, requested.LineageID); err != nil {
+		return ConfirmOutcome{}, err
+	}
+
+	card, err := cardFromDB(requested)
 	if err != nil {
 		return ConfirmOutcome{}, err
 	}
+	// Free-text / no-control containment: only a live AwaitingConfirmation card
+	// bears a structured control. Any other state (incl. an already-approved card
+	// on idempotent replay) fails closed here.
+	if _, err := card.Control(); err != nil {
+		return ConfirmOutcome{}, err // approval.ErrNoControl.
+	}
+
+	current, err := q.GetCurrentApprovalCard(ctx, requested.LineageID)
+	if err != nil {
+		return ConfirmOutcome{}, err
+	}
+
+	// Authoritative-lineage gate (APR-001): the requested card must BE the current
+	// version. A superseded card is invalidated with no execution intent, whatever
+	// its echoed binding says. The reason is the exact dimension the newer version
+	// changed relative to this stale control — resolved against the authoritative
+	// current binding, never a client echo. In P0 the only in-lineage mint
+	// (EditPrice, CHAT-044) always bumps the parameter version, so this reports
+	// parameter_version_changed; the ReasonNone fallback keeps the path fail-closed
+	// even if a future mint left every bound dimension unchanged.
+	if requested.ID != current.ID || requested.Version != current.Version {
+		currentCard, err := cardFromDB(current)
+		if err != nil {
+			return ConfirmOutcome{}, err
+		}
+		reason := card.Binding.ValidateAgainst(currentCard.Binding, now)
+		if reason == approval.ReasonNone {
+			reason = approval.ReasonParameterChanged
+		}
+		advanced, err := s.AdvanceTx(ctx, q, requested.ID, approval.StateAwaitingConfirmation, approval.StateInvalidated, confirmReason(reason))
+		if err != nil {
+			return ConfirmOutcome{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return ConfirmOutcome{}, err
+		}
+		return ConfirmOutcome{
+			Card:             advanced,
+			State:            approval.StateInvalidated,
+			Reason:           reason,
+			ExecutionPending: false,
+		}, nil
+	}
+
+	// The requested card is the authoritative current version: re-verify the
+	// presented binding against it and persist the §8.4 outcome.
 	res, err := card.Confirm(presented, now)
 	if err != nil {
 		return ConfirmOutcome{}, err // approval.ErrNoControl for a non-control-bearing card.
 	}
-	advanced, err := s.Advance(ctx, cardID, approval.StateAwaitingConfirmation, res.Card.State, confirmReason(res.Reason))
+	advanced, err := s.AdvanceTx(ctx, q, requested.ID, approval.StateAwaitingConfirmation, res.Card.State, confirmReason(res.Reason))
 	if err != nil {
+		return ConfirmOutcome{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return ConfirmOutcome{}, err
 	}
 	return ConfirmOutcome{

@@ -383,3 +383,18 @@ func (q *Queries) ListLiveCardsForVariant(ctx context.Context, variantID uuid.UU
 	}
 	return items, nil
 }
+
+const lockApprovalLineage = `-- name: LockApprovalLineage :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text, 0))
+`
+
+// Serialize every writer that mints or advances a card in one lineage (APR-001
+// authoritative-current resolution): a transaction-scoped advisory lock keyed on
+// the lineage id. Both a price edit (new card version) and an individual confirm
+// take it, so a stale confirm cannot race a mint and approve a superseded control
+// — whichever transaction acquires the lock first fully serializes the other.
+// Released automatically at transaction end (commit or rollback).
+func (q *Queries) LockApprovalLineage(ctx context.Context, lineageID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockApprovalLineage, lineageID)
+	return err
+}
