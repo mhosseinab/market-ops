@@ -130,6 +130,15 @@ SELECT * FROM market_events
 WHERE marketplace_account_id = $1 AND state IN ('open', 'updated')
 ORDER BY last_evidence_at DESC, id;
 
+-- name: ListEligibleRecommendationEvents :many
+-- Account-wide set of open|updated market events awaiting a recommendation (PRC-001
+-- runtime producer). evidence_update_count is the monotonic dedup/context token the
+-- producer keys idempotency on. Ordered deterministically so a pass is reproducible.
+SELECT id, marketplace_account_id, variant_id, evidence_update_count
+FROM market_events
+WHERE state IN ('open', 'updated')
+ORDER BY marketplace_account_id, id;
+
 -- name: ResolveEvent :one
 -- Lifecycle transition (§15.1): the triggering condition cleared, so the event is
 -- resolved. This leaves the partial-unique predicate, freeing the dedup_key so a

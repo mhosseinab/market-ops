@@ -16,21 +16,34 @@ import (
 // is stored present-or-unavailable-with-reason, so an absent value is explicit
 // and reproducible (never a silent zero). It returns the persisted row.
 func (s *Service) Persist(ctx context.Context, lineage uuid.UUID, rec Recommendation) (db.Recommendation, error) {
-	refs, err := json.Marshal(rec.Evidence.Refs)
+	params, err := buildInsertRecommendationParams(lineage, rec)
 	if err != nil {
 		return db.Recommendation{}, err
+	}
+	return db.New(s.pool).InsertRecommendation(ctx, params)
+}
+
+// buildInsertRecommendationParams marshals a domain Recommendation into the
+// append-only InsertRecommendation params. It is shared by Persist (own pool) and the
+// transactional producer path (ProduceVersion), so the present-or-unavailable-with-
+// reason money mapping lives in ONE place (DRY) and both paths store an absent value
+// explicitly, never a silent zero.
+func buildInsertRecommendationParams(lineage uuid.UUID, rec Recommendation) (db.InsertRecommendationParams, error) {
+	refs, err := json.Marshal(rec.Evidence.Refs)
+	if err != nil {
+		return db.InsertRecommendationParams{}, err
 	}
 	assumptions, err := json.Marshal(rec.Assumptions)
 	if err != nil {
-		return db.Recommendation{}, err
+		return db.InsertRecommendationParams{}, err
 	}
 	blockers, err := json.Marshal(rec.Blockers)
 	if err != nil {
-		return db.Recommendation{}, err
+		return db.InsertRecommendationParams{}, err
 	}
 	inputs, err := json.Marshal(rec.Inputs)
 	if err != nil {
-		return db.Recommendation{}, err
+		return db.InsertRecommendationParams{}, err
 	}
 
 	params := db.InsertRecommendationParams{
@@ -77,7 +90,7 @@ func (s *Service) Persist(ctx context.Context, lineage uuid.UUID, rec Recommenda
 		params.ExpiresAt = pgtype.Timestamptz{Time: exp, Valid: true}
 	}
 
-	return db.New(s.pool).InsertRecommendation(ctx, params)
+	return params, nil
 }
 
 // eventID returns the event id when the recommendation is event-driven, else Nil.

@@ -442,6 +442,48 @@ func (q *Queries) InsertRelevanceFeedbackForOrg(ctx context.Context, arg InsertR
 	return i, err
 }
 
+const listEligibleRecommendationEvents = `-- name: ListEligibleRecommendationEvents :many
+SELECT id, marketplace_account_id, variant_id, evidence_update_count
+FROM market_events
+WHERE state IN ('open', 'updated')
+ORDER BY marketplace_account_id, id
+`
+
+type ListEligibleRecommendationEventsRow struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	EvidenceUpdateCount  int32
+}
+
+// Account-wide set of open|updated market events awaiting a recommendation (PRC-001
+// runtime producer). evidence_update_count is the monotonic dedup/context token the
+// producer keys idempotency on. Ordered deterministically so a pass is reproducible.
+func (q *Queries) ListEligibleRecommendationEvents(ctx context.Context) ([]ListEligibleRecommendationEventsRow, error) {
+	rows, err := q.db.Query(ctx, listEligibleRecommendationEvents)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListEligibleRecommendationEventsRow{}
+	for rows.Next() {
+		var i ListEligibleRecommendationEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.MarketplaceAccountID,
+			&i.VariantID,
+			&i.EvidenceUpdateCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMaterialityThresholds = `-- name: ListMaterialityThresholds :many
 SELECT id, marketplace_account_id, category, event_type, version, move_bp, seller_count_delta, challenge_margin_bp, effective_from, created_by, created_at FROM materiality_thresholds
 WHERE marketplace_account_id = $1

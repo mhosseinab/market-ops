@@ -81,17 +81,33 @@ func (s *Service) CreateCard(ctx context.Context, recID, lineage uuid.UUID, acco
 // recommendation, chat_drafts.go) go through here, so the machine plane cannot
 // reach a different, weaker Draft-creation path.
 func (s *Service) mintDraftCard(ctx context.Context, recID, lineage, account uuid.UUID, binding approval.Binding, price money.Money) (db.ApprovalCard, error) {
-	evJSON, err := marshalEvidenceVersions(binding.EvidenceVersions)
-	if err != nil {
-		return db.ApprovalCard{}, err
-	}
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return db.ApprovalCard{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	q := db.New(tx)
+
+	card, err := s.mintDraftCardTx(ctx, db.New(tx), recID, lineage, account, binding, price)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.ApprovalCard{}, err
+	}
+	return card, nil
+}
+
+// mintDraftCardTx performs the §8.4 [*] → Draft mint on the caller's transaction q:
+// it locks the lineage, inserts the Draft card and appends its first append-only
+// history row, WITHOUT begin/commit. It is terminal at Draft (never advances the
+// machine, never mints a control). Sharing q lets the runtime producer commit the
+// recommendation version and its card ATOMICALLY (ProduceVersion), while the pool-
+// bound mintDraftCard wraps this in its own transaction for the standalone callers.
+func (s *Service) mintDraftCardTx(ctx context.Context, q *db.Queries, recID, lineage, account uuid.UUID, binding approval.Binding, price money.Money) (db.ApprovalCard, error) {
+	evJSON, err := marshalEvidenceVersions(binding.EvidenceVersions)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
 
 	// Take the lineage lock BEFORE minting the next version, so a concurrent
 	// individual confirm (which locks the same lineage) serializes against this
@@ -129,9 +145,6 @@ func (s *Service) mintDraftCard(ctx context.Context, recID, lineage, account uui
 		ToState:     string(approval.StateDraft),
 		Reason:      "card created",
 	}); err != nil {
-		return db.ApprovalCard{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return db.ApprovalCard{}, err
 	}
 	return card, nil
