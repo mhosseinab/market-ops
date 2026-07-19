@@ -22,11 +22,19 @@ const (
 )
 
 // ComponentPresence is the in-force status of one component for a SKU at the
-// evaluation instant: whether a version exists, and whether that version is
-// stale (past its review-by instant).
+// evaluation instant: whether a version exists, whether that version is stale
+// (past its review-by instant), and whether it comes from an authoritative
+// source. Authoritative matters only for components that
+// RequiresAuthoritativeProvenance (commission, §9.2): for those, a present but
+// non-authoritative version does NOT satisfy the requirement.
 type ComponentPresence struct {
 	Present bool
 	Stale   bool
+	// Authoritative reports whether the in-force version's source is authoritative
+	// provenance (§9.2). Set from IsAuthoritativeSource at recompute time. It is
+	// consulted only for components that RequiresAuthoritativeProvenance; other
+	// components are satisfied regardless of source.
+	Authoritative bool
 }
 
 // ReadinessInput is the pure input to DeriveReadiness. It carries no time, no
@@ -85,7 +93,12 @@ func DeriveReadiness(in ReadinessInput) Readiness {
 			continue
 		}
 		p := in.Components[c]
-		if !p.Present {
+		// A component that requires authoritative provenance (commission, §9.2) is
+		// NOT satisfied by a present-but-non-authoritative (seller-entered) version:
+		// treat it as absent so it blocks (§16) rather than being inferred to be the
+		// marketplace figure (quarantine-over-inference, §4.6). The seller value is
+		// still stored and shown as evidence; it just cannot drive Complete.
+		if !p.Present || (c.RequiresAuthoritativeProvenance() && !p.Authoritative) {
 			missing = append(missing, c)
 			if c.IsHardRequired() {
 				hardMissing = true
