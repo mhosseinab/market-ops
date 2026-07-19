@@ -180,6 +180,17 @@ func (c Capture) resolvedOfferIdentity() string {
 	return canonicalOfferIdentity(c.NativeVariantID, c.NativeSellerID)
 }
 
+// HasCurrentPriceValue reports whether the capture carries a usable CURRENT price
+// value. It requires BOTH a value-bearing availability (a disappeared offer has no
+// current value, §16) AND a structurally complete raw price (Text, Value, Unit all
+// present). This is the gate feeding QualitySignals.HasValue: an in-stock capture
+// with an absent or whitespace-only price fails closed to Unavailable rather than
+// being blessed as Supported by route/provenance alone (issue #43). The price check
+// is presence-only (money quarantine) — no parsing, no unit inference, no float.
+func (c Capture) HasCurrentPriceValue() bool {
+	return c.Availability.hasValue() && c.Price.IsStructurallyComplete()
+}
+
 // Validate rejects incomplete evidence (OBS-002). Every required envelope field
 // must be present; a missing field returns ErrIncompleteEvidence with the list of
 // what is missing. This is the gate the "schema validation rejects incomplete

@@ -66,6 +66,37 @@ func TestValidateRejectsIncompleteEvidence(t *testing.T) {
 	}
 }
 
+// TestHasCurrentPriceValue is the issue #43 guard: a capture carries a usable
+// CURRENT price value only when its availability bears a value AND the raw price is
+// structurally complete (Text, Value, Unit all present). An empty/absent price on
+// an otherwise in-stock capture must NOT count as a current value — it fails closed.
+func TestHasCurrentPriceValue(t *testing.T) {
+	full := money.NewRawAmount("۱٬۲۰۰٬۰۰۰ ریال", "1200000", "IRR-rial")
+	cases := []struct {
+		name         string
+		availability obs.Availability
+		price        money.RawAmount
+		want         bool
+	}{
+		{"in_stock + empty price", obs.InStock, money.RawAmount{}, false},
+		{"in_stock + whitespace price", obs.InStock, money.NewRawAmount("  ", "\t", "\n"), false},
+		{"in_stock + missing unit", obs.InStock, money.NewRawAmount("1200000", "1200000", ""), false},
+		{"disappeared + full price", obs.Disappeared, full, false},
+		{"in_stock + full price", obs.InStock, full, true},
+		{"out_of_stock + full price", obs.OutOfStock, full, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := completeCapture()
+			c.Availability = tc.availability
+			c.Price = tc.price
+			if got := c.HasCurrentPriceValue(); got != tc.want {
+				t.Fatalf("HasCurrentPriceValue() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestDedupKeyProvenance asserts the dedup key is stable for a true replay yet
 // distinct across routes (route provenance preserved, OBS-008) and across capture
 // instants (genuine new evidence).

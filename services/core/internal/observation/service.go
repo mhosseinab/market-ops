@@ -183,7 +183,7 @@ func (s *Service) Ingest(ctx context.Context, c Capture) (IngestResult, error) {
 
 	fresh := !now.After(deadline)
 	quality := DeriveQuality(QualitySignals{
-		HasValue:      c.Availability.hasValue(),
+		HasValue:      c.HasCurrentPriceValue(),
 		Disappeared:   c.Availability == Disappeared,
 		Fresh:         fresh,
 		SchemaValid:   c.SchemaValid,
