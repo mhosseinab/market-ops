@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import viteConfig from "../../vite.config";
+import rawViteConfig from "../../vite.config";
+
+// The config is a function of the Vite mode (it injects the pseudo-locale gateway
+// base only under `--mode pseudo`); resolve it for the default dev serve, whose
+// proxy + dev-session plugin are what these tests assert (both mode-independent).
+const viteConfig =
+  typeof rawViteConfig === "function"
+    ? rawViteConfig({ command: "serve", mode: "development" })
+    : rawViteConfig;
 
 describe("local Vite gateway proxy", () => {
   afterEach(() => {

@@ -118,7 +118,8 @@ Canonical command reference (the repo's real verify commands once S1/S6 land):
 | TS types/lint | `task ts:lint` (= `pnpm -r typecheck` → `tsc --noEmit`; `pnpm biome check .`) | exit 0 |
 | Contracts | `task contracts:generate` then `task contracts:drift` (= `git diff --exit-code contracts gen`) | regen is idempotent; drift check exit 0 |
 | Migrations | `task db:reset` | goose up + down + up clean on scratch DB |
-| Pseudo-locale | `task ts:pseudoloc` (vitest suite + copy-lint) | exit 0 (gate from S25) |
+| Pseudo-locale | `task ts:pseudoloc` (copy-lint + vitest suite + `pseudoloc:visual` browser layout gate) | exit 0 (gate from S25; browser pass from #15) |
+| Pseudo-locale (visual) | `task ts:pseudoloc:visual` (Playwright renders the shell under the pseudo pack in Chromium: overflow/clip/direction + baselines) | exit 0; needs Chromium (`/opt/pw-browsers`) |
 | Observability | `task obs:validate` (dashboard drift + PromQL/series + §20.1 alert/runbook checks) | exit 0 (gate from S33) |
 | Whole gate | `task ci:local` | exit 0 |
 
@@ -160,7 +161,7 @@ ts:        ['apps/**', 'packages/**', 'gen/ts/**', 'contracts/**']
 deploy:    ['deploy/**', 'runbooks/**', 'tools/obs/**']
 ```
 
-Jobs (each `if:` its filter): **contracts** — `task contracts:generate` + `git diff --exit-code` (the drift check); **go** — setup-go with `go-version-file: services/core/go.mod`, `GOWORK=off` explicit on every step, golangci-lint, `go test ./... -race`, scratch-Postgres service container for DB tests (goose up/down assertions run here); **py** — `astral-sh/setup-uv`, `uv sync --frozen --group dev`, ruff, mypy from root, pytest; **ts** — pnpm `--frozen-lockfile`, biome, typecheck, vitest, `task ts:pseudoloc` (pseudo-locale + copy-lint gate, LOC-011), extension + web builds; **deploy-obs** (from S33) — `task obs:validate` (§18 dashboard drift + PromQL/series-name + §20.1 alert-rule/runbook checks; stdlib-only so the gate holds without the optional promql-parser). A contracts change triggers the four language jobs. `task ci:local` mirrors this exactly for the pre-merge loop.
+Jobs (each `if:` its filter): **contracts** — `task contracts:generate` + `git diff --exit-code` (the drift check); **go** — setup-go with `go-version-file: services/core/go.mod`, `GOWORK=off` explicit on every step, golangci-lint, `go test ./... -race`, scratch-Postgres service container for DB tests (goose up/down assertions run here); **py** — `astral-sh/setup-uv`, `uv sync --frozen --group dev`, ruff, mypy from root, pytest; **ts** — pnpm `--frozen-lockfile`, biome, typecheck, vitest, extension + web builds, then a Chromium install + `task ts:pseudoloc` (pseudo-locale + copy-lint gate, LOC-011, incl. the browser layout pass `pseudoloc:visual` from #15); **deploy-obs** (from S33) — `task obs:validate` (§18 dashboard drift + PromQL/series-name + §20.1 alert-rule/runbook checks; stdlib-only so the gate holds without the optional promql-parser). A contracts change triggers the four language jobs. `task ci:local` mirrors this exactly for the pre-merge loop.
 
 ## 8. Environments, deployment, secrets
 

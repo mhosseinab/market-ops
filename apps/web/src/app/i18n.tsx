@@ -1,9 +1,12 @@
 import {
+  buildPseudoCatalog,
   createI18n,
   LOCALE_PACKS,
   type LocaleId,
   type MessageKey,
   type MissingKeyEvent,
+  PSEUDO_DIR,
+  PSEUDO_ID,
   translate,
 } from "@market-ops/locale";
 import type { i18n as I18n } from "i18next";
@@ -64,19 +67,40 @@ export const LocaleContext = createContext<LocaleState | null>(null);
 export function I18nProvider({
   children,
   initialLocale,
+  pseudo = false,
 }: {
   children: ReactNode;
   initialLocale: LocaleId;
+  /**
+   * Pseudo-localization mode (LOC-011): the copy is served from the generated
+   * pseudo pack (expanded + bracketed + forced-LTR) and the document root is
+   * driven to `PSEUDO_DIR`, so the browser layout gate can render the real shell
+   * under the pseudo direction. Formatters still use `initialLocale` (the pseudo
+   * pack only affects `t()`), matching production's data-driven boundary. Off in
+   * production — the base-pack path below is byte-for-byte unchanged.
+   */
+  pseudo?: boolean;
 }) {
   const [locale, setLocale] = useState<LocaleId>(initialLocale);
-  const [instance] = useState<I18n>(() => createI18n({ lng: initialLocale }));
+  const [instance] = useState<I18n>(() =>
+    pseudo
+      ? createI18n({ lng: PSEUDO_ID, resources: { [PSEUDO_ID]: buildPseudoCatalog() } })
+      : createI18n({ lng: initialLocale }),
+  );
 
   useEffect(() => {
+    // Direction/lang are DATA, never branched in a view: the base packs carry
+    // their own dir, and the pseudo pack's direction is the exported PSEUDO_DIR.
+    if (pseudo) {
+      document.documentElement.setAttribute("dir", PSEUDO_DIR);
+      document.documentElement.setAttribute("lang", PSEUDO_ID);
+      return;
+    }
     const pack = LOCALE_PACKS[locale];
     document.documentElement.setAttribute("dir", pack.dir);
     document.documentElement.setAttribute("lang", pack.lang);
     void instance.changeLanguage(locale);
-  }, [locale, instance]);
+  }, [locale, instance, pseudo]);
 
   const value = useMemo<LocaleState>(() => ({ locale, setLocale }), [locale]);
 

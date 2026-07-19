@@ -15,17 +15,22 @@ export function Providers({
   initialLocale,
   marketplaceAccountId,
   queryClient = defaultQueryClient,
+  pseudo = false,
 }: {
   children: ReactNode;
   initialLocale: LocaleId;
   marketplaceAccountId?: string;
   queryClient?: QueryClient;
+  /** Render the whole stack under the pseudo-locale pack (LOC-011 visual gate). */
+  pseudo?: boolean;
 }) {
   return (
     <QueryClientProvider client={queryClient}>
       <AccountProvider marketplaceAccountId={marketplaceAccountId}>
         <AppStateProvider>
-          <I18nProvider initialLocale={initialLocale}>{children}</I18nProvider>
+          <I18nProvider initialLocale={initialLocale} pseudo={pseudo}>
+            {children}
+          </I18nProvider>
         </AppStateProvider>
       </AccountProvider>
     </QueryClientProvider>

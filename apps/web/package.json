@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "e2e:smoke": "playwright test",
+    "test:pseudo:visual": "playwright test -c playwright.pseudo.config.ts",
     "copylint": "node ../../tools/copylint/copylint.mjs apps/web/src",
     "assert:prod-clean": "node scripts/assert-prod-clean.mjs"
   },
