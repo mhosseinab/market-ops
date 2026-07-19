@@ -1,5 +1,6 @@
 import { MAX_ATTEMPTS, QUEUE_CAP } from "./constants";
 import { dedupKey } from "./dedup";
+import { log } from "./observability";
 import {
   type DeadLetterItem,
   type DeadLetterSummary,
@@ -178,6 +179,13 @@ export class UploadQueue {
                 failureReason: "max_attempts_exhausted",
               });
               res.deadLettered++;
+              // Structured, locale-neutral transition log (no PII / no marketplace
+              // free text) — the dead-letter transition is now as observable as the
+              // revoked one: a metric AND a warn line.
+              log("warn", "upload_dead_letter", {
+                dedupKey: item.dedupKey,
+                reason: "max_attempts_exhausted",
+              });
             } else {
               remaining.push({ ...item, attempts });
               res.retried++;
@@ -187,8 +195,16 @@ export class UploadQueue {
         }
       }
 
-      await this.saveQueue(remaining);
+      // No-loss write ORDERING (issue #150, BLOCKER 1): KEY_DEADLETTER and
+      // KEY_QUEUE are two SEPARATE chrome.storage.local commits, not an atomic
+      // multi-key write, and an MV3 worker can be killed between them. Persist
+      // the dead-letter record FIRST, THEN shrink the pending queue: a teardown
+      // after commit 1 leaves the exhausted item in BOTH stores (recoverable,
+      // and server-idempotent via the preserved dedupKey), never in NEITHER. The
+      // inverse order would remove it from pending before it was preserved —
+      // permanent silent loss, exactly the failure #150 exists to close.
       if (res.deadLettered > 0) await this.saveDeadLetter(deadLetter);
+      await this.saveQueue(remaining);
       res.remaining = remaining.length;
       return res;
     });
@@ -197,16 +213,21 @@ export class UploadQueue {
   // retryDeadLetter returns a dead-lettered item to the PENDING queue with a
   // fresh retry budget (attempts reset). The original dedupKey is preserved so a
   // successful redelivery is still server-idempotent against any earlier partial
-  // upload. Returns false (actionable, not a silent success) when no such item
-  // exists. Serialized like every other mutation.
-  async retryDeadLetter(dedupKeyValue: string): Promise<boolean> {
+  // upload. Returns `moved: false` (actionable, not a silent success) when no
+  // such item exists, and `shed: true` when re-queuing at the cap forced a
+  // backpressure shed — the caller MUST emit the queue_backpressure metric so an
+  // operator retry that dropped a live capture is never silent (issue #150,
+  // BLOCKER 2). ADD-first write ordering (saveQueue then saveDeadLetter) means a
+  // mid-op worker kill leaves the item in BOTH stores, never lost.
+  async retryDeadLetter(dedupKeyValue: string): Promise<{ moved: boolean; shed: boolean }> {
     return this.lock.run(async () => {
       const deadLetter = await this.loadDeadLetter();
       const idx = deadLetter.findIndex((i) => i.dedupKey === dedupKeyValue);
-      if (idx === -1) return false;
+      if (idx === -1) return { moved: false, shed: false };
       const [item] = deadLetter.splice(idx, 1);
-      if (item === undefined) return false;
+      if (item === undefined) return { moved: false, shed: false };
       const queue = await this.loadQueue();
+      let shed = false;
       // Guard the idempotency invariant: if an identical capture is already
       // pending, don't create a duplicate — just drop the dead-letter record.
       if (!queue.some((i) => i.dedupKey === item.dedupKey)) {
@@ -216,11 +237,11 @@ export class UploadQueue {
           attempts: 0,
           enqueuedAt: item.enqueuedAt,
         });
-        capToBound(queue);
+        shed = capToBound(queue);
         await this.saveQueue(queue);
       }
       await this.saveDeadLetter(deadLetter);
-      return true;
+      return { moved: true, shed };
     });
   }
 

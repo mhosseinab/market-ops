@@ -2,8 +2,41 @@ import { describe, expect, it } from "vitest";
 import { MAX_ATTEMPTS, QUEUE_CAP } from "./constants";
 import { dedupKey } from "./dedup";
 import { type UploadOutcome, UploadQueue } from "./queue";
-import { KEY_QUEUE, MemoryStore, type QueuedItem } from "./storage";
+import {
+  type DeadLetterItem,
+  KEY_DEADLETTER,
+  KEY_QUEUE,
+  type KeyValueStore,
+  MemoryStore,
+  type QueuedItem,
+} from "./storage";
 import type { CaptureUpload } from "./types";
+
+// CrashStore simulates an MV3 worker being killed mid-flush: it commits the
+// first N `set()` calls to a real MemoryStore, then throws on the next one —
+// reproducing a teardown BETWEEN the two cross-key storage commits (KEY_QUEUE
+// and KEY_DEADLETTER are NOT an atomic multi-key write).
+class CrashStore implements KeyValueStore {
+  private readonly inner = new MemoryStore();
+  private budget = Number.POSITIVE_INFINITY;
+  crashAfter(writes: number): void {
+    this.budget = writes;
+  }
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.inner.get<T>(key);
+  }
+  async set<T>(key: string, value: T): Promise<void> {
+    if (this.budget <= 0) throw new Error("worker killed mid-commit");
+    this.budget--;
+    await this.inner.set(key, value);
+  }
+  async remove(key: string): Promise<void> {
+    await this.inner.remove(key);
+  }
+  async snapshot(): Promise<Record<string, unknown>> {
+    return this.inner.snapshot();
+  }
+}
 
 function capture(overrides: Partial<CaptureUpload> = {}): CaptureUpload {
   return {
@@ -169,7 +202,8 @@ describe("UploadQueue — dead-letter durability, recovery, and classification (
     const [dl] = await q.listDeadLetter();
     expect(dl).toBeDefined();
     const retried = await q.retryDeadLetter(dl?.dedupKey ?? "");
-    expect(retried).toBe(true);
+    expect(retried.moved).toBe(true);
+    expect(retried.shed).toBe(false);
     expect(await q.deadLetterCount()).toBe(0);
     expect(await q.count()).toBe(1); // back to pending, attempts reset
 
@@ -190,7 +224,7 @@ describe("UploadQueue — dead-letter durability, recovery, and classification (
     expect(await q.count()).toBe(0);
     // A no-op discard reports false (never a swallowed default treated as success).
     expect(await q.discardDeadLetter("does-not-exist")).toBe(false);
-    expect(await q.retryDeadLetter("does-not-exist")).toBe(false);
+    expect(await q.retryDeadLetter("does-not-exist")).toEqual({ moved: false, shed: false });
   });
 
   it("(f) cap-shed backpressure, permanent 4xx drop, and exhausted dead-letter are THREE separately classified outcomes", async () => {
@@ -222,5 +256,49 @@ describe("UploadQueue — dead-letter durability, recovery, and classification (
     expect(shedSeen).toBe(true);
     expect(await qShed.count()).toBe(QUEUE_CAP);
     expect(await qShed.deadLetterCount()).toBe(0); // shedding is NOT dead-lettering
+  });
+
+  it("(BLOCKER1) a worker kill BETWEEN flush's two storage commits never loses the exhausted item", async () => {
+    const store = new CrashStore();
+    const q = new UploadQueue(store);
+    await q.enqueue(capture());
+    // Drive to the final, exhausting attempt without crashing (attempts 1..MAX-1).
+    for (let i = 0; i < MAX_ATTEMPTS - 1; i++) await q.flush(async () => "retry");
+
+    // Arm the crash: let the FIRST commit of the exhausting flush land, then kill
+    // the worker before the SECOND. No-loss ordering must persist the dead-letter
+    // record BEFORE it shrinks the pending queue, so the item survives in at
+    // least one store. (Buggy order — shrink pending first — loses it entirely.)
+    store.crashAfter(1);
+    await expect(q.flush(async () => "retry")).rejects.toThrow();
+
+    const key = dedupKey(capture());
+    const pending = (await store.get<QueuedItem[]>(KEY_QUEUE)) ?? [];
+    const dead = (await store.get<DeadLetterItem[]>(KEY_DEADLETTER)) ?? [];
+    const inPending = pending.some((i) => i.dedupKey === key);
+    const inDead = dead.some((i) => i.dedupKey === key);
+    // Recoverable from exactly one of the two stores — never silently lost. The
+    // preserved dedupKey makes any transient duplicate server-idempotent.
+    expect(inPending || inDead).toBe(true);
+  });
+
+  it("(BLOCKER2) retrying a dead-letter item at cap sheds the oldest pending capture and SIGNALS backpressure (not silent)", async () => {
+    const q = new UploadQueue(new MemoryStore());
+    // Produce one dead-letter item.
+    await q.enqueue(capture());
+    for (let i = 0; i < MAX_ATTEMPTS; i++) await q.flush(async () => "retry");
+    const [dl] = await q.listDeadLetter();
+    expect(dl).toBeDefined();
+
+    // Fill the pending queue to the bound with distinct live captures.
+    for (let i = 0; i < QUEUE_CAP; i++) {
+      await q.enqueue(capture({ capturedAt: `2026-07-18T10:00:${i}` }));
+    }
+    expect(await q.count()).toBe(QUEUE_CAP);
+
+    const r = await q.retryDeadLetter(dl?.dedupKey ?? "");
+    expect(r.moved).toBe(true);
+    expect(r.shed).toBe(true); // backpressure propagated, never a silent drop
+    expect(await q.count()).toBe(QUEUE_CAP);
   });
 });

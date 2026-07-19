@@ -269,8 +269,12 @@ async function handleRevoke(): Promise<ExtResponse> {
 // Both emit a distinct metric so the recovery action is observable, never a
 // silent mutation.
 async function handleRetryDeadLetter(dedupKey: string): Promise<ExtResponse> {
-  const moved = await queue.retryDeadLetter(dedupKey);
+  const { moved, shed } = await queue.retryDeadLetter(dedupKey);
   incr("dead_letter_retry", { outcome: moved ? "moved" : "not_found" });
+  // A retry at the queue cap shifts out the oldest live capture — signal it as
+  // backpressure exactly like the enqueue path, so telemetry can tell a clean
+  // recovery from one that shed a pending capture (issue #150, BLOCKER 2).
+  if (shed) incr("queue_backpressure");
   if (moved) {
     await emitQueueDepth();
     await flush();
