@@ -24,6 +24,11 @@ export type MetricName =
   | "dead_letter_retry"
   | "dead_letter_discard"
   | "capability_transition"
+  // The content script's capability-before-fetch gate (issue #155): a product
+  // read that was refused because capture is not READY (unknown/disabled/revoked).
+  // This is the observable proof that the fail-closed gate ran BEFORE any
+  // marketplace product-endpoint request (PRD §4.6 "Unknown never enables").
+  | "capture_gated"
   | "on_demand_latency_ms"
   | "watchlist_add"
   | "schedule_cycle"
