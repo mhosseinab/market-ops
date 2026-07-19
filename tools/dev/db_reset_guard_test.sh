@@ -184,6 +184,38 @@ run_case "reject-query-service-override" 1 no "connection-target|query" \
 run_case "reject-db-name-metacharacters" 1 no "A-Za-z0-9|database name" \
   "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops%22%3bDROP"
 
+# --- Encoding-trick class: percent-encoded connection-target keywords. --------
+# libpq PERCENT-DECODES query keys when parsing the URI, so `%68ost` decodes to
+# `host`, `%70ort` to `port`, `%73ervice` to `service`, etc. A raw-string
+# denylist sees an unrecognized key and would accept; libpq then honours the
+# decoded keyword and re-targets the connection to a remote host/port/service —
+# the cycle-0 bypass class re-opened via encoding. The guard must fail closed on
+# ANY percent-encoding in the query string AND on any key outside the strict
+# connection-inert allowlist. psql must never be reached; no secret may leak.
+run_case "reject-encoded-host-keyword" 1 no "query|encod|allow" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable&%68ost=db.prod.internal"
+
+run_case "reject-encoded-host-mid-key" 1 no "query|encod|allow" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable&ho%73t=db.prod.internal"
+
+run_case "reject-encoded-port-keyword" 1 no "query|encod|allow" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?%70ort=59999"
+
+run_case "reject-encoded-service-keyword" 1 no "query|encod|allow" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?%73ervice=prod"
+
+# REJECT: an unknown (non-allowlisted) but UNENCODED query key also fails closed
+# now — the allowlist is the primary defense; the '%' reject is belt-and-suspenders.
+run_case "reject-unknown-query-key" 1 no "query|allow" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable&options=-c"
+
+# REJECT: even WITH the non-local override, an encoded connection keyword aimed
+# at a remote/protected target still rejects — the override widens host only and
+# never relaxes the encoding/connection-keyword guard.
+run_case "reject-override-still-blocks-encoded-keyword" 1 no "query|encod|allow" \
+  "DATABASE_URL=postgres://market_ops:supersecret@db.staging-host.internal:5432/market_ops?sslmode=disable&%68ost=db.prod.internal" \
+  "DB_RESET_ALLOW_NONLOCAL=1"
+
 if [[ "$failures" -ne 0 ]]; then
   echo "db_reset_guard_test: $failures case(s) failed" >&2
   exit 1

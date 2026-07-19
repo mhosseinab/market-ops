@@ -17,10 +17,12 @@ set -euo pipefail
 #   * Allowed db names: `market_ops` and any `market_ops*` / `*_dev` dev name,
 #     restricted to the [A-Za-z0-9_-] charset (no SQL metacharacters — the name
 #     is interpolated into the destructive DROP DATABASE statement).
-#   * Connection-target libpq query keywords (host, hostaddr, port, dbname,
-#     service) are ALWAYS rejected: libpq honours them over the vetted authority
-#     host, so they are a no-override bypass to a remote DROP. sslmode and other
-#     non-connection params are permitted.
+#   * Query string is fail-closed: any percent-encoding ('%') is rejected (libpq
+#     decodes it into connection keywords the guard cannot vet — e.g. `%68ost`→
+#     host), and any query key outside the strict connection-target-INERT
+#     allowlist {sslmode} is rejected. libpq honours connection keywords over the
+#     vetted authority host, so an unvetted key is a no-override bypass to a
+#     remote DROP.
 #   * Protected db names are ALWAYS rejected (even locally, even with override):
 #     postgres, template0, template1, production, prod, main, master.
 #   * Prod-like environments (APP_ENV/ENVIRONMENT/ENV in {prod, production,
@@ -49,7 +51,8 @@ Default allowlist (no override needed):
 Always rejected (even locally, even with the override):
   db    : postgres, template0, template1, production, prod, main, master
   db    : any name with characters outside [A-Za-z0-9_-]
-  query : libpq connection-target keywords host/hostaddr/port/dbname/service
+  query : any percent-encoding ('%'), or any key other than sslmode
+          (libpq decodes/honours connection keywords over the vetted host)
   env   : APP_ENV / ENVIRONMENT / ENV in {prod, production, staging}
 
 Non-local target override (deliberate, high-friction, SEPARATE from DATABASE_URL):
@@ -121,17 +124,31 @@ if [[ -z "$host" ]]; then
   reject "could not parse a host from DATABASE_URL (empty/local-socket hosts are not allowed)"
 fi
 
-# --- Connection-target query keywords: ALWAYS rejected. ----------------------
+# --- Query string: strict connection-target-INERT allowlist + no encoding. ---
 # libpq honours connection keywords supplied in the URI query string
-# (host, hostaddr, port, dbname, service), and they OVERRIDE the authority host
-# this guard validated (e.g. `.../market_ops?host=db.prod.internal` connects to
-# db.prod.internal, not localhost). The destructive db:reset re-attaches the
-# query to its maintenance URL, so an unvetted connection-target keyword is a
-# no-override bypass reaching a remote DROP. Fail closed on any of them, matched
-# as real query keys (not substrings) and case-insensitively. Non-connection
-# params such as sslmode remain allowed. The value is never printed.
+# (host, hostaddr, port, dbname, service, and aliases), and they OVERRIDE the
+# authority host this guard validated (e.g. `.../market_ops?host=db.prod.internal`
+# connects to db.prod.internal, not localhost). The destructive db:reset
+# re-attaches the query to its maintenance URL, so ANY unvetted key is a
+# no-override bypass reaching a remote DROP.
+#
+# A denylist of raw keyword strings is the WRONG shape: libpq PERCENT-DECODES
+# query keys AFTER this guard would compare them, so `%68ost`→host, `%70ort`→port,
+# `%73ervice`→service slip past a raw-string denylist and re-target the DROP. We
+# therefore FAIL CLOSED two ways, together closing the entire encoding-trick class:
+#   1. Reject if the query string contains ANY literal '%' (percent-encoding).
+#      No decoded keyword can then reach libpq, whatever its encoded form.
+#   2. Reject if ANY query key is outside a strict allowlist of params proven not
+#      to affect the connection target. Only `sslmode` is allowed — the sole
+#      query param used by the CI and dev (`tools/dev/up.sh`) URLs. If a future
+#      local flow needs another param, add it here ONLY after confirming it is
+#      connection-target-inert; when unsure, do not add it (fail closed).
+# Keys are compared case-insensitively. The value is never printed.
 if [[ "$DATABASE_URL" == *\?* ]]; then
   query="${DATABASE_URL#*\?}"
+  if [[ "$query" == *%* ]]; then
+    reject "DATABASE_URL query string contains percent-encoding, which libpq decodes into connection keywords the guard cannot vet; remove it (only a plain 'sslmode' param is permitted)"
+  fi
   # libpq/URI param separator is '&'. Iterate keys only.
   saved_ifs="$IFS"
   IFS='&'
@@ -140,10 +157,12 @@ if [[ "$DATABASE_URL" == *\?* ]]; then
   IFS="$saved_ifs"
   for param in "${params[@]}"; do
     [[ -z "$param" ]] && continue
-    key="${param%%=*}"
-    case "$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')" in
-      host | hostaddr | port | dbname | service)
-        reject "DATABASE_URL query string sets connection-target keyword '$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')', which libpq honours over the vetted host/database; remove it from DATABASE_URL (only non-connection params like sslmode are permitted)"
+    key="$(printf '%s' "${param%%=*}" | tr '[:upper:]' '[:lower:]')"
+    case "$key" in
+      sslmode)
+        ;;
+      *)
+        reject "DATABASE_URL query key '${key}' is not in the connection-target-inert allowlist {sslmode}; libpq may honour it over the vetted host/database, so it is refused (remove all query params except sslmode)"
         ;;
     esac
   done
