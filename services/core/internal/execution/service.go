@@ -206,15 +206,10 @@ func (s *Service) Execute(ctx context.Context, cardID uuid.UUID, actor audit.Act
 	q := db.New(s.pool)
 
 	// Idempotent replay: a prior write for this action returns its recorded state
-	// without touching the marketplace again (EXE-002).
+	// without touching the marketplace again (EXE-002). replayWrite additionally
+	// self-heals a card a crash left stranded behind its recorded external state.
 	if existing, err := q.GetActionExecutionByAction(ctx, card.ActionID); err == nil {
-		return ExecuteResult{
-			ActionID:      card.ActionID,
-			CardID:        card.ID,
-			Mode:          ModeWrite,
-			ExternalState: ExternalState(existing.ExternalState),
-			DidWrite:      false,
-		}, nil
+		return s.replayWrite(ctx, card, existing, actor)
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return ExecuteResult{}, err
 	}
@@ -230,7 +225,14 @@ func (s *Service) Execute(ctx context.Context, cardID uuid.UUID, actor audit.Act
 		return ExecuteResult{}, err
 	}
 
-	if approval.State(card.State) != approval.StateApproved {
+	// Restart-safe entry (EXE-002/003): a fresh Approved card executes; a card a
+	// crash left in Revalidating or Executing (with no execution record — the replay
+	// above already handled the record-exists case) RESUMES the write path from
+	// where it stopped. No other state is executable — everything else fails closed
+	// with ErrNotApproved and no state change.
+	state := approval.State(card.State)
+	resumableWrite := state == approval.StateRevalidating || state == approval.StateExecuting
+	if state != approval.StateApproved && !resumableWrite {
 		return ExecuteResult{}, ErrNotApproved
 	}
 
@@ -242,7 +244,65 @@ func (s *Service) Execute(ctx context.Context, cardID uuid.UUID, actor audit.Act
 	if rc.Enablement.CanWrite() {
 		return s.executeWrite(ctx, card, rc, actor)
 	}
+	// Writes are OFF (recommend-only, EXE-005). Recommend-only tracking only begins
+	// from a fresh Approved card; a card stranded mid-write with writes now OFF is an
+	// inconsistent state we NEVER silently reroute to recommend-only — fail closed,
+	// state unchanged, for explicit reconciliation.
+	if state != approval.StateApproved {
+		return ExecuteResult{}, ErrNotApproved
+	}
 	return s.recordRecommendOnly(ctx, card, rc, actor)
+}
+
+// replayWrite replays an already-recorded write execution WITHOUT any new external
+// write (EXE-002 idempotent replay) and, if a crash left the card stranded behind
+// its recorded external state, self-heals the card so it converges. The only
+// stranding reachable: the durable claim + external write committed (execution
+// record = pending_reconciliation) but the result-commit transaction that advances
+// the card never ran — leaving the card in Executing while the external result is
+// ambiguous. Converging the card to PendingReconciliation makes it visible to
+// reconciliation (authoritative read-back), which resolves it to a terminal state;
+// the ambiguous result is NEVER inferred as success/failure (EXE-003). It is
+// idempotent: a card already at the recorded state is returned untouched, and a
+// concurrent resume that won the transition is tolerated (ErrRejectedTransition).
+func (s *Service) replayWrite(ctx context.Context, card db.ApprovalCard, existing db.ActionExecution, actor audit.Actor) (ExecuteResult, error) {
+	extState := ExternalState(existing.ExternalState)
+	want := cardStateFor(extState)
+	// The only reachable stranding is a pending claim whose result-commit crashed:
+	// the record is pending_reconciliation while the card is still Executing. A
+	// terminal record always advanced its card in the SAME transaction, so it can
+	// never be found behind an Executing card — restricting the heal to the pending
+	// case keeps replay from skipping the terminal path's outcome-window open.
+	if approval.State(card.State) == approval.StateExecuting && want == approval.StatePendingReconciliation {
+		binding, err := bindingOf(card)
+		if err != nil {
+			return ExecuteResult{}, err
+		}
+		// Append the external_result audit that the crashed result-commit never wrote
+		// (AUD-001: a state change carries its audit row), recording that this call
+		// wrote NOTHING and the result stays pending reconciliation.
+		if _, err := s.advanceWithAudit(ctx, card, approval.StateExecuting, want,
+			"recovery:converge_to_"+string(extState), audit.Event{
+				ActionID: card.ActionID, CardID: card.ID, AccountID: card.MarketplaceAccountID,
+				Type: audit.EventExternalResult, Actor: actor, Binding: binding,
+				CardSnapshot: cardSnapshot(card), Detail: map[string]any{
+					"external_state": extState,
+					"external_ref":   existing.ExternalRef,
+					"wrote":          false,
+					"recovery":       true,
+				},
+				TerminalState: string(extState),
+			}); err != nil && !errors.Is(err, recommendation.ErrRejectedTransition) {
+			return ExecuteResult{}, err
+		}
+	}
+	return ExecuteResult{
+		ActionID:      card.ActionID,
+		CardID:        card.ID,
+		Mode:          ModeWrite,
+		ExternalState: extState,
+		DidWrite:      false,
+	}, nil
 }
 
 // executeWrite runs the §8.4 Approved → Revalidating → Executing → terminal write
@@ -257,34 +317,49 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 		return ExecuteResult{}, err
 	}
 
+	// Restart-safe §8.4 prelude: apply ONLY the transitions not already taken, so a
+	// card a crash left in Revalidating/Executing resumes from where it stopped. No
+	// step is re-applied (append-only, FROM-guarded); the idempotent claim below
+	// guarantees AT MOST ONE external write no matter how often this resumes.
+	state := approval.State(card.State)
+
 	// Approved → Revalidating (its append-only §8.4 history row is written in the
 	// same transaction by AdvanceTx; the semantic audit events land below).
-	if _, err := s.advance(ctx, card, approval.StateApproved, approval.StateRevalidating, "revalidation started"); err != nil {
-		return ExecuteResult{}, err
-	}
-
-	gate := EvaluateGates(rc.Inputs)
-	if !gate.OK {
-		s.tel.gateBlocked(ctx, card, gate.Failed, ModeWrite)
-		if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateInvalidated,
-			"gate_blocked:"+string(gate.Failed), audit.Event{
-				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
-				CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason},
-			}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil {
+	if state == approval.StateApproved {
+		if _, err := s.advance(ctx, card, approval.StateApproved, approval.StateRevalidating, "revalidation started"); err != nil {
 			return ExecuteResult{}, err
 		}
-		return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite, Blocked: true, FailedGate: gate.Failed}, nil
+		state = approval.StateRevalidating
 	}
 
-	// Revalidating → Executing + execution_started audit (atomic).
-	if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateExecuting,
-		"revalidated; executing", audit.Event{
-			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-			Type: audit.EventExecutionStarted, Actor: actor, Binding: binding,
-			CardSnapshot: cardSnapshot(card),
-		}); err != nil {
-		return ExecuteResult{}, err
+	// Gate + Revalidating → Executing. Re-validation runs on resume from
+	// Revalidating; a card already in Executing skips the gate (it already passed and
+	// committed to the write — Executing has no →Invalidated edge, and the claim is
+	// idempotent so re-driving cannot double-write).
+	if state == approval.StateRevalidating {
+		gate := EvaluateGates(rc.Inputs)
+		if !gate.OK {
+			s.tel.gateBlocked(ctx, card, gate.Failed, ModeWrite)
+			if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateInvalidated,
+				"gate_blocked:"+string(gate.Failed), audit.Event{
+					ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+					Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
+					CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason},
+				}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil {
+				return ExecuteResult{}, err
+			}
+			return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite, Blocked: true, FailedGate: gate.Failed}, nil
+		}
+
+		// Revalidating → Executing + execution_started audit (atomic).
+		if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateExecuting,
+			"revalidated; executing", audit.Event{
+				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+				Type: audit.EventExecutionStarted, Actor: actor, Binding: binding,
+				CardSnapshot: cardSnapshot(card),
+			}); err != nil {
+			return ExecuteResult{}, err
+		}
 	}
 
 	req := WriteRequest{
