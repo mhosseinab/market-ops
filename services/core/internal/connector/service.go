@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -23,6 +24,45 @@ var ErrNotConnected = errors.New("connector: account is not connected")
 // side effect: the guard runs before any DK call or write.
 var ErrAccountNotFound = errors.New("connector: account not found")
 
+// ErrSyncUnavailable is returned by SyncCatalog when no sync enqueuer is wired
+// (e.g. the job pipeline failed to start). It fails CLOSED: the caller learns the
+// sync could not be initiated rather than silently believing one was queued.
+var ErrSyncUnavailable = errors.New("connector: catalog sync enqueuer is not configured")
+
+// SyncState is the durable state of the latest catalog synchronization run
+// (ACC-004/ACC-005). It is EVIDENCE of completed work, distinct from catalog_read
+// capability support (which only means the operation is allowed). "none" means no
+// run has ever been recorded for the account.
+type SyncState string
+
+const (
+	SyncNone      SyncState = "none"
+	SyncQueued    SyncState = "queued"
+	SyncRunning   SyncState = "running"
+	SyncCompleted SyncState = "completed"
+	SyncFailed    SyncState = "failed"
+)
+
+// CatalogSyncState is the reconciled view of the account's latest catalog-sync
+// run, mapped from durable catalog_sync_runs. It is what the gateway maps onto
+// the CatalogSyncStatus contract type.
+type CatalogSyncState struct {
+	State     SyncState
+	LastRunAt *time.Time
+	Detail    string
+}
+
+// SyncEnqueuer initiates a catalog synchronization for an account. It is a
+// substitutable seam (dependency inversion): the binary wires a River-backed
+// implementation once the job pipeline exists; tests substitute a fake to assert
+// exactly-one / zero enqueue without a database. The connector never enqueues
+// directly, so its unit tests need no job infrastructure.
+type SyncEnqueuer interface {
+	// EnqueueIncrementalSync transactionally creates a sync run and enqueues the
+	// incremental-sync job for the org-scoped account, returning the new run id.
+	EnqueueIncrementalSync(ctx context.Context, organizationID, accountID uuid.UUID) (uuid.UUID, error)
+}
+
 // ConnectionState mirrors the persisted connection_state values.
 type ConnectionState string
 
@@ -32,22 +72,27 @@ const (
 )
 
 // Snapshot is the reconciled connector view returned by every Service operation:
-// the connection state plus the capability registry. It is what the gateway maps
-// onto ConnectorStatus.
+// the connection state, the capability registry, and the durable catalog-sync
+// state. It is what the gateway maps onto ConnectorStatus.
 type Snapshot struct {
 	AccountID  uuid.UUID
 	Connection ConnectionState
 	Registry   *Registry
+	// CatalogSync is the latest catalog-sync run state (ACC-004/ACC-005). Nil
+	// when the account is disconnected (no meaningful sync); non-nil otherwise,
+	// defaulting to SyncNone when no run has been recorded.
+	CatalogSync *CatalogSyncState
 }
 
 // Service is the connector orchestration seam: it exchanges/refreshes tokens
 // (sealing them at rest), seeds the nine capabilities at Unknown, runs probes,
 // and reconciles the persisted status. It is the producer the gateway consumes.
 type Service struct {
-	store  Store
-	cipher *Cipher
-	dk     *DKClient
-	opts   ProbeOptions
+	store   Store
+	cipher  *Cipher
+	dk      *DKClient
+	opts    ProbeOptions
+	syncEnq SyncEnqueuer
 }
 
 // NewService wires a Service. The cipher fails closed on a missing key at
@@ -59,6 +104,13 @@ func NewService(store Store, cipher *Cipher, dk *DKClient) *Service {
 
 // WithProbeOptions sets sample identifiers used by per-variant probes.
 func (s *Service) WithProbeOptions(o ProbeOptions) *Service { s.opts = o; return s }
+
+// SetSyncEnqueuer wires the catalog-sync enqueuer. It is set AFTER the job
+// pipeline exists (the River client outlives connector construction), mirroring
+// the execution/reopen dispatcher pattern. Set once before the HTTP server
+// serves; no concurrent access to the field. Until set, SyncCatalog fails closed
+// with ErrSyncUnavailable rather than pretending a sync was queued.
+func (s *Service) SetSyncEnqueuer(e SyncEnqueuer) { s.syncEnq = e }
 
 // assertOwned is the organization ownership guard (S8-AUTHZ-001). It resolves the
 // account id ONLY when it belongs to organizationID; a foreign or unknown account
@@ -201,7 +253,94 @@ func (s *Service) Status(ctx context.Context, organizationID, accountID uuid.UUI
 		return Snapshot{}, err
 	}
 	snap.Registry = reg
+
+	// Durable catalog-sync evidence (ACC-004/ACC-005): the latest run's state, or
+	// SyncNone when none has ever run. A missing row is the honest "never synced"
+	// default, NOT an error — capability support alone never implies a sync ran.
+	sync, err := s.latestSyncState(ctx, accountID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snap.CatalogSync = sync
 	return snap, nil
+}
+
+// latestSyncState reads the account's most recent catalog_sync_runs row and maps
+// it to a CatalogSyncState. A pgxNoRows result is the fail-open-to-"none" default
+// (no sync has ever run); any other error propagates.
+func (s *Service) latestSyncState(ctx context.Context, accountID uuid.UUID) (*CatalogSyncState, error) {
+	run, err := s.store.GetLatestCatalogSyncRun(ctx, accountID)
+	switch {
+	case err == nil:
+		return mapSyncRun(run), nil
+	case errors.Is(err, pgxNoRows):
+		return &CatalogSyncState{State: SyncNone}, nil
+	default:
+		return nil, fmt.Errorf("connector: load latest catalog sync run: %w", err)
+	}
+}
+
+// mapSyncRun projects a durable catalog_sync_runs row onto the CatalogSyncState
+// the gateway renders. The run's persisted status ("running"/"completed"/
+// "failed") is reported verbatim — never inferred from capability state. A
+// failed run's recorded error is surfaced as recovery-oriented detail (§8 free
+// text; no authority).
+func mapSyncRun(run db.CatalogSyncRun) *CatalogSyncState {
+	started := run.StartedAt.UTC()
+	st := &CatalogSyncState{State: SyncState(run.Status), LastRunAt: &started}
+	if run.Status == string(SyncFailed) && run.Error != "" {
+		st.Detail = run.Error
+	}
+	return st
+}
+
+// SyncCatalog initiates an idempotent catalog synchronization (ACC-004/ACC-005)
+// and returns the reconciled status. It fails CLOSED on catalog_read: while that
+// capability is not Supported no sync is enqueued (§15.2, "Unknown never enables
+// dependent logic"). It is idempotent — a sync already in-flight is never
+// duplicated; the caller observes the current durable state instead.
+func (s *Service) SyncCatalog(ctx context.Context, organizationID, accountID uuid.UUID) (Snapshot, error) {
+	// Ownership guard BEFORE any read or enqueue: a cross-organization account
+	// yields ErrAccountNotFound with no side effect (S8-AUTHZ-001).
+	if err := s.assertOwned(ctx, organizationID, accountID); err != nil {
+		return Snapshot{}, err
+	}
+	// Capability gate: catalog_read MUST be Supported. Unknown/Unsupported/
+	// Degraded fail closed with ErrCapabilityNotSupported and enqueue nothing.
+	if err := s.requireCapabilities(ctx, organizationID, accountID, CatalogRead); err != nil {
+		return Snapshot{}, err
+	}
+	// Idempotency (PRD §9.1 never-cut): if a run is already in-flight, do not
+	// enqueue a duplicate — report the current durable state. An in-flight run is
+	// one whose status is still "running" (or "queued"); a terminal run
+	// (completed/failed) or no run at all is eligible to start a fresh sync.
+	inFlight, err := s.syncInFlight(ctx, accountID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	if !inFlight {
+		if s.syncEnq == nil {
+			return Snapshot{}, ErrSyncUnavailable
+		}
+		if _, err := s.syncEnq.EnqueueIncrementalSync(ctx, organizationID, accountID); err != nil {
+			return Snapshot{}, fmt.Errorf("connector: enqueue catalog sync: %w", err)
+		}
+	}
+	return s.Status(ctx, organizationID, accountID)
+}
+
+// syncInFlight reports whether the account's latest sync run is still active
+// (running/queued) — the guard that makes SyncCatalog idempotent. No run, or a
+// terminal (completed/failed) run, is not in-flight.
+func (s *Service) syncInFlight(ctx context.Context, accountID uuid.UUID) (bool, error) {
+	run, err := s.store.GetLatestCatalogSyncRun(ctx, accountID)
+	switch {
+	case errors.Is(err, pgxNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("connector: load latest catalog sync run: %w", err)
+	}
+	return run.Status == string(SyncRunning) || run.Status == string(SyncQueued), nil
 }
 
 // capabilityRegistry loads the account's persisted capability snapshot into a

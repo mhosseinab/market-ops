@@ -7,9 +7,11 @@ from uuid import UUID
 from attrs import define as _attrs_define
 
 from ..models.connector_connection_state import ConnectorConnectionState
+from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
     from ..models.capability_status import CapabilityStatus
+    from ..models.catalog_sync_status import CatalogSyncStatus
 
 
 T = TypeVar("T", bound="ConnectorStatus")
@@ -24,11 +26,15 @@ class ConnectorStatus:
             marketplace_account_id (UUID):
             connection_state (ConnectorConnectionState): Whether the DK connection is currently established.
             capabilities (list[CapabilityStatus]): All nine §15.2 capabilities, always present.
+            catalog_sync (CatalogSyncStatus | Unset): The account's latest catalog-sync run, derived from durable
+                catalog_sync_runs. Onboarding advances the "sync catalog" step ONLY when `state` is `completed` — never from
+                capability availability.
     """
 
     marketplace_account_id: UUID
     connection_state: ConnectorConnectionState
     capabilities: list[CapabilityStatus]
+    catalog_sync: CatalogSyncStatus | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         marketplace_account_id = str(self.marketplace_account_id)
@@ -40,6 +46,10 @@ class ConnectorStatus:
             capabilities_item = capabilities_item_data.to_dict()
             capabilities.append(capabilities_item)
 
+        catalog_sync: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.catalog_sync, Unset):
+            catalog_sync = self.catalog_sync.to_dict()
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -49,12 +59,15 @@ class ConnectorStatus:
                 "capabilities": capabilities,
             }
         )
+        if catalog_sync is not UNSET:
+            field_dict["catalogSync"] = catalog_sync
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
         from ..models.capability_status import CapabilityStatus
+        from ..models.catalog_sync_status import CatalogSyncStatus
 
         d = dict(src_dict)
         marketplace_account_id = UUID(d.pop("marketplaceAccountId"))
@@ -68,10 +81,18 @@ class ConnectorStatus:
 
             capabilities.append(capabilities_item)
 
+        _catalog_sync = d.pop("catalogSync", UNSET)
+        catalog_sync: CatalogSyncStatus | Unset
+        if isinstance(_catalog_sync, Unset):
+            catalog_sync = UNSET
+        else:
+            catalog_sync = CatalogSyncStatus.from_dict(_catalog_sync)
+
         connector_status = cls(
             marketplace_account_id=marketplace_account_id,
             connection_state=connection_state,
             capabilities=capabilities,
+            catalog_sync=catalog_sync,
         )
 
         return connector_status

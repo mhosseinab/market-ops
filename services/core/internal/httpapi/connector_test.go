@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -38,6 +39,10 @@ func (f *fakeConnector) Disconnect(_ context.Context, org, acc uuid.UUID) (conne
 	return f.snap, f.err
 }
 func (f *fakeConnector) Status(_ context.Context, org, acc uuid.UUID) (connector.Snapshot, error) {
+	f.lastOrg, f.lastAcc = org, acc
+	return f.snap, f.err
+}
+func (f *fakeConnector) SyncCatalog(_ context.Context, org, acc uuid.UUID) (connector.Snapshot, error) {
 	f.lastOrg, f.lastAcc = org, acc
 	return f.snap, f.err
 }
@@ -171,6 +176,7 @@ func TestConnectorHandlersScopeToAuthenticatedOrg(t *testing.T) {
 		{"connect", http.MethodPost, "/connector/connect", `{"marketplaceAccountId":"` + foreignAccount.String() + `","authorizationCode":"code"}`},
 		{"refresh", http.MethodPost, "/connector/refresh", `{"marketplaceAccountId":"` + foreignAccount.String() + `"}`},
 		{"disconnect", http.MethodPost, "/connector/disconnect", `{"marketplaceAccountId":"` + foreignAccount.String() + `"}`},
+		{"sync", http.MethodPost, "/connector/catalog/sync", `{"marketplaceAccountId":"` + foreignAccount.String() + `"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -213,6 +219,7 @@ func TestConnectorHandlersRequireSession(t *testing.T) {
 		{http.MethodPost, "/connector/connect", `{"marketplaceAccountId":"` + acct + `","authorizationCode":"c"}`},
 		{http.MethodPost, "/connector/refresh", `{"marketplaceAccountId":"` + acct + `"}`},
 		{http.MethodPost, "/connector/disconnect", `{"marketplaceAccountId":"` + acct + `"}`},
+		{http.MethodPost, "/connector/catalog/sync", `{"marketplaceAccountId":"` + acct + `"}`},
 	}
 	for _, tc := range cases {
 		fc.lastOrg = uuid.Nil
@@ -232,5 +239,75 @@ func TestConnectorHandlersRequireSession(t *testing.T) {
 		if fc.lastOrg != uuid.Nil {
 			t.Fatalf("%s %s reached the connector service without a session", tc.method, tc.path)
 		}
+	}
+}
+
+// TestSyncCatalogEndpointMapsDurableState proves the sync endpoint returns the
+// reconciled status including the durable catalogSync state (issue #76). The
+// state is EVIDENCE of completed work, distinct from capability support.
+func TestSyncCatalogEndpointMapsDurableState(t *testing.T) {
+	acct := uuid.New()
+	started := time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC)
+	fc := &fakeConnector{snap: connector.Snapshot{
+		AccountID:   acct,
+		Connection:  connector.Connected,
+		Registry:    connector.NewRegistry(),
+		CatalogSync: &connector.CatalogSyncState{State: connector.SyncRunning, LastRunAt: &started},
+	}}
+	fa := newFakeAuth()
+	ownerSession(fa)
+	srv := serverWithConnector(fa, fc)
+
+	rec := httptest.NewRecorder()
+	body := `{"marketplaceAccountId":"` + acct.String() + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/connector/catalog/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		CatalogSync *struct {
+			State     string `json:"state"`
+			LastRunAt string `json:"lastRunAt"`
+		} `json:"catalogSync"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.CatalogSync == nil || got.CatalogSync.State != "running" {
+		t.Fatalf("catalogSync = %+v, want state running", got.CatalogSync)
+	}
+}
+
+// TestSyncCatalogEndpointCapabilityNotSupported proves the fail-closed capability
+// gate surfaces as 409 CAPABILITY_NOT_SUPPORTED (§15.2): a non-Supported
+// catalog_read refuses the operation at the transport boundary.
+func TestSyncCatalogEndpointCapabilityNotSupported(t *testing.T) {
+	fc := &fakeConnector{err: connector.ErrCapabilityNotSupported}
+	fa := newFakeAuth()
+	ownerSession(fa)
+	srv := serverWithConnector(fa, fc)
+
+	rec := httptest.NewRecorder()
+	body := `{"marketplaceAccountId":"` + uuid.NewString() + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/connector/catalog/sync", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body=%s", rec.Code, rec.Body.String())
+	}
+	var env struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Code != "CAPABILITY_NOT_SUPPORTED" {
+		t.Errorf("code = %q, want CAPABILITY_NOT_SUPPORTED", env.Code)
 	}
 }

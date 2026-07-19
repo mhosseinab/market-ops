@@ -418,6 +418,13 @@ func run() error {
 			// reopen atomically enqueues its durable delivery intent (issue #49). Set
 			// before the HTTP server serves — no concurrent access to the field.
 			identitySvc.SetReopenDispatcher(identity.NewJobReopenDispatcher(jobsClient))
+			// Wire the catalog-sync enqueuer now that the River client exists, so the
+			// onboarding "Sync catalog" control can initiate an idempotent incremental
+			// sync (issue #76, ACC-004/ACC-005). Nil-safe: without a wired connector
+			// there is nothing to arm, and SyncCatalog fails closed until this is set.
+			if connSvc != nil {
+				connSvc.SetSyncEnqueuer(catalog.NewSyncEnqueuer(jobsClient, pool))
+			}
 			logger.Info("job pipeline started (recommend-only matcher, outcome close, daily briefing, execution dispatch, reopen dispatch)")
 		}
 	} else {

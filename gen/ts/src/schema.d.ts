@@ -104,6 +104,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/connector/catalog/sync": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start (or resume) an idempotent catalog synchronization.
+         * @description Enqueues an idempotent incremental catalog sync for the account and returns the reconciled connector status, including the durable `catalogSync` run state. The operation fails closed on `catalog_read`: while that capability is not Supported (Unknown/Unsupported/Degraded) no sync is enqueued (ACC-001, §15.2). It is idempotent — a sync already in-flight is never duplicated; the caller observes the current durable state instead (ACC-005). This is the ONLY control that initiates a sync; capability support alone never advances onboarding (ACC-004/ACC-005).
+         */
+        post: operations["syncCatalog"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/login": {
         parameters: {
             query?: never;
@@ -1186,6 +1206,23 @@ export interface components {
             connectionState: components["schemas"]["ConnectorConnectionState"];
             /** @description All nine §15.2 capabilities, always present. */
             capabilities: components["schemas"]["CapabilityStatus"][];
+            catalogSync?: components["schemas"]["CatalogSyncStatus"];
+        };
+        /**
+         * @description Durable state of the latest catalog synchronization run (ACC-004/ACC-005). This is EVIDENCE of completed work, distinct from `catalog_read` capability support (which only means the operation is allowed). `none` means no sync has ever run for the account.
+         * @enum {string}
+         */
+        CatalogSyncState: "none" | "queued" | "running" | "completed" | "failed";
+        /** @description The account's latest catalog-sync run, derived from durable catalog_sync_runs. Onboarding advances the "sync catalog" step ONLY when `state` is `completed` — never from capability availability. */
+        CatalogSyncStatus: {
+            state: components["schemas"]["CatalogSyncState"];
+            /**
+             * Format: date-time
+             * @description When the latest run started (RFC 3339, UTC). Absent while `state` is `none`.
+             */
+            lastRunAt?: string;
+            /** @description Recovery-oriented reason for a `failed` run. Free text only; carries no authority (PRD §8). */
+            detail?: string;
         };
         /**
          * @description Product role (PRD §2.2). Owner governs commercial boundaries and users; Operator executes day-to-day within Owner-defined permissions; Internal diagnoses data/execution and cannot change seller commercial rules.
@@ -2753,6 +2790,39 @@ export interface operations {
         };
         responses: {
             /** @description Connection disconnected; capabilities reset to Unknown. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorStatus"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    syncCatalog: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorAccountRef"];
+            };
+        };
+        responses: {
+            /** @description Sync enqueued (or already in-flight); status with sync state returned. */
             200: {
                 headers: {
                     [name: string]: unknown;

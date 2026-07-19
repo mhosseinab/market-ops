@@ -5,6 +5,8 @@ import type { components } from "@market-ops/gen-ts";
 // api_data_contracts, never hand-patched here.
 export type ConnectorStatus = components["schemas"]["ConnectorStatus"];
 export type CapabilityStatus = components["schemas"]["CapabilityStatus"];
+export type CatalogSyncStatus = components["schemas"]["CatalogSyncStatus"];
+export type CatalogSyncState = components["schemas"]["CatalogSyncState"];
 export type ConnectorCapability = components["schemas"]["ConnectorCapability"];
 export type ConnectorCapabilityState = components["schemas"]["ConnectorCapabilityState"];
 export type ConnectorConnectionState = components["schemas"]["ConnectorConnectionState"];

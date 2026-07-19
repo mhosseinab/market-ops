@@ -202,6 +202,12 @@ const (
 	ActionPairExtension       Action = "extension.pair"
 	ActionConnectorRefresh    Action = "connector.refresh"
 	ActionConnectorDisconnect Action = "connector.disconnect"
+	// ActionConnectorSync authorizes starting an idempotent catalog
+	// synchronization (ACC-004/ACC-005, issue #76). Unlike connect/refresh/
+	// disconnect (which manage the connection + tokens, Owner-only), a catalog
+	// sync ingests catalog DATA — a reversible seller-data task within the L2
+	// baseline {Owner, Operator}, mirroring cost import and capture upload.
+	ActionConnectorSync       Action = "connector.sync"
 	ActionSetNotificationTime Action = "config.notification_time"
 	ActionSetWatchlist        Action = "config.watchlist"
 	ActionSetMonitoringTier   Action = "config.monitoring_tier"
@@ -307,6 +313,10 @@ var Matrix = []Rule{
 	{ActionConnectorConnect, L2ReversibleConfig, allow(RoleOwner)},
 	{ActionConnectorRefresh, L2ReversibleConfig, allow(RoleOwner)},
 	{ActionConnectorDisconnect, L2ReversibleConfig, allow(RoleOwner)},
+	// Catalog sync ingests catalog data — a reversible seller-data task within
+	// the L2 baseline {Owner, Operator}; Internal is excluded (not a seller-data
+	// actor), and the machine gateway principal never initiates a sync.
+	{ActionConnectorSync, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	{ActionSetNotificationTime, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	{ActionSetWatchlist, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},
 	{ActionSetMonitoringTier, L2ReversibleConfig, allow(RoleOwner, RoleOperator)},

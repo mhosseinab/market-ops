@@ -23,6 +23,7 @@ type ConnectorService interface {
 	Refresh(ctx context.Context, organizationID, accountID uuid.UUID) (connector.Snapshot, error)
 	Disconnect(ctx context.Context, organizationID, accountID uuid.UUID) (connector.Snapshot, error)
 	Status(ctx context.Context, organizationID, accountID uuid.UUID) (connector.Snapshot, error)
+	SyncCatalog(ctx context.Context, organizationID, accountID uuid.UUID) (connector.Snapshot, error)
 }
 
 // ConnectConnector exchanges an auth code and returns the reconciled status.
@@ -109,6 +110,29 @@ func (s *gatewayServer) GetConnectorStatus(
 	return gateway.GetConnectorStatus200JSONResponse(toGatewayStatus(snap)), nil
 }
 
+// SyncCatalog initiates an idempotent catalog sync and returns the reconciled
+// status (ACC-004/ACC-005). Capability gating and idempotency live in the
+// service; the transport only maps the outcome.
+func (s *gatewayServer) SyncCatalog(
+	ctx context.Context, req gateway.SyncCatalogRequestObject,
+) (gateway.SyncCatalogResponseObject, error) {
+	if s.connector == nil {
+		return gateway.SyncCatalogdefaultJSONResponse{StatusCode: 503, Body: unavailableErr()}, nil
+	}
+	if req.Body == nil {
+		return gateway.SyncCatalogdefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
+	}
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.SyncCatalogdefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
+	}
+	snap, err := s.connector.SyncCatalog(ctx, p.OrganizationID, req.Body.MarketplaceAccountId)
+	if err != nil {
+		return gateway.SyncCatalogdefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
+	}
+	return gateway.SyncCatalog200JSONResponse(toGatewayStatus(snap)), nil
+}
+
 // toGatewayStatus maps a connector.Snapshot onto the generated ConnectorStatus.
 // It always emits all nine capabilities in fixed order (ACC-001).
 func toGatewayStatus(snap connector.Snapshot) gateway.ConnectorStatus {
@@ -128,11 +152,26 @@ func toGatewayStatus(snap connector.Snapshot) gateway.ConnectorStatus {
 		}
 		caps = append(caps, cs)
 	}
-	return gateway.ConnectorStatus{
+	status := gateway.ConnectorStatus{
 		MarketplaceAccountId: snap.AccountID,
 		ConnectionState:      gateway.ConnectorConnectionState(snap.Connection),
 		Capabilities:         caps,
 	}
+	if snap.CatalogSync != nil {
+		cs := gateway.CatalogSyncStatus{
+			State: gateway.CatalogSyncState(snap.CatalogSync.State),
+		}
+		if snap.CatalogSync.LastRunAt != nil {
+			t := *snap.CatalogSync.LastRunAt
+			cs.LastRunAt = &t
+		}
+		if snap.CatalogSync.Detail != "" {
+			d := snap.CatalogSync.Detail
+			cs.Detail = &d
+		}
+		status.CatalogSync = &cs
+	}
+	return status
 }
 
 func connectorErrStatus(err error) int {
@@ -146,6 +185,15 @@ func connectorErrStatus(err error) int {
 		return 404
 	case errors.Is(err, connector.ErrNotConnected):
 		return 409
+	// catalog_read not Supported: the dependent operation is refused (fail
+	// closed, §15.2). 409 Conflict — the connection exists but its current
+	// capability state forbids the operation.
+	case errors.Is(err, connector.ErrCapabilityNotSupported):
+		return 409
+	// No sync enqueuer wired: the service could not initiate a sync. 503 — a
+	// transient wiring/availability condition, never a healthy "queued".
+	case errors.Is(err, connector.ErrSyncUnavailable):
+		return 503
 	default:
 		return 502
 	}
@@ -164,6 +212,10 @@ func connectorErr(err error) gateway.ErrorEnvelope {
 		msg = "marketplace account not found"
 	case errors.Is(err, connector.ErrNotConnected):
 		code = "NOT_CONNECTED"
+	case errors.Is(err, connector.ErrCapabilityNotSupported):
+		code = "CAPABILITY_NOT_SUPPORTED"
+	case errors.Is(err, connector.ErrSyncUnavailable):
+		code = "SYNC_UNAVAILABLE"
 	}
 	return gateway.ErrorEnvelope{Code: code, Message: msg}
 }
