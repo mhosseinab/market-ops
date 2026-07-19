@@ -164,8 +164,10 @@ func (s *Service) decideWithReason(
 // (Obsolete for a redirect, NeedsReview otherwise), records the append-only
 // audit, and emits the append-only recommendation-invalidation event that
 // downstream packages subscribe to (consumed in S17 to expire dependent
-// recommendations). After the transaction commits, the in-process sink is
-// notified. Returns the emitted event.
+// recommendations). The durable delivery intent is enqueued INSIDE this same
+// transaction (issue #49) so it commits atomically with the state change and the
+// event row; a committed reopen therefore always carries its durable delivery and can
+// never be permanently lost. Returns the emitted event.
 func (s *Service) Reopen(ctx context.Context, identityID uuid.UUID, reason ReopenReason, actor Actor) (MappingReopenedEvent, error) {
 	if !reason.Valid() {
 		return MappingReopenedEvent{}, ErrInvalidReason
@@ -240,10 +242,6 @@ func (s *Service) Reopen(ctx context.Context, identityID uuid.UUID, reason Reope
 		}
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return MappingReopenedEvent{}, fmt.Errorf("identity: commit reopen tx: %w", err)
-	}
-
 	domainEvent := MappingReopenedEvent{
 		EventID:    event.ID,
 		AccountID:  event.MarketplaceAccountID,
@@ -254,10 +252,35 @@ func (s *Service) Reopen(ctx context.Context, identityID uuid.UUID, reason Reope
 		EmittedAt:  event.EmittedAt,
 		NewState:   State(after.State),
 	}
-	// Notify in-process subscribers AFTER commit: a subscriber never sees an event
-	// whose state change was rolled back. The durable row is the system of record.
-	if err := s.sink.MappingReopened(ctx, domainEvent); err != nil {
-		return domainEvent, fmt.Errorf("identity: notify reopen subscriber: %w", err)
+
+	// Durable reopen dispatch (issue #49): enqueue the delivery intent on THIS
+	// transaction, so it commits ATOMICALLY with the state change, the append-only
+	// audit row, and the append-only event row. A dispatch-enqueue failure rolls the
+	// WHOLE reopen back (fail closed): the mapping stays Confirmed, no orphan event or
+	// audit row is left, and the reopen can be retried. Delivery is durable in the
+	// River job store — it no longer depends on an in-process post-commit callback
+	// that could be lost to a sink error or a crash after commit. The intent is unique
+	// by dedup key, so a deduped re-emit collapses to one durable record.
+	if s.dispatcher != nil {
+		if err := s.dispatcher.DispatchReopenTx(ctx, tx, domainEvent); err != nil {
+			return MappingReopenedEvent{}, fmt.Errorf("identity: dispatch reopen intent: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return MappingReopenedEvent{}, fmt.Errorf("identity: commit reopen tx: %w", err)
+	}
+
+	// When a durable dispatcher is wired (production), the committed River intent IS
+	// the delivery guarantee and the worker drives the idempotent consumer exactly-
+	// once-effectively; the in-process sink is intentionally NOT used (no double
+	// processing, and success never depends on it). Without a dispatcher (legacy/
+	// tests), the in-process sink is the delivery path and its error is surfaced —
+	// but it is called AFTER commit, so a subscriber never sees a rolled-back reopen.
+	if s.dispatcher == nil {
+		if err := s.sink.MappingReopened(ctx, domainEvent); err != nil {
+			return domainEvent, fmt.Errorf("identity: notify reopen subscriber: %w", err)
+		}
 	}
 	return domainEvent, nil
 }
