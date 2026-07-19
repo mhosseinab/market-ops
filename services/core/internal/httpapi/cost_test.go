@@ -73,6 +73,36 @@ func TestCostRoutesFailClosedWhenUnwired(t *testing.T) {
 	}
 }
 
+// TestSingleValuePercentRejectedAs400 is the #40 seam completion at the transport
+// boundary: a percent token entered via single-value entry is rejected seller
+// input, not a server fault. EnterSingleCost surfaces cost.ErrPercentNotMoney,
+// which must classify as HTTP 400 with the stable, disposition-parity code
+// PERCENT_NOT_MONEY (mirrors the CSV preview reason percent_not_money) — never
+// the default 500/COST_ERROR arm that pollutes 5xx budgets.
+func TestSingleValuePercentRejectedAs400(t *testing.T) {
+	fake := &fakeCost{err: cost.ErrPercentNotMoney}
+	srv := NewServer(":0", BuildInfo{}, testLogger(), WithCost(fake))
+
+	body := `{"marketplaceAccountId":"` + uuid.New().String() +
+		`","variantId":"` + uuid.New().String() +
+		`","component":"cogs","rawValue":"۱۰٪"}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/cost/value", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	var env gateway.ErrorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode error envelope: %v", err)
+	}
+	if env.Code != "PERCENT_NOT_MONEY" {
+		t.Fatalf("error code = %q, want PERCENT_NOT_MONEY", env.Code)
+	}
+}
+
 // TestPreviewCommitRoundTrip maps the preview and commit models onto the contract.
 func TestPreviewCommitRoundTrip(t *testing.T) {
 	account := uuid.New()

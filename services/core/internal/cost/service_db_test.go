@@ -195,6 +195,31 @@ func TestCostWritesAcceptMatchingAccountVariant(t *testing.T) {
 	}
 }
 
+// TestEnterSingleCostRejectsPercentValue is the #40 seam completion at the
+// service boundary: a percent token entered via single-value entry is not Money;
+// EnterSingleCost must reject it with the stable ErrPercentNotMoney code and
+// commit NO cost profile, whether the percent is typed with Persian or Latin
+// digits (§9.1: percentages never coerce into Money).
+func TestEnterSingleCostRejectsPercentValue(t *testing.T) {
+	pool, q := newPool(t)
+	svc := cost.NewService(pool)
+	ctx := context.Background()
+
+	account, variant := seedVariant(t, q, "SKU-PCT")
+
+	for _, raw := range []string{"۱۰٪", "10%"} {
+		_, err := svc.EnterSingleCost(ctx, cost.SingleCostInput{
+			Account: account, VariantID: variant, Component: cost.ComponentCOGS, RawValue: raw,
+		})
+		if !errors.Is(err, cost.ErrPercentNotMoney) {
+			t.Fatalf("EnterSingleCost(%q) err = %v, want ErrPercentNotMoney", raw, err)
+		}
+	}
+	if n := countCostProfiles(t, pool, variant); n != 0 {
+		t.Fatalf("percent rejection committed cost profiles = %d, want 0", n)
+	}
+}
+
 // TestEnterSingleCostUnknownVariant keeps the not-found path distinct from the
 // mismatch path (unknown variant ⇒ 404 ErrVariantNotFound, not a tenant breach).
 func TestEnterSingleCostUnknownVariant(t *testing.T) {

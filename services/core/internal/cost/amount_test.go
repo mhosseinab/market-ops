@@ -98,6 +98,40 @@ func TestParseAmount_Rejections(t *testing.T) {
 	}
 }
 
+// TestParseAmount_PercentRejected is the #40 regression: a percent-bearing token
+// is NOT Money and must be rejected with a stable percent reason code — never
+// stripped and parsed as the currency amount (§9.1: percentages are basis points
+// on a distinct path, never coerced into Money). The percent characters covered
+// are ASCII %, Arabic ٪ (U+066A), and fullwidth ％ (U+FF05), in Persian, Arabic,
+// and Latin digit families.
+func TestParseAmount_PercentRejected(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		exp  int8
+	}{
+		{"persian digit arabic percent", "۱۰٪", 0}, // the exact issue reproduction
+		{"latin ascii percent", "10%", 0},          // 10%
+		{"latin arabic percent", "10٪", 0},         // 10٪
+		{"latin fullwidth percent", "10％", 0},      // 10％
+		{"arabic digit arabic percent", "٠٥٪", 0},  // Arabic-Indic digits + ٪
+		{"percent with decimals", "12.5%", -2},     // percent on a minor-unit currency
+		{"leading percent", "%10", 0},              // percent anywhere in the token
+		{"persian fullwidth percent", "۲۵％", 0},    // Persian digits + fullwidth
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseAmount(tt.raw, "IRR", tt.exp)
+			if !errors.Is(err, ErrPercentNotMoney) {
+				t.Errorf("ParseAmount(%q) err = %v, want ErrPercentNotMoney", tt.raw, err)
+			}
+			if got := amountReason(err); got != "percent_not_money" {
+				t.Errorf("amountReason for %q = %q, want percent_not_money", tt.raw, got)
+			}
+		})
+	}
+}
+
 func TestParseAmount_NegativeZeroIsZero(t *testing.T) {
 	// "-0" is not a meaningful negative; it normalizes to zero, not a rejection.
 	m, err := ParseAmount("-0", "IRR", 0)

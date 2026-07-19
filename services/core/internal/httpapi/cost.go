@@ -307,7 +307,7 @@ func costStatus(err error) int {
 		errors.Is(err, cost.ErrNoSKUColumn), errors.Is(err, cost.ErrNoComponentColumn),
 		errors.Is(err, cost.ErrMalformedCSV), errors.Is(err, cost.ErrEmptyAmount),
 		errors.Is(err, cost.ErrInvalidAmount), errors.Is(err, cost.ErrNegativeAmount),
-		errors.Is(err, cost.ErrTooManyDecimals):
+		errors.Is(err, cost.ErrTooManyDecimals), errors.Is(err, cost.ErrPercentNotMoney):
 		return 400
 	default:
 		return 500
@@ -334,6 +334,10 @@ func costErr(err error) gateway.ErrorEnvelope {
 	case errors.Is(err, cost.ErrEmptyAmount), errors.Is(err, cost.ErrInvalidAmount),
 		errors.Is(err, cost.ErrNegativeAmount), errors.Is(err, cost.ErrTooManyDecimals):
 		code = "INVALID_AMOUNT"
+	case errors.Is(err, cost.ErrPercentNotMoney):
+		// Distinct code for disposition parity with the CSV preview reason
+		// percent_not_money: a percentage is not Money (#40, §9.1).
+		code = "PERCENT_NOT_MONEY"
 	}
 	return gateway.ErrorEnvelope{Code: code, Message: err.Error()}
 }
