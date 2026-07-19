@@ -50,11 +50,18 @@ type Querier interface {
 	// second request for the same key returns NO row (the service then reads the
 	// existing record and writes nothing external).
 	ClaimActionExecution(ctx context.Context, arg ClaimActionExecutionParams) (ActionExecution, error)
-	// OBS-008 atomic dedup. A returned row = first sighting (accept the observation);
-	// an empty result = replay (dedup — create no duplicate current offer). The key
-	// carries the route, so a different route observing the same value is a distinct
-	// claim and is retained: route provenance is never collapsed away.
-	ClaimDedupKey(ctx context.Context, arg ClaimDedupKeyParams) ([]ObservationDedup, error)
+	// OBS-008 atomic dedup with evidence-hash comparison (issue #44). Returns EXACTLY
+	// one row describing the outcome of the claim:
+	//   * inserted = true  → first sighting: the row was freshly inserted with the
+	//                        incoming evidence_hash (accept the observation).
+	//   * inserted = false → the key already existed: the row carries the STORED
+	//                        (original) evidence_hash, so the caller can compare it to
+	//                        the incoming hash. Equal ⇒ a true replay (idempotent
+	//                        no-op); UNEQUAL ⇒ a material conflict (fail closed, record
+	//                        it, never overwrite the authoritative current offer).
+	// The key carries the route, so a different route observing the same value is a
+	// distinct claim and is retained: route provenance is never collapsed away.
+	ClaimDedupKey(ctx context.Context, arg ClaimDedupKeyParams) (ClaimDedupKeyRow, error)
 	// Atomically claim an unclaimed, unexpired, unrevoked pairing code, minting the
 	// scoped capture credential in the same statement. The code_hash is cleared so a
 	// code is strictly single-use; a second claim matches no row. Returns the row
@@ -361,6 +368,12 @@ type Querier interface {
 	// this (variant, component); the UNIQUE (variant, component, version) constraint
 	// makes a concurrent double-insert fail closed rather than silently collide.
 	InsertCostProfileVersion(ctx context.Context, arg InsertCostProfileVersionParams) (CostProfile, error)
+	// APPEND-ONLY dedup conflict record (issue #44). Written when a capture collides on
+	// the dedup key but carries a materially different evidence envelope (its canonical
+	// evidence hash differs from the stored one). Preserves BOTH hashes and the full
+	// conflicting envelope (raw tokens, money quarantine) so the dropped evidence is
+	// auditable — the second capture is never silently lost. INSERT-only.
+	InsertDedupConflict(ctx context.Context, arg InsertDedupConflictParams) (ObservationDedupConflict, error)
 	// Opens the once-per-business-day digest header. ON CONFLICT DO NOTHING makes the
 	// River digest job idempotent per business day: a retry inserts nothing and
 	// returns no row (no duplicate digest, no duplicate send).
@@ -475,6 +488,8 @@ type Querier interface {
 	// Full version history for one (variant, component), newest first — the versioned
 	// cost-profile list the product-detail screen renders.
 	ListCostProfileVersions(ctx context.Context, arg ListCostProfileVersionsParams) ([]CostProfile, error)
+	// Append-only dedup conflicts for a target, newest first (review/introspection).
+	ListDedupConflictsByTarget(ctx context.Context, arg ListDedupConflictsByTargetParams) ([]ObservationDedupConflict, error)
 	// The membership of one digest, in insertion order (the shared event ids).
 	ListDigestItems(ctx context.Context, digestID uuid.UUID) ([]NotificationDigestItem, error)
 	// Load every engaged switch so the observer can evaluate the layered stop in

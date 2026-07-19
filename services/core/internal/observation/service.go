@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -24,6 +25,15 @@ var ErrTargetNotFound = errors.New("observation: target not found")
 // variant or earn an identity-valid stamp for a mismatched native id.
 var ErrIdentityMismatch = errors.New("observation: capture identity does not match target")
 
+// ErrDedupEvidenceConflict is returned when a capture collides on the dedup key
+// (OBS-008) but carries a MATERIALLY DIFFERENT evidence envelope (its canonical
+// EvidenceHash differs from the stored one) — issue #44. The ingest FAILS CLOSED:
+// the conflicting evidence is preserved append-only and an auditable conflict
+// record is written, but the capture is NEVER reported as an idempotent replay and
+// NEVER overwrites the authoritative current offer. Event deduplication is a §4.6
+// never-cut invariant: a materially different capture must not be silently dropped.
+var ErrDedupEvidenceConflict = errors.New("observation: dedup key collision with materially different evidence")
+
 // Service is the observation store: it syncs targets from Confirmed identities
 // (OBS-001), ingests append-only evidence, derives the current Observed Offer
 // view with route provenance (OBS-008), and runs the OBS-004 expiry sweep. It
@@ -32,16 +42,27 @@ type Service struct {
 	pool *pgxpool.Pool
 	// now is injectable so tests can drive freshness/expiry deterministically.
 	now func() time.Time
+	// logger carries the structured observability signal for the dedup conflict
+	// boundary (issue #44); defaults to slog.Default().
+	logger *slog.Logger
 }
 
 // NewService builds an observation Service bound to the pool.
 func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool, now: time.Now}
+	return &Service{pool: pool, now: time.Now, logger: slog.Default()}
 }
 
 // WithClock overrides the clock (tests only).
 func (s *Service) WithClock(now func() time.Time) *Service {
 	s.now = now
+	return s
+}
+
+// WithLogger overrides the structured logger.
+func (s *Service) WithLogger(logger *slog.Logger) *Service {
+	if logger != nil {
+		s.logger = logger
+	}
 	return s
 }
 
@@ -112,6 +133,12 @@ type IngestResult struct {
 	// evidence row and no duplicate current offer were created; provenance is
 	// retained.
 	Deduped bool
+	// Conflict is true when the capture collided on the dedup key but carried a
+	// materially different evidence envelope (issue #44): it was NOT accepted as a
+	// replay and did NOT overwrite the current offer; the conflicting evidence was
+	// preserved append-only and an auditable conflict record written. Callers must
+	// treat this as a blocked, fail-closed outcome — never as success.
+	Conflict bool
 	// ObservationID is the append-only evidence row id (uuid.Nil when deduped).
 	ObservationID uuid.UUID
 	// Quality is the derived quality state of the accepted capture.
@@ -158,6 +185,7 @@ func (s *Service) Ingest(ctx context.Context, c Capture) (IngestResult, error) {
 	freshWindow := time.Duration(target.FreshnessDeadlineSeconds) * time.Second
 	deadline := c.CapturedAt.Add(freshWindow)
 	dedupKey := DedupKey(c)
+	evidenceHash := EvidenceHash(c)
 	now := s.now()
 
 	// Load any existing current offer (for the §16 disappearance close path).
@@ -194,22 +222,66 @@ func (s *Service) Ingest(ctx context.Context, c Capture) (IngestResult, error) {
 		HasHistory:    analysis.hasHistory,
 	})
 
-	// OBS-008 dedup claim. Empty result ⇒ replay: create no duplicate evidence and
-	// no duplicate current offer, but keep provenance intact.
-	claimed, err := q.ClaimDedupKey(ctx, db.ClaimDedupKeyParams{
+	// OBS-008 dedup claim with evidence-hash comparison (issue #44). The claim
+	// returns exactly one row: freshly inserted (first sighting) or the existing row
+	// with its STORED evidence hash.
+	claim, err := q.ClaimDedupKey(ctx, db.ClaimDedupKeyParams{
 		DedupKey:      dedupKey,
 		TargetID:      c.TargetID,
 		Route:         string(c.Route),
 		OfferIdentity: offerIdentity,
+		EvidenceHash:  evidenceHash,
 	})
 	if err != nil {
 		return IngestResult{}, fmt.Errorf("observation: claim dedup: %w", err)
 	}
-	if len(claimed) == 0 {
-		if err := tx.Commit(ctx); err != nil {
-			return IngestResult{}, fmt.Errorf("observation: commit dedup: %w", err)
+	if !claim.Inserted {
+		// The key already existed. Compare the FULL-envelope evidence hash.
+		if claim.EvidenceHash == evidenceHash {
+			// True replay: byte/canonical-content-equivalent. Idempotent no-op —
+			// no duplicate evidence, no duplicate current offer, provenance intact.
+			if err := tx.Commit(ctx); err != nil {
+				return IngestResult{}, fmt.Errorf("observation: commit dedup: %w", err)
+			}
+			return IngestResult{Deduped: true, Quality: Quality(existing.Quality), Offer: existing}, nil
 		}
-		return IngestResult{Deduped: true, Quality: Quality(existing.Quality), Offer: existing}, nil
+		// MATERIAL CONFLICT (event-deduplication never-cut, §4.6): same dedup key,
+		// materially different evidence envelope. FAIL CLOSED — do NOT report a
+		// replay success and do NOT overwrite the authoritative current offer.
+		// Preserve the conflicting evidence append-only and write the auditable
+		// conflict record, all inside this single transaction.
+		envelope, err := marshalConflictEnvelope(c, evidenceHash, quality)
+		if err != nil {
+			return IngestResult{}, fmt.Errorf("observation: marshal conflict envelope: %w", err)
+		}
+		if _, err := q.InsertDedupConflict(ctx, db.InsertDedupConflictParams{
+			DedupKey:                 dedupKey,
+			TargetID:                 c.TargetID,
+			MarketplaceAccountID:     target.MarketplaceAccountID,
+			Route:                    string(c.Route),
+			OfferIdentity:            offerIdentity,
+			StoredEvidenceHash:       claim.EvidenceHash,
+			ConflictingEvidenceHash:  evidenceHash,
+			ConflictingObservationID: pgtype.UUID{}, // NULL: preserved via the envelope
+			ConflictingEnvelope:      envelope,
+		}); err != nil {
+			return IngestResult{}, fmt.Errorf("observation: record dedup conflict: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return IngestResult{}, fmt.Errorf("observation: commit dedup conflict: %w", err)
+		}
+		// Structured observability signal on the dedup boundary (stable keys, no PII,
+		// no raw marketplace free text — only the technical hashes/ids and route).
+		s.logger.WarnContext(ctx, "observation dedup evidence conflict",
+			slog.String("event", "dedup_evidence_conflict"),
+			slog.String("target_id", c.TargetID.String()),
+			slog.String("offer_identity", offerIdentity),
+			slog.String("route", string(c.Route)),
+			slog.String("dedup_key", dedupKey),
+			slog.String("stored_evidence_hash", claim.EvidenceHash),
+			slog.String("conflicting_evidence_hash", evidenceHash),
+		)
+		return IngestResult{Conflict: true, Quality: Quality(existing.Quality), Offer: existing}, ErrDedupEvidenceConflict
 	}
 
 	// Append-only evidence write (OBS-002).
@@ -421,6 +493,71 @@ func analyzeRoutes(inWindow []db.ListInWindowRouteValuesRow, c Capture) routeAna
 	}
 	a.routesJSON, _ = json.Marshal(ordered)
 	return a
+}
+
+// conflictEnvelope is the raw-token snapshot of a REJECTED conflicting capture,
+// serialized into the append-only conflict record so the dropped evidence stays
+// auditable (issue #44). Money quarantine (§9.1): price/list-price are preserved as
+// VERBATIM tokens (text/value/unit) — never a Money, never parsed, never a float.
+type conflictEnvelope struct {
+	EvidenceHash     string   `json:"evidence_hash"`
+	NativeVariantID  int64    `json:"native_variant_id"`
+	NativeSellerID   string   `json:"native_seller_id"`
+	OfferIdentity    string   `json:"offer_identity"`
+	Route            string   `json:"route"`
+	SubRoute         string   `json:"sub_route"`
+	SourceType       string   `json:"source_type"`
+	SourceURL        string   `json:"source_url"`
+	ParserVersion    string   `json:"parser_version"`
+	ConnectorVersion string   `json:"connector_version"`
+	EvidenceRef      string   `json:"evidence_ref"`
+	RawFixtureRef    string   `json:"raw_fixture_ref"`
+	PriceRawText     string   `json:"price_raw_text"`
+	PriceRawValue    string   `json:"price_raw_value"`
+	PriceRawUnit     string   `json:"price_raw_unit"`
+	ListPriceRawText string   `json:"list_price_raw_text"`
+	ListPriceRawVal  string   `json:"list_price_raw_value"`
+	ListPriceRawUnit string   `json:"list_price_raw_unit"`
+	Availability     string   `json:"availability_status"`
+	StockSignal      *int64   `json:"stock_signal"`
+	Confidence       string   `json:"confidence"`
+	SchemaValid      bool     `json:"schema_valid"`
+	ParsingWarnings  []string `json:"parsing_warnings"`
+	Quality          string   `json:"derived_quality"`
+	CapturedAt       string   `json:"captured_at"`
+}
+
+// marshalConflictEnvelope serializes the rejected capture (raw tokens only) plus
+// its evidence hash and derived quality for the append-only conflict record.
+func marshalConflictEnvelope(c Capture, evidenceHash string, quality Quality) ([]byte, error) {
+	env := conflictEnvelope{
+		EvidenceHash:     evidenceHash,
+		NativeVariantID:  c.NativeVariantID,
+		NativeSellerID:   c.NativeSellerID,
+		OfferIdentity:    c.resolvedOfferIdentity(),
+		Route:            string(c.Route),
+		SubRoute:         c.SubRoute,
+		SourceType:       string(c.SourceType),
+		SourceURL:        c.SourceURL,
+		ParserVersion:    c.ParserVersion,
+		ConnectorVersion: c.ConnectorVersion,
+		EvidenceRef:      c.EvidenceRef,
+		RawFixtureRef:    c.RawFixtureRef,
+		PriceRawText:     c.Price.Text,
+		PriceRawValue:    c.Price.Value,
+		PriceRawUnit:     c.Price.Unit,
+		ListPriceRawText: c.ListPrice.Text,
+		ListPriceRawVal:  c.ListPrice.Value,
+		ListPriceRawUnit: c.ListPrice.Unit,
+		Availability:     string(c.Availability),
+		StockSignal:      c.StockSignal,
+		Confidence:       string(c.Confidence),
+		SchemaValid:      c.SchemaValid,
+		ParsingWarnings:  c.ParsingWarnings,
+		Quality:          string(quality),
+		CapturedAt:       c.CapturedAt.UTC().Format(time.RFC3339Nano),
+	}
+	return json.Marshal(env)
 }
 
 // int8Ptr maps an optional int64 onto pgtype.Int8 (NULL when absent).

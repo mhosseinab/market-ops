@@ -3,6 +3,7 @@ package observation
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -31,4 +32,58 @@ func DedupKey(c Capture) string {
 	}
 	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
 	return hex.EncodeToString(sum[:])
+}
+
+// EvidenceHash is the deterministic sha256 over the FULL evidence envelope — every
+// capture-provided field that persists to the observation row (issue #44). Where
+// DedupKey hashes only the collision SUBSET, this hashes the whole envelope, so two
+// captures sharing a dedup key but differing in ANY material field (list-price
+// unit/text, price text, stock signal, confidence, evidence/fixture refs, source
+// url/type, parser/connector version, schema-valid flag, parsing warnings, native
+// seller id, offer identity, captured instant) produce DIFFERENT hashes. The
+// service compares this on a dedup-key conflict: equal ⇒ true replay (idempotent
+// no-op); unequal ⇒ MATERIAL CONFLICT that must fail closed and be recorded, never
+// silently discarded.
+//
+// Construction mirrors DedupKey: RAW tokens only — no parsing, no float, no money
+// arithmetic (money quarantine). Fields are joined with a unit separator in a FIXED
+// order (order-stable), and the variable-length parsing-warnings slice is length-
+// prefixed and separated with a distinct byte so ["a","b"] and ["a\x1fb"] cannot
+// collide.
+func EvidenceHash(c Capture) string {
+	parts := []string{
+		c.TargetID.String(),
+		c.resolvedOfferIdentity(),
+		strconv.FormatInt(c.NativeVariantID, 10),
+		c.NativeSellerID,
+		string(c.Route),
+		c.SubRoute,
+		string(c.SourceType),
+		c.SourceURL,
+		c.ParserVersion,
+		c.ConnectorVersion,
+		c.EvidenceRef,
+		c.RawFixtureRef,
+		// Raw price evidence (money quarantine — verbatim tokens, never parsed).
+		c.Price.Text, c.Price.Value, c.Price.Unit,
+		c.ListPrice.Text, c.ListPrice.Value, c.ListPrice.Unit,
+		string(c.Availability),
+		stockSignalToken(c.StockSignal),
+		string(c.Confidence),
+		strconv.FormatBool(c.SchemaValid),
+		c.CapturedAt.UTC().Format(time.RFC3339Nano),
+		strconv.Itoa(len(c.ParsingWarnings)),
+	}
+	parts = append(parts, c.ParsingWarnings...)
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x1f")))
+	return hex.EncodeToString(sum[:])
+}
+
+// stockSignalToken renders the optional stock signal as a stable token: a distinct
+// sentinel for absent (nil), so "absent" and 0 never collide.
+func stockSignalToken(v *int64) string {
+	if v == nil {
+		return "\x00nil"
+	}
+	return strconv.FormatInt(*v, 10)
 }
