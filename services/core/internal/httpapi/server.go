@@ -61,6 +61,13 @@ func WithObservation(o ObservationService) Option {
 	return func(s *gatewayServer) { s.observation = o }
 }
 
+// WithCatalog injects the Products read-model service backing the /catalog/*
+// routes (S26, PRD §6.1). Without it those routes fail closed with a structured
+// error, so no product list or single-product read is served on an unwired plane.
+func WithCatalog(c CatalogService) Option {
+	return func(s *gatewayServer) { s.catalog = c }
+}
+
 // WithCost injects the cost-profile / CSV import / readiness service backing the
 // /cost/* routes (PRD §7.2 CST-001..003). Without it those routes fail closed
 // with a structured error, so no cost value, preview, commit, or readiness is

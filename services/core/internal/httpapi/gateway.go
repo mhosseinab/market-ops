@@ -26,6 +26,9 @@ type gatewayServer struct {
 	// observation backs the /observation/* routes (PRD §7.3). Nil until wired; the
 	// handlers fail closed with a structured error when it is absent.
 	observation ObservationService
+	// catalog backs the /catalog/* Products read-model routes (S26, PRD §6.1). Nil
+	// until wired; the handlers fail closed with a structured error when absent.
+	catalog CatalogService
 	// cost backs the /cost/* routes (PRD §7.2 CST-001..003). Nil until wired; the
 	// handlers fail closed with a structured error when it is absent.
 	cost CostService

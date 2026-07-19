@@ -4,6 +4,8 @@ import type {
   ApprovalCardView,
   ApprovalConfirmResult,
   BulkApprovalConfirmResult,
+  CatalogProductPage,
+  CatalogProductRow,
   ConnectorStatus,
   CostImportPreview,
   MarginReadiness,
@@ -109,6 +111,32 @@ export const offer: ObservedOffer = {
   capturedAt: "2026-07-17T09:00:00Z",
   freshnessDeadline: "2026-07-17T10:00:00Z",
   routes: ["route_c"],
+};
+
+// A canonical Products row (S26): confirmed + watched variant with a Supported
+// owned offer and one deterministic market offer.
+export const catalogProductRow: CatalogProductRow = {
+  variantId: VARIANT_ID,
+  productId: "55555555-5555-5555-5555-555555555555",
+  nativeVariantId: 8842213,
+  nativeProductId: 7719004,
+  variantTitle: "Red 128GB",
+  productTitle: "Widget Pro",
+  supplierCode: "SUP-8842213",
+  mappingState: "confirmed",
+  watched: true,
+  ownedOffer: {
+    capability: "supported",
+    present: true,
+    price: { text: "14,000,000", value: "14000000", unit: "IRR" },
+    sellerStock: 12,
+    warehouseStock: 40,
+  },
+  marketOffers: [offer],
+};
+
+export const catalogProductPage: CatalogProductPage = {
+  items: [catalogProductRow],
 };
 
 export const readinessMissing: MarginReadiness = {

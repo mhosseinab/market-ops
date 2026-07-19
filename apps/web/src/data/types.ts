@@ -13,6 +13,15 @@ export type ConnectorConnectionState = components["schemas"]["ConnectorConnectio
 
 export type ObservationTarget = components["schemas"]["ObservationTarget"];
 export type ObservedOffer = components["schemas"]["ObservedOffer"];
+
+// ── S26: canonical Products read model (PRD §6.1) ───────────────────────────
+// Rows are built from Product/Variant/Owned Offer entities joined with identity
+// mapping state and observation evidence — NEVER from an observation target.
+export type CatalogProductRow = components["schemas"]["CatalogProductRow"];
+export type CatalogProductPage = components["schemas"]["CatalogProductPage"];
+export type CatalogMappingState = components["schemas"]["CatalogMappingState"];
+export type OwnedOfferView = components["schemas"]["OwnedOfferView"];
+export type OwnedOfferUnavailableReason = components["schemas"]["OwnedOfferUnavailableReason"];
 export type Observation = components["schemas"]["Observation"];
 export type AvailabilityStatus = components["schemas"]["AvailabilityStatus"];
 export type QualityState = components["schemas"]["QualityState"];

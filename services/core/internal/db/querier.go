@@ -297,6 +297,12 @@ type Querier interface {
 	// sweep (Snapshot -> State -> PlanSweep). A missing row means the window is
 	// untouched: the caller treats pgx.ErrNoRows as zero spend (full headroom).
 	GetBudgetUsage(ctx context.Context, arg GetBudgetUsageParams) (GetBudgetUsageRow, error)
+	// Single-variant canonical Product row backing Product detail (S26, PRD §6.1).
+	// Same canonical projection as ListCatalogProducts, scoped to ONE variant. Both
+	// the account AND the variant id must match (cross-account fail-closed): a foreign
+	// or unknown variant returns no row (pgx.ErrNoRows -> 404), never another account's
+	// data.
+	GetCatalogProductForVariant(ctx context.Context, arg GetCatalogProductForVariantParams) (GetCatalogProductForVariantRow, error)
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	// ORG-SCOPED: only returns the row when the account belongs to the organization.
 	GetConnectorConnection(ctx context.Context, arg GetConnectorConnectionParams) (ConnectorConnection, error)
@@ -576,6 +582,24 @@ type Querier interface {
 	ListAwaitingRecommendOnlyForVariant(ctx context.Context, variantID uuid.UUID) ([]RecommendOnlyAction, error)
 	// The ranked events of a briefing, in Today order (rank asc).
 	ListBriefingEvents(ctx context.Context, briefingID uuid.UUID) ([]BriefingEvent, error)
+	// Account-scoped, cursor-paginated Products READ MODEL (S26, CAT UI / PRD §6.1).
+	// The row SOURCE is the canonical `variants` table (JOINed to its `products`), so
+	// every synced variant appears exactly once — a Product/Owned Offer row is NEVER
+	// synthesized from an observation target (a target is a dependent projection, not
+	// inventory). Identity mapping state, the observation target, and the owned offer
+	// are LEFT-joined as ATTRIBUTES of the canonical variant:
+	//   * ident: the single most-relevant Market Product Identity per variant (active
+	//     first, else the newest inactive), so rejected/obsolete variants still surface
+	//     their explicit state; a variant with no identity row reports mapping_state
+	//     NULL (the handler maps NULL -> 'unmapped').
+	//   * tgt: an ACTIVE observation target (OBS-001) — watched = (tgt.id IS NOT NULL).
+	//   * oo: the canonical owned offer (money-quarantined raw price evidence only).
+	// CROSS-ACCOUNT FAIL-CLOSED: the driving filter is v.marketplace_account_id = $1,
+	// and every LEFT JOIN additionally pins marketplace_account_id to the same account,
+	// so a row belonging to another account can never attach or leak. Pagination is by
+	// the STABLE native_variant_id key ($2 exclusive lower bound), never a mutable
+	// updated_at.
+	ListCatalogProducts(ctx context.Context, arg ListCatalogProductsParams) ([]ListCatalogProductsRow, error)
 	// Windows whose seven days have elapsed and that have no computed result yet.
 	ListClosableOutcomeWindows(ctx context.Context, closesAt time.Time) ([]OutcomeWindow, error)
 	// EXECUTABLE-PATH query (OBS-001): the observation targets an account may create

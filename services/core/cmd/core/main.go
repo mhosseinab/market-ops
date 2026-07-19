@@ -274,6 +274,11 @@ func run() error {
 		// ingestion and the observed-offer/evidence reads are served. Ingestion is
 		// server-authoritative: the extension can never self-certify quality/route.
 		serverOpts = append(serverOpts, httpapi.WithObservation(observation.NewService(pool)))
+		// Wire the canonical Products read model (S26, PRD §6.1): account-scoped,
+		// paginated rows from Product/Variant/Owned Offer entities joined with identity
+		// mapping state and observation evidence. Owned-offer data is gated on the
+		// owned_offer_read capability (§15.2); prices stay raw evidence (money quarantine).
+		serverOpts = append(serverOpts, httpapi.WithCatalog(catalog.NewReadService(pool)))
 		// Wire the extension-pairing plane (PRD §14 EXT-001): short-lived pairing
 		// codes exchanged for SCOPED capture credentials, plus the capture-credential
 		// authentication on /observation/capture and the EXT-009 revocation path. The

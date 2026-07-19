@@ -25,6 +25,9 @@ from .capture_upload_availability_status import CaptureUploadAvailabilityStatus
 from .capture_upload_confidence import CaptureUploadConfidence
 from .capture_upload_source_type import CaptureUploadSourceType
 from .capture_upload_sub_route import CaptureUploadSubRoute
+from .catalog_mapping_state import CatalogMappingState
+from .catalog_product_page import CatalogProductPage
+from .catalog_product_row import CatalogProductRow
 from .catalog_sync_state import CatalogSyncState
 from .catalog_sync_status import CatalogSyncStatus
 from .chat_envelope import ChatEnvelope
@@ -122,6 +125,8 @@ from .outcome_summary import OutcomeSummary
 from .outcome_summary_confidence import OutcomeSummaryConfidence
 from .outcome_summary_result import OutcomeSummaryResult
 from .outcome_view import OutcomeView
+from .owned_offer_unavailable_reason import OwnedOfferUnavailableReason
+from .owned_offer_view import OwnedOfferView
 from .pairing_claim_request import PairingClaimRequest
 from .pairing_code import PairingCode
 from .pairing_credential import PairingCredential
@@ -191,6 +196,9 @@ __all__ = (
     "CaptureUploadConfidence",
     "CaptureUploadSourceType",
     "CaptureUploadSubRoute",
+    "CatalogMappingState",
+    "CatalogProductPage",
+    "CatalogProductRow",
     "CatalogSyncState",
     "CatalogSyncStatus",
     "ChatEnvelope",
@@ -288,6 +296,8 @@ __all__ = (
     "OutcomeSummaryConfidence",
     "OutcomeSummaryResult",
     "OutcomeView",
+    "OwnedOfferUnavailableReason",
+    "OwnedOfferView",
     "PairingClaimRequest",
     "PairingCode",
     "PairingCredential",
