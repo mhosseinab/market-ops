@@ -22,6 +22,19 @@ type Querier interface {
 	// Persist page progress after a page is fully applied. next_page is the resume
 	// cursor an interrupted import continues from; counters accumulate.
 	AdvanceCatalogSyncRun(ctx context.Context, arg AdvanceCatalogSyncRunParams) (CatalogSyncRun, error)
+	// Per-account aggregate of the DURABLE pending_reconciliation set (EXE-003, §20.1):
+	// the current count of parked-unknown write results and the OLDEST park instant.
+	// This is the authoritative backlog measurement — the same durable rows
+	// ListPendingReconciliationByAccount renders in the Operations queue — read LIVE by
+	// the execution.pending_reconciliation_current / _oldest_age_seconds observable
+	// gauges. Because it reads current state, a resolved item simply leaves the set
+	// (count drops, never negative), an unrelated terminal result cannot cancel a still-
+	// pending item, and a process restart re-reads the same rows (no in-memory counter
+	// to zero). Grouped by the bound approval_cards account (action_executions carries
+	// no account column of its own), a bounded label. Pure SELECT — no UPDATE/DELETE, no
+	// Money arithmetic; the age is derived in Go as plain time subtraction on
+	// oldest_created_at.
+	AggregatePendingReconciliation(ctx context.Context) ([]AggregatePendingReconciliationRow, error)
 	// APPEND-ONLY §8.4 history. One row per state change; INSERT only.
 	AppendApprovalCardState(ctx context.Context, arg AppendApprovalCardStateParams) (ApprovalCardState, error)
 	// Audit trail queries (PRD §7.5 AUD-001). audit_records is STRICTLY APPEND-ONLY:
