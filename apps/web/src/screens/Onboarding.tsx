@@ -1,5 +1,5 @@
 import type { MessageKey } from "@market-ops/locale";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLocale, useT } from "../app/i18n";
 import { Banner } from "../components/Banner";
 import { CapabilityBadge } from "../components/badges";
@@ -101,6 +101,21 @@ export function Onboarding() {
   const disconnect = useConnectorAction("/connector/disconnect");
   const syncCatalog = useSyncCatalog();
   const [authCode, setAuthCode] = useState("");
+  const authCodeRef = useRef<HTMLInputElement>(null);
+
+  // Disconnect PURGES stored tokens and resets capabilities to Unknown, so
+  // /connector/refresh (which ROTATES an existing refresh token) cannot recover a
+  // disconnected or never-connected account (issue #77, ACC-003). Recovery routes
+  // through the authorization-code CONNECT flow: focus its control so the primary
+  // action actually leads to a working reconnect instead of a silent refresh
+  // rejection. scrollIntoView is guarded — jsdom does not implement it.
+  const routeToConnect = () => {
+    const input = authCodeRef.current;
+    input?.focus();
+    if (input && typeof input.scrollIntoView === "function") {
+      input.scrollIntoView({ block: "center" });
+    }
+  };
 
   const status = query.data;
 
@@ -120,12 +135,7 @@ export function Onboarding() {
                 body={t("connector.disconnected.body")}
                 actions={
                   <>
-                    <button
-                      type="button"
-                      className="btn btn--primary"
-                      disabled={refresh.isPending}
-                      onClick={() => refresh.mutate()}
-                    >
+                    <button type="button" className="btn btn--primary" onClick={routeToConnect}>
                       {t("onboarding.action.reconnect")}
                     </button>
                     <span className="muted">{t("connector.readOnlyNote")}</span>
@@ -142,16 +152,27 @@ export function Onboarding() {
               <Section
                 titleKey="onboarding.connectionHealth.title"
                 actions={
-                  <button
-                    type="button"
-                    className="btn btn--secondary btn--sm"
-                    disabled={refresh.isPending}
-                    onClick={() => refresh.mutate()}
-                  >
-                    {t("onboarding.action.refresh")}
-                  </button>
+                  // Re-probe ROTATES the retained refresh token, so it is offered
+                  // ONLY when the server confirms a live connection holds those
+                  // credentials (issue #77). A disconnected/never-connected account
+                  // has no token to rotate — recovery is the CONNECT flow instead.
+                  status.connectionState === "connected" ? (
+                    <button
+                      type="button"
+                      className="btn btn--secondary btn--sm"
+                      disabled={refresh.isPending}
+                      onClick={() => refresh.mutate()}
+                    >
+                      {t("onboarding.action.refresh")}
+                    </button>
+                  ) : undefined
                 }
               >
+                {refresh.isError ? (
+                  <p className="blocker-note" role="alert" data-testid="refresh-error">
+                    {t("onboarding.refresh.error")}
+                  </p>
+                ) : null}
                 <div className="kv">
                   <div className="kv__row">
                     <span>{t("onboarding.tokenStatus")}</span>
@@ -234,11 +255,18 @@ export function Onboarding() {
               <label className="field">
                 <span className="field__label">{t("onboarding.connect.authCodeLabel")}</span>
                 <input
+                  ref={authCodeRef}
+                  data-testid="auth-code-input"
                   className="field__input ltr"
                   value={authCode}
                   onChange={(e) => setAuthCode(e.target.value)}
                 />
               </label>
+              {connect.isError ? (
+                <p className="blocker-note" role="alert" data-testid="connect-error">
+                  {t("onboarding.connect.error")}
+                </p>
+              ) : null}
               <button
                 type="button"
                 className="btn btn--primary"

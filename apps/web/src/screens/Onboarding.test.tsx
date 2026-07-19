@@ -9,6 +9,7 @@ import {
   connectorSyncFailed,
   connectorSyncQueued,
   connectorSyncRunning,
+  connectorUnknown,
 } from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
@@ -61,6 +62,101 @@ describe("Onboarding / connection (ACC-001, ACC-003)", () => {
     expect(
       within(container as HTMLElement).getByText(faIR["onboarding.action.reconnect"]),
     ).toBeInTheDocument();
+  });
+});
+
+describe("Onboarding / recovery routing (issue #77, ACC-003)", () => {
+  // Disconnect purges the tokens /connector/refresh needs, so the disconnected
+  // recovery action must route through the authorization-code CONNECT flow and
+  // NEVER call refresh (which would reject with no stored refresh token).
+  it("ACC-003: the disconnected banner's recovery routes to the authorization flow, never refresh", async () => {
+    let refreshCalls = 0;
+    server.use(
+      http.post(`${BASE}/connector/refresh`, () => {
+        refreshCalls += 1;
+        return HttpResponse.json(connectorUnknown);
+      }),
+    );
+    renderRoute("/onboarding");
+
+    const banner = await screen.findByText(faIR["connector.disconnected.title"]);
+    const reconnect = within(banner.closest(".banner") as HTMLElement).getByText(
+      faIR["onboarding.action.reconnect"],
+    );
+    fireEvent.click(reconnect);
+
+    // Routed to the connect (authorization-code) control, not the refresh endpoint.
+    expect(screen.getByTestId("auth-code-input")).toHaveFocus();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(refreshCalls).toBe(0);
+  });
+
+  it("never-connected: the re-probe (refresh) control is NOT offered without retained credentials", async () => {
+    // Default handler = disconnected / never connected: refresh has no token to
+    // rotate, so the control that would call it must not be shown.
+    renderRoute("/onboarding");
+    await screen.findByText(faIR["connector.disconnected.title"]);
+    expect(screen.queryByText(faIR["onboarding.action.refresh"])).not.toBeInTheDocument();
+  });
+
+  it("re-probe (refresh) is offered ONLY for a connected account with retained credentials", async () => {
+    server.use(http.get(`${BASE}/connector/status`, () => HttpResponse.json(connectorSupported)));
+    renderRoute("/onboarding");
+    expect(await screen.findByText(faIR["onboarding.action.refresh"])).toBeInTheDocument();
+  });
+
+  it("reconnect via the authorization code posts CONNECT, never refresh", async () => {
+    let connectCalls = 0;
+    let refreshCalls = 0;
+    server.use(
+      http.post(`${BASE}/connector/connect`, () => {
+        connectCalls += 1;
+        return HttpResponse.json(connectorSupported);
+      }),
+      http.post(`${BASE}/connector/refresh`, () => {
+        refreshCalls += 1;
+        return HttpResponse.json(connectorUnknown);
+      }),
+    );
+    renderRoute("/onboarding");
+
+    await screen.findByText(faIR["connector.disconnected.title"]);
+    const input = screen.getByTestId("auth-code-input");
+    fireEvent.change(input, { target: { value: "auth-xyz" } });
+    fireEvent.click(screen.getByText(faIR["onboarding.connect.submit"]));
+
+    await waitFor(() => expect(connectCalls).toBe(1));
+    expect(refreshCalls).toBe(0);
+  });
+
+  it("recovery failure renders a localized actionable error (connect)", async () => {
+    server.use(
+      http.post(`${BASE}/connector/connect`, () =>
+        HttpResponse.json({ code: "invalid_authorization_code" }, { status: 400 }),
+      ),
+    );
+    renderRoute("/onboarding");
+
+    await screen.findByText(faIR["connector.disconnected.title"]);
+    fireEvent.change(screen.getByTestId("auth-code-input"), { target: { value: "bad-code" } });
+    fireEvent.click(screen.getByText(faIR["onboarding.connect.submit"]));
+
+    expect(await screen.findByText(faIR["onboarding.connect.error"])).toBeInTheDocument();
+  });
+
+  it("recovery failure renders a localized actionable error (re-probe)", async () => {
+    server.use(
+      http.get(`${BASE}/connector/status`, () => HttpResponse.json(connectorSupported)),
+      http.post(`${BASE}/connector/refresh`, () =>
+        HttpResponse.json({ code: "refresh_failed" }, { status: 400 }),
+      ),
+    );
+    renderRoute("/onboarding");
+
+    const reprobe = await screen.findByText(faIR["onboarding.action.refresh"]);
+    fireEvent.click(reprobe);
+
+    expect(await screen.findByText(faIR["onboarding.refresh.error"])).toBeInTheDocument();
   });
 });
 

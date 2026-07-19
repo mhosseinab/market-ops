@@ -213,6 +213,8 @@ export const faIR: Catalog = {
   "onboarding.connect.title": "اتصال دیجی‌کالا",
   "onboarding.connect.authCodeLabel": "کد مجوز دیجی‌کالا",
   "onboarding.connect.submit": "اتصال",
+  "onboarding.connect.error": "اتصال دوباره ناموفق بود. کد مجوز را بررسی کنید و دوباره تلاش کنید.",
+  "onboarding.refresh.error": "بازبررسی قابلیت‌ها ناموفق بود. لطفاً دوباره تلاش کنید.",
   "onboarding.action.refresh": "بازبررسی قابلیت‌ها",
   "onboarding.action.reconnect": "اتصال دوباره",
   "onboarding.action.disconnect": "قطع اتصال",
