@@ -18,7 +18,21 @@ import type { ObservationTarget, ObservedOffer } from "./overlay-data";
 // overlay-read credential) that completes it.
 
 export type OverlayReadOutcome =
-  | { ok: true; target: ObservationTarget; offers: readonly ObservedOffer[] }
+  | {
+      ok: true;
+      target: ObservationTarget;
+      offers: readonly ObservedOffer[];
+      // EXT-008: the gateway-domain id of the market EVENT this owned target is
+      // currently relevant to, when the server reports one. It is a
+      // tenant-authorized value the read endpoint resolves under the account's
+      // own scope (the SAME `eventId` space the SPA's `/event?eventId=` route
+      // and the Today feed use) — NEVER derived here from a DK native id, and
+      // NEVER guessed. Absent/null when the target has no relevant event, so the
+      // overlay renders NO event chip (honest absence, quarantine over
+      // inference). The pending stub below supplies none; a real value only
+      // arrives once the downstream overlay-read seam is wired.
+      relevantEventId?: string | null;
+    }
   | { ok: false; reason: "endpoint_unavailable" | "denied" };
 
 export interface OverlayReadGateway {

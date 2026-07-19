@@ -235,7 +235,15 @@ async function handleGetOverlayView(product: ParsedProduct): Promise<ExtResponse
   if (!target) return { ok: true, overlay: { kind: "unavailable" } };
   const result = await overlayReadGateway.fetchOverlayData(target.targetId);
   if (!result.ok) return { ok: true, overlay: { kind: "unavailable" } };
-  const view = deriveOverlayView(result.target, result.offers, Date.now());
+  // EXT-008: thread the tenant-authorized relevant-event id from the read seam
+  // (null when the server reports none) so the overlay can offer an Event deep
+  // link ONLY when a real gateway id exists — never a guessed/DK-native id.
+  const view = deriveOverlayView(
+    result.target,
+    result.offers,
+    Date.now(),
+    result.relevantEventId ?? null,
+  );
 
   // EXT-006: price history — gap-preserving, from the SAME fail-closed-seam
   // discipline as overlay-read.ts. `history` is null (never fabricated) when
