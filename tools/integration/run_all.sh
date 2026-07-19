@@ -8,7 +8,7 @@
 # Runs the S32 suites and prints one PASS/FAIL line per scenario:
 #   1. kill-switch journey (CHAT-009)               — tools/integration/run_killswitch_journey.sh
 #   2. adversarial containment replay (CHAT-041/045) — tools/integration/replay_adversarial.py
-#   3. §16 edge-case fixtures                        — go test (internal/httpapi/system_edge_cases_test.go)
+#   3. §16 edge-case gate (manifest-driven)          — go run ./cmd/section16gate (tools/integration/section16_manifest.json)
 #   4. permission parity (CHAT-064)                  — go test (internal/httpapi/system_permission_parity_test.go)
 #   5. system duplicate-write (EXE-002)               — go test (internal/httpapi/system_duplicate_write_test.go)
 #   6. cold-start LLM-unhealthy isolation (CHAT-009) — tools/integration/run_coldstart_llm_unhealthy_journey.sh
@@ -116,8 +116,15 @@ else
 fi
 
 # --- scenarios 3-5: Go system tests against the compose Postgres ----------
-echo "### 3/6 §16 edge-case fixtures ###"
-if (cd services/core && GOWORK=off go test ./internal/httpapi/... -run 'TestEdgeCase' -v); then
+# Scenario 3 is now the manifest-driven §16 edge-case GATE (issue #164): instead
+# of `go test -run 'TestEdgeCase'` (which selected only the three TestEdgeCase*
+# functions and silently ignored every other required §16 row), the gate reads
+# tools/integration/section16_manifest.json, cross-checks it against the PRD §16
+# table, and executes every mapped test explicitly — failing if any canonical row
+# is unclassified, any mapped test is renamed/removed (zero -list matches), or any
+# mapped test is skipped rather than run. It reports one line per §16 row.
+echo "### 3/6 §16 edge-case gate (manifest-driven, issue #164) ###"
+if (cd services/core && GOWORK=off go run ./cmd/section16gate); then
   report "3. §16 edge-case fixtures" "PASS"
 else
   report "3. §16 edge-case fixtures" "FAIL"

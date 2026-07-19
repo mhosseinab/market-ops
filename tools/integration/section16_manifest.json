@@ -1,0 +1,253 @@
+{
+  "prd_section": "16",
+  "_comment": [
+    "Canonical row-to-test manifest for the PRD §16 edge-case contract (issue #164).",
+    "The S32 integration gate's §16 scenario (tools/integration/run_all.sh) reads THIS file",
+    "and executes every mapped test explicitly, failing if any canonical §16 row is absent,",
+    "any mapped test is renamed/removed (zero -list matches), or any mapped test is skipped.",
+    "",
+    "Every row's `edge_case` MUST match a PRD §16 table row VERBATIM; the gate cross-checks",
+    "this manifest against docs/PRD.md §16 and fails on any unclassified or stale row.",
+    "",
+    "classification:",
+    "  go_gate         — offline-testable in the Go core; this gate runs `go test` for each",
+    "                    listed {package,name} against the compose Postgres and requires PASS.",
+    "  other_scenario  — offline-testable, but executed by ANOTHER run_all.sh scenario in the",
+    "                    SAME `task test:integration` invocation (named in `scenario`); the gate",
+    "                    asserts that scenario is still wired.",
+    "  other_plane     — offline-testable in a NON-Go plane whose automated suite runs in a",
+    "                    different CI job (e.g. the `ts` job); the gate asserts each referenced",
+    "                    {file,marker} still exists so a rename cannot silently drop coverage.",
+    "  non_automatable — NOT offline-reproducible yet (needs a live/paid dependency or an unbuilt",
+    "                    fixture); MUST carry an `owner` and a `reason`. Reported, never executed."
+  ],
+  "rows": [
+    {
+      "id": "missing_or_stale_cogs",
+      "edge_case": "Missing or stale COGS",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/cost", "name": "TestDeriveReadiness_TransitionTable"},
+        {"package": "./internal/cost", "name": "TestReadinessAllFourStatesViaDB"},
+        {"package": "./internal/cost", "name": "TestGetReadiness_AgesIntoStale_Issue39"}
+      ]
+    },
+    {
+      "id": "unknown_commission_or_boundary",
+      "edge_case": "Unknown commission or boundary",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/cost", "name": "TestDeriveReadiness_CommissionProvenance"},
+        {"package": "./internal/cost", "name": "TestCommissionProvenanceGatesCompleteViaDB"},
+        {"package": "./internal/policy", "name": "TestEvaluate_BoundaryUnknownBlocks"},
+        {"package": "./internal/margin", "name": "TestContribution_MissingRequiredBlocks"}
+      ]
+    },
+    {
+      "id": "ambiguous_money_unit",
+      "edge_case": "Ambiguous money unit",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/observation", "name": "TestDeriveQuality"},
+        {"package": "./internal/observation", "name": "TestUnknownStateFailsClosed"},
+        {"package": "./internal/event", "name": "TestRankMixedCurrencyQuarantine"},
+        {"package": "./internal/event", "name": "TestRankerEmitsQuarantineTelemetry"}
+      ]
+    },
+    {
+      "id": "multiple_matching_variants",
+      "edge_case": "Multiple matching variants",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/identity", "name": "TestGenerateCandidatesExactNativeIDIdempotent"},
+        {"package": "./internal/identity", "name": "TestUnconfirmedNeverFeedsExecutablePath"},
+        {"package": "./internal/identity", "name": "TestOneActiveConfirmedPerVariant"},
+        {"package": "./internal/observation", "name": "TestUnconfirmedIdentityCannotCreateTarget"}
+      ]
+    },
+    {
+      "id": "product_merge_split_redirect",
+      "edge_case": "Product merge/split/redirect",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/identity", "name": "TestReopenFlipsStateAndEmitsInvalidation"},
+        {"package": "./internal/identity", "name": "TestReopenDispatch_DurableIntentEnqueuedAtomically"},
+        {"package": "./internal/recommendation", "name": "TestReopenExpirer_InvalidatesLiveCard"},
+        {"package": "./internal/recommendation", "name": "TestReopenExpirer_InvalidatesApprovedCard"},
+        {"package": "./internal/recommendation", "name": "TestReopenExpirer_InvalidatesRevalidatingCard"},
+        {"package": "./internal/routec", "name": "TestReopenRetiresTargets"}
+      ]
+    },
+    {
+      "id": "offer_disappears",
+      "edge_case": "Offer disappears",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/observation", "name": "TestDisappearanceClosesWithEndTimeNeverZero"}
+      ]
+    },
+    {
+      "id": "temporary_unavailability",
+      "edge_case": "Temporary unavailability",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/observation", "name": "TestEmptyPriceIngestsUnavailable"},
+        {"package": "./internal/routec", "name": "TestParseUnavailableGolden"},
+        {"package": "./internal/routec", "name": "TestUnknownAvailabilityFailsClosed"}
+      ]
+    },
+    {
+      "id": "promotion_affects_effective_price",
+      "edge_case": "Promotion affects effective price",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/routec", "name": "TestParseMarketableGolden"}
+      ]
+    },
+    {
+      "id": "routes_disagree",
+      "edge_case": "Routes disagree",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/observation", "name": "TestRouteDisagreementConflicted"},
+        {"package": "./internal/observation", "name": "TestStalePriorRouteDoesNotVerify"}
+      ]
+    },
+    {
+      "id": "extension_offline",
+      "edge_case": "Extension offline",
+      "classification": "other_plane",
+      "plane": "ts",
+      "owner": "chrome_extension",
+      "plane_tests": [
+        {"file": "apps/extension/src/lib/queue.test.ts", "marker": "idempotent offline retry (OBS-008"}
+      ],
+      "note": "Extension-offline capture behavior (queue survives offline, replays until accepted, no data loss) is proven by the extension plane's own vitest suite, executed in the `ts` CI job. Route C freshness is server-scheduled and structurally independent of extension liveness (no Route C code path reads extension state), so there is no Go-core reproduction for this row."
+    },
+    {
+      "id": "route_c_blocked",
+      "edge_case": "Route C blocked",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/routec", "name": "TestBreakerOpensOnEachConfiguredThreshold"},
+        {"package": "./internal/routec", "name": "TestObserveTargetRetryStopsWhenBreakerOpens"},
+        {"package": "./internal/routec", "name": "TestObserveTargetDoesNotRetryBlockSignal"}
+      ]
+    },
+    {
+      "id": "manual_dk_price_change",
+      "edge_case": "Manual DK price change",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/reconcile", "name": "TestInvalidateStaleCardsForVariant"},
+        {"package": "./internal/reconcile", "name": "TestReconcilePending_ResolvesToTerminalAndOpensWindow"}
+      ]
+    },
+    {
+      "id": "boundary_cost_evidence_changes_after_card",
+      "edge_case": "Boundary/cost/evidence changes after card",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/execution", "name": "TestEvaluateGates_InjectedChangePerGate"},
+        {"package": "./internal/execution", "name": "TestEvaluateGates_EvidenceVersionChangeBlocks"},
+        {"package": "./internal/recommendation", "name": "TestConfirmIndividual_EveryDimensionInvalidatesControl"}
+      ]
+    },
+    {
+      "id": "partial_bulk_failure",
+      "edge_case": "Partial bulk failure",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/recommendation", "name": "TestConfirmBulkSelection_SupersededMemberInvalidatedButOthersAuthorized"},
+        {"package": "./internal/recommendation", "name": "TestConfirmBulkSelection_BlockedMemberNeverExecutes"},
+        {"package": "./internal/httpapi", "name": "TestConfirmBulkApproval_MapsPerItemResults"}
+      ]
+    },
+    {
+      "id": "unknown_write_result",
+      "edge_case": "Unknown write result",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/httpapi", "name": "TestEdgeCase_UnknownWriteResult_PendingReconciliationBlocksRetry"},
+        {"package": "./internal/execution", "name": "TestClassify_UnknownFailsClosedToPendingReconciliation"},
+        {"package": "./internal/execution", "name": "TestExecute_UnknownResultParksPendingAndRetryRejected"}
+      ]
+    },
+    {
+      "id": "duplicate_event",
+      "edge_case": "Duplicate event",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/httpapi", "name": "TestEdgeCase_DuplicateEvent_SurfaceShowsOneItem"},
+        {"package": "./internal/event", "name": "TestDedupUpdatesOpenRecordZeroDuplicates"}
+      ]
+    },
+    {
+      "id": "no_events",
+      "edge_case": "No events",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/httpapi", "name": "TestEdgeCase_NoEvents_ExplicitNoActionState"}
+      ]
+    },
+    {
+      "id": "new_sku_without_history",
+      "edge_case": "New SKU without history",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/routec", "name": "TestRouteCAloneNeverManufacturesVerified"},
+        {"package": "./internal/observation", "name": "TestConsequenceMatrix"}
+      ]
+    },
+    {
+      "id": "duplicate_cost_rows",
+      "edge_case": "Duplicate cost rows",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/cost", "name": "TestDuplicateRowsBlockCommit"},
+        {"package": "./internal/cost", "name": "TestPreviewDoesNotCommit"}
+      ]
+    },
+    {
+      "id": "chat_affirmative_free_text",
+      "edge_case": "Chat affirmative free text",
+      "classification": "other_scenario",
+      "scenario": "adversarial containment replay (CHAT-041/045)",
+      "note": "Free-text-never-approves is proven at the real HTTP/SSE boundary by S32 scenario 2 (tools/integration/replay_adversarial.py): the adversarial fixture set plus fuzzed variants sent as real chat turns must yield zero transitions and zero /actions state diff. That IS this row's offline containment proof; reproducing it as a separate Go fixture would duplicate it."
+    },
+    {
+      "id": "conversation_restored",
+      "edge_case": "Conversation restored",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/recommendation", "name": "TestConfirmIndividual_ExpiredRecordsNoConfirmationAudit"},
+        {"package": "./internal/conversation", "name": "TestConversationContinuesAcrossRequestsAndPersistsRetention"}
+      ]
+    },
+    {
+      "id": "chat_model_outage",
+      "edge_case": "Chat/model outage",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/httpapi", "name": "TestChatKillSwitchGlobalLeavesScreensFunctional"},
+        {"package": "./internal/httpapi", "name": "TestChatFailsClosedWhenLLMUnwired"}
+      ]
+    },
+    {
+      "id": "briefing_failure",
+      "edge_case": "Briefing failure",
+      "classification": "go_gate",
+      "tests": [
+        {"package": "./internal/httpapi", "name": "TestBriefingRoute_ServesAndFailsClosed"},
+        {"package": "./internal/briefing", "name": "TestBriefingEventsEqualTodayFeed"}
+      ]
+    },
+    {
+      "id": "chat_disabled_mid_conversation",
+      "edge_case": "Chat disabled mid-conversation",
+      "classification": "non_automatable",
+      "owner": "web_frontend",
+      "reason": "The DYNAMIC transition — a conversation going read-only while it is OPEN, with valid cards remaining in Actions — needs a stateful chat-session fixture that is not yet built. The STATIC kill-switch case (chat never available → screens-only) is covered by S32 scenario 1 (kill-switch journey). Tracked to web_frontend in docs/implementation/dk-p0-progress.md (2026-07-18)."
+    }
+  ]
+}
