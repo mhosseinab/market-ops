@@ -483,6 +483,86 @@ func TestRouteDisagreementConflicted(t *testing.T) {
 	}
 }
 
+// TestEmptyPriceIngestsUnavailable is the issue #43 SEAM proof: a capture that is
+// in_stock but carries an EMPTY price must ingest through the REAL Service.Ingest
+// path to Quality == Unavailable — a missing price can never read as usable current
+// marketplace evidence. The capture is STILL stored append-only (quarantine over
+// reject). Reverting the service.go HasCurrentPriceValue wiring back to
+// availability-only would flip this to Unverified/Supported and FAIL this test.
+func TestEmptyPriceIngestsUnavailable(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant, nv, np := seedVariant(t, q)
+	insertConfirmedIdentity(t, pool, account, variant, nv, np)
+
+	clk := &clock{t: time.Now().UTC()}
+	svc := obs.NewService(pool).WithClock(clk.now)
+	created, _ := svc.SyncTargetsFromConfirmed(ctx, account)
+	target := created[0].ID
+
+	// In-stock, fresh, schema-valid, identity-valid — everything a "current" gate
+	// would want — EXCEPT the raw price is entirely absent.
+	c := captureFor(target, account, nv, obs.RouteC, clk.now())
+	c.Price = money.RawAmount{}
+	res, err := svc.Ingest(ctx, c)
+	if err != nil {
+		t.Fatalf("ingest empty-price: %v", err)
+	}
+	if res.Quality != obs.Unavailable {
+		t.Fatalf("an empty-price in_stock capture must be Unavailable, got %s", res.Quality)
+	}
+	if obs.Quality(res.Offer.Quality).SatisfiesCurrentDataGate() {
+		t.Fatal("an empty-price capture must never satisfy a current-data gate (issue #43)")
+	}
+	if obs.ConsequenceOf(res.Quality).CanExecute || obs.ConsequenceOf(res.Quality).Recommend {
+		t.Fatal("an empty-price capture must block recommend and execute")
+	}
+	// Quarantine over reject: evidence is STILL stored append-only.
+	rows, err := svc.ListObservations(ctx, target, 100)
+	if err != nil {
+		t.Fatalf("list observations: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("empty-price capture must still be stored append-only, got %d rows", len(rows))
+	}
+
+	// Whitespace-only price is likewise absence, not a value.
+	ws := captureFor(target, account, nv, obs.RouteB, clk.now().Add(time.Second))
+	ws.Price = money.NewRawAmount("   ", "\t", "\n")
+	wsRes, err := svc.Ingest(ctx, ws)
+	if err != nil {
+		t.Fatalf("ingest whitespace-price: %v", err)
+	}
+	if wsRes.Quality != obs.Unavailable {
+		t.Fatalf("a whitespace-only price capture must be Unavailable, got %s", wsRes.Quality)
+	}
+}
+
+// TestCompletePriceRetainsValueBearingQuality is the issue #43 positive seam case:
+// an out_of_stock capture WITH a complete price stays value-bearing (a real state,
+// NOT Unavailable). This confirms the gate keys on price PRESENCE, not on in_stock.
+func TestCompletePriceRetainsValueBearingQuality(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant, nv, np := seedVariant(t, q)
+	insertConfirmedIdentity(t, pool, account, variant, nv, np)
+
+	clk := &clock{t: time.Now().UTC()}
+	svc := obs.NewService(pool).WithClock(clk.now)
+	created, _ := svc.SyncTargetsFromConfirmed(ctx, account)
+	target := created[0].ID
+
+	c := captureFor(target, account, nv, obs.RouteC, clk.now())
+	c.Availability = obs.OutOfStock // a value-bearing availability, not disappeared
+	res, err := svc.Ingest(ctx, c)
+	if err != nil {
+		t.Fatalf("ingest complete out_of_stock: %v", err)
+	}
+	if res.Quality == obs.Unavailable {
+		t.Fatalf("an out_of_stock capture with a complete price must stay value-bearing, got %s", res.Quality)
+	}
+}
+
 func containsRoute(routes []byte, want string) bool {
 	// routes is jsonb; a substring check is sufficient for the fixed route tokens.
 	return len(routes) > 0 && contains(string(routes), want)

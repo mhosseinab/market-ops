@@ -1,5 +1,7 @@
 package money
 
+import "strings"
+
 // Evidence-side representation of a raw marketplace amount. PRD §9.1 requires
 // that "raw marketplace text/value/unit and capture evidence are preserved
 // separately" from authoritative Money — it is never conflated with a Money and
@@ -32,4 +34,18 @@ func NewRawAmount(text, value, unit string) RawAmount {
 // IsEmpty reports whether nothing was captured.
 func (r RawAmount) IsEmpty() bool {
 	return r.Text == "" && r.Value == "" && r.Unit == ""
+}
+
+// IsStructurallyComplete reports whether all three raw fields (Text, Value, Unit)
+// carry non-whitespace content. This is a PRESENCE-ONLY structural check: it does
+// NOT parse the value, interpret the unit, infer a currency, or perform any numeric
+// or floating-point work. It stays strictly inside the money quarantine (PRD §9.1) —
+// promotion of a raw amount to authoritative Money still happens only through the
+// verified, versioned region transform, which this never touches. A capture that
+// fails this check has no usable current price and must fail closed downstream
+// (issue #43: an empty price can never read as usable marketplace evidence).
+func (r RawAmount) IsStructurallyComplete() bool {
+	return strings.TrimSpace(r.Text) != "" &&
+		strings.TrimSpace(r.Value) != "" &&
+		strings.TrimSpace(r.Unit) != ""
 }
