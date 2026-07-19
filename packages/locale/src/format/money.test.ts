@@ -9,7 +9,9 @@ import { renderMoney } from "./money";
 function enFromRawDecimal(rawDecimal: string): string {
   const neg = rawDecimal.startsWith("-");
   const unsigned = neg ? rawDecimal.slice(1) : rawDecimal;
-  const [intPart, fracPart] = unsigned.split(".");
+  const dot = unsigned.indexOf(".");
+  const intPart = dot === -1 ? unsigned : unsigned.slice(0, dot);
+  const fracPart = dot === -1 ? undefined : unsigned.slice(dot + 1);
   const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   const sign = neg ? "−" : "";
   return fracPart ? `${sign}${grouped}.${fracPart}` : `${sign}${grouped}`;
