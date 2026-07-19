@@ -38,6 +38,17 @@ type Ingestor interface {
 	Ingest(ctx context.Context, c observation.Capture) (observation.IngestResult, error)
 }
 
+// DriftDowngrader is the durable-downgrade seam (§10.4). On every drift path the
+// observer calls it so the affected target's current view stops reading as current
+// BEFORE a consumer can act on stale evidence. The real consumer is
+// observation.Service; a fake records the calls in unit tests. It is deliberately a
+// SEPARATE, single-method interface from Ingestor (ISP): a drift downgrade writes
+// no evidence — it only tightens the derived current view — and must not be
+// confused with ingestion.
+type DriftDowngrader interface {
+	DowngradeCurrentForDrift(ctx context.Context, targetID uuid.UUID, reason string) (int64, error)
+}
+
 // TargetSource enumerates the active targets for a cadence tier (scheduler input).
 type TargetSource interface {
 	TargetsByTier(ctx context.Context, tier observation.Tier) ([]TargetRef, error)
@@ -78,6 +89,10 @@ type ObserveOutcome struct {
 	// is downgraded (Stale if it had a value, Unavailable otherwise). It never
 	// relabels an old value current (OBS-007).
 	DowngradedQuality observation.Quality
+	// PersistedDowngrades is the number of current offers durably downgraded by the
+	// drift path (via DriftDowngrader). It distinguishes a persisted drift downgrade
+	// from a silent skip in the sweep telemetry (§10.4 Route C parser outcome).
+	PersistedDowngrades int
 }
 
 // breakerRegistry holds one breaker per account (a soft block on one account must
@@ -109,28 +124,30 @@ func (r *breakerRegistry) get(account uuid.UUID) *Breaker {
 // switch, drift guard, and observation store into one guarded pipeline. Each
 // dependency is a seam so the whole thing runs offline against fixtures.
 type Observer struct {
-	cfg      Config
-	fetcher  Fetcher
-	limiter  *Limiter
-	budget   *Budget
-	breakers *breakerRegistry
-	drift    *DriftGuard
-	ingestor Ingestor
-	kill     KillSwitchStore
-	source   TargetSource
-	now      func() time.Time
-	rng      *rand.Rand
+	cfg        Config
+	fetcher    Fetcher
+	limiter    *Limiter
+	budget     *Budget
+	breakers   *breakerRegistry
+	drift      *DriftGuard
+	ingestor   Ingestor
+	downgrader DriftDowngrader
+	kill       KillSwitchStore
+	source     TargetSource
+	now        func() time.Time
+	rng        *rand.Rand
 }
 
 // ObserverDeps bundles the Observer's collaborators.
 type ObserverDeps struct {
-	Fetcher  Fetcher
-	Ingestor Ingestor
-	Kill     KillSwitchStore
-	Source   TargetSource
-	Drift    *DriftGuard
-	Now      func() time.Time
-	Rand     *rand.Rand
+	Fetcher    Fetcher
+	Ingestor   Ingestor
+	Downgrader DriftDowngrader
+	Kill       KillSwitchStore
+	Source     TargetSource
+	Drift      *DriftGuard
+	Now        func() time.Time
+	Rand       *rand.Rand
 }
 
 // NewObserver wires an Observer from config and dependencies. A nil clock uses
@@ -149,17 +166,18 @@ func NewObserver(cfg Config, deps ObserverDeps) *Observer {
 		drift = NewDriftGuard()
 	}
 	return &Observer{
-		cfg:      cfg,
-		fetcher:  deps.Fetcher,
-		limiter:  NewLimiter(cfg.PerAccountConcurrency, cfg.PerHostConcurrency),
-		budget:   NewBudget(cfg.RequestBudget, cfg.ByteBudget, cfg.BudgetWindow, now),
-		breakers: newBreakerRegistry(cfg.Breaker, now),
-		drift:    drift,
-		ingestor: deps.Ingestor,
-		kill:     deps.Kill,
-		source:   deps.Source,
-		now:      now,
-		rng:      rng,
+		cfg:        cfg,
+		fetcher:    deps.Fetcher,
+		limiter:    NewLimiter(cfg.PerAccountConcurrency, cfg.PerHostConcurrency),
+		budget:     NewBudget(cfg.RequestBudget, cfg.ByteBudget, cfg.BudgetWindow, now),
+		breakers:   newBreakerRegistry(cfg.Breaker, now),
+		drift:      drift,
+		ingestor:   deps.Ingestor,
+		downgrader: deps.Downgrader,
+		kill:       deps.Kill,
+		source:     deps.Source,
+		now:        now,
+		rng:        rng,
 	}
 }
 
@@ -183,9 +201,15 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 		return ObserveOutcome{Skipped: SkipKillSwitch}, nil
 	}
 	if !o.drift.Extracting() {
-		// Extraction is paused: do not fetch or ingest. Report the downgraded
-		// quality; the store's expiry sweep ages the current value to Stale.
-		return ObserveOutcome{Skipped: SkipDriftPaused, DowngradedQuality: PausedQuality(true)}, nil
+		// Extraction is paused: do not fetch or ingest. Durably downgrade this
+		// target's current view NOW (§10.4) so a still-fresh pre-drift value cannot
+		// keep reading as current while the guard is paused — the expiry sweep alone
+		// would not fire until the freshness deadline. Fail closed on a write error.
+		n, err := o.persistDriftDowngrade(ctx, ref, string(SkipDriftPaused))
+		if err != nil {
+			return ObserveOutcome{}, err
+		}
+		return ObserveOutcome{Skipped: SkipDriftPaused, DowngradedQuality: PausedQuality(true), PersistedDowngrades: n}, nil
 	}
 	breaker := o.breakers.get(ref.Account)
 	if !breaker.Allow() {
@@ -219,12 +243,20 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 		// drift also stops fetching.
 		o.drift.ReportDrift(perr.Error())
 		breaker.Observe(SignalDrift)
-		return ObserveOutcome{Skipped: SkipParseDrift, Signal: SignalOK, DowngradedQuality: PausedQuality(true)}, nil
+		n, derr := o.persistDriftDowngrade(ctx, ref, string(SkipParseDrift))
+		if derr != nil {
+			return ObserveOutcome{}, derr
+		}
+		return ObserveOutcome{Skipped: SkipParseDrift, Signal: SignalOK, DowngradedQuality: PausedQuality(true), PersistedDowngrades: n}, nil
 	}
 	if canary := Canary(parsed); !canary.Passed {
 		o.drift.ReportCanary(canary)
 		breaker.Observe(SignalDrift)
-		return ObserveOutcome{Skipped: SkipCanaryFailed, Signal: SignalOK, DowngradedQuality: PausedQuality(true)}, nil
+		n, derr := o.persistDriftDowngrade(ctx, ref, string(SkipCanaryFailed))
+		if derr != nil {
+			return ObserveOutcome{}, derr
+		}
+		return ObserveOutcome{Skipped: SkipCanaryFailed, Signal: SignalOK, DowngradedQuality: PausedQuality(true), PersistedDowngrades: n}, nil
 	}
 	// Identity quarantine (§4.6, OBS-001): the authoritative response product id
 	// MUST equal the scheduled target's native product id before any evidence is
@@ -236,7 +268,11 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 	if parsed.ProductID != ref.NativeProductID {
 		o.drift.ReportDrift(fmt.Sprintf("product identity mismatch: response=%d target=%d", parsed.ProductID, ref.NativeProductID))
 		breaker.Observe(SignalDrift)
-		return ObserveOutcome{Skipped: SkipIdentityMismatch, Signal: SignalOK, DowngradedQuality: PausedQuality(true)}, nil
+		n, derr := o.persistDriftDowngrade(ctx, ref, string(SkipIdentityMismatch))
+		if derr != nil {
+			return ObserveOutcome{}, derr
+		}
+		return ObserveOutcome{Skipped: SkipIdentityMismatch, Signal: SignalOK, DowngradedQuality: PausedQuality(true), PersistedDowngrades: n}, nil
 	}
 
 	captures := o.buildCaptures(ref, parsed)
@@ -252,6 +288,23 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 		}
 	}
 	return ObserveOutcome{Signal: SignalOK, Ingested: len(captures)}, nil
+}
+
+// persistDriftDowngrade durably tightens the affected target's current view on a
+// drift path (§10.4 stop rule). It FAILS CLOSED: a write error is returned to the
+// caller (surfaced as an ObserveTarget error and tallied as a sweep error), never
+// swallowed — a stale value must not keep reading as current merely because the
+// downgrade write failed. A nil downgrader (an incompletely wired observer) is a
+// no-op; production wiring (bundle.go) always supplies observation.Service.
+func (o *Observer) persistDriftDowngrade(ctx context.Context, ref TargetRef, reason string) (int, error) {
+	if o.downgrader == nil {
+		return 0, nil
+	}
+	n, err := o.downgrader.DowngradeCurrentForDrift(ctx, ref.TargetID, reason)
+	if err != nil {
+		return 0, fmt.Errorf("routec: persist drift downgrade (%s): %w", reason, err)
+	}
+	return int(n), nil
 }
 
 // fetchWithRetry performs the fetch with a bounded in-attempt retry on TRANSIENT
@@ -431,8 +484,13 @@ type SweepSummary struct {
 	SkippedBreak  int
 	SkippedBudget int
 	Downgraded    int
-	Trimmed       int
-	Errors        int
+	// PersistedDowngrades is the number of current offers durably downgraded by
+	// drift paths this sweep (§10.4). Downgraded counts drift SKIPS; this counts the
+	// current-view rows actually tightened, so a persisted drift downgrade is
+	// distinguishable from a skip that found nothing to downgrade.
+	PersistedDowngrades int
+	Trimmed             int
+	Errors              int
 }
 
 func (s *SweepSummary) tally(o ObserveOutcome) {
@@ -445,6 +503,7 @@ func (s *SweepSummary) tally(o ObserveOutcome) {
 		s.SkippedBudget++
 	case SkipDriftPaused, SkipParseDrift, SkipCanaryFailed, SkipIdentityMismatch:
 		s.Downgraded++
+		s.PersistedDowngrades += o.PersistedDowngrades
 	case SkipFetchSignal:
 		// counted as observed-but-deferred; no ingest
 	case SkipNone:

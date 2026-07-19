@@ -341,6 +341,25 @@ func (s *Service) SweepExpired(ctx context.Context, account uuid.UUID) (int64, e
 	return n, nil
 }
 
+// DowngradeCurrentForDrift durably downgrades a target's LIVE current offers when
+// Route C detects parser drift (§10.4). It is the persistence half of the drift
+// stop rule: the observer, on any drift path, calls this so the affected current
+// view can no longer read as current before the fix. Each live offer moves to
+// Stale (or Unavailable when it carries no usable value) — both fail the
+// current-data gate. It is a single-statement transactional UPDATE on the DERIVED
+// view only; the append-only observations evidence is never touched. Idempotent
+// and one-directional (offers already stale/unavailable/conflicted are left as-is),
+// so it never re-upgrades a more-restrictive state and a re-run is a no-op. The
+// reason is carried for the caller's audit/log context. Returns the count of
+// offers downgraded.
+func (s *Service) DowngradeCurrentForDrift(ctx context.Context, targetID uuid.UUID, reason string) (int64, error) {
+	n, err := db.New(s.pool).DowngradeObservedOffersForDrift(ctx, targetID)
+	if err != nil {
+		return 0, fmt.Errorf("observation: downgrade current offers for drift (%s): %w", reason, err)
+	}
+	return n, nil
+}
+
 // loadExisting returns the current offer for (target, offer identity) if present.
 func (s *Service) loadExisting(ctx context.Context, q *db.Queries, target uuid.UUID, offerIdentity string) (db.ObservedOffer, bool, error) {
 	existing, err := q.GetObservedOffer(ctx, db.GetObservedOfferParams{TargetID: target, OfferIdentity: offerIdentity})

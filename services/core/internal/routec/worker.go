@@ -49,6 +49,7 @@ func (w *TierSweepWorker) Work(ctx context.Context, job *river.Job[TierSweepArgs
 			"skipped_breaker", summary.SkippedBreak,
 			"skipped_budget", summary.SkippedBudget,
 			"downgraded", summary.Downgraded,
+			"persisted_downgrades", summary.PersistedDowngrades,
 			"errors", summary.Errors,
 		)
 	}

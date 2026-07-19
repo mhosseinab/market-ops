@@ -2,6 +2,8 @@ package routec_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -41,15 +43,63 @@ func (i *fakeIngestor) Ingest(_ context.Context, c observation.Capture) (observa
 	return observation.IngestResult{ObservationID: uuid.New(), Quality: observation.Unverified}, nil
 }
 
+// fakeDowngrader records the durable drift-downgrade calls the observer makes
+// through the DriftDowngrader seam. It stands in for observation.Service so the
+// unit tests can assert the persist happens on every drift path (and fail closed
+// on error) without a database.
+type fakeDowngrader struct {
+	mu      sync.Mutex
+	targets []uuid.UUID
+	reasons []string
+	n       int64
+	err     error
+}
+
+func (d *fakeDowngrader) DowngradeCurrentForDrift(_ context.Context, targetID uuid.UUID, reason string) (int64, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.targets = append(d.targets, targetID)
+	d.reasons = append(d.reasons, reason)
+	if d.err != nil {
+		return 0, d.err
+	}
+	return d.n, nil
+}
+
+func (d *fakeDowngrader) calls() []uuid.UUID {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]uuid.UUID, len(d.targets))
+	copy(out, d.targets)
+	return out
+}
+
 func newTestObserver(t *testing.T, f routec.Fetcher, ing routec.Ingestor, kill routec.KillSwitchStore, drift *routec.DriftGuard) *routec.Observer {
 	t.Helper()
 	cfg := routec.DefaultConfig()
 	return routec.NewObserver(cfg, routec.ObserverDeps{
-		Fetcher:  f,
-		Ingestor: ing,
-		Kill:     kill,
-		Drift:    drift,
-		Now:      func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		Fetcher:    f,
+		Ingestor:   ing,
+		Kill:       kill,
+		Drift:      drift,
+		Downgrader: &fakeDowngrader{},
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	})
+}
+
+// newTestObserverWithDowngrader wires an explicit downgrader so a test can assert
+// the drift-downgrade seam was invoked (or inject a failure for the fail-closed
+// path).
+func newTestObserverWithDowngrader(t *testing.T, f routec.Fetcher, ing routec.Ingestor, kill routec.KillSwitchStore, drift *routec.DriftGuard, dg routec.DriftDowngrader) *routec.Observer {
+	t.Helper()
+	cfg := routec.DefaultConfig()
+	return routec.NewObserver(cfg, routec.ObserverDeps{
+		Fetcher:    f,
+		Ingestor:   ing,
+		Kill:       kill,
+		Drift:      drift,
+		Downgrader: dg,
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 	})
 }
 
@@ -419,5 +469,82 @@ func TestObserveTargetBudgetExhaustedSkips(t *testing.T) {
 	}
 	if out.Skipped != routec.SkipBudget {
 		t.Fatalf("second observe skip: got %q want budget_exhausted", out.Skipped)
+	}
+}
+
+// zeroPricedBody is a marketable product for the given target whose only offer is
+// zero-priced — it PARSES fine but FAILS the value/unit canary, so ObserveTarget
+// takes the canary-failed drift path (before the identity check).
+func zeroPricedBody(ref routec.TargetRef) []byte {
+	return []byte(fmt.Sprintf(
+		`{"status":200,"data":{"product":{"id":%d,"status":"marketable","variants":[`+
+			`{"id":%d,"status":"marketable","seller":{"id":1,"code":"X"},`+
+			`"price":{"selling_price":0,"rrp_price":0}}]}}}`,
+		ref.NativeProductID, ref.NativeVariantID))
+}
+
+// TestObserveTargetPersistsDriftDowngradeOnAllPaths is the issue #47 regression:
+// EVERY drift path (drift-paused entry, parse drift, canary failed, identity
+// mismatch) must durably downgrade the affected target's current view through the
+// DriftDowngrader seam — not merely compute an in-memory DowngradedQuality. Before
+// the fix the seam was never called, so a fresh process re-read the pre-drift
+// value as current. Each case asserts the downgrader received the target id.
+func TestObserveTargetPersistsDriftDowngradeOnAllPaths(t *testing.T) {
+	ref := testTarget()
+	cases := []struct {
+		name     string
+		body     []byte
+		prePause bool
+		want     routec.SkipReason
+	}{
+		{"parse_drift", golden(t, "drift_missing_product.json"), false, routec.SkipParseDrift},
+		{"canary_failed", zeroPricedBody(ref), false, routec.SkipCanaryFailed},
+		{"identity_mismatch", golden(t, "product_wrong_id.json"), false, routec.SkipIdentityMismatch},
+		{"drift_paused", golden(t, "product_marketable.json"), true, routec.SkipDriftPaused},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeFetcher{result: routec.FetchResult{StatusCode: 200, Body: tc.body, Signal: routec.SignalOK}}
+			ing := &fakeIngestor{}
+			dg := &fakeDowngrader{n: 1}
+			guard := routec.NewDriftGuard()
+			if tc.prePause {
+				guard.ReportDrift("pre-existing drift")
+			}
+			obs := newTestObserverWithDowngrader(t, f, ing, routec.NewMemKillSwitchStore(), guard, dg)
+
+			out, err := obs.ObserveTarget(context.Background(), routec.Snapshot{}, ref)
+			if err != nil {
+				t.Fatalf("observe: %v", err)
+			}
+			if out.Skipped != tc.want {
+				t.Fatalf("skip reason: got %q want %q", out.Skipped, tc.want)
+			}
+			if len(ing.captures) != 0 {
+				t.Fatal("a drift path must ingest no value")
+			}
+			calls := dg.calls()
+			if len(calls) != 1 || calls[0] != ref.TargetID {
+				t.Fatalf("durable drift downgrade not persisted for target: got calls=%v want [%s]", calls, ref.TargetID)
+			}
+			if out.PersistedDowngrades != 1 {
+				t.Fatalf("persisted-downgrade count: got %d want 1", out.PersistedDowngrades)
+			}
+		})
+	}
+}
+
+// TestObserveTargetDriftDowngradeErrorFailsClosed asserts a failed durable
+// downgrade surfaces as an ObserveTarget error (fail closed) rather than a clean
+// skip — a swallowed error would leave the stale value readable as current.
+func TestObserveTargetDriftDowngradeErrorFailsClosed(t *testing.T) {
+	f := &fakeFetcher{result: routec.FetchResult{StatusCode: 200, Body: golden(t, "drift_missing_product.json"), Signal: routec.SignalOK}}
+	ing := &fakeIngestor{}
+	dg := &fakeDowngrader{err: errors.New("db unavailable")}
+	obs := newTestObserverWithDowngrader(t, f, ing, routec.NewMemKillSwitchStore(), routec.NewDriftGuard(), dg)
+
+	out, err := obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
+	if err == nil {
+		t.Fatalf("a failed durable drift downgrade must fail closed (error), got clean outcome %+v", out)
 	}
 }
