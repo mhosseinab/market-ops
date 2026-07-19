@@ -210,6 +210,20 @@ services:
       CONNECTOR_ENCRYPTION_KEY: mkvAIfG+QW29zMxw5iflub+g59dAj3Dh1KAAcoglQHM=
     volumes:
       - ../:/src
+    # NO `llm: condition: service_healthy` edge here — deliberate (CHAT-009,
+    # never-cut screens-only fallback, §8). Core startup must NOT gate on the
+    # chat plane being healthy: if the LLM is absent/unhealthy at cold start,
+    # core and the Caddy ingress (which depends on core, below) must STILL reach
+    # healthy and serve every structured screen — only /chat may fail closed.
+    # Core makes no blocking LLM call at boot and its /healthz never touches the
+    # LLM (services/core/cmd/core/main.go, internal/httpapi/chat.go): with
+    # LLM_SERVICE_URL set but unreachable, /chat returns the bounded structured
+    # unavailable state (503 provider_unavailable) while screens are unaffected.
+    # A `service_healthy` edge here would let a chat-plane outage take down the
+    # whole structured plane — the exact regression
+    # tools/integration/run_coldstart_llm_unhealthy_journey.sh guards against.
+    # The `llm` service itself stays defined: scenarios 2-5 and the warm-stop
+    # kill-switch journey bring it up explicitly.
     depends_on:
       postgres:
         condition: service_healthy
@@ -217,8 +231,6 @@ services:
         condition: service_completed_successfully
       mockdk:
         condition: service_started
-      llm:
-        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O-", "http://localhost:8080/healthz"]
       interval: 5s
