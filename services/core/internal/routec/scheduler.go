@@ -25,6 +25,14 @@ type SweepPlan struct {
 	// budget pressure. They are deferred to a later sweep at the SAME cadence —
 	// freshness is never widened to cover them.
 	Trimmed int
+	// NextCursor is the rotation offset the caller must persist and feed back into
+	// the NEXT sweep for this (tier, account). It advances past the targets selected
+	// this sweep so a recurring tight budget rotates through the WHOLE eligible list
+	// instead of re-selecting the same prefix every cycle (issue #50: no
+	// prefix/target starvation). It is always a valid index into the eligible list
+	// (or 0 when the list is empty), giving deterministic, bounded fairness with
+	// stable tie-breaking — the eligible order itself is unchanged.
+	NextCursor int
 }
 
 // PlanSweep decides which targets to observe this sweep. It applies the count cap
@@ -32,12 +40,24 @@ type SweepPlan struct {
 // capped count. It returns the tier's UNCHANGED cadence/freshness windows
 // alongside the (possibly trimmed) target list.
 //
-//   - targetIDs: the tier's eligible active targets, in scheduler order.
+//   - targetIDs: the tier's eligible active targets, in scheduler order (a STABLE
+//     order, e.g. ListActiveTargetsByTier's ORDER BY account, native_variant_id).
 //   - countCap: the max targets to schedule this sweep (for priority this is the
 //     EffectivePriorityCap; for standard/background it is len(targetIDs) or an
 //     operator cap).
 //   - budget: the account's remaining request headroom.
-func PlanSweep(tier observation.Tier, targetIDs []uuid.UUID, countCap int, budget State) SweepPlan {
+//   - cursor: the rotation offset persisted from this (tier, account)'s PREVIOUS
+//     sweep (SweepPlan.NextCursor). Under budget pressure selection starts at this
+//     offset and wraps, so successive tight sweeps rotate through the WHOLE
+//     eligible list rather than repeatedly taking the same deterministic prefix
+//     and starving the tail (issue #50). Pass 0 on the first sweep. A stale or
+//     out-of-range cursor (e.g. the eligible set shrank) is normalized modulo the
+//     eligible count — never a panic or an out-of-range slice.
+//
+// Fairness is deterministic: the eligible ORDER is never reshuffled; the cursor
+// only chooses the window's starting point, so tie-breaking is stable and every
+// eligible target is selected within ceil(eligible/selected) constrained sweeps.
+func PlanSweep(tier observation.Tier, targetIDs []uuid.UUID, countCap int, budget State, cursor int) SweepPlan {
 	cadence, freshness := TierCadence(tier)
 	plan := SweepPlan{Tier: tier, Cadence: cadence, Freshness: freshness}
 
@@ -53,8 +73,24 @@ func PlanSweep(tier observation.Tier, targetIDs []uuid.UUID, countCap int, budge
 	if selected < 0 {
 		selected = 0
 	}
-	plan.TargetIDs = append([]uuid.UUID(nil), targetIDs[:selected]...)
+	if eligible == 0 {
+		plan.TargetIDs = []uuid.UUID{}
+		plan.NextCursor = 0
+		return plan
+	}
+	// Normalize the persisted cursor into [0, eligible): a shrunken eligible set or a
+	// defensive negative value never yields a bad index.
+	start := ((cursor % eligible) + eligible) % eligible
+	out := make([]uuid.UUID, 0, selected)
+	for i := 0; i < selected; i++ {
+		out = append(out, targetIDs[(start+i)%eligible])
+	}
+	plan.TargetIDs = out
 	plan.Trimmed = eligible - selected
+	// Advance the cursor past what we selected so the NEXT tight sweep continues
+	// where this one stopped. A full sweep (selected == eligible) leaves the cursor
+	// where it started — everyone was observed, so rotation is a no-op.
+	plan.NextCursor = (start + selected) % eligible
 	return plan
 }
 
