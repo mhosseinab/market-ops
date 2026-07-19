@@ -68,6 +68,14 @@ func WithCatalog(c CatalogService) Option {
 	return func(s *gatewayServer) { s.catalog = c }
 }
 
+// WithDiagnostics injects the READ-ONLY listing/image diagnostics read model
+// backing GET /catalog/product-diagnostics (S26, LST-001). Without it that route
+// fails closed with a structured error, so no diagnostic is served on an unwired
+// plane. The injected service exposes only a read — no generate/publish control.
+func WithDiagnostics(d DiagnosticsService) Option {
+	return func(s *gatewayServer) { s.diagnostics = d }
+}
+
 // WithCost injects the cost-profile / CSV import / readiness service backing the
 // /cost/* routes (PRD §7.2 CST-001..003). Without it those routes fail closed
 // with a structured error, so no cost value, preview, commit, or readiness is

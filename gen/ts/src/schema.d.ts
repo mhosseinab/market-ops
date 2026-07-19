@@ -324,6 +324,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/catalog/product-diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read READ-ONLY listing and image diagnostics for a variant.
+         * @description The listing/image diagnostics report for one variant (S26, LST-001). Diagnostics are STRICTLY READ-ONLY: every result is DERIVED from already captured canonical catalog data (Product / Variant / Listing) and NEVER generates, rewrites, or publishes content — there is no write/execute control on this seam anywhere. Each result NAMES the observed entity + field and the rule id/version it was evaluated against (LST-001), carries observed-value METADATA only (presence/length — never the raw text or a fabricated value; quarantine-over-inference), a pass/warn result, a stable evidence reference, and the capture time of the underlying catalog data. A field whose source content the connector does not yet surface is reported observed-state not_observed → warn (fail closed, never a fabricated pass). Account scope is org-derived and fails closed cross-account (a foreign or unknown variant is 404); possession of an account UUID grants no access.
+         */
+        get: operations["listProductDiagnostics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/observation/targets": {
         parameters: {
             query?: never;
@@ -1613,6 +1633,66 @@ export interface components {
         /** @description Append-only observation evidence for a target, newest first. */
         ObservationList: {
             items: components["schemas"]["Observation"][];
+        };
+        /**
+         * @description The canonical entity a listing/image diagnostic observed (§15.1). The diagnostic NAMES this entity so the result is never an anonymous verdict.
+         * @enum {string}
+         */
+        ListingDiagnosticEntity: "product" | "variant" | "listing";
+        /**
+         * @description The named field a listing/image diagnostic evaluated (LST-001). P0 covers the seller-facing listing quality surface: title, description, image.
+         * @enum {string}
+         */
+        ListingDiagnosticField: "title" | "description" | "image";
+        /**
+         * @description The read-only pass/warn verdict of one diagnostic. `warn` flags a field that needs attention (empty or not yet observed); it NEVER triggers a write, generation, or auto-fix — remediation is a human, out-of-band act.
+         * @enum {string}
+         */
+        ListingDiagnosticResult: "pass" | "warn";
+        /**
+         * @description The observed-value state a diagnostic recorded for its field. `present`: the field carried captured content; `empty`: the field was captured but blank; `not_observed`: the connector does not yet surface this field's content, so it is reported as unobserved (fail closed) rather than inferred — quarantine-over-inference (§9.1/§4.6).
+         * @enum {string}
+         */
+        ListingObservedState: "present" | "empty" | "not_observed";
+        /** @description Observed-value METADATA only — never the raw listing text or a fabricated value. Carries the observed state and, for a captured text field, its character length so the UI can describe WHAT was observed without echoing (or inventing) content. */
+        ListingObservedMeta: {
+            state: components["schemas"]["ListingObservedState"];
+            /**
+             * Format: int32
+             * @description Character (rune) length of the observed text field; null when the field is not a captured text value (e.g. not_observed).
+             */
+            characterLength?: number | null;
+        };
+        /** @description One READ-ONLY listing/image diagnostic (LST-001). It NAMES the observed entity + field and the rule id/version it was evaluated against, carries observed-value metadata (never content), a pass/warn result, a stable evidence reference, and the capture time of the underlying catalog data. There is deliberately NO remediation/generate/publish control on this record — a diagnostic reports, it never acts. */
+        ListingDiagnostic: {
+            entity: components["schemas"]["ListingDiagnosticEntity"];
+            field: components["schemas"]["ListingDiagnosticField"];
+            /** @description Stable rule identifier (LTR technical id), e.g. listing.title.present. */
+            ruleId: string;
+            /** @description Version of the rule that produced this result (LTR technical id), e.g. v1. */
+            ruleVersion: string;
+            result: components["schemas"]["ListingDiagnosticResult"];
+            observed: components["schemas"]["ListingObservedMeta"];
+            /** @description Stable reference to the canonical source the diagnostic read (a reference, not content), e.g. catalog/variant/{nativeVariantId}. */
+            evidenceRef: string;
+            /**
+             * Format: date-time
+             * @description Capture time of the underlying catalog data the diagnostic evaluated.
+             */
+            capturedAt: string;
+        };
+        /** @description The READ-ONLY listing/image diagnostics report for one variant (LST-001). Every item names its entity + field + rule and carries a pass/warn result; the report NEVER generates or publishes content. */
+        ListingDiagnosticsReport: {
+            /** Format: uuid */
+            variantId: string;
+            /** Format: uuid */
+            marketplaceAccountId: string;
+            /**
+             * Format: date-time
+             * @description Server time the read-only report was computed (a read, not a content edit).
+             */
+            evaluatedAt: string;
+            items: components["schemas"]["ListingDiagnostic"][];
         };
         /** @description ALLOW-LISTED extension (Route B) capture upload (PRD §10.1). Only these fields are accepted (additionalProperties false). The extension cannot assert schema/identity validity or conflict, cannot forge Route C, and cannot declare a permanent disappearance — those are server-side. Price is raw evidence only (money quarantine). */
         CaptureUpload: {
@@ -3276,6 +3356,40 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CatalogProductRow"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listProductDiagnostics: {
+        parameters: {
+            query: {
+                /** @description Marketplace account that must own the variant. */
+                marketplaceAccountId: string;
+                /** @description The variant whose listing/image diagnostics are requested. */
+                variantId: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The read-only listing/image diagnostics report for the variant. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ListingDiagnosticsReport"];
                 };
             };
             /** @description Unexpected error. */

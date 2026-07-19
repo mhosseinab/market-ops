@@ -42,6 +42,8 @@ export const queryKeys = {
     ["catalog-products", accountId, cursor] as const,
   catalogProduct: (accountId: string, variantId: string) =>
     ["catalog-product", accountId, variantId] as const,
+  productDiagnostics: (accountId: string, variantId: string) =>
+    ["product-diagnostics", accountId, variantId] as const,
   targets: (accountId: string) => ["observation-targets", accountId] as const,
   offers: (accountId: string) => ["observed-offers", accountId] as const,
   observations: (targetId: string) => ["observations", targetId] as const,
@@ -101,6 +103,25 @@ export function useCatalogProduct(variantId: string | undefined) {
     queryFn: async () =>
       unwrap(
         await gateway.GET("/catalog/product", {
+          params: {
+            query: { marketplaceAccountId, variantId: variantId as string },
+          },
+        }),
+      ),
+  });
+}
+
+// The READ-ONLY listing/image diagnostics report for a variant (S26, LST-001).
+// Real contract data derived from captured catalog rows; the screen renders these
+// pass/warn results and never triggers a write, generation, or auto-fix.
+export function useProductDiagnostics(variantId: string | undefined) {
+  const { marketplaceAccountId } = useAccount();
+  return useQuery({
+    enabled: Boolean(variantId),
+    queryKey: queryKeys.productDiagnostics(marketplaceAccountId, variantId ?? ""),
+    queryFn: async () =>
+      unwrap(
+        await gateway.GET("/catalog/product-diagnostics", {
           params: {
             query: { marketplaceAccountId, variantId: variantId as string },
           },

@@ -270,3 +270,37 @@ LEFT JOIN owned_offers oo
     AND oo.marketplace_account_id = v.marketplace_account_id
 WHERE v.marketplace_account_id = $1
   AND v.id = $2;
+
+-- name: GetVariantListingForDiagnostics :one
+-- The READ-ONLY listing/image diagnostics source projection for one variant (S26,
+-- LST-001). It reads ONLY already-captured canonical catalog data — the variant +
+-- product titles, whether a Listing presence row exists, and the variant's capture
+-- time (updated_at) — so a diagnostic can NAME the observed field and its capture
+-- moment without any write, generation, or inference. Description/image are NOT
+-- projected: the DK Seller connector does not surface that content yet, so those
+-- diagnostics are reported not_observed by the read model rather than guessed.
+-- CROSS-ACCOUNT FAIL-CLOSED: both the account ($1) and the variant id ($2) must
+-- match; a foreign or unknown variant returns no row (pgx.ErrNoRows -> 404).
+SELECT
+    v.id                              AS variant_id,
+    v.native_variant_id               AS native_variant_id,
+    v.native_product_id               AS native_product_id,
+    v.title                           AS variant_title,
+    p.title                           AS product_title,
+    (lst.id IS NOT NULL)::boolean     AS listing_present,
+    COALESCE(lst.native_listing_id, 0) AS native_listing_id,
+    v.updated_at                      AS variant_updated_at
+FROM variants v
+JOIN products p
+    ON p.id = v.product_id
+    AND p.marketplace_account_id = v.marketplace_account_id
+LEFT JOIN LATERAL (
+    SELECT l.id, l.native_listing_id
+    FROM listings l
+    WHERE l.variant_id = v.id
+      AND l.marketplace_account_id = v.marketplace_account_id
+    ORDER BY l.updated_at DESC, l.id DESC
+    LIMIT 1
+) lst ON true
+WHERE v.marketplace_account_id = $1
+  AND v.id = $2;

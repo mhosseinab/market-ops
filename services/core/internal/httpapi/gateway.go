@@ -29,6 +29,11 @@ type gatewayServer struct {
 	// catalog backs the /catalog/* Products read-model routes (S26, PRD §6.1). Nil
 	// until wired; the handlers fail closed with a structured error when absent.
 	catalog CatalogService
+	// diagnostics backs GET /catalog/product-diagnostics (S26, LST-001). Nil until
+	// wired; the handler fails closed with a structured error when absent, so no
+	// listing/image diagnostic is served on an unwired plane. Read-only: the service
+	// exposes no write/generate/publish path.
+	diagnostics DiagnosticsService
 	// cost backs the /cost/* routes (PRD §7.2 CST-001..003). Nil until wired; the
 	// handlers fail closed with a structured error when it is absent.
 	cost CostService

@@ -8,6 +8,7 @@ import type {
   CatalogProductRow,
   ConnectorStatus,
   CostImportPreview,
+  ListingDiagnosticsReport,
   MarginReadiness,
   MarketEvent,
   NeedsReviewQueue,
@@ -494,4 +495,45 @@ export const readinessComplete: MarginReadiness = {
   missingComponents: [],
   staleComponents: [],
   computedAt: "2026-07-17T09:00:00Z",
+};
+
+// READ-ONLY listing/image diagnostics (S26, LST-001): a passing title plus the
+// dark-posture description/image results (not_observed → warn). Each row NAMES its
+// entity + field + rule; nothing generates content.
+export const productDiagnostics: ListingDiagnosticsReport = {
+  variantId: VARIANT_ID,
+  marketplaceAccountId: ACCOUNT_ID,
+  evaluatedAt: "2026-07-19T12:00:00Z",
+  items: [
+    {
+      entity: "variant",
+      field: "title",
+      ruleId: "listing.title.present",
+      ruleVersion: "v1",
+      result: "pass",
+      observed: { state: "present", characterLength: 11 },
+      evidenceRef: "catalog/variant/7719004",
+      capturedAt: "2026-07-18T09:00:00Z",
+    },
+    {
+      entity: "listing",
+      field: "description",
+      ruleId: "listing.description.present",
+      ruleVersion: "v1",
+      result: "warn",
+      observed: { state: "not_observed" },
+      evidenceRef: "catalog/listing/8842213",
+      capturedAt: "2026-07-18T09:00:00Z",
+    },
+    {
+      entity: "listing",
+      field: "image",
+      ruleId: "listing.image.present",
+      ruleVersion: "v1",
+      result: "warn",
+      observed: { state: "not_observed" },
+      evidenceRef: "catalog/listing/8842213",
+      capturedAt: "2026-07-18T09:00:00Z",
+    },
+  ],
 };

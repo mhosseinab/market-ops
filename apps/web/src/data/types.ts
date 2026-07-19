@@ -23,6 +23,17 @@ export type CatalogMappingState = components["schemas"]["CatalogMappingState"];
 export type OwnedOfferView = components["schemas"]["OwnedOfferView"];
 export type OwnedOfferUnavailableReason = components["schemas"]["OwnedOfferUnavailableReason"];
 export type Observation = components["schemas"]["Observation"];
+
+// ── S26: READ-ONLY listing/image diagnostics (LST-001) ──────────────────────
+// Derived from captured catalog data; every result NAMES its entity + field +
+// rule and carries a pass/warn verdict. NEVER generates or publishes content.
+export type ListingDiagnosticsReport = components["schemas"]["ListingDiagnosticsReport"];
+export type ListingDiagnostic = components["schemas"]["ListingDiagnostic"];
+export type ListingDiagnosticEntity = components["schemas"]["ListingDiagnosticEntity"];
+export type ListingDiagnosticField = components["schemas"]["ListingDiagnosticField"];
+export type ListingDiagnosticResult = components["schemas"]["ListingDiagnosticResult"];
+export type ListingObservedState = components["schemas"]["ListingObservedState"];
+export type ListingObservedMeta = components["schemas"]["ListingObservedMeta"];
 export type AvailabilityStatus = components["schemas"]["AvailabilityStatus"];
 export type QualityState = components["schemas"]["QualityState"];
 export type RawAmount = components["schemas"]["RawAmount"];

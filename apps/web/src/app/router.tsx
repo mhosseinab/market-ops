@@ -11,6 +11,7 @@ import { EmptyState } from "../components/EmptyState";
 import { Actions } from "../screens/Actions";
 import { BulkApproval } from "../screens/BulkApproval";
 import { CostImport } from "../screens/CostImport";
+import { Diagnostics } from "../screens/Diagnostics";
 import { EventDetail } from "../screens/EventDetail";
 import { Market } from "../screens/Market";
 import { Onboarding } from "../screens/Onboarding";
@@ -46,6 +47,7 @@ const SCREENS: Partial<Record<RouteKey, () => ReactElement>> = {
   today: Today,
   products: Products,
   product: ProductDetail,
+  diagnostics: Diagnostics,
   cost: CostImport,
   onboarding: Onboarding,
   event: EventDetail,

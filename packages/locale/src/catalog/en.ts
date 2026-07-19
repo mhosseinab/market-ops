@@ -306,6 +306,30 @@ export const en: Catalog = {
   "product.diagnostics.source": "Source",
   "product.diagnostics.evidence": "Evidence ref",
   "product.diagnostics.viewAll": "View diagnostics →",
+
+  // Diagnostics screen (S26, LST-001, read-only). Every result NAMES its entity +
+  // field + rule; nothing here generates, changes, or publishes a listing.
+  "diagnostics.readOnlyNote":
+    "Read-only. Diagnostics report on your listing — they never change or publish it.",
+  "diagnostics.noVariant": "Open diagnostics from a product to see its listing and image checks.",
+  "diagnostics.field.title": "Title",
+  "diagnostics.field.description": "Description",
+  "diagnostics.field.image": "Main image",
+  "diagnostics.entity.product": "Product",
+  "diagnostics.entity.variant": "Variant",
+  "diagnostics.entity.listing": "Listing",
+  "diagnostics.entityLabel": "Observed entity",
+  "diagnostics.rule": "Rule",
+  "diagnostics.result.pass": "Passing",
+  "diagnostics.result.warn": "Needs attention",
+  "diagnostics.observed.label": "Observed value",
+  "diagnostics.observed.present": "Present",
+  "diagnostics.observed.empty": "Empty",
+  "diagnostics.observed.notObserved": "Not observed yet",
+  "diagnostics.observed.length": "{count} characters",
+  "diagnostics.evidence": "Evidence ref",
+  "diagnostics.capturedAt": "Captured",
+
   "product.noTarget": "No active observation target for this product.",
   "product.back": "← Back to products",
 

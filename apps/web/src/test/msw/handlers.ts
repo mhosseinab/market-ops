@@ -14,6 +14,7 @@ import {
   offer,
   outcomeClosed,
   previewWithDuplicate,
+  productDiagnostics,
   readinessMissing,
   recommendationDetail,
   sessionOwner,
@@ -53,6 +54,7 @@ export const handlers = [
 
   http.get(`${B}/catalog/products`, () => HttpResponse.json(catalogProductPage)),
   http.get(`${B}/catalog/product`, () => HttpResponse.json(catalogProductRow)),
+  http.get(`${B}/catalog/product-diagnostics`, () => HttpResponse.json(productDiagnostics)),
 
   http.get(`${B}/observation/targets`, () => HttpResponse.json({ items: [target] })),
   http.get(`${B}/observation/observed-offers`, () => HttpResponse.json({ items: [offer] })),

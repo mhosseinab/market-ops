@@ -28,6 +28,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/conversation"
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/diagnostics"
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
 	"github.com/mhosseinab/market-ops/services/core/internal/execution"
 	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
@@ -279,6 +280,11 @@ func run() error {
 		// mapping state and observation evidence. Owned-offer data is gated on the
 		// owned_offer_read capability (§15.2); prices stay raw evidence (money quarantine).
 		serverOpts = append(serverOpts, httpapi.WithCatalog(catalog.NewReadService(pool)))
+		// Wire the READ-ONLY listing/image diagnostics read model (S26, LST-001):
+		// org-scoped, fail-closed derivation of pass/warn results from already-captured
+		// canonical catalog data. It NAMES the observed field + rule and never
+		// generates or publishes content — there is no write path on this seam.
+		serverOpts = append(serverOpts, httpapi.WithDiagnostics(diagnostics.NewReadService(pool)))
 		// Wire the extension-pairing plane (PRD §14 EXT-001): short-lived pairing
 		// codes exchanged for SCOPED capture credentials, plus the capture-credential
 		// authentication on /observation/capture and the EXT-009 revocation path. The

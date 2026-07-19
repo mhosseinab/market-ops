@@ -6,6 +6,7 @@ import { Banner } from "../components/Banner";
 import {
   AvailabilityBadge,
   CapabilityBadge,
+  DiagnosticResultBadge,
   FreshnessPill,
   MappingBadge,
   QualityBadge,
@@ -16,18 +17,18 @@ import { MoneyView } from "../components/MoneyView";
 import { Section } from "../components/primitives";
 import { SectionError } from "../components/SectionError";
 import { ViewState } from "../components/ViewState";
-import { formatCount, formatInstant } from "../data/format";
+import { formatCount } from "../data/format";
 import { freshnessState } from "../data/freshness";
 import {
   useCatalogProduct,
   useCostProfiles,
   useMarginReadiness,
-  useObservations,
-  useObservationTargets,
+  useProductDiagnostics,
 } from "../data/hooks";
 import type {
   CostComponent,
   CostProfileVersion,
+  ListingDiagnosticField,
   ObservedOffer,
   OwnedOfferView,
 } from "../data/types";
@@ -42,6 +43,12 @@ const COST_COMPONENTS: readonly CostComponent[] = [
   "ads",
   "returns",
 ];
+
+const DIAGNOSTIC_FIELD_LABEL: Record<ListingDiagnosticField, MessageKey> = {
+  title: "diagnostics.field.title",
+  description: "diagnostics.field.description",
+  image: "diagnostics.field.image",
+};
 
 const COMPONENT_LABEL: Record<CostComponent, MessageKey> = {
   cogs: "costComponent.cogs",
@@ -93,13 +100,12 @@ export function ProductDetail() {
   const readinessQuery = useMarginReadiness(variantId);
   const profilesQuery = useCostProfiles(variantId);
 
-  // Observation evidence (diagnostics) is keyed by the variant's target, which
-  // exists only for a watched (active Confirmed) variant. It is EVIDENCE only —
-  // its absence never hides the canonical product.
-  const targetsQuery = useObservationTargets();
-  const target = targetsQuery.data?.items.find((tg) => tg.variantId === variantId);
-  const observationsQuery = useObservations(target?.id);
-  const latestObservation = observationsQuery.data?.items[0];
+  // READ-ONLY listing/image diagnostics (LST-001), derived from captured catalog
+  // data. This is the REAL diagnostics seam — NOT observation capture provenance
+  // (sourceType/parserVersion are how an offer was OBSERVED, never a listing/image
+  // verdict). Its absence never hides the canonical product.
+  const diagnosticsQuery = useProductDiagnostics(variantId);
+  const diagnostics = diagnosticsQuery.data?.items ?? [];
 
   const readiness = readinessQuery.data;
   const offer = product ? primaryOffer(product.marketOffers) : undefined;
@@ -331,39 +337,25 @@ export function ProductDetail() {
                 </AppLink>
               }
             >
-              {targetsQuery.isError || observationsQuery.isError ? (
+              {diagnosticsQuery.isError ? (
                 <SectionError
                   titleKey="product.diagnostics.error.title"
                   bodyKey="product.diagnostics.error.body"
                   testId="product-diagnostics-error"
-                  onRetry={() => {
-                    void targetsQuery.refetch();
-                    void observationsQuery.refetch();
-                  }}
+                  onRetry={() => void diagnosticsQuery.refetch()}
                 />
-              ) : latestObservation ? (
+              ) : diagnostics.length > 0 ? (
                 <dl className="kv">
-                  <div className="kv__row">
-                    <span>{t("product.diagnostics.observedField")}</span>
-                    <LtrToken text={latestObservation.sourceType} />
-                  </div>
-                  <div className="kv__row">
-                    <span>
-                      {t("product.diagnostics.ruleVersion", {
-                        version: latestObservation.parserVersion,
-                      })}
-                    </span>
-                  </div>
-                  <div className="kv__row">
-                    <span>{t("product.diagnostics.evidence")}</span>
-                    <LtrToken text={latestObservation.evidenceRef} />
-                  </div>
-                  <div className="kv__row">
-                    <span>{t("product.diagnostics.source")}</span>
-                    <span className="muted">
-                      {formatInstant(latestObservation.capturedAt, locale)}
-                    </span>
-                  </div>
+                  {diagnostics.map((d) => (
+                    <div key={`${d.field}.${d.ruleId}`} className="kv__row">
+                      <span>{t(DIAGNOSTIC_FIELD_LABEL[d.field])}</span>
+                      <span className="inline-badges">
+                        <DiagnosticResultBadge state={d.result} />
+                        {/* Rule id/version are technical identifiers: raw + LTR. */}
+                        <LtrToken text={d.ruleId} />
+                      </span>
+                    </div>
+                  ))}
                 </dl>
               ) : (
                 <p className="muted">{t("common.notAvailable")}</p>
