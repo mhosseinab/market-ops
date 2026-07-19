@@ -8,6 +8,7 @@ import {
   deriveManifest,
   FORBIDDEN_MANIFEST_ENTRIES,
   gatewayHostPermission,
+  resolveGatewayBaseUrl,
 } from "../../scripts/manifest.mjs";
 
 // EXT-001/§14: the packaged extension must reach EXACTLY its configured first-party
@@ -18,6 +19,33 @@ import {
 
 const extRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const sourceManifest = JSON.parse(readFileSync(join(extRoot, "public", "manifest.json"), "utf8"));
+
+describe("resolveGatewayBaseUrl — production requires an explicit gateway (NEGATIVE first)", () => {
+  it("FAILS closed when VITE_GATEWAY_BASE_URL is UNSET in production", () => {
+    expect(() => resolveGatewayBaseUrl({}, "production")).toThrow();
+  });
+
+  it("FAILS closed when VITE_GATEWAY_BASE_URL is EMPTY in production", () => {
+    expect(() => resolveGatewayBaseUrl({ VITE_GATEWAY_BASE_URL: "" }, "production")).toThrow();
+    expect(() => resolveGatewayBaseUrl({ VITE_GATEWAY_BASE_URL: "   " }, "production")).toThrow();
+  });
+
+  it("returns the explicit gateway in production when set", () => {
+    expect(
+      resolveGatewayBaseUrl({ VITE_GATEWAY_BASE_URL: "https://gateway.example" }, "production"),
+    ).toBe("https://gateway.example");
+  });
+
+  it("defaults to the loopback gateway ONLY for the dev/unpacked flow", () => {
+    expect(resolveGatewayBaseUrl({}, "development")).toBe("http://localhost:8080");
+  });
+
+  it("honours an explicit dev gateway override without inventing a default", () => {
+    expect(
+      resolveGatewayBaseUrl({ VITE_GATEWAY_BASE_URL: "http://localhost:9000" }, "development"),
+    ).toBe("http://localhost:9000");
+  });
+});
 
 describe("gatewayHostPermission — validation (NEGATIVE first)", () => {
   it("rejects the total wildcard *://*/*", () => {

@@ -21,6 +21,15 @@ tasks:
 
   build:
     desc: Build the web app and extension and reject dev-only production bundle content.
+    # The extension's production packaging (apps/extension/scripts/build.mjs) FAILS
+    # CLOSED when VITE_GATEWAY_BASE_URL is unset — it refuses to ship a manifest
+    # scoped to the localhost dev default (issue #144). CI/pre-merge verification is
+    # not a real release, so supply an explicit verification gateway here; a real
+    # release pipeline overrides VITE_GATEWAY_BASE_URL with the deployed gateway
+    # origin and that value wins. This is explicit config, never a silent default.
+    env:
+      VITE_GATEWAY_BASE_URL:
+        sh: echo "${VITE_GATEWAY_BASE_URL:-https://gateway.example}"
     cmds:
       # --if-present so the task is a no-op green on scaffold members that have no
       # build script yet (web/extension build scripts land in their own steps) and

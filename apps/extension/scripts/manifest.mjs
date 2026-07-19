@@ -31,6 +31,34 @@ export const FORBIDDEN_MANIFEST_ENTRIES = Object.freeze([
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
+// Dev/unpacked-only loopback gateway. A production packaging build must NEVER fall
+// back to this — it exists solely so an unpacked dev build stays loadable against
+// the local core (mirrors the service worker's dev default).
+const DEV_GATEWAY_BASE_URL = "http://localhost:8080";
+
+// resolveGatewayBaseUrl picks the gateway base URL the packaged manifest is scoped
+// to, failing closed in production (quarantine over inference — CLAUDE.md). In a
+// production build VITE_GATEWAY_BASE_URL MUST be set explicitly to a non-empty
+// value; an unset or empty var aborts rather than silently shipping a localhost
+// artifact. The loopback default is reserved for the dev/unpacked flow only.
+export function resolveGatewayBaseUrl(env, mode) {
+  const raw = env?.VITE_GATEWAY_BASE_URL;
+  const value = typeof raw === "string" ? raw.trim() : "";
+
+  if (mode === "production") {
+    if (value === "") {
+      throw new Error(
+        "VITE_GATEWAY_BASE_URL must be set to the gateway origin for a production build — " +
+          "refusing to ship an artifact scoped to the localhost dev default",
+      );
+    }
+    return value;
+  }
+
+  // dev/unpacked: honour an explicit override, else the loopback default.
+  return value === "" ? DEV_GATEWAY_BASE_URL : value;
+}
+
 // gatewayHostPermission validates a gateway base URL and returns the single Chrome
 // match pattern that scopes host access to exactly that origin. It fails closed on
 // anything ambiguous or wider than one concrete host:
