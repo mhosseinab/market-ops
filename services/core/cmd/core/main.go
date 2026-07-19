@@ -261,12 +261,15 @@ func run() error {
 		}
 
 		// Wire the execution/reconciliation/outcome plane (EXE-001..005, AUD-001,
-		// OUT-001). Execution ships DARK: the DefaultResolver reports write
-		// enablement OFF (Unknown price_write capability AND the S35 region flag
-		// absent), so an Approved card is tracked recommend-only and NOTHING is
-		// written until the gated S35 probes record verified parameters. The HTTP
-		// writer targets the DK batch endpoint; it is exercised only once
-		// enablement flips on. A nil capability check fails closed (never Supported).
+		// OUT-001). Execution ships DARK: the DefaultResolver has NO authoritative
+		// signal sources, so it FAILS CLOSED (ErrSignalsStatic) rather than
+		// revalidating the EXE-001 gates on static/fabricated signals — neither the
+		// write path NOR recommend-only matching may run on non-live truth. The live
+		// signal sources (identity/price/money-unit/boundary/permission/evidence)
+		// and NewLiveResolver are wired only once the gated S35 probes record
+		// verified parameters. The HTTP writer targets the DK batch endpoint; it is
+		// exercised only once enablement flips on. A nil capability check fails
+		// closed (never Supported).
 		writer := execution.NewHTTPWriter("", "", nil)
 		resolver := execution.NewDefaultResolver(pool, nil)
 		serverOpts = append(serverOpts, httpapi.WithExecution(
