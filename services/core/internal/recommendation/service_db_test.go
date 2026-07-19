@@ -248,3 +248,144 @@ func TestReopenExpirer_InvalidatesLiveCard(t *testing.T) {
 		t.Fatalf("card state after reopen = %s; want invalidated", got.State)
 	}
 }
+
+// driveToState advances a freshly-minted Draft card up the §8.4 happy path until
+// it reaches target, using the real FROM-guarded advances.
+func driveToState(t *testing.T, svc *recommendation.Service, cardID uuid.UUID, target approval.State) {
+	t.Helper()
+	ctx := context.Background()
+	path := []struct{ from, to approval.State }{
+		{approval.StateDraft, approval.StateReadyForReview},
+		{approval.StateReadyForReview, approval.StateAwaitingConfirmation},
+		{approval.StateAwaitingConfirmation, approval.StateApproved},
+		{approval.StateApproved, approval.StateRevalidating},
+	}
+	for _, s := range path {
+		if _, err := svc.Advance(ctx, cardID, s.from, s.to, "test-drive"); err != nil {
+			t.Fatalf("advance %s→%s: %v", s.from, s.to, err)
+		}
+		if s.to == target {
+			return
+		}
+	}
+	t.Fatalf("target state %s not reached on the happy path", target)
+}
+
+// TestReopenExpirer_InvalidatesApprovedCard proves the §16 identity-reopen rule
+// for an ALREADY-APPROVED dependent (issue #86): the §8.4 table has no direct
+// Approved → Invalidated edge, so the consumer must compose Approved →
+// Revalidating → Invalidated in one transaction. After reopen the card must be
+// Invalidated (fail closed) — never left Approved/executable — and the
+// append-only history must record BOTH hops.
+func TestReopenExpirer_InvalidatesApprovedCard(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant := seedVariant(t, q)
+	svc := recommendation.NewService(pool)
+	card := persistApprovableCard(t, svc, account, variant)
+
+	driveToState(t, svc, card.ID, approval.StateApproved)
+
+	n, err := svc.ExpireDependentForVariant(ctx, variant, "identity_reopen:test")
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("invalidated count = %d; want 1", n)
+	}
+
+	got, err := svc.GetCard(ctx, card.ID)
+	if err != nil {
+		t.Fatalf("get card: %v", err)
+	}
+	if got.State != string(approval.StateInvalidated) {
+		t.Fatalf("approved card after reopen = %s; want invalidated (fail closed)", got.State)
+	}
+
+	// The append-only history must show the composed Approved→Revalidating→Invalidated
+	// hops (AUD-001): every hop writes its own row, none is skipped or overwritten.
+	// The two hops share a transaction timestamp, so ordering is asserted by the
+	// self-describing from→to linkage (which reconstructs the true order) rather than
+	// by the occurred_at tiebreak.
+	hist, err := svc.History(ctx, card.ID)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(hist) != 6 {
+		t.Fatalf("history has %d rows; want 6 (%v)", len(hist), historyToStates(hist))
+	}
+	wantEdges := map[string]bool{
+		"->draft":                 true, // [*] → Draft (NULL from_state)
+		"draft->ready_for_review": true,
+		"ready_for_review->awaiting_confirmation": true,
+		"awaiting_confirmation->approved":         true,
+		"approved->revalidating":                  true, // composed hop 1 (#86)
+		"revalidating->invalidated":               true, // composed hop 2 (#86)
+	}
+	for _, row := range hist {
+		var from string
+		if row.FromState.Valid {
+			from = row.FromState.String
+		}
+		edge := from + "->" + row.ToState
+		if !wantEdges[edge] {
+			t.Fatalf("unexpected history edge %q", edge)
+		}
+		delete(wantEdges, edge)
+	}
+	if len(wantEdges) != 0 {
+		t.Fatalf("missing history edges: %v", wantEdges)
+	}
+
+	// Idempotency: a second delivery is a no-op — Invalidated is terminal, the live
+	// query no longer returns it, count is 0, and no spurious history row is added.
+	n2, err := svc.ExpireDependentForVariant(ctx, variant, "identity_reopen:test")
+	if err != nil {
+		t.Fatalf("second expire: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second expire invalidated %d; want 0 (idempotent)", n2)
+	}
+	hist2, err := svc.History(ctx, card.ID)
+	if err != nil {
+		t.Fatalf("history 2: %v", err)
+	}
+	if len(hist2) != 6 {
+		t.Fatalf("second delivery added history rows: %d; want 6", len(hist2))
+	}
+}
+
+// TestReopenExpirer_InvalidatesRevalidatingCard proves a Revalidating dependent is
+// also invalidated (its single-hop Revalidating → Invalidated edge is unchanged).
+func TestReopenExpirer_InvalidatesRevalidatingCard(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant := seedVariant(t, q)
+	svc := recommendation.NewService(pool)
+	card := persistApprovableCard(t, svc, account, variant)
+
+	driveToState(t, svc, card.ID, approval.StateRevalidating)
+
+	n, err := svc.ExpireDependentForVariant(ctx, variant, "identity_reopen:test")
+	if err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("invalidated count = %d; want 1", n)
+	}
+	got, err := svc.GetCard(ctx, card.ID)
+	if err != nil {
+		t.Fatalf("get card: %v", err)
+	}
+	if got.State != string(approval.StateInvalidated) {
+		t.Fatalf("revalidating card after reopen = %s; want invalidated", got.State)
+	}
+}
+
+func historyToStates(hist []db.ApprovalCardState) []string {
+	out := make([]string, len(hist))
+	for i, r := range hist {
+		out[i] = r.ToState
+	}
+	return out
+}
