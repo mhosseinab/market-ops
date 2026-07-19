@@ -205,6 +205,14 @@ type Querier interface {
 	// become 'expired'. Like resolution this frees the dedup_key. Evidence is left
 	// intact; expiry is a lifecycle transition, not a delete.
 	ExpireStaleEvents(ctx context.Context, arg ExpireStaleEventsParams) (int64, error)
+	// DURABLE, ACCOUNT-WIDE expiry sweep (§15.1, issue #66): every open|updated event
+	// past its expiry deadline across ALL accounts becomes 'expired'. This is the query
+	// the runtime producer pass drives so a stale alert cannot stay actionable-looking
+	// indefinitely — a read-time filter alone would NOT free the dedup_key, so the row
+	// must actually leave open|updated. Freeing the key lets a genuinely new future
+	// occurrence open a fresh event (EVT-003). Idempotent: a sweep with nothing due
+	// affects zero rows, and a resolved/expired row is untouched (never resurrected).
+	ExpireStaleEventsAll(ctx context.Context, expiresAt time.Time) (int64, error)
 	FailCatalogSyncRun(ctx context.Context, arg FailCatalogSyncRunParams) (CatalogSyncRun, error)
 	// Cost profile / CSV import / margin readiness queries (PRD §7.2 CST-001..003,
 	// §9.2, §16). Write disciplines:
@@ -590,6 +598,13 @@ type Querier interface {
 	// resolved. This leaves the partial-unique predicate, freeing the dedup_key so a
 	// genuinely new future occurrence can open a fresh event.
 	ResolveEvent(ctx context.Context, arg ResolveEventParams) (MarketEvent, error)
+	// Type-aware CONDITION-CLEAR (§15.1, issue #66): when a detector reports its
+	// triggering condition no longer holds, the runtime producer resolves the single
+	// open|updated event for that dedup identity. Scoping on state IN ('open','updated')
+	// makes it MONOTONIC and idempotent — a replay of the same clearance (the event
+	// already resolved/expired, or none ever opened) affects zero rows and can never
+	// resurrect a terminal event. Resolving frees the dedup_key just like ResolveEvent.
+	ResolveOpenEventByDedupKey(ctx context.Context, arg ResolveOpenEventByDedupKeyParams) (int64, error)
 	// Resolve a CSV SKU token to variants within an account. Zero rows ⇒ unknown SKU;
 	// more than one ⇒ ambiguous (both are preview rejects with a stated reason).
 	ResolveVariantsBySupplierCode(ctx context.Context, arg ResolveVariantsBySupplierCodeParams) ([]ResolveVariantsBySupplierCodeRow, error)

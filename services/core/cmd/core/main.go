@@ -332,8 +332,11 @@ func run() error {
 			BriefingGenerate: briefingSvc.GenerateAll,
 			DigestGenerate:   digestRunner(digestSvc),
 			MarketEventProduce: func(c context.Context) (int, error) {
+				// One pass performs the full EVT lifecycle: durable expiry sweep +
+				// type-aware condition-clear (issue #66) alongside production/dedup. The
+				// returned count is the total lifecycle work done this pass.
 				m, err := eventProducer.RunOnce(c)
-				return m.Produced + m.Deduped, err
+				return m.Produced + m.Deduped + m.Resolved + m.Expired, err
 			},
 		}, catalogDeps)
 		if jobsErr != nil {

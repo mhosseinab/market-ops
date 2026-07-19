@@ -127,6 +127,33 @@ WHERE marketplace_account_id = $1
   AND state IN ('open', 'updated')
   AND expires_at < $2;
 
+-- name: ExpireStaleEventsAll :execrows
+-- DURABLE, ACCOUNT-WIDE expiry sweep (§15.1, issue #66): every open|updated event
+-- past its expiry deadline across ALL accounts becomes 'expired'. This is the query
+-- the runtime producer pass drives so a stale alert cannot stay actionable-looking
+-- indefinitely — a read-time filter alone would NOT free the dedup_key, so the row
+-- must actually leave open|updated. Freeing the key lets a genuinely new future
+-- occurrence open a fresh event (EVT-003). Idempotent: a sweep with nothing due
+-- affects zero rows, and a resolved/expired row is untouched (never resurrected).
+UPDATE market_events SET
+    state      = 'expired',
+    updated_at = now()
+WHERE state IN ('open', 'updated')
+  AND expires_at < $1;
+
+-- name: ResolveOpenEventByDedupKey :execrows
+-- Type-aware CONDITION-CLEAR (§15.1, issue #66): when a detector reports its
+-- triggering condition no longer holds, the runtime producer resolves the single
+-- open|updated event for that dedup identity. Scoping on state IN ('open','updated')
+-- makes it MONOTONIC and idempotent — a replay of the same clearance (the event
+-- already resolved/expired, or none ever opened) affects zero rows and can never
+-- resurrect a terminal event. Resolving frees the dedup_key just like ResolveEvent.
+UPDATE market_events SET
+    state       = 'resolved',
+    resolved_at = $2,
+    updated_at  = now()
+WHERE dedup_key = $1 AND state IN ('open', 'updated');
+
 -- name: InsertRelevanceFeedback :one
 -- APPEND-ONLY relevance history (EVT-005). Each vote is a new row; a mute is a
 -- feedback record, never a delete of the event.

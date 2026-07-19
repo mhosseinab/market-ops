@@ -154,6 +154,32 @@ func (s *Service) ExpireStale(ctx context.Context, account uuid.UUID) (int64, er
 	})
 }
 
+// ExpireStaleAll is the durable, ACCOUNT-WIDE expiry sweep the runtime producer
+// drives (§15.1, issue #66). Every open|updated event past `now` transitions to
+// expired, leaving Today and freeing its dedup key. `now` is supplied by the caller
+// (the producer's clock) so the sweep and the production pass share one instant.
+// Idempotent: a sweep with nothing due returns 0 and a terminal row is never
+// resurrected, so repeated sweeps and restarts are safe.
+func (s *Service) ExpireStaleAll(ctx context.Context, now time.Time) (int64, error) {
+	return db.New(s.pool).ExpireStaleEventsAll(ctx, now)
+}
+
+// ResolveOpen resolves the single open|updated event for a dedup identity when its
+// triggering condition no longer holds (§15.1 condition-clear, issue #66). It
+// reports whether a row transitioned. A no-op (no open event — already
+// resolved/expired, or never opened) returns false and transitions nothing, so a
+// replay of the same clearance never resurrects a terminal event (EVT-003).
+func (s *Service) ResolveOpen(ctx context.Context, dedupKey string) (bool, error) {
+	n, err := db.New(s.pool).ResolveOpenEventByDedupKey(ctx, db.ResolveOpenEventByDedupKeyParams{
+		DedupKey:   dedupKey,
+		ResolvedAt: pgtype.Timestamptz{Time: s.now(), Valid: true},
+	})
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 // SetThreshold inserts a new versioned materiality threshold (EVT-002).
 func (s *Service) SetThreshold(ctx context.Context, p ThresholdParams) (db.MaterialityThreshold, error) {
 	return db.New(s.pool).InsertMaterialityThreshold(ctx, db.InsertMaterialityThresholdParams{

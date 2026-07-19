@@ -38,6 +38,29 @@ func (q *Queries) ExpireStaleEvents(ctx context.Context, arg ExpireStaleEventsPa
 	return result.RowsAffected(), nil
 }
 
+const expireStaleEventsAll = `-- name: ExpireStaleEventsAll :execrows
+UPDATE market_events SET
+    state      = 'expired',
+    updated_at = now()
+WHERE state IN ('open', 'updated')
+  AND expires_at < $1
+`
+
+// DURABLE, ACCOUNT-WIDE expiry sweep (§15.1, issue #66): every open|updated event
+// past its expiry deadline across ALL accounts becomes 'expired'. This is the query
+// the runtime producer pass drives so a stale alert cannot stay actionable-looking
+// indefinitely — a read-time filter alone would NOT free the dedup_key, so the row
+// must actually leave open|updated. Freeing the key lets a genuinely new future
+// occurrence open a fresh event (EVT-003). Idempotent: a sweep with nothing due
+// affects zero rows, and a resolved/expired row is untouched (never resurrected).
+func (q *Queries) ExpireStaleEventsAll(ctx context.Context, expiresAt time.Time) (int64, error) {
+	result, err := q.db.Exec(ctx, expireStaleEventsAll, expiresAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getEvent = `-- name: GetEvent :one
 SELECT id, marketplace_account_id, variant_id, target_id, event_type, severity, state, dedup_key, threshold_id, threshold_version, exposure_known, exposure_mantissa, exposure_currency, exposure_exponent, confidence_bp, urgency_bp, evidence_observation_id, evidence_quality, evidence_ref, evidence_detail, first_detected_at, last_evidence_at, expires_at, resolved_at, updated_at, evidence_update_count FROM market_events WHERE id = $1
 `
@@ -558,6 +581,33 @@ func (q *Queries) ResolveEvent(ctx context.Context, arg ResolveEventParams) (Mar
 		&i.EvidenceUpdateCount,
 	)
 	return i, err
+}
+
+const resolveOpenEventByDedupKey = `-- name: ResolveOpenEventByDedupKey :execrows
+UPDATE market_events SET
+    state       = 'resolved',
+    resolved_at = $2,
+    updated_at  = now()
+WHERE dedup_key = $1 AND state IN ('open', 'updated')
+`
+
+type ResolveOpenEventByDedupKeyParams struct {
+	DedupKey   string
+	ResolvedAt pgtype.Timestamptz
+}
+
+// Type-aware CONDITION-CLEAR (§15.1, issue #66): when a detector reports its
+// triggering condition no longer holds, the runtime producer resolves the single
+// open|updated event for that dedup identity. Scoping on state IN ('open','updated')
+// makes it MONOTONIC and idempotent — a replay of the same clearance (the event
+// already resolved/expired, or none ever opened) affects zero rows and can never
+// resurrect a terminal event. Resolving frees the dedup_key just like ResolveEvent.
+func (q *Queries) ResolveOpenEventByDedupKey(ctx context.Context, arg ResolveOpenEventByDedupKeyParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resolveOpenEventByDedupKey, arg.DedupKey, arg.ResolvedAt)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateOpenEvent = `-- name: UpdateOpenEvent :one

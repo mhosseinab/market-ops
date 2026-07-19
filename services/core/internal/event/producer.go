@@ -25,6 +25,16 @@ type Recorder interface {
 	// RecordFor persists a detected candidate idempotently (EVT-003 dedup): a
 	// replay of the same condition updates the one open event, never a duplicate.
 	RecordFor(ctx context.Context, account uuid.UUID, c Candidate) (RecordResult, error)
+	// ExpireStaleAll transitions every open|updated event past `now` to 'expired'
+	// across all accounts (§15.1 durable sweep, issue #66), freeing each dedup key.
+	// Returns the number expired. Idempotent and monotonic: nothing due returns 0
+	// and a terminal event is never resurrected, so restarts/repeats are safe.
+	ExpireStaleAll(ctx context.Context, now time.Time) (int64, error)
+	// ResolveOpen resolves the single open|updated event for a dedup identity when
+	// its triggering condition no longer holds (§15.1 condition-clear, issue #66).
+	// Reports whether a row transitioned; a no-op (nothing open) returns false and
+	// never resurrects a terminal event, so a replayed clearance is idempotent.
+	ResolveOpen(ctx context.Context, dedupKey string) (bool, error)
 }
 
 // Transition is one detected input transition awaiting event production. Exactly
@@ -61,7 +71,9 @@ type ProducerMetrics struct {
 	Scanned  int // transitions considered
 	Produced int // new open events created
 	Deduped  int // replays that updated an existing open event (no new Today item)
-	Dormant  int // non-material transitions (detector did not fire)
+	Dormant  int // non-material transitions with no open event to clear
+	Resolved int // condition-clear transitions that resolved an open event (§15.1)
+	Expired  int // events swept to 'expired' past their deadline (§15.1 durable sweep)
 	Errors   int // per-transition failures surfaced for retry
 }
 
@@ -105,14 +117,34 @@ func (p *Producer) WithClock(now func() time.Time) *Producer {
 // double-produce (EVT-003). RunOnce satisfies the jobs.RunOnceFunc shape via a thin
 // adapter in the bootstrap.
 func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
-	transitions, err := p.source.Transitions(ctx)
-	if err != nil {
-		p.tel.errors.Add(ctx, 1)
-		return ProducerMetrics{}, fmt.Errorf("event producer: load transitions: %w", err)
-	}
-
 	var m ProducerMetrics
 	var errs []error
+
+	// (1) DURABLE EXPIRY SWEEP FIRST (§15.1, issue #66). Transition every
+	// open|updated event past its deadline to 'expired' BEFORE producing, so a stale
+	// alert leaves Today and its dedup key is freed — letting a genuinely new
+	// occurrence in this same pass open cleanly. The sweep uses the producer's clock,
+	// is account-wide, idempotent (nothing due ⇒ 0), and safe across restart. A sweep
+	// failure is surfaced for River retry but does NOT abort production (the two
+	// lifecycle duties are independent).
+	if expired, xerr := p.rec.ExpireStaleAll(ctx, p.now()); xerr != nil {
+		m.Errors++
+		p.tel.errors.Add(ctx, 1)
+		errs = append(errs, fmt.Errorf("event producer: expiry sweep: %w", xerr))
+	} else if expired > 0 {
+		m.Expired = int(expired)
+		p.tel.expired.Add(ctx, expired)
+	}
+
+	transitions, err := p.source.Transitions(ctx)
+	if err != nil {
+		m.Errors++
+		p.tel.errors.Add(ctx, 1)
+		errs = append(errs, fmt.Errorf("event producer: load transitions: %w", err))
+		p.logSummary(ctx, m)
+		return m, errors.Join(errs...)
+	}
+
 	for _, tr := range transitions {
 		m.Scanned++
 		cand, ok, derr := p.evaluate(ctx, tr)
@@ -123,8 +155,32 @@ func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
 			continue
 		}
 		if !ok {
-			m.Dormant++
-			p.tel.dormant.Add(ctx, 1)
+			// (2) TYPE-AWARE CONDITION-CLEAR (§15.1, issue #66). The detector reports
+			// the triggering condition no longer holds. If an open event exists for
+			// this transition's dedup identity, resolve it (state→resolved, freeing the
+			// key); otherwise the transition is simply dormant (nothing to clear). The
+			// resolve is idempotent — a replayed clearance is a no-op and never
+			// resurrects a terminal event (EVT-003 monotonic lifecycle).
+			key, hasKey := transitionDedupKey(tr)
+			if !hasKey {
+				m.Dormant++
+				p.tel.dormant.Add(ctx, 1)
+				continue
+			}
+			resolved, rerr := p.rec.ResolveOpen(ctx, key)
+			if rerr != nil {
+				m.Errors++
+				p.tel.errors.Add(ctx, 1)
+				errs = append(errs, fmt.Errorf("event producer: resolve %s: %w", tr.Type, rerr))
+				continue
+			}
+			if resolved {
+				m.Resolved++
+				p.tel.resolved.Add(ctx, 1)
+			} else {
+				m.Dormant++
+				p.tel.dormant.Add(ctx, 1)
+			}
 			continue
 		}
 		res, rerr := p.rec.RecordFor(ctx, tr.Account, cand)
@@ -143,16 +199,59 @@ func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
 		}
 	}
 
-	// Structured summary on the producer boundary (shared field schema). Logged on
-	// every pass so an empty/all-dormant pass is observable, never silent.
-	p.logger.InfoContext(ctx, "market event production pass",
-		"scanned", m.Scanned, "produced", m.Produced, "deduped", m.Deduped,
-		"dormant", m.Dormant, "errors", m.Errors)
-
+	p.logSummary(ctx, m)
 	if len(errs) > 0 {
 		return m, errors.Join(errs...)
 	}
 	return m, nil
+}
+
+// logSummary emits the structured per-pass summary on the producer boundary (shared
+// field schema). Logged on every pass so an empty/all-dormant/sweep-only pass is
+// observable, never silent.
+func (p *Producer) logSummary(ctx context.Context, m ProducerMetrics) {
+	p.logger.InfoContext(ctx, "market event production pass",
+		"scanned", m.Scanned, "produced", m.Produced, "deduped", m.Deduped,
+		"dormant", m.Dormant, "resolved", m.Resolved, "expired", m.Expired,
+		"errors", m.Errors)
+}
+
+// transitionDedupKey computes the dedup identity a transition concerns, whether or
+// not its detector fires — the key the condition-clear path resolves against. It
+// mirrors the candidate's dedupKey EXACTLY (scope = competitor offer identity for
+// competitor_price, empty for the others), so a cleared transition resolves the same
+// row a fired one would have opened. Returns false when the type's payload is absent
+// (a malformed transition, already surfaced as an error by evaluate).
+func transitionDedupKey(tr Transition) (string, bool) {
+	switch tr.Type {
+	case TypeWinningState:
+		if tr.WinningState == nil {
+			return "", false
+		}
+		return dedupKey(tr.Type, tr.WinningState.Variant, ""), true
+	case TypeCompetitorPrice:
+		if tr.CompetitorPrice == nil {
+			return "", false
+		}
+		return dedupKey(tr.Type, tr.CompetitorPrice.Variant, tr.CompetitorPrice.OfferIdentity), true
+	case TypeSellerCount:
+		if tr.SellerCount == nil {
+			return "", false
+		}
+		return dedupKey(tr.Type, tr.SellerCount.Variant, ""), true
+	case TypeSuppressionBoundary:
+		if tr.SuppressionBoundary == nil {
+			return "", false
+		}
+		return dedupKey(tr.Type, tr.SuppressionBoundary.Variant, ""), true
+	case TypeContributionFloor:
+		if tr.ContributionFloor == nil {
+			return "", false
+		}
+		return dedupKey(tr.Type, tr.ContributionFloor.Variant, ""), true
+	default:
+		return "", false
+	}
 }
 
 // evaluate resolves the versioned threshold for the transition's type, injects it
@@ -251,6 +350,8 @@ type producerTelemetry struct {
 	produced metric.Int64Counter
 	deduped  metric.Int64Counter
 	dormant  metric.Int64Counter
+	resolved metric.Int64Counter
+	expired  metric.Int64Counter
 	errors   metric.Int64Counter
 }
 
@@ -269,6 +370,8 @@ func newProducerTelemetry() *producerTelemetry {
 		produced: ctr("event.producer.produced", "new market events opened by the producer (EVT-001)"),
 		deduped:  ctr("event.producer.deduped", "producer replays that updated an open event; no duplicate Today item (EVT-003)"),
 		dormant:  ctr("event.producer.dormant", "non-material transitions the producer evaluated but did not record"),
+		resolved: ctr("event.producer.resolved", "open events resolved because their triggering condition cleared (§15.1)"),
+		expired:  ctr("event.producer.expired", "open events swept to expired past their deadline (§15.1 durable sweep)"),
 		errors:   ctr("event.producer.errors", "producer per-transition failures surfaced for retry"),
 	}
 }
