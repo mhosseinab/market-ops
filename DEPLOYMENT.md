@@ -282,6 +282,12 @@ individually instead.
    | Prometheus | `http://localhost:9090` |
    | Spotlight | `http://localhost:8969` |
 
+   All of these bind to `127.0.0.1` only (loopback) by default, so the dev stack
+   is not exposed to the LAN. Set `DK_DEV_BIND_IP=0.0.0.0` to deliberately expose
+   them. Grafana anonymous admin is disabled: log in as `admin` with the password
+   `task dev` / `task up` writes to `tmp/dev-grafana-admin-password` (mode 0600),
+   or provide your own via `GF_SECURITY_ADMIN_PASSWORD`.
+
 `task up` configures Vite to proxy `/api` to the core and strip the prefix,
 matching the local Caddy integration route without requiring core CORS.
 

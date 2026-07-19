@@ -52,6 +52,11 @@ if [[ "${MARKET_OPS_UP_CHECK_ONLY:-}" == "1" ]]; then
   else
     echo "DEV_OWNER_PASSWORD=provided"
   fi
+  if [[ -z "${GF_SECURITY_ADMIN_PASSWORD:-}" ]]; then
+    echo "GRAFANA_ADMIN_PASSWORD=generated"
+  else
+    echo "GRAFANA_ADMIN_PASSWORD=provided"
+  fi
   exit 0
 fi
 
@@ -99,6 +104,16 @@ if is_placeholder "${SEEDE2E_PASSWORD:-}"; then
 fi
 export CONNECTOR_ENCRYPTION_KEY LLM_GATEWAY_TOKEN SEEDE2E_PASSWORD
 export SEEDE2E_EMAIL="${SEEDE2E_EMAIL:-owner@dev.local}"
+
+# Grafana admin (issue #10): anonymous Admin is disabled, so `task dev` needs a
+# real admin login. Generate a random dev-only password under tmp/ when the
+# environment does not already provide one, then export it so the `task dev`
+# compose-up inherits it (never a predictable admin/admin default).
+if is_placeholder "${GF_SECURITY_ADMIN_PASSWORD:-}"; then
+  GF_SECURITY_ADMIN_PASSWORD="$(read_or_create_secret tmp/dev-grafana-admin-password password)"
+fi
+export GF_SECURITY_ADMIN_USER="${GF_SECURITY_ADMIN_USER:-admin}"
+export GF_SECURITY_ADMIN_PASSWORD
 
 echo "Starting local infrastructure..."
 task dev
@@ -199,6 +214,7 @@ echo "  Go core      http://localhost:8080"
 echo "  LLM plane    http://localhost:8100       ($LLM_PROVIDER_KIND provider)"
 echo "  Dev owner    $SEEDE2E_EMAIL"
 echo "  Password     tmp/dev-owner-password      (mode 0600)"
+echo "  Grafana      http://localhost:3000       (login: admin / tmp/dev-grafana-admin-password)"
 echo "  Logs         tmp/up-{llm,core,web}.log"
 echo
 

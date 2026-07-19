@@ -44,7 +44,15 @@ tasks:
     vars:
       COMPOSE: docker compose -f deploy/compose.dev.yml
     cmds:
-      - "{{.COMPOSE}} up -d"
+      # Loopback-bound by default (issue #10). Grafana admin login comes from the
+      # environment; generate a random dev-only password when one is not provided
+      # so a clean checkout still comes up with no manual env setup.
+      - |
+        export GF_SECURITY_ADMIN_USER="${GF_SECURITY_ADMIN_USER:-admin}"
+        if [ -z "${GF_SECURITY_ADMIN_PASSWORD:-}" ]; then
+          export GF_SECURITY_ADMIN_PASSWORD="$(bash tools/dev/grafana_admin_password.sh)"
+        fi
+        {{.COMPOSE}} up -d
       # Wait for the PostgreSQL healthcheck before returning (migrations/watchers
       # wire in with the S5 DB foundation).
       - |
@@ -52,8 +60,8 @@ tasks:
         for i in $(seq 1 60); do
           status=$({{.COMPOSE}} ps postgres --format '{{`{{.Health}}`}}' 2>/dev/null || true)
           if [ "$status" = "healthy" ]; then
-            echo "PostgreSQL is healthy. Dev stack is up:"
-            echo "  Grafana   http://localhost:3000   (anonymous admin)"
+            echo "PostgreSQL is healthy. Dev stack is up (loopback-only; DK_DEV_BIND_IP to expose):"
+            echo "  Grafana   http://localhost:3000   (login: admin / see tmp/dev-grafana-admin-password)"
             echo "  Mailpit   http://localhost:8025"
             echo "  Spotlight http://localhost:8969"
             exit 0
@@ -93,6 +101,7 @@ tasks:
       - bash tools/dev/up_test.sh
       - bash tools/dev/db_reset_guard_test.sh
       - bash tools/ledger/validate_ledger_test.sh
+      - bash tools/deploy/compose_ports_test.sh
 
   lint:all:
     desc: Run every language linter in parallel.
