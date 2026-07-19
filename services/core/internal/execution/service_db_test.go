@@ -143,12 +143,14 @@ func (f fakeResolver) Resolve(_ context.Context, card db.ApprovalCard) (Revalida
 	// Default the current binding to the card's bound binding (all gates pass)
 	// unless the test overrode it.
 	if rc.Inputs.Current.ActionID == uuid.Nil {
-		rc.Inputs.Current = bindingOf(card)
-		rc.Inputs.Current.EvidenceVersions = nil
+		b, _ := bindingOf(card)
+		b.EvidenceVersions = nil
+		rc.Inputs.Current = b
 	}
 	if rc.Inputs.Bound.ActionID == uuid.Nil {
-		rc.Inputs.Bound = bindingOf(card)
-		rc.Inputs.Bound.EvidenceVersions = nil
+		b, _ := bindingOf(card)
+		b.EvidenceVersions = nil
+		rc.Inputs.Bound = b
 	}
 	return rc, nil
 }

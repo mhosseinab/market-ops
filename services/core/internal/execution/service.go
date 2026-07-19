@@ -205,6 +205,11 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 	ctx, span := s.tel.startSpan(ctx, "execution.write", card)
 	defer span.End()
 
+	binding, err := bindingOf(card)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+
 	// Approved → Revalidating (its append-only §8.4 history row is written in the
 	// same transaction by AdvanceTx; the semantic audit events land below).
 	if _, err := s.advance(ctx, card, approval.StateApproved, approval.StateRevalidating, "revalidation started"); err != nil {
@@ -217,7 +222,7 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 		if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateInvalidated,
 			"gate_blocked:"+string(gate.Failed), audit.Event{
 				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: bindingOf(card),
+				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
 				CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason},
 			}); err != nil {
 			return ExecuteResult{}, err
@@ -229,7 +234,7 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 	if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateExecuting,
 		"revalidated; executing", audit.Event{
 			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-			Type: audit.EventExecutionStarted, Actor: actor, Binding: bindingOf(card),
+			Type: audit.EventExecutionStarted, Actor: actor, Binding: binding,
 			CardSnapshot: cardSnapshot(card),
 		}); err != nil {
 		return ExecuteResult{}, err
@@ -260,7 +265,7 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 	// Record the classified result, advance Executing → terminal/pending, append the
 	// external_result (and terminal) audit, and open the OUT-001 window — ALL in ONE
 	// transaction, so an external mutation never lands without its audit + state.
-	if err := s.commitWriteResult(ctx, card, rc, actor, claimed, result, extState, wrote); err != nil {
+	if err := s.commitWriteResult(ctx, card, rc, actor, req, claimed, result, extState, wrote); err != nil {
 		return ExecuteResult{}, err
 	}
 
@@ -309,7 +314,11 @@ func (s *Service) claimAndWrite(ctx context.Context, card db.ApprovalCard, req W
 // transaction. On any failure the whole transaction rolls back (fail closed): the
 // execution record stays pending and the card stays Executing, so reconciliation
 // resolves it; no partial, audit-less state is ever committed.
-func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor, claimed db.ActionExecution, result WriteResult, extState ExternalState, wrote bool) error {
+func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor, req WriteRequest, claimed db.ActionExecution, result WriteResult, extState ExternalState, wrote bool) error {
+	binding, err := bindingOf(card)
+	if err != nil {
+		return err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -339,10 +348,22 @@ func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, r
 		}
 		return err
 	}
+	// The external_result detail carries the REDACTED write request AND response
+	// into the append-only trail (issue #104 / AUD-001): the write request/response
+	// must be reproducible from immutable rows, never only from the mutable
+	// action_executions projection. Redaction preserves the money triple, the
+	// idempotency key, the outcome, and the marketplace handle, and drops raw
+	// marketplace free text.
 	if _, err := audit.Append(ctx, q, audit.Event{
 		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-		Type: audit.EventExternalResult, Actor: actor, Binding: bindingOf(card),
-		CardSnapshot: cardSnapshot(card), Detail: map[string]any{"external_state": extState, "external_ref": result.ExternalRef, "wrote": wrote},
+		Type: audit.EventExternalResult, Actor: actor, Binding: binding,
+		CardSnapshot: cardSnapshot(card), Detail: map[string]any{
+			"external_state": extState,
+			"external_ref":   result.ExternalRef,
+			"wrote":          wrote,
+			"request":        redactedRequest(req),
+			"response":       redactedResponse(result, extState),
+		},
 		TerminalState: string(extState),
 	}); err != nil {
 		s.tel.auditWriteFailed(ctx, card.ActionID, err)
@@ -359,7 +380,7 @@ func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, r
 		}
 		if _, err := audit.Append(ctx, q, audit.Event{
 			ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-			Type: audit.EventTerminal, Actor: actor, Binding: bindingOf(card),
+			Type: audit.EventTerminal, Actor: actor, Binding: binding,
 			CardSnapshot: cardSnapshot(card), TerminalState: string(extState),
 		}); err != nil {
 			s.tel.auditWriteFailed(ctx, card.ActionID, err)
@@ -388,6 +409,11 @@ func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard,
 	defer span.End()
 	s.tel.recommendOnlyFallback(ctx, card)
 
+	binding, err := bindingOf(card)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+
 	gate := EvaluateGates(rc.Inputs)
 	if !gate.OK {
 		s.tel.gateBlocked(ctx, card, gate.Failed, ModeRecommendOnly)
@@ -399,7 +425,7 @@ func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard,
 		if _, err := s.advanceWithAudit(ctx, card, approval.StateRevalidating, approval.StateInvalidated,
 			"gate_blocked:"+string(gate.Failed), audit.Event{
 				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: bindingOf(card),
+				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
 				CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason, "mode": ModeRecommendOnly},
 			}); err != nil {
 			return ExecuteResult{}, err
@@ -430,7 +456,7 @@ func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard,
 	}
 	if _, err := audit.Append(ctx, q, audit.Event{
 		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
-		Type: audit.EventRecommendOnly, Actor: actor, Binding: bindingOf(card),
+		Type: audit.EventRecommendOnly, Actor: actor, Binding: binding,
 		CardSnapshot: cardSnapshot(card), Detail: map[string]any{"state": StateAwaitingExternalExecution, "window_expires_at": now.Add(matchWindow)},
 	}); err != nil {
 		s.tel.auditWriteFailed(ctx, card.ActionID, err)
@@ -587,29 +613,91 @@ func cardStateFor(s ExternalState) approval.State {
 	}
 }
 
-func bindingOf(card db.ApprovalCard) approval.Binding {
+// bindingOf builds the APR-001 binding for an audit event from a card. It parses
+// the card's bound evidence-version map so EVERY audit record carries the exact
+// cited-evidence versions that were approved (issue #104 / AUD-001): before this,
+// evidence_versions serialized as an empty {} on every execution/terminal record.
+// A malformed evidence payload is a corrupt card state and is returned as an error
+// (fail closed) — never silently defaulted to an empty binding.
+func bindingOf(card db.ApprovalCard) (approval.Binding, error) {
+	evidence, err := parseEvidenceVersions(card.EvidenceVersions)
+	if err != nil {
+		return approval.Binding{}, err
+	}
 	return approval.Binding{
 		ActionID:           card.ActionID,
 		ParameterVersion:   card.ParameterVersion,
 		ContextVersion:     card.ContextVersion,
 		PolicyVersion:      card.PolicyVersion,
 		CostProfileVersion: card.CostProfileVersion,
+		EvidenceVersions:   evidence,
 		Expiry:             card.ExpiresAt,
+	}, nil
+}
+
+// cardSnapshot is the COMPLETE immutable AUD-001 card/recommendation snapshot: the
+// exact recommendation identity, every APR-001 version (parameter/context/policy/
+// cost-profile), the bound evidence versions, expiry, and the money triple. It is
+// what was shown and approved, reproducible from the append-only trail alone —
+// never the current values (issue #104). The price stays the integer triple
+// (mantissa/currency/exponent); no float ever enters the money path.
+func cardSnapshot(card db.ApprovalCard) map[string]any {
+	return map[string]any{
+		"id":                   card.ID,
+		"recommendation_id":    card.RecommendationID,
+		"lineage_id":           card.LineageID,
+		"account_id":           card.MarketplaceAccountID,
+		"version":              card.Version,
+		"state":                card.State,
+		"action_id":            card.ActionID,
+		"parameter_version":    card.ParameterVersion,
+		"context_version":      card.ContextVersion,
+		"policy_version":       card.PolicyVersion,
+		"cost_profile_version": card.CostProfileVersion,
+		"evidence_versions":    rawEvidenceJSON(card.EvidenceVersions),
+		"idempotency_key":      card.IdempotencyKey,
+		"price_mantissa":       card.PriceMantissa,
+		"price_currency":       card.PriceCurrency,
+		"price_exponent":       card.PriceExponent,
+		"expires_at":           card.ExpiresAt,
+		"created_at":           card.CreatedAt,
 	}
 }
 
-func cardSnapshot(card db.ApprovalCard) map[string]any {
+// rawEvidenceJSON embeds the card's bound evidence-version JSON object verbatim in
+// the snapshot so an evidence add/remove/version-bump is byte-distinguishable in
+// the replayed record. An empty payload normalises to an empty object.
+func rawEvidenceJSON(raw []byte) json.RawMessage {
+	if len(raw) == 0 {
+		return json.RawMessage("{}")
+	}
+	return json.RawMessage(raw)
+}
+
+// redactedRequest projects a write request onto the fields the audit trail needs to
+// reproduce WHAT was written — the money triple, the target variant, and the
+// idempotency key that gates EXE-002. It carries NO auth secret: the token lives on
+// the transport, never in the request payload. The money stays an integer triple.
+func redactedRequest(req WriteRequest) map[string]any {
 	return map[string]any{
-		"id":                card.ID,
-		"recommendation_id": card.RecommendationID,
-		"version":           card.Version,
-		"state":             card.State,
-		"action_id":         card.ActionID,
-		"parameter_version": card.ParameterVersion,
-		"idempotency_key":   card.IdempotencyKey,
-		"price_mantissa":    card.PriceMantissa,
-		"price_currency":    card.PriceCurrency,
-		"price_exponent":    card.PriceExponent,
+		"idempotency_key":   req.IdempotencyKey,
+		"variant_native_id": req.VariantNativeID,
+		"price_mantissa":    req.PriceMantissa,
+		"price_currency":    req.PriceCurrency,
+		"price_exponent":    req.PriceExponent,
+	}
+}
+
+// redactedResponse projects a write result onto the fields the audit trail needs to
+// reproduce the OUTCOME — the raw outcome, the marketplace handle, and the
+// classified external state — while dropping WriteResult.Detail, which is a raw,
+// non-authoritative marketplace note that must never persist (structured-logs +
+// free-text-containment invariants: no PII / no raw marketplace free text).
+func redactedResponse(result WriteResult, extState ExternalState) map[string]any {
+	return map[string]any{
+		"outcome":        result.Outcome,
+		"external_ref":   result.ExternalRef,
+		"external_state": extState,
 	}
 }
 

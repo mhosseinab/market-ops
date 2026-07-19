@@ -94,7 +94,10 @@ func seedAwaitingCard(t *testing.T, pool *pgxpool.Pool, q *db.Queries) (db.Appro
 	if err != nil {
 		t.Fatalf("get awaiting card: %v", err)
 	}
-	presented := bindingOf(awaiting)
+	presented, err := bindingOf(awaiting)
+	if err != nil {
+		t.Fatalf("bindingOf: %v", err)
+	}
 	presented.EvidenceVersions = nil
 	return awaiting, nativeVariant, presented
 }
