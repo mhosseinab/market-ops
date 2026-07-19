@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +62,14 @@ var ErrUnsendableTarget = errors.New("notify: unsendable digest target")
 // never fatal (analytics is advisory, off the delivery-correctness path).
 type SentObserver func(ctx context.Context, account uuid.UUID, itemCount int)
 
+// IsolatedObserver is notified when the digest ISOLATES one persisted row that
+// violates the closed message schema (a legacy/invalid row): the row is skipped
+// (never sent, never mutated — append-only preserved) so it cannot poison the
+// whole account's digest pass, and the skip is OBSERVABLE (never a silent drop).
+// This is the typed seam a test asserts on; the service also emits a metric and a
+// warn log for every isolation. reason is the bounded ValidationReason.
+type IsolatedObserver func(ctx context.Context, account, notificationID uuid.UUID, titleKey, bodyKey string, reason ValidationReason)
+
 // DigestService composes and sends the once-per-business-day email digest. It is
 // idempotent per account business-day (the notification_digests unique key), so a
 // River retry never sends a duplicate digest.
@@ -69,6 +78,8 @@ type DigestService struct {
 	mailer   Mailer
 	resolver TargetResolver
 	observer SentObserver
+	isolated IsolatedObserver
+	logger   *slog.Logger
 	now      func() time.Time
 }
 
@@ -92,6 +103,20 @@ func (s *DigestService) WithClock(now func() time.Time) *DigestService {
 // WithObserver attaches the post-send observer (the §18 analytics hook).
 func (s *DigestService) WithObserver(o SentObserver) *DigestService {
 	s.observer = o
+	return s
+}
+
+// WithIsolatedObserver attaches the isolated-row observer (issue #126): it fires
+// for every persisted digest row skipped for violating the closed message schema.
+func (s *DigestService) WithIsolatedObserver(o IsolatedObserver) *DigestService {
+	s.isolated = o
+	return s
+}
+
+// WithLogger attaches a structured logger so a digest-row isolation is logged (in
+// addition to the observer and the metric). A nil logger is a no-op.
+func (s *DigestService) WithLogger(l *slog.Logger) *DigestService {
+	s.logger = l
 	return s
 }
 
@@ -134,13 +159,27 @@ func (s *DigestService) GenerateForAccount(ctx context.Context, account uuid.UUI
 		return false, fmt.Errorf("%w: account %s", ErrUnsendableTarget, account)
 	}
 
+	// Isolate any legacy/invalid persisted row that violates the closed message
+	// schema (issue #126): ONE bad row must never poison the whole account's digest
+	// pass. A violating row is SKIPPED (never sent) but the skip is OBSERVABLE — a
+	// typed observer + metric + warn log, never a silent drop — and the row itself
+	// is untouched (append-only: no UPDATE/DELETE). The rest of the day still sends.
 	items := make([]Notification, 0, len(rows))
 	for _, r := range rows {
 		n, err := toNotification(r)
 		if err != nil {
 			return false, err
 		}
+		if verr := validateShape(n.Category, n.TitleKey, n.BodyKey, n.BodyParams); verr != nil {
+			s.isolate(ctx, account, n, verr)
+			continue
+		}
 		items = append(items, n)
+	}
+	if len(items) == 0 {
+		// Every eligible row was isolated (each emitted a signal). Nothing sendable
+		// today — a per-row-observed no-op, not a silent drop.
+		return false, nil
 	}
 
 	msg, err := renderDigest(target, items)
@@ -214,6 +253,24 @@ func (s *DigestService) GenerateAll(ctx context.Context) (int, error) {
 		}
 	}
 	return sent, nil
+}
+
+// isolate records an observable skip of one persisted digest row that violates the
+// closed message schema. It emits the metric, the warn log (technical identifiers
+// only — never Persian copy), and the typed observer. It performs NO write: the row
+// stays in the append-only store untouched (issue #126, never-cut: no silent drop,
+// no UPDATE/DELETE).
+func (s *DigestService) isolate(ctx context.Context, account uuid.UUID, n Notification, verr *MessageValidationError) {
+	recordIsolation(ctx, verr)
+	if s.logger != nil {
+		s.logger.WarnContext(ctx, "digest row isolated: invalid message shape",
+			"account_id", account, "notification_id", n.ID, "category", string(n.Category),
+			"surface", verr.Surface, "reason", string(verr.Reason),
+			"title_key", n.TitleKey, "body_key", n.BodyKey, "slot", verr.Slot)
+	}
+	if s.isolated != nil {
+		s.isolated(ctx, account, n.ID, n.TitleKey, n.BodyKey, verr.Reason)
+	}
 }
 
 // renderDigest builds the email entirely from catalog keys in the target locale.

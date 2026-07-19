@@ -268,6 +268,88 @@ func TestDigestSharesEventIDsWithInApp(t *testing.T) {
 	}
 }
 
+// TestDigest_IsolatesInvalidRow is the issue #126 isolation guarantee: a single
+// persisted legacy/invalid row (an unknown title key that Store.Deliver would now
+// reject, inserted DIRECTLY to simulate a pre-contract row) must NOT poison the
+// whole account's digest pass. The invalid row is ISOLATED (skipped, never sent)
+// and the isolation is OBSERVABLE (typed observer fires), while the account's
+// remaining valid row still sends. The append-only row is left untouched.
+func TestDigest_IsolatesInvalidRow(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account := seedAccount(t, q)
+	store := notify.NewStore(pool)
+
+	// One VALID batched market event (goes through the enforced contract).
+	valid := uuid.New()
+	if _, err := store.Deliver(ctx, notify.DeliverParams{
+		Account: account, EventID: valid, DedupKey: "valid-" + valid.String(),
+		Category: notify.CategoryMarketEvent, Severity: "info",
+		TitleKey: notify.KeyItemMarketEvent, BodyKey: notify.KeyItemMarketEvent,
+		BodyParams: map[string]string{"variant": "SKU-OK"},
+	}); err != nil {
+		t.Fatalf("deliver valid: %v", err)
+	}
+
+	// One INVALID/legacy row inserted directly (bypassing the store's validation)
+	// to simulate a row persisted before the closed contract existed.
+	badEvent := uuid.New()
+	if _, err := q.DeliverNotification(ctx, db.DeliverNotificationParams{
+		MarketplaceAccountID: account, EventID: badEvent, DedupKey: "legacy-" + badEvent.String(),
+		Category: "market_event", Severity: "info", BypassDigest: false,
+		TitleKey: "legacy.unknown.key", BodyKey: "legacy.unknown.key",
+		BodyParams: []byte(`{"whatever":"x"}`),
+	}); err != nil {
+		t.Fatalf("insert legacy row: %v", err)
+	}
+
+	var isolatedCount int
+	var isolatedReason notify.ValidationReason
+	mailer := &captureMailer{}
+	digest := notify.NewDigestService(pool, mailer, fixedResolver{notify.Target{
+		Email: "owner@example.com", Locale: "en", BriefingURL: "https://app/briefing",
+	}}).WithIsolatedObserver(func(_ context.Context, acct, _ uuid.UUID, _, _ string, reason notify.ValidationReason) {
+		if acct == account {
+			isolatedCount++
+			isolatedReason = reason
+		}
+	})
+
+	sent, err := digest.GenerateForAccount(ctx, account)
+	if err != nil {
+		t.Fatalf("generate digest: %v", err)
+	}
+	if !sent {
+		t.Fatal("digest must still send for the remaining valid row")
+	}
+	if len(mailer.sent) != 1 {
+		t.Fatalf("sent %d emails, want 1", len(mailer.sent))
+	}
+	body := mailer.sent[0].Body
+	if !strings.Contains(body, valid.String()) {
+		t.Fatal("digest must include the valid event id")
+	}
+	if strings.Contains(body, badEvent.String()) {
+		t.Fatal("digest must NOT include the isolated invalid row")
+	}
+	// The isolation is observable (never a silent drop).
+	if isolatedCount != 1 {
+		t.Fatalf("isolated observer fired %d times, want 1", isolatedCount)
+	}
+	if isolatedReason != notify.ReasonUnknownKey {
+		t.Fatalf("isolation reason = %q, want unknown_key", isolatedReason)
+	}
+
+	// The invalid row is untouched in the append-only store (still in the feed).
+	list, err := store.List(ctx, account)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 2 {
+		t.Fatalf("feed has %d, want 2 (invalid row isolated, not deleted)", len(list))
+	}
+}
+
 // TestMarkRead_IsIdempotentProjection proves the read-state projection is bounded:
 // marking read once flips read_at, and a second mark is an idempotent no-op
 // (changed=false) — never a blind overwrite of the append-only row.
@@ -282,6 +364,7 @@ func TestMarkRead_IsIdempotentProjection(t *testing.T) {
 		Account: account, EventID: id, DedupKey: "r-" + id.String(),
 		Category: notify.CategoryMarketEvent, Severity: "info",
 		TitleKey: notify.KeyItemMarketEvent, BodyKey: notify.KeyItemMarketEvent,
+		BodyParams: map[string]string{"variant": "SKU-1"},
 	})
 	if err != nil {
 		t.Fatalf("deliver: %v", err)
