@@ -130,8 +130,69 @@ describe("StateMachineView — §8.4 stages", () => {
   it("renders the eight revalidation gates while Revalidating", () => {
     render(wrap(<StateMachineView state="revalidating" />));
     expect(screen.getByText(faIR["sm.gates.title"])).toBeInTheDocument();
+    // All eight gate labels still render, in order.
     expect(screen.getByText(faIR["sm.gate.identity"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["sm.gate.cost"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["sm.gate.price"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["sm.gate.evidence"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["rec.guardrail.floor"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["sm.gate.movement"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["sm.gate.version"])).toBeInTheDocument();
     expect(screen.getByText(faIR["sm.gate.idempotency"])).toBeInTheDocument();
+  });
+
+  it("fails closed: a bare Revalidating renders every gate as pending, never passed", () => {
+    // NEGATIVE (primary): with no authoritative per-gate result, the parent
+    // lifecycle state must NEVER be inferred as a pass. No ✓ may appear.
+    render(wrap(<StateMachineView state="revalidating" />));
+    // The pass glyph must not be present anywhere.
+    expect(screen.queryByText("✓")).not.toBeInTheDocument();
+    // Every one of the eight gates shows a pending accessible status.
+    expect(screen.getAllByText(faIR["sm.gate.status.pending"])).toHaveLength(8);
+    // Neither passed nor failed accessible status is present.
+    expect(screen.queryByText(faIR["sm.gate.status.passed"])).not.toBeInTheDocument();
+    expect(screen.queryByText(faIR["sm.gate.status.failed"])).not.toBeInTheDocument();
+  });
+
+  it("renders an authoritative FAILED gate as failed while others stay pending", () => {
+    render(
+      wrap(
+        <StateMachineView state="revalidating" gateResults={{ "rec.guardrail.floor": "failed" }} />,
+      ),
+    );
+    expect(screen.getByText(faIR["sm.gate.status.failed"])).toBeInTheDocument();
+    // The other seven unresolved gates remain pending; still no pass.
+    expect(screen.getAllByText(faIR["sm.gate.status.pending"])).toHaveLength(7);
+    expect(screen.queryByText(faIR["sm.gate.status.passed"])).not.toBeInTheDocument();
+    expect(screen.queryByText("✓")).not.toBeInTheDocument();
+  });
+
+  it("renders PASSED only from an explicit server-provided pass result", () => {
+    render(
+      wrap(
+        <StateMachineView state="revalidating" gateResults={{ "sm.gate.identity": "passed" }} />,
+      ),
+    );
+    // Exactly one gate is passed; the ✓ appears only for it.
+    expect(screen.getByText(faIR["sm.gate.status.passed"])).toBeInTheDocument();
+    expect(screen.getAllByText("✓")).toHaveLength(1);
+    // The remaining seven gates without a result stay pending.
+    expect(screen.getAllByText(faIR["sm.gate.status.pending"])).toHaveLength(7);
+  });
+
+  it("gives pending, passed, and failed distinct accessible status labels", () => {
+    render(
+      wrap(
+        <StateMachineView
+          state="revalidating"
+          gateResults={{ "sm.gate.identity": "passed", "sm.gate.cost": "failed" }}
+        />,
+      ),
+    );
+    // Queried by accessible text, not by the decorative glyph.
+    expect(screen.getByText(faIR["sm.gate.status.passed"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["sm.gate.status.failed"])).toBeInTheDocument();
+    expect(screen.getAllByText(faIR["sm.gate.status.pending"])).toHaveLength(6);
   });
 
   it("names the changed dimension when Invalidated", () => {

@@ -44,7 +44,7 @@ const STATE_TONE: Record<ApprovalState, Tone> = {
 };
 
 // The eight EXE-001 revalidation gates, in order (design screen 5 checklist).
-const REVALIDATION_GATES: readonly MessageKey[] = [
+const REVALIDATION_GATES = [
   "sm.gate.identity",
   "sm.gate.cost",
   "sm.gate.price",
@@ -53,7 +53,29 @@ const REVALIDATION_GATES: readonly MessageKey[] = [
   "sm.gate.movement",
   "sm.gate.version",
   "sm.gate.idempotency",
-];
+] as const satisfies readonly MessageKey[];
+
+// A gate is a catalog key from the revalidation list; its authoritative result is
+// one of three states. FAIL-CLOSED INVARIANT: the parent lifecycle state
+// (state === "revalidating") NEVER maps to a pass. A gate is "passed"/"failed"
+// ONLY when an explicit authoritative per-gate result is supplied via gateResults;
+// with no result the gate stays "pending" (unknown) — the server runs the matrix
+// server-side and streams no per-gate progress in P0, so pending is the truth.
+type GateKey = (typeof REVALIDATION_GATES)[number];
+type GateStatus = "pending" | "passed" | "failed";
+
+const GATE_STATUS_LABEL: Record<GateStatus, MessageKey> = {
+  pending: "sm.gate.status.pending",
+  passed: "sm.gate.status.passed",
+  failed: "sm.gate.status.failed",
+};
+
+// Decorative glyph only (aria-hidden); the accessible status is the catalog label.
+const GATE_STATUS_MARK: Record<GateStatus, string> = {
+  pending: "○",
+  passed: "✓",
+  failed: "✕",
+};
 
 const REASON_LABEL: Record<Exclude<ApprovalInvalidationReason, "">, MessageKey> = {
   action_mismatch: "approvalReason.action_mismatch",
@@ -71,6 +93,7 @@ export function StateMachineView({
   executionPending = false,
   permissionDenied = false,
   idempotencyKey,
+  gateResults,
   onRecalculate,
   onRequestOwner,
 }: {
@@ -79,6 +102,10 @@ export function StateMachineView({
   executionPending?: boolean;
   permissionDenied?: boolean;
   idempotencyKey?: string;
+  // Authoritative per-gate results, supplied ONLY from a server-confirmed source.
+  // Absent (the P0 reality) ⇒ every gate renders pending; a lifecycle state can
+  // never be inferred as a pass. Never fabricate this from ApprovalState.
+  gateResults?: Partial<Record<GateKey, GateStatus>>;
   onRecalculate?: () => void;
   onRequestOwner?: () => void;
 }) {
@@ -118,14 +145,20 @@ export function StateMachineView({
         <div className="sm-gates">
           <p className="panel__subtitle">{t("sm.gates.title")}</p>
           <ul className="sm-gates__list">
-            {REVALIDATION_GATES.map((gate) => (
-              <li key={gate} className="sm-gates__item">
-                <span className="sm-gates__mark" aria-hidden>
-                  {"✓"}
-                </span>
-                {t(gate)}
-              </li>
-            ))}
+            {REVALIDATION_GATES.map((gate) => {
+              // Fail closed: default to pending; a pass/fail is honoured ONLY from
+              // an explicit authoritative result, never from the lifecycle state.
+              const status: GateStatus = gateResults?.[gate] ?? "pending";
+              return (
+                <li key={gate} className="sm-gates__item" data-gate-status={status}>
+                  <span className="sm-gates__mark" aria-hidden>
+                    {GATE_STATUS_MARK[status]}
+                  </span>
+                  {t(gate)}
+                  <span className="sm-gates__status">{t(GATE_STATUS_LABEL[status])}</span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       ) : state === "invalidated" ? (
