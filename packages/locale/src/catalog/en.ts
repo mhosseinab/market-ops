@@ -378,6 +378,8 @@ export const en: Catalog = {
   "event.evidence.inferenceNote": "Model inference, not observed fact",
   "event.threshold": "Materiality threshold version: {version}",
   "event.evidenceRef": "Evidence reference",
+  "event.observedType": "Observed condition",
+  "event.observedObservation": "Cited observation",
   "event.firstDetected": "First detected",
   "event.lastEvidence": "Latest evidence",
   "event.expires": "Expires",
