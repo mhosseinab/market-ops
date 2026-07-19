@@ -126,6 +126,74 @@ def test_fail_closed_helper_shape() -> None:
     assert refusal.missing == ["cost"]
 
 
+# --- containment: a refusal never echoes the rejected ungrounded numbers -----
+# (issue #52, NEVER-CUT §4.6 free-text containment)
+
+# Reuse the grounding digit class: ASCII + Persian + Arabic-Indic decimal digits.
+from llm.envelope.grounding import _DIGIT  # noqa: E402
+
+
+def _user_visible_strings(refusal: CannotAnswer) -> list[str]:
+    """Every field of a refusal that can reach the user's screen."""
+    return [
+        refusal.message,
+        refusal.reason_key,
+        refusal.deep_link,
+        *refusal.missing,
+        *refusal.violations,
+    ]
+
+
+def test_grounding_refusal_never_echoes_rejected_numbers() -> None:
+    """A grounding failure must emit a fixed, non-numeric safe response and
+    discard the rejected model content — none of the injected ungrounded
+    numeric tokens (nor Persian/Arabic-Indic equivalents) may appear in any
+    user-visible field of the refusal (issue #52, §4.6 containment)."""
+    # Distinctive injected numbers across several free-text vectors.
+    injected_tokens = ["4321", "8765", "۹۹۹", "٧٧٧"]
+    fabricated = SourcedValue(
+        source=SourceRef(tool="", response_field=""),  # unsourced ⇒ FABRICATED_NUMBER
+        provenance=Provenance.MARGIN_ENGINE,
+        money=Money(mantissa=567890, currency="IRR"),
+    )
+    result = compose_or_refuse(
+        catalog=UNSCOPED,
+        model_inference="a plausible note",
+        # digit in a claim statement (NUMBER_IN_TEXT)
+        observed_facts=[
+            Claim(statement="the price is 8765 toman", evidence=[GOOD_EVIDENCE]),
+            Claim(statement="made up total", evidence=[GOOD_EVIDENCE], value=fabricated),
+        ],
+        # digits (ASCII + Persian + Arabic-Indic) in missing-data notes
+        missing_data=[
+            "price is 4321 toman",
+            "margin was ۹۹۹",
+            "count ٧٧٧",
+        ],
+    )
+    assert isinstance(result, CannotAnswer)
+
+    fields = _user_visible_strings(result)
+    # 1) No injected token echoed verbatim into any user-visible field.
+    for token in injected_tokens:
+        for field in fields:
+            assert token not in field, (
+                f"injected token {token!r} leaked into user-visible field {field!r}"
+            )
+    # 2) No digit at all (any script) in any user-visible field.
+    for field in fields:
+        assert not _DIGIT.search(field), f"user-visible field carries a digit: {field!r}"
+
+    # 3) The refusal still carries the structured signal.
+    assert result.code == "CANNOT_ANSWER"
+    assert result.reason_key == "state.degraded.body"
+    assert result.deep_link  # non-empty deep link to the structured screen
+    assert result.violations  # grounding codes present
+    # The grounding codes for the injected vectors are surfaced (codes only).
+    assert "NUMBER_IN_TEXT" in result.violations
+    assert "FABRICATED_NUMBER" in result.violations
+
+
 # --- money is never a float inside a sourced value (§9.1) -------------------
 
 
