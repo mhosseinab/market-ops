@@ -26,20 +26,24 @@ type Source interface {
 	FetchVariantsPage(ctx context.Context, page, size int) (connector.VariantPage, error)
 }
 
-// connectorSource binds a connector.Service to a single account, keeping token
-// handling inside the connector.
+// connectorSource binds a connector.Service to a single (organization, account)
+// pair, keeping token handling inside the connector. The organization id is
+// carried alongside the account so the connector's ORG-SCOPED reads
+// (S8-AUTHZ-001) resolve against the account's owning organization.
 type connectorSource struct {
 	svc     *connector.Service
+	org     uuid.UUID
 	account uuid.UUID
 }
 
-// NewConnectorSource returns a Source backed by the connector for one account.
-func NewConnectorSource(svc *connector.Service, account uuid.UUID) Source {
-	return connectorSource{svc: svc, account: account}
+// NewConnectorSource returns a Source backed by the connector for one account,
+// scoped to its owning organization.
+func NewConnectorSource(svc *connector.Service, org, account uuid.UUID) Source {
+	return connectorSource{svc: svc, org: org, account: account}
 }
 
 func (s connectorSource) FetchVariantsPage(ctx context.Context, page, size int) (connector.VariantPage, error) {
-	return s.svc.FetchVariantsPage(ctx, s.account, page, size)
+	return s.svc.FetchVariantsPage(ctx, s.org, s.account, page, size)
 }
 
 // priceEvidence builds the QUARANTINED raw-money representation of an owned-offer

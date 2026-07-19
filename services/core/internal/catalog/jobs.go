@@ -18,9 +18,12 @@ import (
 // CatalogInitialImportArgs drives the paginated, resumable initial import
 // (ACC-004). RunID is created transactionally with the enqueue so the job and
 // its progress row commit together. Fields are JSON-safe business data (plan §4.8).
+// OrganizationID is the account's owning organization; it scopes the connector's
+// ORG-SCOPED reads (S8-AUTHZ-001) so the sync's DB access is org-predicated.
 type CatalogInitialImportArgs struct {
-	AccountID uuid.UUID `json:"account_id"`
-	RunID     uuid.UUID `json:"run_id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+	AccountID      uuid.UUID `json:"account_id"`
+	RunID          uuid.UUID `json:"run_id"`
 }
 
 // Kind is River's stable job identifier; never change once shipped.
@@ -29,8 +32,9 @@ func (CatalogInitialImportArgs) Kind() string { return "catalog_initial_import" 
 // CatalogIncrementalSyncArgs drives an idempotent incremental sync + drift
 // reconciliation (ACC-005).
 type CatalogIncrementalSyncArgs struct {
-	AccountID uuid.UUID `json:"account_id"`
-	RunID     uuid.UUID `json:"run_id"`
+	OrganizationID uuid.UUID `json:"organization_id"`
+	AccountID      uuid.UUID `json:"account_id"`
+	RunID          uuid.UUID `json:"run_id"`
 }
 
 // Kind is River's stable job identifier; never change once shipped.
@@ -45,8 +49,8 @@ type WorkerDeps struct {
 	Logger    *slog.Logger
 }
 
-func (d WorkerDeps) syncerFor(account uuid.UUID) *Syncer {
-	return NewSyncer(d.Pool, NewConnectorSource(d.Connector, account), d.PageSize)
+func (d WorkerDeps) syncerFor(org, account uuid.UUID) *Syncer {
+	return NewSyncer(d.Pool, NewConnectorSource(d.Connector, org, account), d.PageSize)
 }
 
 // InitialImportWorker runs CatalogInitialImportArgs to completion, resuming from
@@ -60,7 +64,7 @@ type InitialImportWorker struct {
 
 // Work satisfies river.Worker.
 func (w *InitialImportWorker) Work(ctx context.Context, job *river.Job[CatalogInitialImportArgs]) error {
-	return w.deps.syncerFor(job.Args.AccountID).Resume(ctx, job.Args.AccountID, job.Args.RunID)
+	return w.deps.syncerFor(job.Args.OrganizationID, job.Args.AccountID).Resume(ctx, job.Args.AccountID, job.Args.RunID)
 }
 
 // IncrementalSyncWorker runs CatalogIncrementalSyncArgs to completion.
@@ -71,7 +75,7 @@ type IncrementalSyncWorker struct {
 
 // Work satisfies river.Worker.
 func (w *IncrementalSyncWorker) Work(ctx context.Context, job *river.Job[CatalogIncrementalSyncArgs]) error {
-	return w.deps.syncerFor(job.Args.AccountID).Resume(ctx, job.Args.AccountID, job.Args.RunID)
+	return w.deps.syncerFor(job.Args.OrganizationID, job.Args.AccountID).Resume(ctx, job.Args.AccountID, job.Args.RunID)
 }
 
 // RegisterWorkers adds the catalog sync workers to the platform registry. The
@@ -89,18 +93,20 @@ func RegisterWorkers(workers *river.Workers, deps WorkerDeps) error {
 
 // EnqueueInitialImport creates the sync run and enqueues the import job in the
 // caller's transaction (transactional enqueue, jobs pkg invariant): the job
-// becomes visible only if the run row commits. Returns the run id.
-func EnqueueInitialImport(ctx context.Context, client *jobs.Client, tx pgx.Tx, account uuid.UUID) (uuid.UUID, error) {
+// becomes visible only if the run row commits. Returns the run id. org is the
+// account's owning organization, carried so the sync's connector reads are
+// org-scoped (S8-AUTHZ-001).
+func EnqueueInitialImport(ctx context.Context, client *jobs.Client, tx pgx.Tx, org, account uuid.UUID) (uuid.UUID, error) {
 	return enqueueRun(ctx, client, tx, account, KindInitial, func(runID uuid.UUID) river.JobArgs {
-		return CatalogInitialImportArgs{AccountID: account, RunID: runID}
+		return CatalogInitialImportArgs{OrganizationID: org, AccountID: account, RunID: runID}
 	})
 }
 
 // EnqueueIncrementalSync creates an incremental run and enqueues the job in the
 // caller's transaction.
-func EnqueueIncrementalSync(ctx context.Context, client *jobs.Client, tx pgx.Tx, account uuid.UUID) (uuid.UUID, error) {
+func EnqueueIncrementalSync(ctx context.Context, client *jobs.Client, tx pgx.Tx, org, account uuid.UUID) (uuid.UUID, error) {
 	return enqueueRun(ctx, client, tx, account, KindIncremental, func(runID uuid.UUID) river.JobArgs {
-		return CatalogIncrementalSyncArgs{AccountID: account, RunID: runID}
+		return CatalogIncrementalSyncArgs{OrganizationID: org, AccountID: account, RunID: runID}
 	})
 }
 

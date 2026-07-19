@@ -13,7 +13,7 @@ import (
 )
 
 const disconnectConnectorConnection = `-- name: DisconnectConnectorConnection :one
-UPDATE connector_connections SET
+UPDATE connector_connections cc SET
     connection_state     = 'disconnected',
     access_token_sealed  = NULL,
     refresh_token_sealed = NULL,
@@ -21,13 +21,23 @@ UPDATE connector_connections SET
     refresh_expires_at   = NULL,
     key_version          = 0,
     updated_at           = now()
-WHERE marketplace_account_id = $1
-RETURNING id, marketplace_account_id, connection_state, access_token_sealed, refresh_token_sealed, access_expires_at, refresh_expires_at, key_version, created_at, updated_at
+FROM marketplace_accounts ma
+WHERE cc.marketplace_account_id = ma.id
+  AND cc.marketplace_account_id = $1
+  AND ma.organization_id = $2
+RETURNING cc.id, cc.marketplace_account_id, cc.connection_state, cc.access_token_sealed, cc.refresh_token_sealed, cc.access_expires_at, cc.refresh_expires_at, cc.key_version, cc.created_at, cc.updated_at
 `
 
+type DisconnectConnectorConnectionParams struct {
+	MarketplaceAccountID uuid.UUID
+	OrganizationID       uuid.UUID
+}
+
 // Sever the connection and purge sealed tokens (ACC-001). Idempotent.
-func (q *Queries) DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error) {
-	row := q.db.QueryRow(ctx, disconnectConnectorConnection, marketplaceAccountID)
+// ORG-SCOPED: a foreign account matches zero rows, so no mutation occurs and
+// RETURNING is empty — identical to disconnecting an unknown account.
+func (q *Queries) DisconnectConnectorConnection(ctx context.Context, arg DisconnectConnectorConnectionParams) (ConnectorConnection, error) {
+	row := q.db.QueryRow(ctx, disconnectConnectorConnection, arg.MarketplaceAccountID, arg.OrganizationID)
 	var i ConnectorConnection
 	err := row.Scan(
 		&i.ID,
@@ -45,12 +55,20 @@ func (q *Queries) DisconnectConnectorConnection(ctx context.Context, marketplace
 }
 
 const getConnectorConnection = `-- name: GetConnectorConnection :one
-SELECT id, marketplace_account_id, connection_state, access_token_sealed, refresh_token_sealed, access_expires_at, refresh_expires_at, key_version, created_at, updated_at FROM connector_connections
-WHERE marketplace_account_id = $1
+SELECT cc.id, cc.marketplace_account_id, cc.connection_state, cc.access_token_sealed, cc.refresh_token_sealed, cc.access_expires_at, cc.refresh_expires_at, cc.key_version, cc.created_at, cc.updated_at FROM connector_connections cc
+JOIN marketplace_accounts ma ON ma.id = cc.marketplace_account_id
+WHERE cc.marketplace_account_id = $1
+  AND ma.organization_id = $2
 `
 
-func (q *Queries) GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error) {
-	row := q.db.QueryRow(ctx, getConnectorConnection, marketplaceAccountID)
+type GetConnectorConnectionParams struct {
+	MarketplaceAccountID uuid.UUID
+	OrganizationID       uuid.UUID
+}
+
+// ORG-SCOPED: only returns the row when the account belongs to the organization.
+func (q *Queries) GetConnectorConnection(ctx context.Context, arg GetConnectorConnectionParams) (ConnectorConnection, error) {
+	row := q.db.QueryRow(ctx, getConnectorConnection, arg.MarketplaceAccountID, arg.OrganizationID)
 	var i ConnectorConnection
 	err := row.Scan(
 		&i.ID,
@@ -68,13 +86,21 @@ func (q *Queries) GetConnectorConnection(ctx context.Context, marketplaceAccount
 }
 
 const listConnectorCapabilities = `-- name: ListConnectorCapabilities :many
-SELECT id, marketplace_account_id, capability, status, detail, last_verified_at, created_at, updated_at FROM connector_capabilities
-WHERE marketplace_account_id = $1
-ORDER BY capability
+SELECT cc.id, cc.marketplace_account_id, cc.capability, cc.status, cc.detail, cc.last_verified_at, cc.created_at, cc.updated_at FROM connector_capabilities cc
+JOIN marketplace_accounts ma ON ma.id = cc.marketplace_account_id
+WHERE cc.marketplace_account_id = $1
+  AND ma.organization_id = $2
+ORDER BY cc.capability
 `
 
-func (q *Queries) ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error) {
-	rows, err := q.db.Query(ctx, listConnectorCapabilities, marketplaceAccountID)
+type ListConnectorCapabilitiesParams struct {
+	MarketplaceAccountID uuid.UUID
+	OrganizationID       uuid.UUID
+}
+
+// ORG-SCOPED: capability rows are visible only to the owning organization.
+func (q *Queries) ListConnectorCapabilities(ctx context.Context, arg ListConnectorCapabilitiesParams) ([]ConnectorCapability, error) {
+	rows, err := q.db.Query(ctx, listConnectorCapabilities, arg.MarketplaceAccountID, arg.OrganizationID)
 	if err != nil {
 		return nil, err
 	}
@@ -103,66 +129,86 @@ func (q *Queries) ListConnectorCapabilities(ctx context.Context, marketplaceAcco
 }
 
 const resetConnectorCapability = `-- name: ResetConnectorCapability :exec
-UPDATE connector_capabilities SET
+UPDATE connector_capabilities cc SET
     status           = 'unknown',
     detail           = NULL,
     last_verified_at = NULL,
     updated_at       = now()
-WHERE marketplace_account_id = $1
+FROM marketplace_accounts ma
+WHERE cc.marketplace_account_id = ma.id
+  AND cc.marketplace_account_id = $1
+  AND ma.organization_id = $2
 `
 
+type ResetConnectorCapabilityParams struct {
+	MarketplaceAccountID uuid.UUID
+	OrganizationID       uuid.UUID
+}
+
 // Return a capability to 'unknown' (disconnect). Clears last_verified_at so a
-// stale verification can never read as current.
-func (q *Queries) ResetConnectorCapability(ctx context.Context, marketplaceAccountID uuid.UUID) error {
-	_, err := q.db.Exec(ctx, resetConnectorCapability, marketplaceAccountID)
+// stale verification can never read as current. ORG-SCOPED: a foreign account
+// matches zero rows, so no capability of another organization is ever reset.
+func (q *Queries) ResetConnectorCapability(ctx context.Context, arg ResetConnectorCapabilityParams) error {
+	_, err := q.db.Exec(ctx, resetConnectorCapability, arg.MarketplaceAccountID, arg.OrganizationID)
 	return err
 }
 
 const seedConnectorCapability = `-- name: SeedConnectorCapability :exec
 INSERT INTO connector_capabilities (marketplace_account_id, capability, status)
-VALUES ($1, $2, 'unknown')
+SELECT ma.id, $1, 'unknown'
+FROM marketplace_accounts ma
+WHERE ma.id = $2
+  AND ma.organization_id = $3
 ON CONFLICT (marketplace_account_id, capability) DO NOTHING
 `
 
 type SeedConnectorCapabilityParams struct {
-	MarketplaceAccountID uuid.UUID
 	Capability           string
+	MarketplaceAccountID uuid.UUID
+	OrganizationID       uuid.UUID
 }
 
 // Insert a capability at 'unknown' if absent; leave an existing row untouched so
 // a prior probe result is not clobbered by a re-seed (capability-gating invariant).
+// ORG-SCOPED: seeds only when the account belongs to the organization.
 func (q *Queries) SeedConnectorCapability(ctx context.Context, arg SeedConnectorCapabilityParams) error {
-	_, err := q.db.Exec(ctx, seedConnectorCapability, arg.MarketplaceAccountID, arg.Capability)
+	_, err := q.db.Exec(ctx, seedConnectorCapability, arg.Capability, arg.MarketplaceAccountID, arg.OrganizationID)
 	return err
 }
 
 const setConnectorCapabilityStatus = `-- name: SetConnectorCapabilityStatus :one
-UPDATE connector_capabilities SET
-    status           = $3,
-    detail           = $4,
-    last_verified_at = $5,
+UPDATE connector_capabilities cc SET
+    status           = $1,
+    detail           = $2,
+    last_verified_at = $3,
     updated_at       = now()
-WHERE marketplace_account_id = $1 AND capability = $2
-RETURNING id, marketplace_account_id, capability, status, detail, last_verified_at, created_at, updated_at
+FROM marketplace_accounts ma
+WHERE cc.marketplace_account_id = ma.id
+  AND cc.marketplace_account_id = $4
+  AND cc.capability = $5
+  AND ma.organization_id = $6
+RETURNING cc.id, cc.marketplace_account_id, cc.capability, cc.status, cc.detail, cc.last_verified_at, cc.created_at, cc.updated_at
 `
 
 type SetConnectorCapabilityStatusParams struct {
-	MarketplaceAccountID uuid.UUID
-	Capability           string
 	Status               string
 	Detail               pgtype.Text
 	LastVerifiedAt       pgtype.Timestamptz
+	MarketplaceAccountID uuid.UUID
+	Capability           string
+	OrganizationID       uuid.UUID
 }
 
 // Record a probe result. Only a probe calls this; status is set explicitly and
-// last_verified_at stamps when it was determined.
+// last_verified_at stamps when it was determined. ORG-SCOPED.
 func (q *Queries) SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error) {
 	row := q.db.QueryRow(ctx, setConnectorCapabilityStatus,
-		arg.MarketplaceAccountID,
-		arg.Capability,
 		arg.Status,
 		arg.Detail,
 		arg.LastVerifiedAt,
+		arg.MarketplaceAccountID,
+		arg.Capability,
+		arg.OrganizationID,
 	)
 	var i ConnectorCapability
 	err := row.Scan(
@@ -183,7 +229,13 @@ INSERT INTO connector_connections (
     marketplace_account_id, connection_state,
     access_token_sealed, refresh_token_sealed,
     access_expires_at, refresh_expires_at, key_version, updated_at
-) VALUES ($1, 'connected', $2, $3, $4, $5, $6, now())
+)
+SELECT ma.id, 'connected',
+    $1, $2,
+    $3, $4, $5, now()
+FROM marketplace_accounts ma
+WHERE ma.id = $6
+  AND ma.organization_id = $7
 ON CONFLICT (marketplace_account_id) DO UPDATE SET
     connection_state     = 'connected',
     access_token_sealed  = EXCLUDED.access_token_sealed,
@@ -196,23 +248,30 @@ RETURNING id, marketplace_account_id, connection_state, access_token_sealed, ref
 `
 
 type UpsertConnectorConnectionParams struct {
-	MarketplaceAccountID uuid.UUID
 	AccessTokenSealed    []byte
 	RefreshTokenSealed   []byte
 	AccessExpiresAt      pgtype.Timestamptz
 	RefreshExpiresAt     pgtype.Timestamptz
 	KeyVersion           int32
+	MarketplaceAccountID uuid.UUID
+	OrganizationID       uuid.UUID
 }
 
 // Establish or update the connection with sealed tokens (connect / refresh).
+// ORG-SCOPED (S8-AUTHZ-001): the INSERT ... SELECT only materialises a row when
+// the account belongs to the given organization, so a caller cannot create or
+// overwrite a connection for another organization's account. A foreign account
+// yields zero source rows: nothing is inserted, no conflict fires, and RETURNING
+// is empty (pgx.ErrNoRows) — the same fail-closed result as an unknown account.
 func (q *Queries) UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error) {
 	row := q.db.QueryRow(ctx, upsertConnectorConnection,
-		arg.MarketplaceAccountID,
 		arg.AccessTokenSealed,
 		arg.RefreshTokenSealed,
 		arg.AccessExpiresAt,
 		arg.RefreshExpiresAt,
 		arg.KeyVersion,
+		arg.MarketplaceAccountID,
+		arg.OrganizationID,
 	)
 	var i ConnectorConnection
 	err := row.Scan(

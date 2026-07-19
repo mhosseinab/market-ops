@@ -13,11 +13,16 @@ import (
 // ConnectorService is the connector orchestration the gateway depends on
 // (ACC-001). *connector.Service satisfies it. Keeping it an interface lets the
 // transport be tested with a fake and keeps httpapi free of DB wiring.
+//
+// Every method takes the authenticated organization id as a MANDATORY first
+// argument (S8-AUTHZ-001). The handlers derive it from the session principal —
+// never from request input — so possession of a marketplace-account UUID cannot
+// grant cross-organization access.
 type ConnectorService interface {
-	Connect(ctx context.Context, accountID uuid.UUID, authCode string) (connector.Snapshot, error)
-	Refresh(ctx context.Context, accountID uuid.UUID) (connector.Snapshot, error)
-	Disconnect(ctx context.Context, accountID uuid.UUID) (connector.Snapshot, error)
-	Status(ctx context.Context, accountID uuid.UUID) (connector.Snapshot, error)
+	Connect(ctx context.Context, organizationID, accountID uuid.UUID, authCode string) (connector.Snapshot, error)
+	Refresh(ctx context.Context, organizationID, accountID uuid.UUID) (connector.Snapshot, error)
+	Disconnect(ctx context.Context, organizationID, accountID uuid.UUID) (connector.Snapshot, error)
+	Status(ctx context.Context, organizationID, accountID uuid.UUID) (connector.Snapshot, error)
 }
 
 // ConnectConnector exchanges an auth code and returns the reconciled status.
@@ -30,7 +35,14 @@ func (s *gatewayServer) ConnectConnector(
 	if req.Body == nil {
 		return gateway.ConnectConnectordefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	snap, err := s.connector.Connect(ctx, req.Body.MarketplaceAccountId, req.Body.AuthorizationCode)
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.ConnectConnectordefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
+	}
+	// Organization scope comes ONLY from the authenticated principal, never from
+	// request input (S8-AUTHZ-001). A foreign account UUID is rejected by the
+	// service with no side effect.
+	snap, err := s.connector.Connect(ctx, p.OrganizationID, req.Body.MarketplaceAccountId, req.Body.AuthorizationCode)
 	if err != nil {
 		return gateway.ConnectConnectordefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
 	}
@@ -47,7 +59,11 @@ func (s *gatewayServer) RefreshConnector(
 	if req.Body == nil {
 		return gateway.RefreshConnectordefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	snap, err := s.connector.Refresh(ctx, req.Body.MarketplaceAccountId)
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.RefreshConnectordefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
+	}
+	snap, err := s.connector.Refresh(ctx, p.OrganizationID, req.Body.MarketplaceAccountId)
 	if err != nil {
 		return gateway.RefreshConnectordefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
 	}
@@ -64,7 +80,11 @@ func (s *gatewayServer) DisconnectConnector(
 	if req.Body == nil {
 		return gateway.DisconnectConnectordefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	snap, err := s.connector.Disconnect(ctx, req.Body.MarketplaceAccountId)
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.DisconnectConnectordefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
+	}
+	snap, err := s.connector.Disconnect(ctx, p.OrganizationID, req.Body.MarketplaceAccountId)
 	if err != nil {
 		return gateway.DisconnectConnectordefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
 	}
@@ -78,7 +98,11 @@ func (s *gatewayServer) GetConnectorStatus(
 	if s.connector == nil {
 		return gateway.GetConnectorStatusdefaultJSONResponse{StatusCode: 503, Body: unavailableErr()}, nil
 	}
-	snap, err := s.connector.Status(ctx, req.Params.MarketplaceAccountId)
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.GetConnectorStatusdefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
+	}
+	snap, err := s.connector.Status(ctx, p.OrganizationID, req.Params.MarketplaceAccountId)
 	if err != nil {
 		return gateway.GetConnectorStatusdefaultJSONResponse{StatusCode: connectorErrStatus(err), Body: connectorErr(err)}, nil
 	}
@@ -115,6 +139,11 @@ func connectorErrStatus(err error) int {
 	switch {
 	case errors.Is(err, connector.ErrInvalidAuthCode):
 		return 400
+	// A foreign OR unknown account id is reported identically as 404 so the
+	// response never reveals whether a cross-organization account exists
+	// (S8-AUTHZ-001).
+	case errors.Is(err, connector.ErrAccountNotFound):
+		return 404
 	case errors.Is(err, connector.ErrNotConnected):
 		return 409
 	default:
@@ -124,13 +153,18 @@ func connectorErrStatus(err error) int {
 
 func connectorErr(err error) gateway.ErrorEnvelope {
 	code := "CONNECTOR_ERROR"
+	msg := err.Error()
 	switch {
 	case errors.Is(err, connector.ErrInvalidAuthCode):
 		code = "INVALID_ARGUMENT"
+	case errors.Is(err, connector.ErrAccountNotFound):
+		// Fixed code + message: a foreign account and an unknown account are
+		// indistinguishable to the caller (no existence oracle).
+		code = "NOT_FOUND"
+		msg = "marketplace account not found"
 	case errors.Is(err, connector.ErrNotConnected):
 		code = "NOT_CONNECTED"
 	}
-	msg := err.Error()
 	return gateway.ErrorEnvelope{Code: code, Message: msg}
 }
 

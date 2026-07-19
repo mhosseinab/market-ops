@@ -33,20 +33,29 @@ func newPool(t *testing.T) (*pgxpool.Pool, *db.Queries) {
 
 func seedAccount(t *testing.T, q *db.Queries) uuid.UUID {
 	t.Helper()
+	_, account := seedOrgAccount(t, q)
+	return account
+}
+
+// seedOrgAccount creates an organization + marketplace account and returns both.
+// The org id is needed wherever a real connector call is made, since connector
+// reads/writes are org-scoped (S8-AUTHZ-001).
+func seedOrgAccount(t *testing.T, q *db.Queries) (org, account uuid.UUID) {
+	t.Helper()
 	ctx := context.Background()
-	org, err := q.CreateOrganization(ctx, "catalog-test-"+uuid.NewString())
+	o, err := q.CreateOrganization(ctx, "catalog-test-"+uuid.NewString())
 	if err != nil {
 		t.Fatalf("create org: %v", err)
 	}
 	acct, err := q.CreateMarketplaceAccount(ctx, db.CreateMarketplaceAccountParams{
-		OrganizationID:  org.ID,
+		OrganizationID:  o.ID,
 		NativeAccountID: "native-" + uuid.NewString(),
 		DisplayName:     "Catalog Seller",
 	})
 	if err != nil {
 		t.Fatalf("create account: %v", err)
 	}
-	return acct.ID
+	return o.ID, acct.ID
 }
 
 // item builds a connector.VariantItem with the given native ids and a verbatim

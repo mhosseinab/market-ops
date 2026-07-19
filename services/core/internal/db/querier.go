@@ -156,7 +156,9 @@ type Querier interface {
 	// event. The caller treats pgx.ErrNoRows as "already delivered" (idempotent).
 	DeliverNotification(ctx context.Context, arg DeliverNotificationParams) (Notification, error)
 	// Sever the connection and purge sealed tokens (ACC-001). Idempotent.
-	DisconnectConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
+	// ORG-SCOPED: a foreign account matches zero rows, so no mutation occurs and
+	// RETURNING is empty — identical to disconnecting an unknown account.
+	DisconnectConnectorConnection(ctx context.Context, arg DisconnectConnectorConnectionParams) (ConnectorConnection, error)
 	DisengageAccountKillSwitch(ctx context.Context, accountID pgtype.UUID) error
 	DisengageGlobalKillSwitch(ctx context.Context) error
 	DisengageTargetKillSwitch(ctx context.Context, targetID pgtype.UUID) error
@@ -195,7 +197,8 @@ type Querier interface {
 	GetApprovalCard(ctx context.Context, id uuid.UUID) (ApprovalCard, error)
 	GetBriefingByAccountDay(ctx context.Context, arg GetBriefingByAccountDayParams) (Briefing, error)
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
-	GetConnectorConnection(ctx context.Context, marketplaceAccountID uuid.UUID) (ConnectorConnection, error)
+	// ORG-SCOPED: only returns the row when the account belongs to the organization.
+	GetConnectorConnection(ctx context.Context, arg GetConnectorConnectionParams) (ConnectorConnection, error)
 	GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	// The greatest-version card for a lineage (the live card version).
 	GetCurrentApprovalCard(ctx context.Context, lineageID uuid.UUID) (ApprovalCard, error)
@@ -237,6 +240,10 @@ type Querier interface {
 	GetObservationTarget(ctx context.Context, id uuid.UUID) (ObservationTarget, error)
 	GetObservedOffer(ctx context.Context, arg GetObservedOfferParams) (ObservedOffer, error)
 	GetOpenEventByDedupKey(ctx context.Context, dedupKey string) (MarketEvent, error)
+	// Ownership guard: resolve an account id ONLY when it belongs to the given
+	// organization. A foreign or unknown account id yields no row (pgx.ErrNoRows),
+	// so possession of a UUID never grants cross-organization access (S8-AUTHZ-001).
+	GetOrgMarketplaceAccountID(ctx context.Context, arg GetOrgMarketplaceAccountIDParams) (uuid.UUID, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
 	GetOutcomeResult(ctx context.Context, windowID uuid.UUID) (OutcomeResult, error)
 	GetOutcomeWindowByAction(ctx context.Context, actionID uuid.UUID) (OutcomeWindow, error)
@@ -389,7 +396,8 @@ type Querier interface {
 	// banner — §16 "routes disagree → Conflicted; block"). The price of record is
 	// untouched; only the quality state signals the conflict.
 	ListConflictedObservedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservedOffer, error)
-	ListConnectorCapabilities(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ConnectorCapability, error)
+	// ORG-SCOPED: capability rows are visible only to the owning organization.
+	ListConnectorCapabilities(ctx context.Context, arg ListConnectorCapabilitiesParams) ([]ConnectorCapability, error)
 	ListCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
 	// Full version history for one (variant, component), newest first — the versioned
 	// cost-profile list the product-detail screen renders.
@@ -519,8 +527,9 @@ type Querier interface {
 	// recommendation-invalidation event in the same transaction.
 	ReopenConfirmedIdentity(ctx context.Context, arg ReopenConfirmedIdentityParams) (MarketProductIdentity, error)
 	// Return a capability to 'unknown' (disconnect). Clears last_verified_at so a
-	// stale verification can never read as current.
-	ResetConnectorCapability(ctx context.Context, marketplaceAccountID uuid.UUID) error
+	// stale verification can never read as current. ORG-SCOPED: a foreign account
+	// matches zero rows, so no capability of another organization is ever reset.
+	ResetConnectorCapability(ctx context.Context, arg ResetConnectorCapabilityParams) error
 	// Resolve a presented capture credential to its scoped account. Rows that are
 	// revoked or past credential expiry are excluded, so a revoked or stale
 	// credential fails closed (401).
@@ -537,13 +546,14 @@ type Querier interface {
 	RevokePairingsForAccount(ctx context.Context, marketplaceAccountID uuid.UUID) error
 	// Insert a capability at 'unknown' if absent; leave an existing row untouched so
 	// a prior probe result is not clobbered by a re-seed (capability-gating invariant).
+	// ORG-SCOPED: seeds only when the account belongs to the organization.
 	SeedConnectorCapability(ctx context.Context, arg SeedConnectorCapabilityParams) error
 	// Record a retryable error WITHOUT marking the run failed: status stays 'running'
 	// and next_page is untouched, so a retry (River backoff) resumes from the same
 	// page. Used for transient fetch/apply faults (pagination fault, parser drift).
 	SetCatalogSyncRunError(ctx context.Context, arg SetCatalogSyncRunErrorParams) (CatalogSyncRun, error)
 	// Record a probe result. Only a probe calls this; status is set explicitly and
-	// last_verified_at stamps when it was determined.
+	// last_verified_at stamps when it was determined. ORG-SCOPED.
 	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
 	// Advance a recommend-only action to a terminal EXE-005 state. FROM-guarded on
 	// the awaiting state so a resolved action is not re-resolved.
@@ -556,6 +566,11 @@ type Querier interface {
 	UpdateOpenEvent(ctx context.Context, arg UpdateOpenEventParams) (MarketEvent, error)
 	UpsertAccountCostPolicy(ctx context.Context, arg UpsertAccountCostPolicyParams) (AccountCostPolicy, error)
 	// Establish or update the connection with sealed tokens (connect / refresh).
+	// ORG-SCOPED (S8-AUTHZ-001): the INSERT ... SELECT only materialises a row when
+	// the account belongs to the given organization, so a caller cannot create or
+	// overwrite a connection for another organization's account. A foreign account
+	// yields zero source rows: nothing is inserted, no conflict fires, and RETURNING
+	// is empty (pgx.ErrNoRows) — the same fail-closed result as an unknown account.
 	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)
 	UpsertGuardrailSettings(ctx context.Context, arg UpsertGuardrailSettingsParams) (GuardrailSetting, error)
 	UpsertListing(ctx context.Context, arg UpsertListingParams) (UpsertListingRow, error)

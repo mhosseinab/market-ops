@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	dkclient "github.com/mhosseinab/market-ops/gen/dkgo"
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
 )
 
 // VariantItem is the connector's stable, minimal projection of one DK seller
@@ -161,27 +163,36 @@ func (c *DKClient) FetchVariantsPage(ctx context.Context, accessToken string, pa
 // it loads and decrypts the account's access token, then fetches through the DK
 // client. Token handling stays inside the connector (the catalog layer never
 // touches sealed tokens).
-func (s *Service) FetchVariantsPage(ctx context.Context, accountID uuid.UUID, page, size int) (VariantPage, error) {
+func (s *Service) FetchVariantsPage(ctx context.Context, organizationID, accountID uuid.UUID, page, size int) (VariantPage, error) {
 	// Capability gate FIRST (§15.2 never-cut): catalog sync depends on BOTH
 	// OwnedOfferRead and CatalogRead. Any non-Supported state (Unknown,
 	// Unsupported, Degraded) fails closed here, BEFORE the token is decrypted and
 	// before any DK request. This is the single enforcement point shared by
 	// direct connector callers and River-driven sync (both route through this
-	// Service method via catalog.connectorSource).
-	if err := s.requireCapabilities(ctx, accountID, OwnedOfferRead, CatalogRead); err != nil {
+	// Service method via catalog.connectorSource). The capability lookup and the
+	// token load are ORG-SCOPED (S8-AUTHZ-001): an account not owned by
+	// organizationID resolves to no rows and fails closed before any DK contact.
+	if err := s.requireCapabilities(ctx, organizationID, accountID, OwnedOfferRead, CatalogRead); err != nil {
 		return VariantPage{}, err
 	}
-	token, err := s.accessTokenFor(ctx, accountID)
+	token, err := s.accessTokenFor(ctx, organizationID, accountID)
 	if err != nil {
 		return VariantPage{}, err
 	}
 	return s.dk.FetchVariantsPage(ctx, token, page, size)
 }
 
-// accessTokenFor loads the connection and returns the decrypted access token,
-// failing closed if the account is not connected.
-func (s *Service) accessTokenFor(ctx context.Context, accountID uuid.UUID) (string, error) {
-	conn, err := s.store.GetConnectorConnection(ctx, accountID)
+// accessTokenFor loads the connection ORG-SCOPED and returns the decrypted access
+// token, failing closed if the account is not connected or not owned by the
+// organization (a foreign account resolves to ErrNotConnected via no row).
+func (s *Service) accessTokenFor(ctx context.Context, organizationID, accountID uuid.UUID) (string, error) {
+	conn, err := s.store.GetConnectorConnection(ctx, db.GetConnectorConnectionParams{
+		MarketplaceAccountID: accountID,
+		OrganizationID:       organizationID,
+	})
+	if errors.Is(err, pgxNoRows) {
+		return "", ErrNotConnected
+	}
 	if err != nil {
 		return "", fmt.Errorf("connector: load connection: %w", err)
 	}

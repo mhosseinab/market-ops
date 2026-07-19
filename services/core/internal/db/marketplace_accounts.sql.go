@@ -94,6 +94,26 @@ func (q *Queries) GetMarketplaceAccountByOrganization(ctx context.Context, organ
 	return i, err
 }
 
+const getOrgMarketplaceAccountID = `-- name: GetOrgMarketplaceAccountID :one
+SELECT id FROM marketplace_accounts
+WHERE id = $1 AND organization_id = $2
+`
+
+type GetOrgMarketplaceAccountIDParams struct {
+	ID             uuid.UUID
+	OrganizationID uuid.UUID
+}
+
+// Ownership guard: resolve an account id ONLY when it belongs to the given
+// organization. A foreign or unknown account id yields no row (pgx.ErrNoRows),
+// so possession of a UUID never grants cross-organization access (S8-AUTHZ-001).
+func (q *Queries) GetOrgMarketplaceAccountID(ctx context.Context, arg GetOrgMarketplaceAccountIDParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, getOrgMarketplaceAccountID, arg.ID, arg.OrganizationID)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const listMarketplaceAccountIDs = `-- name: ListMarketplaceAccountIDs :many
 SELECT id FROM marketplace_accounts
 ORDER BY created_at, id

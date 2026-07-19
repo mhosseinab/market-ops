@@ -40,17 +40,20 @@ func (c *countingTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
 }
 
 // seedConnected puts a connected account with VALID sealed tokens and the given
-// capability states into the fake store. Every capability starts Unknown; the
-// overrides then set specific states. Valid tokens ensure the ONLY thing that
-// can block FetchVariantsPage is the capability gate.
-func seedConnected(t *testing.T, store *fakeStore, cipher *Cipher, acct uuid.UUID, overrides map[Capability]State) {
+// capability states into the fake store, owned by org. Every capability starts
+// Unknown; the overrides then set specific states. Valid tokens ensure the ONLY
+// thing that can block FetchVariantsPage is the capability gate. All writes are
+// org-scoped, so the account must be registered (owned) first.
+func seedConnected(t *testing.T, store *fakeStore, cipher *Cipher, org, acct uuid.UUID, overrides map[Capability]State) {
 	t.Helper()
+	store.own(org, acct)
 	access, refresh, err := cipher.SealTokens(TokenSet{AccessToken: "access-tok", RefreshToken: "refresh-tok"})
 	if err != nil {
 		t.Fatalf("seal tokens: %v", err)
 	}
 	if _, err := store.UpsertConnectorConnection(context.Background(), db.UpsertConnectorConnectionParams{
 		MarketplaceAccountID: acct,
+		OrganizationID:       org,
 		AccessTokenSealed:    access,
 		RefreshTokenSealed:   refresh,
 		KeyVersion:           cipher.Version(),
@@ -60,6 +63,7 @@ func seedConnected(t *testing.T, store *fakeStore, cipher *Cipher, acct uuid.UUI
 	for _, c := range AllCapabilities() {
 		if err := store.SeedConnectorCapability(context.Background(), db.SeedConnectorCapabilityParams{
 			MarketplaceAccountID: acct,
+			OrganizationID:       org,
 			Capability:           string(c),
 		}); err != nil {
 			t.Fatalf("seed capability %s: %v", c, err)
@@ -68,6 +72,7 @@ func seedConnected(t *testing.T, store *fakeStore, cipher *Cipher, acct uuid.UUI
 	for c, st := range overrides {
 		if _, err := store.SetConnectorCapabilityStatus(context.Background(), db.SetConnectorCapabilityStatusParams{
 			MarketplaceAccountID: acct,
+			OrganizationID:       org,
 			Capability:           string(c),
 			Status:               string(st),
 		}); err != nil {
@@ -109,7 +114,7 @@ func TestFetchVariantsPageCapabilityGateBlocks(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				store := newFakeStore()
 				cipher := newCipher(t)
-				acct := uuid.New()
+				org, acct := uuid.New(), uuid.New()
 
 				// Both required capabilities Supported, then knock ONE down to the
 				// non-supported state under test.
@@ -118,12 +123,12 @@ func TestFetchVariantsPageCapabilityGateBlocks(t *testing.T) {
 					CatalogRead:    Supported,
 				}
 				overrides[cap] = st
-				seedConnected(t, store, cipher, acct, overrides)
+				seedConnected(t, store, cipher, org, acct, overrides)
 
 				dk := newDKClientWithTransport(t, panicTransport{t: t})
 				svc := NewService(store, cipher, dk)
 
-				_, err := svc.FetchVariantsPage(context.Background(), acct, 1, 50)
+				_, err := svc.FetchVariantsPage(context.Background(), org, acct, 1, 50)
 				if !errors.Is(err, ErrCapabilityNotSupported) {
 					t.Fatalf("FetchVariantsPage err = %v, want ErrCapabilityNotSupported", err)
 				}
@@ -138,9 +143,9 @@ func TestFetchVariantsPageCapabilityGateBlocks(t *testing.T) {
 func TestFetchVariantsPageCapabilityGateAllows(t *testing.T) {
 	store := newFakeStore()
 	cipher := newCipher(t)
-	acct := uuid.New()
+	org, acct := uuid.New(), uuid.New()
 
-	seedConnected(t, store, cipher, acct, map[Capability]State{
+	seedConnected(t, store, cipher, org, acct, map[Capability]State{
 		OwnedOfferRead: Supported,
 		CatalogRead:    Supported,
 	})
@@ -149,7 +154,7 @@ func TestFetchVariantsPageCapabilityGateAllows(t *testing.T) {
 	dk := newDKClientWithTransport(t, rt)
 	svc := NewService(store, cipher, dk)
 
-	page, err := svc.FetchVariantsPage(context.Background(), acct, 1, 50)
+	page, err := svc.FetchVariantsPage(context.Background(), org, acct, 1, 50)
 	if err != nil {
 		t.Fatalf("FetchVariantsPage err = %v, want nil", err)
 	}
