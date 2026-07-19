@@ -1,6 +1,10 @@
 package event_test
 
 import (
+	"math"
+	"math/big"
+	"math/rand"
+	"strconv"
 	"testing"
 	"time"
 
@@ -129,6 +133,89 @@ func TestDetectCompetitorPrice(t *testing.T) {
 			t.Fatal("a movement with no unit must not fire — money quarantine")
 		}
 	})
+
+	// issue #72: an extreme but schema-valid movement whose basis-point value
+	// exceeds int64 must NOT wrap through a narrowing conversion and be misread
+	// as a below-threshold non-event. It is material and critical, and the
+	// move_bp evidence carries the EXACT big-integer value (no truncation).
+	t.Run("#72 extreme MaxInt64 movement is material and critical (no int64 narrowing)", func(t *testing.T) {
+		in := base
+		in.PrevValue = "1"
+		in.CurrValue = strconv.FormatInt(math.MaxInt64, 10) // 9223372036854775807
+		c, ok := event.DetectCompetitorPrice(in)
+		if !ok {
+			t.Fatal("an extreme MaxInt64 movement must fire — a wrapped int64 must not become a false non-event")
+		}
+		if c.Severity != event.SeverityCritical {
+			t.Errorf("severity = %s, want critical", c.Severity)
+		}
+		// bp = |curr-prev| * 10000 / prev = 9223372036854775806 * 10000 / 1.
+		wantBp, _ := new(big.Int).SetString("92233720368547758060000", 10)
+		if got := c.Evidence.Detail["move_bp"]; got != wantBp.String() {
+			t.Errorf("move_bp = %q, want exact %q (no int64 truncation)", got, wantBp.String())
+		}
+	})
+}
+
+// TestDetectCompetitorPriceMatchesBigIntReference is the property test the issue
+// asks for: over a wide range of same-unit token pairs (including movements whose
+// bp overflows int64), the detector's fire/severity classification and the move_bp
+// evidence must match an independent big.Int reference — so the comparison boundary
+// is exact and deterministic, never lossy (issue #72, EVT-002).
+func TestDetectCompetitorPriceMatchesBigIntReference(t *testing.T) {
+	now := time.Now()
+	const thrBp int64 = 500 // 5%
+	thr := event.Threshold{ID: uuid.New(), Version: 1, MoveBp: money.NewBasisPoints(thrBp)}
+	base := event.CompetitorPriceInput{
+		Variant: uuid.New(), Target: uuid.New(), OfferIdentity: "s",
+		Unit: "IRR", Evidence: goodEvidence(), Now: now, TTL: time.Hour, Threshold: thr,
+	}
+	threshold := big.NewInt(thrBp)
+	doubleThreshold := new(big.Int).Mul(threshold, big.NewInt(2))
+
+	rng := rand.New(rand.NewSource(72))
+	for i := 0; i < 5000; i++ {
+		var prev, curr int64
+		switch i % 4 {
+		case 0: // tiny prev, huge curr — the overflow region
+			prev = rng.Int63n(1000) + 1
+			curr = rng.Int63n(math.MaxInt64)
+		case 1: // near-equal values — the below-threshold region
+			prev = rng.Int63n(math.MaxInt64-1000) + 1000
+			curr = prev + rng.Int63n(2000) - 1000
+			if curr < 0 {
+				curr = 0
+			}
+		default:
+			prev = rng.Int63n(math.MaxInt64-1) + 1
+			curr = rng.Int63n(math.MaxInt64)
+		}
+
+		// Independent reference classification, entirely in big.Int.
+		diff := new(big.Int).Sub(big.NewInt(curr), big.NewInt(prev))
+		diff.Abs(diff)
+		bp := new(big.Int).Mul(diff, big.NewInt(money.BasisPointScale))
+		bp.Quo(bp, big.NewInt(prev))
+		wantFire := bp.Cmp(threshold) >= 0
+		wantCritical := bp.Cmp(doubleThreshold) >= 0
+
+		in := base
+		in.PrevValue = strconv.FormatInt(prev, 10)
+		in.CurrValue = strconv.FormatInt(curr, 10)
+		c, ok := event.DetectCompetitorPrice(in)
+		if ok != wantFire {
+			t.Fatalf("fire mismatch prev=%d curr=%d bp=%s: got %v want %v", prev, curr, bp, ok, wantFire)
+		}
+		if !ok {
+			continue
+		}
+		if gotCritical := c.Severity == event.SeverityCritical; gotCritical != wantCritical {
+			t.Fatalf("severity mismatch prev=%d curr=%d bp=%s: gotCritical=%v want %v", prev, curr, bp, gotCritical, wantCritical)
+		}
+		if got := c.Evidence.Detail["move_bp"]; got != bp.String() {
+			t.Fatalf("move_bp mismatch prev=%d curr=%d: got %q want exact %q", prev, curr, got, bp.String())
+		}
+	}
 }
 
 // --- (3) Seller-count movement ---------------------------------------------

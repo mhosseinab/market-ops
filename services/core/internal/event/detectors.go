@@ -173,11 +173,19 @@ func DetectCompetitorPrice(in CompetitorPriceInput) (Candidate, bool) {
 		return Candidate{}, false
 	}
 	threshold := in.Threshold.MoveBp.Value()
-	if threshold <= 0 || moveBp < threshold {
+	if threshold <= 0 {
+		return Candidate{}, false
+	}
+	// Classify the movement against the thresholds ENTIRELY in big.Int (issue #72).
+	// The bp value can exceed int64 for an extreme same-unit movement; narrowing it
+	// before the comparison could wrap it negative and misread a critical movement
+	// as a below-threshold non-event. The comparison boundary stays exact.
+	thr := big.NewInt(threshold)
+	if moveBp.Cmp(thr) < 0 {
 		return Candidate{}, false
 	}
 	sev := SeverityWarning
-	if moveBp >= 2*threshold {
+	if moveBp.Cmp(new(big.Int).Lsh(thr, 1)) >= 0 { // moveBp >= 2*threshold
 		sev = SeverityCritical
 	}
 	ev := in.Evidence
@@ -188,7 +196,7 @@ func DetectCompetitorPrice(in CompetitorPriceInput) (Candidate, bool) {
 	ev.Detail["prev_value"] = in.PrevValue
 	ev.Detail["curr_value"] = in.CurrValue
 	ev.Detail["unit"] = in.Unit
-	ev.Detail["move_bp"] = strconv.FormatInt(moveBp, 10)
+	ev.Detail["move_bp"] = moveBp.String()
 	c := candidate(TypeCompetitorPrice, in.Variant, in.Target, in.OfferIdentity, sev,
 		in.Exposure, ev, in.Now, in.TTL, in.Threshold)
 	// Carry the durable-consumption seam onto the candidate so RecordFor can commit
@@ -201,28 +209,32 @@ func DetectCompetitorPrice(in CompetitorPriceInput) (Candidate, bool) {
 // arithmetic only (no float). It reports ok=false when the unit is empty, the
 // tokens are not integers, or prev is zero (an undefined ratio) — the detector
 // then simply does not fire rather than fabricate a movement.
-func movementBasisPoints(prev, curr, unit string) (int64, bool) {
+//
+// The result is a *big.Int and is NEVER narrowed to int64 here: an extreme
+// same-unit movement produces a bp value larger than int64, and the caller
+// compares it against the threshold in big.Int so the comparison boundary stays
+// exact (issue #72). It is a dimensionless ratio, not a money path.
+func movementBasisPoints(prev, curr, unit string) (*big.Int, bool) {
 	if strings.TrimSpace(unit) == "" {
-		return 0, false
+		return nil, false
 	}
 	p, err := strconv.ParseInt(strings.TrimSpace(prev), 10, 64)
 	if err != nil || p <= 0 {
-		return 0, false
+		return nil, false
 	}
 	c, err := strconv.ParseInt(strings.TrimSpace(curr), 10, 64)
 	if err != nil || c < 0 {
-		return 0, false
+		return nil, false
 	}
 	diff := c - p
 	if diff < 0 {
 		diff = -diff
 	}
 	// basis points = diff * 10000 / prev, integer division (toward zero). Computed
-	// in big.Int so a very large same-unit token can never overflow int64 on the
-	// multiply before the divide (dimensionless ratio — not a money path).
-	bp := new(big.Int).Mul(big.NewInt(diff), big.NewInt(10000))
+	// and returned in big.Int so neither the multiply nor the comparison can overflow.
+	bp := new(big.Int).Mul(big.NewInt(diff), big.NewInt(money.BasisPointScale))
 	bp.Quo(bp, big.NewInt(p))
-	return bp.Int64(), true
+	return bp, true
 }
 
 // --- (3) Seller-count movement --------------------------------------------
