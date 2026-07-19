@@ -371,7 +371,8 @@ func TestObserveTargetRetriesTransientThenSucceeds(t *testing.T) {
 	ing := &fakeIngestor{}
 	obs := routec.NewObserver(retryCfg(3), routec.ObserverDeps{
 		Fetcher: f, Ingestor: ing, Kill: routec.NewMemKillSwitchStore(),
-		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		Downgrader: &fakeDowngrader{},
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 	})
 	out, err := obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
 	if err != nil {
@@ -392,7 +393,8 @@ func TestObserveTargetDoesNotRetryBlockSignal(t *testing.T) {
 	ing := &fakeIngestor{}
 	obs := routec.NewObserver(retryCfg(3), routec.ObserverDeps{
 		Fetcher: f, Ingestor: ing, Kill: routec.NewMemKillSwitchStore(),
-		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		Downgrader: &fakeDowngrader{},
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 	})
 	out, _ := obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
 	if out.Skipped != routec.SkipFetchSignal || out.Signal != routec.Signal429 {
@@ -413,7 +415,8 @@ func TestObserveTargetRetryStopsWhenBudgetExhausted(t *testing.T) {
 	ing := &fakeIngestor{}
 	obs := routec.NewObserver(cfg, routec.ObserverDeps{
 		Fetcher: f, Ingestor: ing, Kill: routec.NewMemKillSwitchStore(),
-		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		Downgrader: &fakeDowngrader{},
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 	})
 	_, _ = obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
 	if f.calls() != 2 {
@@ -434,7 +437,8 @@ func TestObserveTargetRetryStopsWhenBreakerOpens(t *testing.T) {
 	ing := &fakeIngestor{}
 	obs := routec.NewObserver(cfg, routec.ObserverDeps{
 		Fetcher: f, Ingestor: ing, Kill: routec.NewMemKillSwitchStore(),
-		Now: func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		Downgrader: &fakeDowngrader{},
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 	})
 	_, _ = obs.ObserveTarget(context.Background(), routec.Snapshot{}, testTarget())
 	if f.calls() != 1 {
@@ -450,10 +454,11 @@ func TestObserveTargetBudgetExhaustedSkips(t *testing.T) {
 	f := &fakeFetcher{result: routec.FetchResult{StatusCode: 200, Body: golden(t, "product_marketable.json"), Signal: routec.SignalOK, Bytes: 10}}
 	ing := &fakeIngestor{}
 	obs := routec.NewObserver(cfg, routec.ObserverDeps{
-		Fetcher:  f,
-		Ingestor: ing,
-		Kill:     routec.NewMemKillSwitchStore(),
-		Now:      func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+		Fetcher:    f,
+		Ingestor:   ing,
+		Kill:       routec.NewMemKillSwitchStore(),
+		Downgrader: &fakeDowngrader{},
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
 	})
 	ref := testTarget()
 	// First observe consumes the single request of budget.
@@ -532,6 +537,26 @@ func TestObserveTargetPersistsDriftDowngradeOnAllPaths(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNewObserverRejectsNilDowngrader pins the fail-closed contract: the drift
+// downgrader is a REQUIRED collaborator (the durable half of the §10.4 stop rule,
+// a never-cut protection), so an Observer can never be constructed without one. A
+// nil Downgrader that silently no-oped would reintroduce #47 — the in-memory
+// downgrade computed but never persisted, PersistedDowngrades=0 indistinguishable
+// from "nothing to downgrade", no error, no log. Construction must fail closed.
+func TestNewObserverRejectsNilDowngrader(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("NewObserver must reject a nil Downgrader (required drift-downgrade collaborator), not silently tolerate it")
+		}
+	}()
+	_ = routec.NewObserver(routec.DefaultConfig(), routec.ObserverDeps{
+		Fetcher:  &fakeFetcher{},
+		Ingestor: &fakeIngestor{},
+		Kill:     routec.NewMemKillSwitchStore(),
+		// Downgrader intentionally omitted (nil) — must not construct.
+	})
 }
 
 // TestObserveTargetDriftDowngradeErrorFailsClosed asserts a failed durable

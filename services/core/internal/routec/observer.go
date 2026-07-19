@@ -165,6 +165,15 @@ func NewObserver(cfg Config, deps ObserverDeps) *Observer {
 	if drift == nil {
 		drift = NewDriftGuard()
 	}
+	// The drift downgrader is a REQUIRED collaborator: it is the durable half of the
+	// §10.4 stop rule (issue #47). Unlike the clock/rng/drift-guard (which have safe
+	// defaults), a missing downgrader has NO safe default — silently tolerating nil
+	// would recompute the in-memory downgrade but never persist it, so stale evidence
+	// would keep reading as current. Fail fast at construction (a wiring bug), never
+	// at a runtime drift path with a swallowed no-op.
+	if deps.Downgrader == nil {
+		panic("routec: NewObserver requires a non-nil Downgrader (durable drift-downgrade seam, §10.4/#47)")
+	}
 	return &Observer{
 		cfg:        cfg,
 		fetcher:    deps.Fetcher,
@@ -294,11 +303,12 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 // drift path (§10.4 stop rule). It FAILS CLOSED: a write error is returned to the
 // caller (surfaced as an ObserveTarget error and tallied as a sweep error), never
 // swallowed — a stale value must not keep reading as current merely because the
-// downgrade write failed. A nil downgrader (an incompletely wired observer) is a
-// no-op; production wiring (bundle.go) always supplies observation.Service.
+// downgrade write failed. The downgrader is guaranteed non-nil by NewObserver; the
+// nil guard here is defense-in-depth and also fails closed (an error, never a
+// silent 0,nil no-op).
 func (o *Observer) persistDriftDowngrade(ctx context.Context, ref TargetRef, reason string) (int, error) {
 	if o.downgrader == nil {
-		return 0, nil
+		return 0, fmt.Errorf("routec: drift downgrade (%s): downgrader not configured", reason)
 	}
 	n, err := o.downgrader.DowngradeCurrentForDrift(ctx, ref.TargetID, reason)
 	if err != nil {
