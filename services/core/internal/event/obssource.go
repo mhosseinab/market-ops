@@ -28,18 +28,18 @@ import (
 //   - winning_state: needs an owned-vs-competitor buy-box WINNER comparison over
 //     the account's owned offer (owned_offers, landed by S10 catalog/owned-offer
 //     sync) versus the competing Observed Offers (S15 observation store). No
-//     committed winning/challenged signal is produced yet; the step that lands
-//     that comparison completes this leg.
+//     committed winning/challenged signal is produced yet; tracked by #190, which
+//     wires this leg's runtime source once the S10 owned-offer comparison lands.
 //   - seller_count: needs a durable PRIOR-vs-CURRENT competing-seller COUNT series
 //     per variant. The append-only observations (S15) record no seller-count
 //     series and observed_offers is current-state only, so there is no prior count
-//     to compare; the step that persists that seller-count snapshot series
-//     completes this leg.
+//     to compare; tracked by #190, which wires this leg's runtime source once the
+//     seller-count snapshot series is persisted.
 //   - suppression_boundary: needs the OWNED-offer suppression + marketplace price-
 //     boundary signal (the owned offer from owned_offers, S10, plus a boundary
 //     state), distinct from competitor offers. No committed owned-offer
-//     suppression/boundary transition exists yet; the step that derives it
-//     completes this leg.
+//     suppression/boundary transition exists yet; tracked by #190, which wires this
+//     leg's runtime source once the S10 owned-offer suppression/boundary state lands.
 //   - contribution_floor: consumes the S16 margin/policy contribution outputs and
 //     is dormant behind cost readiness Complete (EVT-001) — wired when S16 lands.
 //
@@ -84,10 +84,25 @@ func (s *ObservationSource) Transitions(ctx context.Context) ([]Transition, erro
 	for _, account := range accounts {
 		// The account's OWN DK seller identity (its marketplace-assigned native
 		// account id; migration 0001 base_tables: "native_account_id is the
-		// marketplace-assigned identifier"). An owned offer, if Route C observes it,
-		// carries this as native_seller_id (routec/parser.go: offer SellerID = DK
-		// Seller.ID). It is excluded below so the account's OWN price change never
-		// drives a COMPETITOR-price event (EVT-001 type 2 is a competitor movement).
+		// marketplace-assigned identifier, globally unique"). An owned offer, if
+		// Route C observes it, carries this as native_seller_id (routec/parser.go:124-125
+		// offer.SellerID = strconv.FormatInt(*v.Seller.ID, 10)). It is excluded below so
+		// the account's OWN price change never drives a COMPETITOR-price event (EVT-001
+		// type 2 is a competitor movement).
+		//
+		// IDENTITY CONTRACT (see TestOwnedSellerIdentityContract): this exclusion is
+		// correct ONLY IF marketplace_accounts.native_account_id holds the DK numeric
+		// Seller.ID as a DECIMAL STRING — the exact representation Route C writes to
+		// native_seller_id (strconv.FormatInt(*v.Seller.ID, 10)). Upholding that contract
+		// is the responsibility of the S10 owned-offer / account-sync provisioning step,
+		// which is the path that must populate native_account_id from the DK seller
+		// profile; no production onboarding path does so yet (today it is set only in
+		// tests). Safe direction: an empty ownedSeller matches nothing, so a competitor
+		// is NEVER dropped (see below). The residual risk is the OTHER direction — a
+		// NON-numeric native_account_id (e.g. a "native-<uuid>" handle) fails to equal
+		// the decimal native_seller_id and so fails to EXCLUDE the owned offer, yielding
+		// a spurious (advisory-only) competitor_price Today item. Not a never-cut breach;
+		// documented + guarded here, never assumed.
 		acct, err := q.GetMarketplaceAccount(ctx, account)
 		if err != nil {
 			return nil, fmt.Errorf("observation source: get account: %w", err)

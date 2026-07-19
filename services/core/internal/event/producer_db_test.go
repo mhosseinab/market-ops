@@ -2,6 +2,7 @@ package event_test
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -197,6 +198,93 @@ func TestObservationSourceEmitsOnlyCompetitorPrice(t *testing.T) {
 	}
 	if competitor < 1 {
 		t.Fatalf("the sourced competitor-price leg must still emit for rival-1, got %d", competitor)
+	}
+}
+
+// TestOwnedSellerIdentityContract PINS the owned-vs-competitor identity contract
+// the owned-offer exclusion in obssource.go depends on, instead of assuming it
+// (Finding 2, issue #65). The exclusion compares marketplace_accounts.native_account_id
+// against the observation's native_seller_id. Route C writes native_seller_id as the
+// DECIMAL string of the DK numeric Seller.ID (routec/parser.go:124-125
+// strconv.FormatInt(*v.Seller.ID, 10)); migration 0001 base_tables defines
+// native_account_id as the marketplace-assigned identifier. So the exclusion is
+// correct ONLY IF native_account_id holds that SAME decimal Seller.ID string —
+// the contract the S10 owned-offer / account-sync provisioning step must uphold.
+//
+// This test proves BOTH directions rather than manufacturing the equivalence like the
+// generic seed does: (A) contract upheld -> owned offer excluded; (B) contract violated
+// by a NON-numeric native_account_id ("native-<uuid>", the shape the non-prod seed uses)
+// -> the owned offer is NOT excluded and leaks as a spurious (advisory-only)
+// competitor_price transition. Advisory only; not a never-cut breach.
+func TestOwnedSellerIdentityContract(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+
+	// A DK numeric Seller.ID and the EXACT representation Route C writes for it
+	// (strconv.FormatInt, parser.go:124-125). A fresh value per run keeps the
+	// globally-unique native_account_id from colliding across runs on a shared DB.
+	dkSellerID := int64(uuid.New().ID())
+	ownedDecimal := strconv.FormatInt(dkSellerID, 10)
+
+	// ---- Scenario A: identity contract UPHELD -> owned offer EXCLUDED. ----
+	accountA, _, targetA, nvA := seedTarget(t, pool, q)
+	// Provision the account as S10 must: native_account_id = decimal DK Seller.ID.
+	// (marketplace_accounts is not an append-only table, so this UPDATE is allowed.)
+	if _, err := pool.Exec(ctx,
+		`UPDATE marketplace_accounts SET native_account_id=$1 WHERE id=$2`,
+		ownedDecimal, accountA); err != nil {
+		t.Fatalf("provision numeric native_account_id: %v", err)
+	}
+	// The exclusion compares against exactly this decimal string.
+	if got := ownedSellerID(t, q, accountA); got != ownedDecimal {
+		t.Fatalf("account native_account_id = %q, want decimal Seller.ID %q", got, ownedDecimal)
+	}
+
+	baseA := time.Now().UTC().Add(-30 * time.Minute)
+	// Owned offer, as Route C emits it (native_seller_id = decimal Seller.ID), moves price.
+	appendObservation(t, q, accountA, targetA, nvA, ownedDecimal, "1000000", baseA)
+	appendObservation(t, q, accountA, targetA, nvA, ownedDecimal, "1300000", baseA.Add(5*time.Minute))
+	// A genuine competitor moves price and MUST fire.
+	appendObservation(t, q, accountA, targetA, nvA, "rival-1", "2000000", baseA.Add(time.Minute))
+	appendObservation(t, q, accountA, targetA, nvA, "rival-1", "2600000", baseA.Add(6*time.Minute))
+
+	allA, err := event.NewObservationSource(pool).Transitions(ctx)
+	if err != nil {
+		t.Fatalf("transitions A: %v", err)
+	}
+	gotA := transitionsForTarget(allA, targetA)
+	if len(gotA) != 1 {
+		t.Fatalf("contract upheld: want exactly 1 competitor transition (owned decimal excluded), got %d: %+v", len(gotA), gotA)
+	}
+	if gotA[0].CompetitorPrice.OfferIdentity == ownedDecimal {
+		t.Fatalf("contract upheld: the owned decimal Seller.ID must be excluded, not surfaced as a competitor")
+	}
+
+	// ---- Scenario B: identity contract VIOLATED -> owned offer NOT excluded. ----
+	accountB, _, targetB, nvB := seedTarget(t, pool, q)
+	nonNumeric := ownedSellerID(t, q, accountB) // "native-<uuid>" from the generic seed
+	// Pin the failure precondition: a non-numeric handle is not the decimal Route C writes.
+	if _, err := strconv.ParseInt(nonNumeric, 10, 64); err == nil {
+		t.Fatalf("precondition: seed native_account_id %q unexpectedly parses as an integer", nonNumeric)
+	}
+	if nonNumeric == ownedDecimal {
+		t.Fatalf("precondition: non-numeric native_account_id must differ from the decimal Seller.ID")
+	}
+
+	baseB := time.Now().UTC().Add(-30 * time.Minute)
+	// The owned offer as Route C actually writes it (native_seller_id = decimal Seller.ID),
+	// which does NOT equal the account's non-numeric native_account_id.
+	appendObservation(t, q, accountB, targetB, nvB, ownedDecimal, "1000000", baseB)
+	appendObservation(t, q, accountB, targetB, nvB, ownedDecimal, "1300000", baseB.Add(5*time.Minute))
+
+	allB, err := event.NewObservationSource(pool).Transitions(ctx)
+	if err != nil {
+		t.Fatalf("transitions B: %v", err)
+	}
+	gotB := transitionsForTarget(allB, targetB)
+	if len(gotB) != 1 || gotB[0].CompetitorPrice.OfferIdentity != ownedDecimal {
+		t.Fatalf("contract violated: a non-numeric native_account_id must FAIL to exclude the owned offer "+
+			"(it leaks as 1 competitor transition on the decimal Seller.ID); got %d: %+v", len(gotB), gotB)
 	}
 }
 
