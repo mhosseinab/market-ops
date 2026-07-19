@@ -107,6 +107,35 @@ func TestBuildPreviewRows_DispositionsAndReasons(t *testing.T) {
 	}
 }
 
+// TestBuildPreviewRows_PercentRejected proves the #40 fix reaches the CSV preview
+// seam: a percent-bearing cost cell rejects with the stable percent_not_money
+// reason instead of silently stripping the sign and committing the value as Money.
+func TestBuildPreviewRows_PercentRejected(t *testing.T) {
+	v1 := uuid.New()
+	entries := []ParsedEntry{
+		// Normalized mirrors csv.go: digit-folded (LOC-007) but the percent sign
+		// is preserved verbatim, so ۱۰٪ folds to "10٪".
+		{RowNumber: 1, RawSKU: "OK", Component: ComponentCOGS, Normalized: "10٪"},
+		{RowNumber: 2, RawSKU: "OK", Component: ComponentCommission, Normalized: "10%"},
+	}
+	resolved := map[string]ResolvedSKU{"OK": {VariantID: v1, Count: 1}}
+	rows, counts := BuildPreviewRows(entries, resolved, "IRR", 0)
+	for _, r := range rows {
+		if r.Disposition != DispositionReject {
+			t.Errorf("row %d disposition = %q, want reject", r.RowNumber, r.Disposition)
+		}
+		if r.Reason != "percent_not_money" {
+			t.Errorf("row %d reason = %q, want percent_not_money", r.RowNumber, r.Reason)
+		}
+		if r.HasAmount {
+			t.Errorf("row %d must not carry a parsed amount", r.RowNumber)
+		}
+	}
+	if counts.Accept != 0 || counts.Reject != 2 {
+		t.Errorf("counts = %+v, want accept 0 reject 2", counts)
+	}
+}
+
 func TestBuildPreviewRows_EveryNonAcceptHasReason(t *testing.T) {
 	// Invariant sweep: no matter the outcome, a non-accept row always has a reason.
 	entries := []ParsedEntry{

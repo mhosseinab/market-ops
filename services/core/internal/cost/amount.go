@@ -23,7 +23,18 @@ var (
 	// configured exponent can represent WITHOUT rounding. Money is never silently
 	// rounded (§9.1), so this is rejected rather than truncated.
 	ErrTooManyDecimals = errors.New("cost: more decimal places than currency exponent allows")
+	// ErrPercentNotMoney — the token carries a percent sign. A percentage is not a
+	// Money value; it belongs on a distinct fixed-point basis-points rate path
+	// (§9.1), never coerced into the currency amount. Rejected with a stable code
+	// so the CSV preview row and single-value entry both explain the refusal
+	// instead of silently changing the unit and meaning of seller input (#40).
+	ErrPercentNotMoney = errors.New("cost: percent token is not money")
 )
+
+// percentMarks are the percent signs a seller could type. A token containing any
+// of them is a percentage, not Money, and is rejected rather than stripped:
+// ASCII '%', Arabic percent ٪ (U+066A), and fullwidth percent ％ (U+FF05).
+const percentMarks = "%٪％"
 
 // Reason returns the stable machine reason code for a parse error, for the
 // preview-row disposition. Non-parse errors map to the generic invalid_amount.
@@ -35,6 +46,8 @@ func amountReason(err error) string {
 		return "negative_amount"
 	case errors.Is(err, ErrTooManyDecimals):
 		return "too_many_decimals"
+	case errors.Is(err, ErrPercentNotMoney):
+		return "percent_not_money"
 	default:
 		return "invalid_amount"
 	}
@@ -49,7 +62,6 @@ var separatorReplacer = strings.NewReplacer(
 	"،", "", // Arabic comma ، used as grouping
 	" ", "", // spaces / thin spaces used as grouping
 	"٫", ".", // Arabic decimal separator ٫ → '.'
-	"٪", "", // Arabic percent sign, if present as a stray mark
 )
 
 // ParseAmount converts a seller-entered numeric token into an authoritative
@@ -63,6 +75,13 @@ var separatorReplacer = strings.NewReplacer(
 func ParseAmount(raw, currency string, exponent int8) (money.Money, error) {
 	s := normalize.Digits(raw)
 	s = strings.TrimSpace(s)
+	// A percent-bearing token is a percentage, not Money: reject it with a stable
+	// code BEFORE any separator folding, so the unit is never silently stripped
+	// and reinterpreted as the currency amount (#40, §9.1). Any future rate input
+	// belongs on a distinct basis-points path, not here.
+	if strings.ContainsAny(s, percentMarks) {
+		return money.Money{}, ErrPercentNotMoney
+	}
 	s = separatorReplacer.Replace(s)
 	if s == "" {
 		return money.Money{}, ErrEmptyAmount
