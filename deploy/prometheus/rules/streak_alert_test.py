@@ -81,7 +81,7 @@ def main() -> int:
         errors.append("expr must read the connector_sync_failure_streak gauge (authoritative sync boundary)")
     if "increase(" in expr or "rate(" in expr:
         errors.append("expr must NOT use increase()/rate(): a rolling window cannot express a consecutive streak")
-    if re.search(r"/connector/\(?refresh|/connector/\(?connect|connector/\(refresh\|connect\)", expr) or "http_server_request_duration" in expr:
+    if "/connector/" in expr or "http_server_request_duration" in expr:
         errors.append("expr must NOT key off credential connect/refresh HTTP routes; those are not the sync operation")
     if for_min > 5:
         errors.append(f"`for: {rule['for']}` is too long to be a stability delay; it must not substitute for streak logic")

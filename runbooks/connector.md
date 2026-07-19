@@ -21,6 +21,19 @@
 - Initial import missing the §17.2 target (95% within 4h for 5,000 SKUs) or
   incremental sync exceeding P95 15m.
 
+## Producer (where the gauge comes from)
+
+The `connector_sync_failure_streak` gauge has a mounted producer in the `core`
+binary (`services/core/cmd/core/main.go`): when the DK connector is wired, the
+catalog-sync workers are registered with a process-wide sync-streak tracker, and
+`SeedFromDurableState` re-derives in-flight streaks from durable
+`catalog_sync_runs` at startup (and re-emits those gauge values). A run retried
+across multiple attempts contributes exactly one increment, so the live gauge
+equals the durable re-derivation — no false page from River retries, no silent
+collapse on restart. Without a wired connector (no `CONNECTOR_ENCRYPTION_KEY`)
+there is no sync activity, the workers stay unregistered, and this alert has no
+series to fire on — an honest absence, not a hidden gap.
+
 ## Owning queue and ownership boundary
 
 This is platform-observed but the connector's own resilience (backoff, capability
