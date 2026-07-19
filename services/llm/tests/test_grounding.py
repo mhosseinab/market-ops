@@ -347,6 +347,74 @@ def test_relation_disagreeing_with_signed_delta_is_rejected() -> None:
     assert "COMPARISON_RELATION_MISMATCH" in _codes(env)
 
 
+# --- Issue #55: temporal time-axis coherence (COMPARISON_TIME_INCOHERENT) ----
+
+
+def test_temporal_comparison_with_identical_timestamps_is_rejected() -> None:
+    # Issue #55 "mismatched entity/time": a before/after comparison whose two
+    # capture instants are the SAME is not a trend across time at all — the axis
+    # is degenerate. Operands are otherwise fully coherent, so the time code fires
+    # in isolation.
+    env = ResponseEnvelope(
+        comparisons=[
+            _coherent_comparison(
+                left_captured_at="2026-07-17T10:00:00Z",
+                right_captured_at="2026-07-17T10:00:00Z",
+            )
+        ]
+    )
+    codes = _codes(env)
+    assert "COMPARISON_TIME_INCOHERENT" in codes
+    assert "COMPARISON_INCOMPLETE" not in codes  # presence check is satisfied
+
+
+def test_temporal_comparison_with_reversed_timestamps_is_rejected() -> None:
+    # A before/after comparison whose "after" instant precedes its "before" instant
+    # is chronologically incoherent: before must be <= after.
+    env = ResponseEnvelope(
+        comparisons=[
+            _coherent_comparison(
+                left_captured_at="2026-07-17T10:00:00Z",
+                right_captured_at="2026-07-16T10:00:00Z",
+            )
+        ]
+    )
+    assert "COMPARISON_TIME_INCOHERENT" in _codes(env)
+
+
+def test_temporal_comparison_with_unparseable_timestamp_is_rejected() -> None:
+    # Fail closed: an instant that does not parse as a datetime cannot establish a
+    # coherent before/after axis — quarantine over inference, never coerce.
+    env = ResponseEnvelope(
+        comparisons=[_coherent_comparison(right_captured_at="not-a-timestamp")]
+    )
+    assert "COMPARISON_TIME_INCOHERENT" in _codes(env)
+
+
+def test_temporal_comparison_with_ordered_timestamps_passes_time_check() -> None:
+    # Positive: a properly ordered (before < after) temporal comparison with
+    # coherent operands raises NO time-axis violation.
+    env = ResponseEnvelope(comparisons=[_coherent_comparison()])
+    assert "COMPARISON_TIME_INCOHERENT" not in _codes(env)
+
+
+def test_cross_entity_comparison_ignores_time_ordering() -> None:
+    # The ordering/inequality rule is TEMPORAL-only. A cross-entity A/B comparison
+    # with equal (or reversed) capture instants is not a time-axis error.
+    env = ResponseEnvelope(
+        comparisons=[
+            _coherent_comparison(
+                kind=ComparisonKind.CROSS_ENTITY,
+                left_entity="sku-1",
+                right_entity="sku-2",
+                left_captured_at="2026-07-17T10:00:00Z",
+                right_captured_at="2026-07-17T10:00:00Z",
+            )
+        ]
+    )
+    assert "COMPARISON_TIME_INCOHERENT" not in _codes(env)
+
+
 def test_coherent_count_comparison_is_accepted() -> None:
     # A non-money (count) comparison is also coherently checkable: 6 → 4, Δ 2.
     def _count(mantissa: int) -> SourcedValue:

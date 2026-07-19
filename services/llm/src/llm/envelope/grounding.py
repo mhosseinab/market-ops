@@ -23,9 +23,11 @@ violation of the §12.2 response contract, then :func:`validate_grounding` raise
   (``COMPARISON_UNIT_MISMATCH``), the delta must be the EXACT integer left − right
   at that shared scale (``COMPARISON_DELTA_INCOHERENT``), each operand must name a
   kind-consistent entity (``COMPARISON_UNBOUND_ENTITY`` /
-  ``COMPARISON_ENTITY_MISMATCH``), and the claimed direction must agree with the
-  signed delta (``COMPARISON_RELATION_MISMATCH``) — so individually-present
-  numbers can never be recombined into a numerically false comparison.
+  ``COMPARISON_ENTITY_MISMATCH``), a temporal before/after must span two distinct
+  chronologically ordered capture instants (``COMPARISON_TIME_INCOHERENT``), and
+  the claimed direction must agree with the signed delta
+  (``COMPARISON_RELATION_MISMATCH``) — so individually-present numbers can never
+  be recombined into a numerically false comparison.
 * **CHAT-022** — every named state uses a canonical catalog key; an invented
   synonym is rejected (the key set is verified against the packages/locale
   catalog by a drift test).
@@ -47,6 +49,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from llm.envelope.contract import (
     ENGINE_PROVENANCES,
@@ -438,6 +441,24 @@ def _operand_scalar(value: SourcedValue) -> tuple[str, int] | None:
     return None
 
 
+def _parse_instant(raw: str) -> datetime | None:
+    """Parse an ISO-8601/RFC3339 capture timestamp to a UTC-aware instant.
+
+    Returns ``None`` if the string is not a parseable datetime — the caller then
+    fails closed (quarantine over inference, §4.6). Comparison is in instant/UTC
+    terms only: a tz-naive value is read as UTC and an offset-bearing value is
+    converted to UTC, so there is NO locale/calendar branch — only an absolute
+    instant on the timeline.
+    """
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 def _check_comparison_coherence(cmp: Comparison, where: str, out: list[Violation]) -> None:
     """Issue #55: bind and re-derive the comparison's whole provenance tuple.
 
@@ -446,8 +467,10 @@ def _check_comparison_coherence(cmp: Comparison, where: str, out: list[Violation
     repairs) any incoherent combination: mixed numeric kind/currency/exponent
     (COMPARISON_UNIT_MISMATCH), a delta that is not the exact integer left − right
     (COMPARISON_DELTA_INCOHERENT), an unbound or kind-inconsistent entity binding
-    (COMPARISON_UNBOUND_ENTITY / COMPARISON_ENTITY_MISMATCH), and a claimed
-    direction that disagrees with the signed delta (COMPARISON_RELATION_MISMATCH).
+    (COMPARISON_UNBOUND_ENTITY / COMPARISON_ENTITY_MISMATCH), a temporal reading
+    without two distinct ordered capture instants (COMPARISON_TIME_INCOHERENT),
+    and a claimed direction that disagrees with the signed delta
+    (COMPARISON_RELATION_MISMATCH).
     Details name only codes, positions, and categories — never a rejected number
     or entity string.
     """
@@ -480,6 +503,25 @@ def _check_comparison_coherence(cmp: Comparison, where: str, out: list[Violation
                 f"sides (§12.2 comparison provenance, #55)",
             )
         )
+
+    # TIME-AXIS coherence (TEMPORAL only): a before/after reading spans two
+    # DISTINCT instants in chronological order — before <= after. Identical or
+    # reversed instants make the trend degenerate; an unparseable instant cannot
+    # anchor the axis and fails closed. Non-temporal kinds keep the presence-only
+    # rule (CHAT-021, checked in _check_comparison). Details name codes/positions
+    # only — never the timestamp values (free-text containment §4.6).
+    if cmp.kind is ComparisonKind.TEMPORAL:
+        left_t = _parse_instant(cmp.left_captured_at)
+        right_t = _parse_instant(cmp.right_captured_at)
+        if left_t is None or right_t is None or left_t >= right_t:
+            out.append(
+                Violation(
+                    "COMPARISON_TIME_INCOHERENT",
+                    f"{where}: temporal before/after comparison lacks two distinct "
+                    f"chronologically ordered capture instants (§12.2 comparison "
+                    f"coherence, #55)",
+                )
+            )
 
     # UNIT/TYPE coherence: left, right, delta must all be authoritative numbers of
     # the SAME kind (money ⇒ identical currency AND exponent; or all counts).
