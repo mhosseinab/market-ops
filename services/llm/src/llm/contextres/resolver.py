@@ -279,7 +279,32 @@ _FIXED_PHRASES: dict[str, tuple[int, str]] = {
     "ماه گذشته": (30, "time.range.last_month"),
 }
 
+# Catalog keys for the "last N days" family (localization boundary — key strings
+# only; the fa-IR/en copy lives in the locale pack, never authored here).
+LABEL_RANGE_LAST_N_DAYS = "time.range.last_n_days"
+LABEL_RANGE_UNSPECIFIED = "time.range.unspecified"
+# A phrase that HAS the "last N days" shape but whose N is zero, out of the
+# supported bound, or a pathologically long digit run: a DISTINCT typed outcome
+# from ``unspecified`` (unrecognized phrase), so the response layer can treat it
+# as a bounded clarification/failure instead of a plausible-looking default.
+LABEL_RANGE_UNSUPPORTED = "time.range.unsupported"
+
+# The inclusive upper bound on a user-supplied relative-day window. A year is well
+# past the longest fixed phrase (last month = 30) and the deepest fixture
+# ("last 90 days"), and days_back = MAX-1 = 364 is trivially inside timedelta's
+# ~1e9-day limit, so int()/timedelta can never overflow once N passes this gate.
+MAX_RELATIVE_DAYS = 365
+# The most digits a supported N can have (``len("365") == 3``). Any longer digit
+# run is out of range BY CONSTRUCTION, so it is rejected on length BEFORE int() —
+# a run longer than Python 3.12's 4300-digit int↔str limit never reaches int().
+_MAX_RELATIVE_DAYS_DIGITS = len(str(MAX_RELATIVE_DAYS))
+
 # "last N days" / "N روز گذشته" / "N روز اخیر" — N captured after digit folding.
+# The digit run is captured verbatim (still bounded downstream): a non-anchored
+# search keeps embedded phrases matching, while numeric bounding lives in
+# :func:`_resolve_relative_days` so a huge or overlong N fails closed, never
+# crashes. The ``\d+`` is a simple, linear (non-nested) quantifier — no
+# catastrophic backtracking — and int() is guarded by length before conversion.
 _LAST_N_DAYS = re.compile(
     r"(?:last\s+(\d+)\s+days?"
     r"|past\s+(\d+)\s+days?"
@@ -288,11 +313,18 @@ _LAST_N_DAYS = re.compile(
 
 
 def resolve_time_range(phrase: str, now: str) -> TimeRange:
-    """Resolve a time phrase to an explicit range + as-of (§8.1). Pure.
+    """Resolve a time phrase to an explicit range + as-of (§8.1). Pure and TOTAL.
 
     ``now`` is the injected as-of clock (RFC 3339 UTC). Persian/Latin digits fold
     first (CHAT-081). An unrecognized phrase yields a single-day range anchored at
     ``now`` labelled ``time.range.unspecified`` — explicit, never an open range.
+
+    A "last N days" phrase whose N is zero, above :data:`MAX_RELATIVE_DAYS`, or a
+    pathologically long digit run fails closed as an explicit single-day range
+    labelled :data:`LABEL_RANGE_UNSUPPORTED` (PRD §4.6, quarantine-over-inference):
+    the bound is enforced BEFORE ``int()``/``timedelta``, so no user-controlled
+    relative-day phrase can raise ``ValueError``/``OverflowError`` or a date-range
+    error and 500 the turn.
     """
     as_of = _parse_rfc3339(now)
     folded = normalize_digits(phrase).strip().lower()
@@ -303,12 +335,29 @@ def resolve_time_range(phrase: str, now: str) -> TimeRange:
 
     match = _LAST_N_DAYS.search(folded)
     if match is not None:
-        n = int(next(g for g in match.groups() if g is not None))
-        # N days inclusive of today ⇒ window length N-1 days back, min 0.
-        return _range_ending_now(max(n - 1, 0), as_of, "time.range.last_n_days")
+        digits = next(g for g in match.groups() if g is not None)
+        return _resolve_relative_days(digits, as_of)
 
     # Unrecognized ⇒ explicit single-day range at as-of; never an open range.
-    return _range_ending_now(0, as_of, "time.range.unspecified")
+    return _range_ending_now(0, as_of, LABEL_RANGE_UNSPECIFIED)
+
+
+def _resolve_relative_days(digits: str, as_of: datetime) -> TimeRange:
+    """Bound a captured "last N days" digit run, then build its range. Pure.
+
+    Fails closed to :data:`LABEL_RANGE_UNSUPPORTED` for anything outside
+    ``1..MAX_RELATIVE_DAYS``. The length gate runs FIRST so an overlong run never
+    reaches ``int()`` (Python 3.12 caps int↔str at 4300 digits); the numeric gate
+    then keeps ``timedelta`` inside its limits. Only an in-range N builds a real
+    window, so ``int()``/``timedelta`` are never reached with an unsafe value.
+    """
+    if len(digits) > _MAX_RELATIVE_DAYS_DIGITS:
+        return _range_ending_now(0, as_of, LABEL_RANGE_UNSUPPORTED)
+    n = int(digits)
+    if n < 1 or n > MAX_RELATIVE_DAYS:
+        return _range_ending_now(0, as_of, LABEL_RANGE_UNSUPPORTED)
+    # N days inclusive of today ⇒ window length N-1 days back (n>=1 ⇒ >=0).
+    return _range_ending_now(n - 1, as_of, LABEL_RANGE_LAST_N_DAYS)
 
 
 def _range_ending_now(days_back: int, as_of: datetime, label_key: str) -> TimeRange:
