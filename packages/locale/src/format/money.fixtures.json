@@ -1,0 +1,77 @@
+{
+  "_comment": "Canonical Money conformance vectors shared by the TS formatter (packages/locale) and the Go core (services/core/internal/money). Value = mantissa × 10^exponent (PRD §9.1, never-cut MONEY CORRECTNESS). `rawDecimal` is the locale-independent exact decimal string with ASCII '-' and '.'. `expectedEn` is the `en`-locale grouped rendering produced by renderMoney (ASCII ',' grouping, '.' decimal, U+2212 minus). No floating point: bigint/string arithmetic only.",
+  "vectors": [
+    {
+      "name": "positive exponent scales up",
+      "mantissa": "12345",
+      "currency": "IRR",
+      "exponent": 2,
+      "rawDecimal": "1234500",
+      "expectedEn": "1,234,500"
+    },
+    {
+      "name": "large positive exponent scales up",
+      "mantissa": "12345",
+      "currency": "IRR",
+      "exponent": 3,
+      "rawDecimal": "12345000",
+      "expectedEn": "12,345,000"
+    },
+    {
+      "name": "negative exponent places decimal point",
+      "mantissa": "12345",
+      "currency": "IRR",
+      "exponent": -2,
+      "rawDecimal": "123.45",
+      "expectedEn": "123.45"
+    },
+    {
+      "name": "negative exponent left-pads fractional zeros",
+      "mantissa": "5",
+      "currency": "IRR",
+      "exponent": -2,
+      "rawDecimal": "0.05",
+      "expectedEn": "0.05"
+    },
+    {
+      "name": "exponent zero is unchanged",
+      "mantissa": "145000000",
+      "currency": "IRR",
+      "exponent": 0,
+      "rawDecimal": "145000000",
+      "expectedEn": "145,000,000"
+    },
+    {
+      "name": "exponent zero small value is unchanged",
+      "mantissa": "100",
+      "currency": "IRR",
+      "exponent": 0,
+      "rawDecimal": "100",
+      "expectedEn": "100"
+    },
+    {
+      "name": "negative mantissa exponent zero",
+      "mantissa": "-14100000",
+      "currency": "IRR",
+      "exponent": 0,
+      "rawDecimal": "-14100000",
+      "expectedEn": "−14,100,000"
+    },
+    {
+      "name": "negative mantissa negative exponent",
+      "mantissa": "-12345",
+      "currency": "IRR",
+      "exponent": -2,
+      "rawDecimal": "-123.45",
+      "expectedEn": "−123.45"
+    },
+    {
+      "name": "int64 max mantissa negative exponent proves bigint precision",
+      "mantissa": "9223372036854775807",
+      "currency": "IRR",
+      "exponent": -2,
+      "rawDecimal": "92233720368547758.07",
+      "expectedEn": "92,233,720,368,547,758.07"
+    }
+  ]
+}
