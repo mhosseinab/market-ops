@@ -185,6 +185,17 @@ export function renderOverlay(
     // ONLY once we have the real variantId (state.kind === "ready") — no
     // link is ever shown built from a guessed/wrong id.
     panel.appendChild(deepLinkChip(root.ownerDocument, view.variantId));
+
+    // EXT-008: an Event deep link to the market event this target is relevant
+    // to — rendered ONLY when the read seam supplied a real, tenant-authorized
+    // gateway `eventId` (view.relevantEventId). No event ⇒ no chip (honest
+    // absence, never a fabricated/guessed id, never a DK native id). Same
+    // ordinary-user-clicked <a target="_blank"> posture as the product chip,
+    // and the id space matches the SPA's `/event?eventId=` route exactly.
+    const eventId = view.relevantEventId;
+    if (eventId !== null && eventId.trim() !== "") {
+      panel.appendChild(eventLinkChip(root.ownerDocument, eventId));
+    }
   }
 
   // Action buttons are gated on capability === "ready" — Unknown (never
@@ -272,6 +283,20 @@ function deepLinkChip(doc: Document, variantId: string): HTMLAnchorElement {
   a.target = "_blank";
   a.rel = "noopener noreferrer";
   a.textContent = t("ext.deepLink.product");
+  return a;
+}
+
+// eventLinkChip builds the EXT-008 event deep link from the gateway-domain
+// eventId the read seam supplied — same user-clicked, new-tab, noopener posture
+// as the product chip. Never built from a DK native id or a guessed value (the
+// caller only reaches here with a real, non-empty tenant-authorized id).
+function eventLinkChip(doc: Document, eventId: string): HTMLAnchorElement {
+  const a = doc.createElement("a");
+  a.dataset.role = "deep-link-event";
+  a.href = buildDeepLink({ kind: "event", id: eventId });
+  a.target = "_blank";
+  a.rel = "noopener noreferrer";
+  a.textContent = t("ext.deepLink.event");
   return a;
 }
 

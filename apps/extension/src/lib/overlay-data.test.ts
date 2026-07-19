@@ -95,6 +95,21 @@ describe("overlay-data — EXT-005 rendered, never recomputed", () => {
     expect(view.lowestQualifying).toEqual({ kind: "none" });
   });
 
+  // EXT-008 — the relevant-event id is threaded through VERBATIM from the read
+  // seam; it is never derived from a DK native id and never fabricated.
+  it("threads the tenant-authorized relevantEventId through verbatim (gateway id space, not a DK native id)", () => {
+    const view = deriveOverlayView(target(), [], NOW, "gw-event-42");
+    expect(view.relevantEventId).toBe("gw-event-42");
+    // Never accidentally sourced from nativeProductId/nativeVariantId.
+    expect(view.relevantEventId).not.toBe(String(target().nativeProductId));
+    expect(view.relevantEventId).not.toBe(String(target().nativeVariantId));
+  });
+
+  it("defaults relevantEventId to null (honest absence) when the read seam supplies none", () => {
+    const view = deriveOverlayView(target(), [], NOW);
+    expect(view.relevantEventId).toBeNull();
+  });
+
   // Issue #157 — quarantine over inference (PRD §9.1 / §4.6). Raw prices carry a
   // validation-gated, un-canonicalized source unit; ordering across incompatible
   // units would fabricate a commercial ranking. The overlay must report the
@@ -206,6 +221,7 @@ describe("overlay-data — EXT-005 rendered, never recomputed", () => {
       lowestQualifying: { kind: "none" },
       freshness: null,
       quality: null,
+      relevantEventId: null,
     });
   });
 });

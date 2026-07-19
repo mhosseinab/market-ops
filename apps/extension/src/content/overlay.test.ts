@@ -34,6 +34,7 @@ function baseView(overrides: Partial<OverlayView> = {}): OverlayView {
     lowestQualifying: { kind: "none" },
     freshness: null,
     quality: null,
+    relevantEventId: null,
     ...overrides,
   };
 }
@@ -171,6 +172,44 @@ describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/c
     expect(root.querySelector('[data-role="deep-link-product"]')).toBeNull();
     renderOverlay(root, { kind: "unavailable" }, NO_ACTIONS, ctx());
     expect(root.querySelector('[data-role="deep-link-product"]')).toBeNull();
+  });
+
+  it("EXT-008: a target with a relevant event renders BOTH Product and Event links using gateway ids (/event?eventId=)", () => {
+    const view = baseView({ relevantEventId: "gw-event-xyz-9" });
+    const root = mountOverlay();
+    renderOverlay(root, { kind: "ready", view, history: null }, NO_ACTIONS, ctx());
+    const product = root.querySelector<HTMLAnchorElement>('[data-role="deep-link-product"]');
+    const event = root.querySelector<HTMLAnchorElement>('[data-role="deep-link-event"]');
+    expect(product).not.toBeNull();
+    expect(event).not.toBeNull();
+    expect(event?.getAttribute("href")).toMatch(/\/event\?eventId=gw-event-xyz-9$/);
+    // Registered authenticated route + safe new-tab posture.
+    expect(event?.target).toBe("_blank");
+    expect(event?.rel).toBe("noopener noreferrer");
+  });
+
+  it("EXT-008: missing/empty relevant event omits the Event chip WITHOUT fabrication — product-only stays correct", () => {
+    const root = mountOverlay();
+    // No event id → no event chip, product chip still present.
+    renderOverlay(root, { kind: "ready", view: baseView(), history: null }, NO_ACTIONS, ctx());
+    expect(root.querySelector('[data-role="deep-link-product"]')).not.toBeNull();
+    expect(root.querySelector('[data-role="deep-link-event"]')).toBeNull();
+    // A blank/whitespace id is treated as absence (never a fabricated link).
+    renderOverlay(
+      root,
+      { kind: "ready", view: baseView({ relevantEventId: "   " }), history: null },
+      NO_ACTIONS,
+      ctx(),
+    );
+    expect(root.querySelector('[data-role="deep-link-event"]')).toBeNull();
+  });
+
+  it("EXT-008: NEVER renders an Event chip before ready (pending/unavailable) — no event link built from no data", () => {
+    const root = mountOverlay();
+    renderOverlay(root, { kind: "pending" }, NO_ACTIONS, ctx());
+    expect(root.querySelector('[data-role="deep-link-event"]')).toBeNull();
+    renderOverlay(root, { kind: "unavailable" }, NO_ACTIONS, ctx());
+    expect(root.querySelector('[data-role="deep-link-event"]')).toBeNull();
   });
 
   it("EXT-006: a gap-preserving history renders EVERY segment with an EXPLICIT gap marker between them — no fabricated point", () => {

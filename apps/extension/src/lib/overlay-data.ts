@@ -65,6 +65,13 @@ export interface OverlayView {
   readonly lowestQualifying: LowestQualifying;
   readonly freshness: FreshnessBucket | null;
   readonly quality: components["schemas"]["ObservedOffer"]["quality"] | null;
+  // EXT-008: the gateway-domain id of the market EVENT this target is currently
+  // relevant to, when the server reports one — the SAME `eventId` space the
+  // SPA's `/event?eventId=` route resolves against. `null` when there is no
+  // relevant event, so the overlay renders NO event chip (honest absence). This
+  // is NEVER derived from a DK native id and NEVER guessed; it is only the
+  // tenant-authorized id the overlay read seam supplies (see overlay-read.ts).
+  readonly relevantEventId: string | null;
 }
 
 const QUALIFYING_AVAILABILITY = new Set(["in_stock", "limited"]);
@@ -84,6 +91,13 @@ export function deriveOverlayView(
   target: ObservationTarget,
   allOffers: readonly ObservedOffer[],
   nowMs: number,
+  // The tenant-authorized relevant-event id the read seam supplied for this
+  // target, or null when there is none (EXT-008). Passed through VERBATIM —
+  // never derived from a DK native id, never fabricated — so the event deep
+  // link resolves against the SAME gateway id space as the SPA. Defaults to
+  // null (honest absence) so callers that have no event id render no event
+  // chip.
+  relevantEventId: string | null = null,
 ): OverlayView {
   const offers = allOffers.filter((o) => o.targetId === target.id && !o.endedAt);
   const sellerIds = new Set(offers.map((o) => o.nativeSellerId).filter((s): s is string => !!s));
@@ -104,6 +118,7 @@ export function deriveOverlayView(
     lowestQualifying,
     freshness: primary ? freshnessBucketOf(primary, nowMs) : null,
     quality: primary?.quality ?? null,
+    relevantEventId,
   };
 }
 
