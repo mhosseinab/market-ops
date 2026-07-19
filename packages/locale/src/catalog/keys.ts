@@ -118,6 +118,18 @@ export const MESSAGE_KEYS = [
   "state.degraded.title",
   "state.degraded.body",
 
+  // Shared mutation-error surface (issue #82): a failed state-changing request is
+  // localized on its HTTP status class; the machine requestId aids correlation.
+  "mutationError.title.badRequest",
+  "mutationError.title.unauthorized",
+  "mutationError.title.forbidden",
+  "mutationError.title.conflict",
+  "mutationError.title.server",
+  "mutationError.title.generic",
+  "mutationError.requestId",
+  "mutationError.retry",
+  "mutationError.dismiss",
+
   // Chat dock footnote (free text never executes)
   "chat.footnote",
 
@@ -243,6 +255,8 @@ export const MESSAGE_KEYS = [
   "onboarding.connect.submit",
   "onboarding.connect.error",
   "onboarding.refresh.error",
+  "onboarding.disconnect.error",
+  "onboarding.sync.error",
   "onboarding.action.refresh",
   "onboarding.action.reconnect",
   "onboarding.action.disconnect",
@@ -364,6 +378,9 @@ export const MESSAGE_KEYS = [
   "cost.confirm",
   "cost.duplicateBlock",
   "cost.committed",
+  "cost.preview.error",
+  "cost.commit.error",
+  "cost.single.error",
   "disposition.accept",
   "disposition.reject",
   "disposition.duplicate",
@@ -398,6 +415,7 @@ export const MESSAGE_KEYS = [
   "needsReview.evidence.version",
   "needsReview.note.label",
   "needsReview.selectHint",
+  "needsReview.decision.error",
 
   // Generic filter
   "filter.all",

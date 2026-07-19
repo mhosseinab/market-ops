@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocale, useT } from "../app/i18n";
 import { type Column, DataTable } from "../components/DataTable";
 import { LtrToken } from "../components/LtrToken";
+import { MutationError } from "../components/MutationError";
 import { Section } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
 import { formatCount } from "../data/format";
@@ -25,9 +26,22 @@ export function NeedsReview() {
   const items = query.data?.items ?? [];
   const selected = items.find((i) => i.identityId === selectedId);
 
+  // At most one decision runs at a time; surface whichever failed. The note is a
+  // free-text field, not authority — but it IS the reviewer's input, so it is
+  // preserved on failure (cleared only once the decision is recorded).
+  const failed = confirm.isError ? confirm : reject.isError ? reject : defer.isError ? defer : null;
+
   function decide(fn: typeof confirm, identityId: string) {
-    fn.mutate({ identityId, ...(note.trim() ? { note: note.trim() } : {}) });
-    setNote("");
+    fn.mutate(
+      { identityId, ...(note.trim() ? { note: note.trim() } : {}) },
+      { onSuccess: () => setNote("") },
+    );
+  }
+
+  function dismissDecisionError() {
+    confirm.reset();
+    reject.reset();
+    defer.reset();
   }
 
   const columns: readonly Column<NeedsReviewItem>[] = [
@@ -76,6 +90,17 @@ export function NeedsReview() {
         isEmpty={items.length === 0}
         onRetry={() => void query.refetch()}
       >
+        {/* A quarantined identity only moves on a structured decision; a failed
+            decision is surfaced with the note preserved. The row's own
+            confirm/reject/defer controls remain the explicit re-decision path. */}
+        {failed ? (
+          <MutationError
+            testId="decision-error"
+            error={failed.error}
+            guidanceKey="needsReview.decision.error"
+            onDismiss={dismissDecisionError}
+          />
+        ) : null}
         <div className="split">
           <div className="split__main">
             <DataTable

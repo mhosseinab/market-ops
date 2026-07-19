@@ -108,6 +108,16 @@ export const en: Catalog = {
   "state.degraded.title": "Limited mode",
   "state.degraded.body": "Assistant unavailable; structured screens remain active.",
 
+  "mutationError.title.badRequest": "The request could not be processed",
+  "mutationError.title.unauthorized": "Your session has expired",
+  "mutationError.title.forbidden": "You do not have permission for this action",
+  "mutationError.title.conflict": "This no longer matches the current state",
+  "mutationError.title.server": "The service could not complete this request",
+  "mutationError.title.generic": "The request failed",
+  "mutationError.requestId": "Reference id:",
+  "mutationError.retry": "Try again",
+  "mutationError.dismiss": "Dismiss",
+
   "chat.footnote": "Approval only via a structured control; free text never executes.",
 
   "chat.title": "Assistant",
@@ -216,6 +226,9 @@ export const en: Catalog = {
   "onboarding.connect.submit": "Connect",
   "onboarding.connect.error": "Reconnecting failed. Check the authorization code and try again.",
   "onboarding.refresh.error": "Re-probing capabilities failed. Please try again.",
+  "onboarding.disconnect.error":
+    "Disconnecting failed. The connection is unchanged; you can try again.",
+  "onboarding.sync.error": "Starting the catalog sync failed. You can try again.",
   "onboarding.action.refresh": "Re-probe capabilities",
   "onboarding.action.reconnect": "Reconnect",
   "onboarding.action.disconnect": "Disconnect",
@@ -338,6 +351,10 @@ export const en: Catalog = {
   "cost.confirm": "Confirm {count} valid rows",
   "cost.duplicateBlock": "{count} duplicate rows must be resolved before confirm.",
   "cost.committed": "{count} rows committed.",
+  "cost.preview.error": "Previewing the file failed. Your file is kept; you can try again.",
+  "cost.commit.error":
+    "The commit did not complete and its outcome is unknown. Re-run the preview to see the current state before committing again.",
+  "cost.single.error": "Recording the value failed. Your entry is kept; check it and submit again.",
   "disposition.accept": "Matched",
   "disposition.reject": "Error",
   "disposition.duplicate": "Duplicate",
@@ -371,6 +388,8 @@ export const en: Catalog = {
   "needsReview.evidence.version": "Version",
   "needsReview.note.label": "Reviewer note (optional)",
   "needsReview.selectHint": "Select a row to see its evidence.",
+  "needsReview.decision.error":
+    "The decision was not recorded. Your note is kept; you can try again.",
 
   "filter.all": "All",
 

@@ -1,9 +1,12 @@
 import { DEFAULT_LOCALE, faIR } from "@market-ops/locale";
 import { QueryClient } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import { Providers } from "../app/Providers";
 import { ACCOUNT_ID } from "../test/msw/fixtures";
+import { BASE } from "../test/msw/handlers";
+import { server } from "../test/msw/server";
 import { NeedsReview } from "./NeedsReview";
 
 afterEach(() => {
@@ -41,5 +44,37 @@ describe("Needs Review queue (journey 4)", () => {
     expect(within(aside).queryByText("8,842,213")).toBeNull();
     // The evidence panel title resolved through the catalog.
     expect(within(aside).getByText(faIR["needsReview.evidence.title"])).toBeInTheDocument();
+  });
+
+  it("surfaces a decision failure and PRESERVES the reviewer note (#82)", async () => {
+    server.use(
+      http.post(`${BASE}/identity/confirm`, () =>
+        HttpResponse.json({ code: "CONFLICT", requestId: "req-id" }, { status: 409 }),
+      ),
+    );
+    renderNeedsReview();
+
+    const skuCell = await screen.findByText("DKP-8842213");
+    fireEvent.click(skuCell);
+
+    // Type a reviewer note, then confirm (which fails).
+    const aside = document.querySelector(".split__aside") as HTMLElement;
+    const note = within(aside).getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(note, { target: { value: "matches the DK listing" } });
+    fireEvent.click(screen.getByText(faIR["needsReview.confirm"]));
+
+    // The failure is surfaced (not silent) with the 409 title + guidance.
+    await screen.findByTestId("decision-error");
+    expect(screen.getByText(faIR["mutationError.title.conflict"])).toBeInTheDocument();
+    expect(screen.getByText(faIR["needsReview.decision.error"])).toBeInTheDocument();
+
+    // Input preserved (acceptance): the note is NOT cleared on failure.
+    expect((within(aside).getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "matches the DK listing",
+    );
+
+    // Dismiss clears just this error; the row controls remain the recovery path.
+    fireEvent.click(screen.getByTestId("decision-error-dismiss"));
+    await waitFor(() => expect(screen.queryByTestId("decision-error")).toBeNull());
   });
 });

@@ -107,6 +107,16 @@ export const faIR: Catalog = {
   "state.degraded.title": "حالت محدود",
   "state.degraded.body": "دستیار در دسترس نیست؛ صفحه‌های ساختاریافته فعال‌اند.",
 
+  "mutationError.title.badRequest": "درخواست قابل پردازش نبود",
+  "mutationError.title.unauthorized": "نشست شما منقضی شده است",
+  "mutationError.title.forbidden": "برای این اقدام دسترسی ندارید",
+  "mutationError.title.conflict": "این با وضعیت فعلی هم‌خوان نیست",
+  "mutationError.title.server": "سرویس نتوانست این درخواست را کامل کند",
+  "mutationError.title.generic": "درخواست ناموفق بود",
+  "mutationError.requestId": "شناسه پیگیری:",
+  "mutationError.retry": "تلاش دوباره",
+  "mutationError.dismiss": "بستن",
+
   "chat.footnote": "تایید فقط با کنترل ساختاریافته؛ متن آزاد اجرا نمی‌کند.",
 
   "chat.title": "دستیار",
@@ -215,6 +225,9 @@ export const faIR: Catalog = {
   "onboarding.connect.submit": "اتصال",
   "onboarding.connect.error": "اتصال دوباره ناموفق بود. کد مجوز را بررسی کنید و دوباره تلاش کنید.",
   "onboarding.refresh.error": "بازبررسی قابلیت‌ها ناموفق بود. لطفاً دوباره تلاش کنید.",
+  "onboarding.disconnect.error":
+    "قطع اتصال ناموفق بود. اتصال بدون تغییر است؛ می‌توانید دوباره تلاش کنید.",
+  "onboarding.sync.error": "شروع همگام‌سازی فهرست کالا ناموفق بود. می‌توانید دوباره تلاش کنید.",
   "onboarding.action.refresh": "بازبررسی قابلیت‌ها",
   "onboarding.action.reconnect": "اتصال دوباره",
   "onboarding.action.disconnect": "قطع اتصال",
@@ -336,6 +349,12 @@ export const faIR: Catalog = {
   "cost.confirm": "تایید {count} ردیف معتبر",
   "cost.duplicateBlock": "{count} ردیف تکراری پیش از تایید باید رفع شود.",
   "cost.committed": "{count} ردیف ثبت شد.",
+  "cost.preview.error":
+    "پیش‌نمایش فایل ناموفق بود. فایل شما حفظ شده است؛ می‌توانید دوباره تلاش کنید.",
+  "cost.commit.error":
+    "ثبت کامل نشد و نتیجه‌اش نامشخص است. پیش از ثبت دوباره، پیش‌نمایش را دوباره اجرا کنید تا وضعیت فعلی را ببینید.",
+  "cost.single.error":
+    "ثبت مقدار ناموفق بود. ورودی شما حفظ شده است؛ آن را بررسی و دوباره ثبت کنید.",
   "disposition.accept": "نگاشته‌شده",
   "disposition.reject": "خطا",
   "disposition.duplicate": "تکراری",
@@ -369,6 +388,8 @@ export const faIR: Catalog = {
   "needsReview.evidence.version": "نسخه",
   "needsReview.note.label": "یادداشت بازبین (اختیاری)",
   "needsReview.selectHint": "برای دیدن شواهد، یک ردیف را انتخاب کنید.",
+  "needsReview.decision.error":
+    "تصمیم ثبت نشد. یادداشت شما حفظ شده است؛ می‌توانید دوباره تلاش کنید.",
 
   "filter.all": "همه",
 
