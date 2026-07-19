@@ -20,6 +20,7 @@ from llm.envelope.models import (
     RawEvidenceValue,
     StreamEventKind,
 )
+from llm.orchestrator.graph import envelope_from_structured
 from pydantic import ValidationError
 
 _MANTISSA_WIRE = re.compile(r"^-?[0-9]+$")
@@ -145,24 +146,50 @@ def test_money_rejects_out_of_int64_range_mantissa() -> None:
             Money.model_validate({"mantissa": bad, "currency": "IRR"})
 
 
-def test_chat_stream_final_frame_carries_string_mantissa() -> None:
+@pytest.mark.parametrize(
+    "mantissa",
+    [
+        _ABOVE_2_53,  # 9007199254740993 — the classic JS-number rounding case
+        _INT64_MAX,  # 9223372036854775807
+        _INT64_MIN,  # -9223372036854775808
+        -_ABOVE_2_53,
+        0,
+    ],
+)
+def test_chat_stream_final_frame_carries_string_mantissa(mantissa: int) -> None:
     """The SSE ``final`` frame delivered to web has a string mantissa.
 
-    This is the boundary #73 protects: web does ``JSON.parse`` on this frame.
+    This exercises the REAL production seam, not a hand-applied JSON-mode dump:
+    :func:`envelope_from_structured` is exactly what ``graph.py`` uses to build
+    the ``answer`` dict, and ``app.py`` wraps that dict verbatim in a
+    ``ChatStreamEvent(kind=FINAL, envelope=...)`` and calls ``to_sse``. If the
+    helper dumped in Python mode (as production did before #73's real fix), the
+    int ``mantissa`` re-serializes here as a JSON NUMBER — the #73 defect web
+    ``JSON.parse`` rounds. The assertion below tracks production and fails closed
+    on any non-string / non-decimal mantissa.
     """
-    answer = AssistantAnswer(
+    structured = AssistantAnswer(
         summary="lowest qualifying offer",
-        amounts=[Money(mantissa=_ABOVE_2_53, currency="IRR", exponent=0)],
+        amounts=[Money(mantissa=mantissa, currency="IRR", exponent=0)],
     )
+    # Identical to graph.py: structured -> JSON-safe envelope dict.
+    answer = envelope_from_structured(structured)
+    # Identical to app.py: wrap the dict verbatim and emit the SSE final frame.
     event = ChatStreamEvent(
         kind=StreamEventKind.FINAL,
         conversation_id="c-1",
-        envelope=answer.model_dump(mode="json"),
+        envelope=answer,
     )
     frame = event.to_sse()
     assert frame.startswith("data: ")
     assert frame.endswith("\n\n")
     payload = json.loads(frame[len("data: ") : -2])
-    mantissa = payload["envelope"]["amounts"][0]["mantissa"]
-    assert isinstance(mantissa, str)
-    assert mantissa == str(_ABOVE_2_53)
+    wire_mantissa = payload["envelope"]["amounts"][0]["mantissa"]
+    # What web's JSON.parse observes on this exact frame: a string, never a
+    # (lossy) JSON number, and never a float/bool.
+    assert isinstance(wire_mantissa, str)
+    assert not isinstance(wire_mantissa, bool)
+    assert _MANTISSA_WIRE.fullmatch(wire_mantissa)
+    assert wire_mantissa == str(mantissa)
+    # Round-trips back to the exact int64 with no precision loss.
+    assert int(wire_mantissa) == mantissa
