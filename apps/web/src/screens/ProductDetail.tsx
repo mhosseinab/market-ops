@@ -14,6 +14,7 @@ import {
 import { LtrToken } from "../components/LtrToken";
 import { MoneyView } from "../components/MoneyView";
 import { Section } from "../components/primitives";
+import { SectionError } from "../components/SectionError";
 import { ViewState } from "../components/ViewState";
 import { formatCount, formatInstant } from "../data/format";
 import { freshnessState } from "../data/freshness";
@@ -234,7 +235,14 @@ export function ProductDetail() {
               </Section>
 
               <Section titleKey="product.contribution.title">
-                {readiness?.state === "complete" ? (
+                {readinessQuery.isError ? (
+                  <SectionError
+                    titleKey="product.readiness.error.title"
+                    bodyKey="product.readiness.error.body"
+                    testId="product-contribution-error"
+                    onRetry={() => void readinessQuery.refetch()}
+                  />
+                ) : readiness?.state === "complete" ? (
                   <p className="muted">{t("common.notAvailable")}</p>
                 ) : (
                   <p className="muted">{t("product.contribution.placeholder")}</p>
@@ -242,7 +250,14 @@ export function ProductDetail() {
               </Section>
 
               <Section titleKey="product.section.readiness">
-                {readiness ? (
+                {readinessQuery.isError ? (
+                  <SectionError
+                    titleKey="product.readiness.error.title"
+                    bodyKey="product.readiness.error.body"
+                    testId="product-readiness-error"
+                    onRetry={() => void readinessQuery.refetch()}
+                  />
+                ) : readiness ? (
                   <>
                     <ReadinessBadge state={readiness.state} />
                     {readiness.missingComponents.length > 0 ? (
@@ -277,26 +292,35 @@ export function ProductDetail() {
             </div>
 
             <Section titleKey="product.section.costs">
-              <ul className="cost-list">
-                {COST_COMPONENTS.map((component) => {
-                  const profile = profileByComponent.get(component);
-                  return (
-                    <li key={component} className="cost-list__item">
-                      <span className="cost-list__name">{t(COMPONENT_LABEL[component])}</span>
-                      {profile ? (
-                        <>
-                          <MoneyView amount={profile.amount} />
-                          <span className="muted">
-                            {t("product.cost.version", { version: profile.version })}
-                          </span>
-                        </>
-                      ) : (
-                        <span className="muted">{t("product.cost.notRecorded")}</span>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
+              {profilesQuery.isError ? (
+                <SectionError
+                  titleKey="product.cost.error.title"
+                  bodyKey="product.cost.error.body"
+                  testId="product-cost-error"
+                  onRetry={() => void profilesQuery.refetch()}
+                />
+              ) : (
+                <ul className="cost-list">
+                  {COST_COMPONENTS.map((component) => {
+                    const profile = profileByComponent.get(component);
+                    return (
+                      <li key={component} className="cost-list__item">
+                        <span className="cost-list__name">{t(COMPONENT_LABEL[component])}</span>
+                        {profile ? (
+                          <>
+                            <MoneyView amount={profile.amount} />
+                            <span className="muted">
+                              {t("product.cost.version", { version: profile.version })}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="muted">{t("product.cost.notRecorded")}</span>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
             </Section>
 
             <Section
@@ -307,7 +331,17 @@ export function ProductDetail() {
                 </AppLink>
               }
             >
-              {latestObservation ? (
+              {targetsQuery.isError || observationsQuery.isError ? (
+                <SectionError
+                  titleKey="product.diagnostics.error.title"
+                  bodyKey="product.diagnostics.error.body"
+                  testId="product-diagnostics-error"
+                  onRetry={() => {
+                    void targetsQuery.refetch();
+                    void observationsQuery.refetch();
+                  }}
+                />
+              ) : latestObservation ? (
                 <dl className="kv">
                   <div className="kv__row">
                     <span>{t("product.diagnostics.observedField")}</span>

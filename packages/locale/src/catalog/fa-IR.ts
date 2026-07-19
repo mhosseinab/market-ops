@@ -288,6 +288,15 @@ export const faIR: Catalog = {
   "product.stock.noSignal": "بدون سیگنال موجودی",
   "product.cost.notRecorded": "ثبت‌نشده",
   "product.cost.version": "نسخهٔ {version}",
+  "product.readiness.error.title": "آمادگی حاشیه بارگذاری نشد",
+  "product.readiness.error.body":
+    "این درخواست ناموفق بود — آمادگی تا زمان بارگذاری نمایش داده نمی‌شود. برای بارگذاری دوباره تلاش کنید.",
+  "product.cost.error.title": "پروفایل بها بارگذاری نشد",
+  "product.cost.error.body":
+    "این درخواست ناموفق بود — اجزای بها تا زمان بارگذاری نمایش داده نمی‌شوند. برای بارگذاری دوباره تلاش کنید.",
+  "product.diagnostics.error.title": "تشخیص‌ها بارگذاری نشدند",
+  "product.diagnostics.error.body":
+    "این درخواست ناموفق بود — تشخیص‌ها تا زمان بارگذاری نمایش داده نمی‌شوند. برای بارگذاری دوباره تلاش کنید.",
   "product.readiness.missingList": "اجزای فاقد بها",
   "product.readiness.staleList": "اجزای قدیمی",
   "product.diagnostics.observedField": "میدان مشاهده‌شده",
