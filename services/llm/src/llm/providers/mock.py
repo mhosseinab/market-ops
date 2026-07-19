@@ -21,11 +21,16 @@ on it (§12.4, no silent truncation).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+import asyncio
+import json
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.callbacks import (
+    AsyncCallbackManagerForLLMRun,
+    CallbackManagerForLLMRun,
+)
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
@@ -54,6 +59,19 @@ class MockScript:
     # containment test drives the actual message through classification. Never
     # used with a real endpoint (the model classifies for real there).
     intent_classifier: Callable[[str], str] | None = None
+    # Natural-language content chunks streamed (as ``AIMessageChunk`` content)
+    # BEFORE the terminal structured tool call, modelling a provider that streams
+    # its answer token-by-token (#23). Empty ⇒ no incremental content. These are
+    # free-text tokens ONLY — the structured Money-bearing answer rides the
+    # terminal tool-call chunk, never a reconstructed number in a token.
+    stream_chunks: tuple[str, ...] = ()
+    # Async delay before EACH streamed chunk (seconds). Lets a test prove a token
+    # is delivered while the run is still in flight (progressive delivery).
+    chunk_delay_seconds: float = 0.0
+    # Optional observability hook: a mutable list the async stream appends to per
+    # emitted content chunk, so a cancellation test can prove upstream emission
+    # stopped after the consumer disconnected. Not part of the model contract.
+    emit_counter: list[int] | None = None
 
 
 class MockChatModel(BaseChatModel):
@@ -102,10 +120,7 @@ class MockChatModel(BaseChatModel):
     def _response_args(self, messages: list[BaseMessage] | None) -> dict[str, Any]:
         """The structured response args, content-derived for intent when configured."""
         s = self.script
-        if (
-            s.response_tool_name == "IntentClassification"
-            and s.intent_classifier is not None
-        ):
+        if s.response_tool_name == "IntentClassification" and s.intent_classifier is not None:
             text = _last_human_text(messages)
             return {"intent": s.intent_classifier(text), "rationale": "mock-keyword"}
         return s.response_args
@@ -127,6 +142,58 @@ class MockChatModel(BaseChatModel):
         )
         return ChatResult(generations=[generation])
 
+    def _content_chunks(self) -> tuple[str, ...]:
+        """The natural-language content chunks to stream before the terminal chunk."""
+        s = self.script
+        if s.stream_chunks:
+            return s.stream_chunks
+        if s.mode == "say":
+            return tuple(word + " " for word in s.content.split(" "))
+        return ()
+
+    def _terminal_chunk(self, messages: list[BaseMessage] | None) -> ChatGenerationChunk:
+        """The final streamed chunk: carries the tool call (answer/loop) + metadata.
+
+        Streaming a structured answer means the response-schema tool call rides a
+        ``tool_call_chunks`` entry (empty text content), so the token stream never
+        contains the Money-bearing args as free text (#73, §9.1). ``finish_reason``
+        rides ``response_metadata`` so the token-ceiling guard fails closed on a
+        truncated streamed completion exactly as it does on a buffered one (§12.4).
+        """
+        s = self.script
+        metadata = {"finish_reason": s.finish_reason} if s.finish_reason is not None else {}
+        if s.mode == "answer":
+            args = json.dumps(self._response_args(messages))
+            return ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    id="mock-stream",
+                    tool_call_chunks=[
+                        {
+                            "name": s.response_tool_name,
+                            "args": args,
+                            "id": "mock-answer",
+                            "index": 0,
+                        }
+                    ],
+                    response_metadata=metadata,
+                )
+            )
+        if s.mode == "loop_tool":
+            return ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    id="mock-stream",
+                    tool_call_chunks=[
+                        {"name": s.loop_tool_name, "args": "{}", "id": "mock-loop", "index": 0}
+                    ],
+                    response_metadata=metadata,
+                )
+            )
+        return ChatGenerationChunk(
+            message=AIMessageChunk(content="", id="mock-stream", response_metadata=metadata)
+        )
+
     def _stream(
         self,
         messages: list[BaseMessage],
@@ -134,14 +201,31 @@ class MockChatModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> Iterator[ChatGenerationChunk]:
-        # Stream the plain content word-by-word for the "say" script; other
-        # scripts fall back to a single non-streaming chunk.
-        if self.script.mode == "say":
-            for word in self.script.content.split(" "):
-                yield ChatGenerationChunk(message=AIMessageChunk(content=word + " "))
-            return
-        content = self._ai_message(messages).content
-        yield ChatGenerationChunk(message=AIMessageChunk(content=content))
+        for chunk in self._content_chunks():
+            yield ChatGenerationChunk(message=AIMessageChunk(content=chunk, id="mock-stream"))
+        yield self._terminal_chunk(messages)
+
+    async def _astream(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: AsyncCallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[ChatGenerationChunk]:
+        """Async token streaming — the path the graph's ``astream`` drives (#23).
+
+        Natural-language content chunks are emitted incrementally (with an optional
+        per-chunk delay so a test can observe a token mid-run), then the terminal
+        tool-call / metadata chunk closes the completion.
+        """
+        s = self.script
+        for chunk in self._content_chunks():
+            if s.chunk_delay_seconds:
+                await asyncio.sleep(s.chunk_delay_seconds)
+            if s.emit_counter is not None:
+                s.emit_counter.append(1)
+            yield ChatGenerationChunk(message=AIMessageChunk(content=chunk, id="mock-stream"))
+        yield self._terminal_chunk(messages)
 
 
 def _last_human_text(messages: list[BaseMessage] | None) -> str:

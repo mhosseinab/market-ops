@@ -8,21 +8,26 @@ from the shared registry (the single source), produces a typed output via
 * a **per-tool** ``ToolCallLimitMiddleware`` for every registry tool,
   each with ``exit_behavior="error"`` so exceeding a limit raises
   ``ToolCallLimitExceededError``;
-* a **per-tool timeout** (``wrap_tool_call``) that raises
-  :class:`ToolTimeoutError` when a single tool exceeds
+* a **per-tool timeout** (:class:`PerToolTimeoutMiddleware`, wrapping tool calls)
+  that raises :class:`ToolTimeoutError` when a single tool exceeds
   ``settings.per_tool_timeout_seconds``; and
-* a **token-ceiling guard** (``wrap_model_call``) that raises
-  :class:`TokenCeilingError` when a completion is truncated at the token ceiling
-  (``finish_reason == "length"``) — no silent truncation.
+* a **token-ceiling guard** (:class:`TokenCeilingMiddleware`, wrapping model
+  calls) that raises :class:`TokenCeilingError` when a completion is truncated at
+  the token ceiling (``finish_reason == "length"``) — no silent truncation.
 
-Every one of these maps in the graph to the §12.4 structured failure. Nothing
-here ever approves/executes; the terminal write is at most a Draft, and approval
-is never a graph interrupt.
+Both custom middlewares implement the SYNC and ASYNC hooks (``wrap_*_call`` and
+``awrap_*_call``) so the §12.4 bounds hold identically whether the turn is
+invoked (buffered) or streamed asynchronously (``astream`` — the #23 token
+path). Every one of these maps in the graph to the §12.4 structured failure.
+Nothing here ever approves/executes; the terminal write is at most a Draft, and
+approval is never a graph interrupt.
 """
 
 from __future__ import annotations
 
+import asyncio
 import concurrent.futures
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -30,8 +35,6 @@ from langchain.agents import create_agent
 from langchain.agents.middleware import (
     AgentMiddleware,
     ToolCallLimitMiddleware,
-    wrap_model_call,
-    wrap_tool_call,
 )
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -60,44 +63,75 @@ class TokenCeilingError(Exception):
     """
 
 
-def _build_per_tool_timeout_middleware(timeout_seconds: float) -> AgentMiddleware:
-    """A ``wrap_tool_call`` middleware enforcing a per-tool wall-clock timeout.
+class PerToolTimeoutMiddleware(AgentMiddleware[Any, Any, Any]):
+    """Enforce a per-tool wall-clock timeout on BOTH the sync and async paths.
 
-    The tool runs on a worker thread; if it does not finish within
-    ``timeout_seconds`` the middleware stops waiting and raises
-    :class:`ToolTimeoutError`. The worker is abandoned (``wait=False``) — a hung
-    tool cannot hold the turn open — and the error becomes the §12.4 failure.
+    The sync path (``invoke``/``stream``) runs the tool on a worker thread and
+    abandons it (``wait=False``) if it overruns; the async path
+    (``ainvoke``/``astream`` — the #23 token-streaming path) wraps the awaited
+    handler in :func:`asyncio.wait_for`. Either way an overrun raises
+    :class:`ToolTimeoutError`, which the graph maps to the ``TOOL_TIMEOUT`` §12.4
+    structured failure so a hung tool never holds a turn open. Implementing both
+    hooks is required: a sync-only middleware raises ``NotImplementedError`` the
+    moment the agent is streamed asynchronously.
     """
 
-    @wrap_tool_call(name="PerToolTimeoutMiddleware")
-    def per_tool_timeout(request: Any, handler: Any) -> Any:  # noqa: ANN401
+    tools: list[Any] = []  # noqa: RUF012 - framework reads middleware.tools
+
+    def __init__(self, timeout_seconds: float) -> None:
+        super().__init__()
+        self._timeout_seconds = timeout_seconds
+
+    def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:  # noqa: ANN401
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = executor.submit(handler, request)
         try:
-            return future.result(timeout=timeout_seconds)
+            return future.result(timeout=self._timeout_seconds)
         except concurrent.futures.TimeoutError as exc:
-            name = request.tool_call.get("name", "<unknown>")
-            raise ToolTimeoutError(
-                f"tool {name!r} exceeded the {timeout_seconds}s per-tool timeout (§12.4)"
-            ) from exc
+            raise self._timeout_error(request) from exc
         finally:
             # Do NOT block on a runaway tool; the turn is already failing closed.
             executor.shutdown(wait=False)
 
-    return per_tool_timeout
+    async def awrap_tool_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:  # noqa: ANN401
+        try:
+            return await asyncio.wait_for(handler(request), timeout=self._timeout_seconds)
+        except TimeoutError as exc:  # asyncio.wait_for raises the builtin TimeoutError
+            # The abandoned coroutine/executor task is left to unwind on its own;
+            # the turn is already failing closed, exactly like the sync path.
+            raise self._timeout_error(request) from exc
+
+    def _timeout_error(self, request: Any) -> ToolTimeoutError:  # noqa: ANN401
+        name = request.tool_call.get("name", "<unknown>")
+        return ToolTimeoutError(
+            f"tool {name!r} exceeded the {self._timeout_seconds}s per-tool timeout (§12.4)"
+        )
 
 
-def _build_token_ceiling_middleware() -> AgentMiddleware:
-    """A ``wrap_model_call`` middleware that fails closed on truncated output.
+class TokenCeilingMiddleware(AgentMiddleware[Any, Any, Any]):
+    """Fail closed on a completion truncated at the token ceiling (sync + async).
 
-    Inspects every message a model call returns; a ``finish_reason == "length"``
-    means the provider hit ``max_output_tokens`` and cut the completion, so we
-    raise :class:`TokenCeilingError` instead of relaying a truncated answer.
+    A ``finish_reason == "length"`` means the provider hit ``max_output_tokens``
+    and cut the completion; relaying it as if complete would be a silent
+    truncation (§12.4), so both hooks raise :class:`TokenCeilingError`. Both are
+    implemented so the guard holds identically whether the turn is invoked
+    (buffered) or streamed asynchronously (#23).
     """
 
-    @wrap_model_call(name="TokenCeilingMiddleware")
-    def token_ceiling(request: Any, handler: Any) -> Any:  # noqa: ANN401
+    tools: list[Any] = []  # noqa: RUF012 - framework reads middleware.tools
+
+    def wrap_model_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:  # noqa: ANN401
         response = handler(request)
+        self._check(response)
+        return response
+
+    async def awrap_model_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:  # noqa: ANN401
+        response = await handler(request)
+        self._check(response)
+        return response
+
+    @staticmethod
+    def _check(response: Any) -> None:  # noqa: ANN401
         for message in response.result:
             metadata = getattr(message, "response_metadata", None) or {}
             if metadata.get("finish_reason") == "length":
@@ -105,9 +139,6 @@ def _build_token_ceiling_middleware() -> AgentMiddleware:
                     "model completion hit the token ceiling (finish_reason=length); "
                     "no silent truncation (§12.4)"
                 )
-        return response
-
-    return token_ceiling
 
 
 _SYSTEM_PROMPT = (
@@ -175,8 +206,9 @@ def build_agent(
     # Per-tool wall-clock timeout and token-ceiling guard — the remaining two
     # §12.4 hard bounds. Both raise, and the graph maps them to a structured
     # failure (TOOL_TIMEOUT / TOKEN_CEILING). No silent truncation, no hung tool.
-    middleware.append(_build_per_tool_timeout_middleware(settings.per_tool_timeout_seconds))
-    middleware.append(_build_token_ceiling_middleware())
+    # Both implement sync AND async hooks so the bounds hold on the streamed path.
+    middleware.append(PerToolTimeoutMiddleware(settings.per_tool_timeout_seconds))
+    middleware.append(TokenCeilingMiddleware())
 
     graph = create_agent(
         model,

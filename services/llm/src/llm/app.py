@@ -68,9 +68,7 @@ class AppState:
         # fixed label — the real endpoint classifies for real (§12.5).
         agent_model = build_chat_model(settings)
         self.agent = build_agent(agent_model, self.registry, settings)
-        classifier_model = build_chat_model(
-            settings, mock_script=_classifier_mock_script(settings)
-        )
+        classifier_model = build_chat_model(settings, mock_script=_classifier_mock_script(settings))
         self.classifier = IntentClassifier(classifier_model)
         self.turn_graph: TurnGraph = build_turn_graph(
             self.agent, settings, self.classifier, self.metrics
@@ -135,7 +133,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
 
 async def _stream_turn(state: AppState, req: ChatRequest) -> AsyncIterator[str]:
-    """Yield SSE frames for a turn: conversation, token(s), final | failure."""
+    """Yield SSE frames for a turn: conversation, token(s), final | failure.
+
+    Tokens are forwarded from the graph's async stream AS the model produces them
+    (#23) — the async generator yields each frame directly to the ASGI transport,
+    which awaits every yield, giving natural backpressure and no unbounded buffer.
+    A client disconnect closes this generator, which stops the upstream stream.
+    """
     conversation_id = req.conversation_id or str(uuid.uuid4())
     yield ChatStreamEvent(
         kind=StreamEventKind.CONVERSATION, conversation_id=conversation_id
@@ -146,14 +150,10 @@ async def _stream_turn(state: AppState, req: ChatRequest) -> AsyncIterator[str]:
         "marketplace_account_id": req.marketplace_account_id,
         "conversation_id": conversation_id,
     }
-    result = state.turn_graph.run(turn_state)
-
-    if not result.ok:
-        yield ChatStreamEvent(kind=StreamEventKind.FAILURE, failure=result.failure).to_sse()
-        return
-
-    answer = result.answer or {}
-    summary = str(answer.get("summary", ""))
-    if summary:
-        yield ChatStreamEvent(kind=StreamEventKind.TOKEN, token=summary).to_sse()
-    yield ChatStreamEvent(kind=StreamEventKind.FINAL, envelope=answer).to_sse()
+    async for chunk in state.turn_graph.astream_turn(turn_state):
+        if chunk.kind == "token" and chunk.token is not None:
+            yield ChatStreamEvent(kind=StreamEventKind.TOKEN, token=chunk.token).to_sse()
+        elif chunk.kind == "final":
+            yield ChatStreamEvent(kind=StreamEventKind.FINAL, envelope=chunk.answer or {}).to_sse()
+        elif chunk.kind == "failure":
+            yield ChatStreamEvent(kind=StreamEventKind.FAILURE, failure=chunk.failure).to_sse()
