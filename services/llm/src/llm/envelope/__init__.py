@@ -18,6 +18,7 @@ from llm.envelope.composer import (
 )
 from llm.envelope.contract import (
     MAX_INLINE_ROWS,
+    AvailabilityCatalog,
     Calculation,
     CannotAnswer,
     Claim,
@@ -27,6 +28,7 @@ from llm.envelope.contract import (
     Provenance,
     Recommendation,
     ResponseEnvelope,
+    SectionScope,
     SourcedValue,
     SourceRef,
 )
@@ -55,6 +57,7 @@ __all__ = [
     "FALLBACK_DEEP_LINK",
     "MAX_INLINE_ROWS",
     "AssistantAnswer",
+    "AvailabilityCatalog",
     "Calculation",
     "CannotAnswer",
     "ChatStreamEvent",
@@ -69,6 +72,7 @@ __all__ = [
     "RawEvidenceValue",
     "Recommendation",
     "ResponseEnvelope",
+    "SectionScope",
     "SourceRef",
     "SourcedValue",
     "StreamEventKind",

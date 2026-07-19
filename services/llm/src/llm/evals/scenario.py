@@ -19,6 +19,7 @@ from typing import Any
 
 from llm.envelope.composer import compose_or_refuse
 from llm.envelope.contract import (
+    AvailabilityCatalog,
     Calculation,
     CannotAnswer,
     Claim,
@@ -27,6 +28,7 @@ from llm.envelope.contract import (
     Provenance,
     Recommendation,
     ResponseEnvelope,
+    SectionScope,
     SourcedValue,
     SourceRef,
 )
@@ -113,6 +115,36 @@ def _recommendation(spec: dict[str, Any] | None) -> Recommendation | None:
     )
 
 
+def _section_scope(spec: dict[str, Any] | None) -> SectionScope:
+    if spec is None:
+        return SectionScope()
+    sources = [
+        SourceRef(tool=s.get("tool", ""), response_field=s.get("field", ""))
+        for s in spec.get("sources", [])
+    ]
+    return SectionScope(evidence_ids=list(spec.get("evidence_ids", [])), sources=sources)
+
+
+def _availability(spec: dict[str, Any] | None) -> AvailabilityCatalog | None:
+    """Build the per-section availability catalog when a fixture declares one.
+
+    A factual fixture MAY carry an ``availability`` block naming the evidence IDs
+    and source refs legitimately made available per section (issue #51). When it
+    does, the real composer enforces strict section-scoped membership; when it is
+    absent, existing trusted-fixture behavior is preserved (no scope check).
+    """
+    if spec is None:
+        return None
+    return AvailabilityCatalog(
+        observed_facts=_section_scope(spec.get("observed_facts")),
+        dk_signals=_section_scope(spec.get("dk_signals")),
+        seller_config=_section_scope(spec.get("seller_config")),
+        deterministic_calculations=_section_scope(spec.get("deterministic_calculations")),
+        comparisons=_section_scope(spec.get("comparisons")),
+        exposure=_section_scope(spec.get("exposure")),
+    )
+
+
 def compose_fixture(case: dict[str, Any]) -> ResponseEnvelope | CannotAnswer:
     """Rebuild a factual fixture and run it through the REAL composer/grounding.
 
@@ -130,6 +162,7 @@ def compose_fixture(case: dict[str, Any]) -> ResponseEnvelope | CannotAnswer:
         recommendation=_recommendation(case.get("recommendation")),
         comparisons=[_comparison(c) for c in case.get("comparisons", [])],
         exposure=_exposure(case.get("exposure")),
+        catalog=_availability(case.get("availability")),
     )
 
 

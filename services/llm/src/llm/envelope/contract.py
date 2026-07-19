@@ -75,6 +75,58 @@ class SourceRef(BaseModel):
         return bool(self.tool.strip()) and bool(self.response_field.strip())
 
 
+class SectionScope(BaseModel):
+    """The evidence IDs and SourceRefs legitimately available for ONE section.
+
+    Built from validated tool outputs, this is the authoritative allow-set for a
+    single response section and its required evidence category (issue #51 / §12.2
+    provenance). ``evidence_ids`` are the ``EvidenceRef.evidence_id`` values the
+    tools returned for this section; ``sources`` are the ``(tool, response_field)``
+    references those tools exposed for this section. A claim/value that cites an
+    evidence_id or SourceRef absent here — even one globally valid in ANOTHER
+    section — is rejected by the grounding walker. Both fields are JSON-safe lists
+    so the whole catalog can live in graph state.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_ids: list[str] = Field(default_factory=list)
+    sources: list[SourceRef] = Field(default_factory=list)
+
+    def allows_evidence(self, evidence_id: str) -> bool:
+        """True when ``evidence_id`` was made available for this section."""
+        return evidence_id in set(self.evidence_ids)
+
+    def allows_source(self, ref: SourceRef) -> bool:
+        """True when the exact ``(tool, response_field)`` is in this section's set."""
+        return any(
+            s.tool == ref.tool and s.response_field == ref.response_field
+            for s in self.sources
+        )
+
+
+class AvailabilityCatalog(BaseModel):
+    """Per-section authoritative availability, built from validated tool outputs.
+
+    Each response section maps to the :class:`SectionScope` of evidence IDs and
+    SourceRefs explicitly made available for that section and required evidence
+    category. The grounding walker uses it to REJECT any claim/section that cites
+    an evidence_id or SourceRef not scoped to that section — closing the issue #51
+    gap where a valid ref from one section is re-attached to another to make
+    unsupported content look grounded. Every field is JSON-safe (lists of
+    strings / typed SourceRefs), so the catalog is safe to hold in graph state.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    observed_facts: SectionScope = Field(default_factory=SectionScope)
+    dk_signals: SectionScope = Field(default_factory=SectionScope)
+    seller_config: SectionScope = Field(default_factory=SectionScope)
+    deterministic_calculations: SectionScope = Field(default_factory=SectionScope)
+    comparisons: SectionScope = Field(default_factory=SectionScope)
+    exposure: SectionScope = Field(default_factory=SectionScope)
+
+
 class SourcedValue(BaseModel):
     """A single value copied from a typed service response, with its provenance.
 

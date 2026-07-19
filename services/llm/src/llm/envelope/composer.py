@@ -16,6 +16,7 @@ from __future__ import annotations
 from pydantic import ValidationError
 
 from llm.envelope.contract import (
+    AvailabilityCatalog,
     Calculation,
     CannotAnswer,
     Claim,
@@ -47,13 +48,16 @@ def compose(
     comparisons: list[Comparison] | None = None,
     tables: list[InlineTable] | None = None,
     exposure: ExposureTotal | None = None,
+    catalog: AvailabilityCatalog | None = None,
 ) -> ResponseEnvelope:
     """Build and VALIDATE a response envelope.
 
     ``model_inference`` is the only slot the model authors; every other argument
-    is typed, sourced data the caller assembled from service responses. Raises
-    :class:`GroundingError` if the result is not grounded — callers that must
-    fail closed use :func:`compose_or_refuse`.
+    is typed, sourced data the caller assembled from service responses. When a
+    ``catalog`` (built from validated tool outputs) is supplied, grounding also
+    enforces strict section-scoped membership of every evidence_id and SourceRef
+    (issue #51). Raises :class:`GroundingError` if the result is not grounded —
+    callers that must fail closed use :func:`compose_or_refuse`.
     """
     env = ResponseEnvelope(
         observed_facts=observed_facts or [],
@@ -67,7 +71,7 @@ def compose(
         tables=tables or [],
         exposure=exposure,
     )
-    validate_grounding(env)
+    validate_grounding(env, catalog=catalog)
     return env
 
 
@@ -105,13 +109,15 @@ def compose_or_refuse(
     comparisons: list[Comparison] | None = None,
     tables: list[InlineTable] | None = None,
     exposure: ExposureTotal | None = None,
+    catalog: AvailabilityCatalog | None = None,
 ) -> ResponseEnvelope | CannotAnswer:
     """Compose a grounded envelope, or fail closed to a structured refusal.
 
-    On any grounding violation — or any pydantic construction/validation error —
-    the plane returns :class:`CannotAnswer` — never a degraded, plausible-looking
-    answer — carrying the violation codes and any named missing data for audit,
-    plus the deep link to the structured screen.
+    On any grounding violation — including a wrong-section evidence_id/SourceRef
+    when a ``catalog`` is supplied (issue #51) — or any pydantic
+    construction/validation error, the plane returns :class:`CannotAnswer` —
+    never a degraded, plausible-looking answer — carrying the violation codes and
+    any named missing data for audit, plus the deep link to the structured screen.
     """
     try:
         return compose(
@@ -125,6 +131,7 @@ def compose_or_refuse(
             comparisons=comparisons,
             tables=tables,
             exposure=exposure,
+            catalog=catalog,
         )
     except GroundingError as exc:
         return fail_closed(
