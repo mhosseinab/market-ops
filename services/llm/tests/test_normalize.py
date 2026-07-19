@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import random
 
-from llm.intents.normalize import normalize_digits, normalize_input, tokenize
+from llm.intents.normalize import (
+    canonicalize_key,
+    normalize_digits,
+    normalize_input,
+    tokenize,
+)
 
 _PERSIAN_ZERO = 0x06F0
 _ARABIC_ZERO = 0x0660
@@ -86,3 +91,33 @@ def test_normalize_input_collapses_whitespace_and_keeps_raw() -> None:
     assert out.text == "قیمت 123"
     assert out.raw == "  قیمت   ۱۲۳  "
     assert out.tokens == ("قیمت", "123")
+
+
+# --- canonicalize_key: the identifier match-key boundary (#29, CHAT-081) ------
+
+
+def test_canonicalize_key_folds_digit_families_to_latin() -> None:
+    # Persian and Arabic-Indic digit spellings fold to the identical Latin key.
+    assert canonicalize_key("SKU-۱۲۳") == "SKU-123"
+    assert canonicalize_key("SKU-١٢٣") == "SKU-123"
+
+
+def test_canonicalize_key_folds_arabic_kaf_and_yeh() -> None:
+    # Arabic kaf/yeh fold to Persian glyphs (reusing the shared _CHAR_FOLD table).
+    assert canonicalize_key("كيف-1") == "کیف-1"
+
+
+def test_canonicalize_key_drops_zwnj() -> None:
+    zwnj = "‌"
+    assert canonicalize_key(f"SKU-1{zwnj}23") == "SKU-123"
+
+
+def test_canonicalize_key_preserves_case() -> None:
+    # SKUs are case-sensitive; canonicalization must not lowercase.
+    assert canonicalize_key("Sku-Abc") == "Sku-Abc"
+
+
+def test_canonicalize_key_is_idempotent() -> None:
+    for raw in ("SKU-۱۲۳", "كيف-1", "SKU-1‌23", "ۀخانه", "plain-123"):
+        once = canonicalize_key(raw)
+        assert canonicalize_key(once) == once, raw

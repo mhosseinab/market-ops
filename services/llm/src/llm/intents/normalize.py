@@ -96,6 +96,21 @@ def _fold_text(text: str) -> str:
     return "".join(out)
 
 
+def canonicalize_key(text: str) -> str:
+    """Fold a technical identifier to its canonical match key (§11.1, CHAT-081).
+
+    Applies the SAME boundary folding as :func:`normalize_input` — Persian
+    (``U+06F0..U+06F9``) and Arabic-Indic (``U+0660..U+0669``) digits → Latin,
+    Arabic Kaf/Yeh → Persian (via the shared ``_CHAR_FOLD`` table) — and then
+    drops ZWNJ so a stray in-word joiner never defeats an identifier match. It is
+    NOT lowercased: SKUs/IDs are case-sensitive.
+
+    Pure and idempotent. Intended for equality of match keys only; the raw token
+    is preserved separately as evidence by the caller (never mutated here).
+    """
+    return _fold_text(text).replace(_ZWNJ, "")
+
+
 def tokenize(text: str) -> tuple[str, ...]:
     """Split ``text`` into mixed-script tokens (fa-IR collation facet, §11.1).
 
