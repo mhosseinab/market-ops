@@ -84,6 +84,19 @@ services:
   migrate:
     image: golang:1.25
     working_dir: /src
+    # Share the postgres container's network namespace so this one-shot reaches
+    # the DB over genuine loopback (127.0.0.1 below), NOT the cross-container
+    # service name `postgres`. `task db:reset`'s fail-closed guard (issue #9)
+    # allows only local hosts {localhost,127.0.0.1,::1} and rejects everything
+    # else unless the deliberate DB_RESET_ALLOW_NONLOCAL override is set. Here
+    # the connection genuinely IS local (same netns as postgres), so host
+    # locality is satisfied for real — the guard stays fully armed (a real
+    # remote/prod host would still be refused) instead of being switched off.
+    # This service publishes no ports and is only reached BY name by nothing, so
+    # borrowing postgres's netns costs nothing; egress+DNS for apt/go/curl come
+    # from postgres's default-network attachment. `core`/`mockdk` keep talking to
+    # postgres over the default network by service name — unaffected.
+    network_mode: "service:postgres"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
@@ -97,7 +110,13 @@ services:
     environment:
       GOWORK: "off"
       GOFLAGS: "-mod=mod"
-      DATABASE_URL: postgres://market_ops:market_ops@postgres:5432/market_ops?sslmode=disable
+      # Host is 127.0.0.1 (loopback within postgres's shared netns, see
+      # network_mode above), so `task db:reset`'s host-locality guard passes
+      # with NO override — the target is genuinely local, not merely waved
+      # through. DB name stays `market_ops` (allowlisted; still dropped/recreated
+      # each run). core/mockdk keep using the `postgres` service name on the
+      # default network — only this in-netns one-shot uses loopback.
+      DATABASE_URL: postgres://market_ops:market_ops@127.0.0.1:5432/market_ops?sslmode=disable
       # Required (no in-YAML default) — same single-source-of-truth contract
       # as before (task test:integration's seed-credential fix): the caller
       # (run_all.sh / run_killswitch_journey.sh) is the ONE place a default
