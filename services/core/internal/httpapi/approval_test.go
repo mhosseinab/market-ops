@@ -13,8 +13,10 @@ import (
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
+	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
@@ -27,6 +29,7 @@ type fakeApproval struct {
 	bulkOutcome recommendation.BulkConfirmOutcome
 	bulkErr     error
 	err         error
+	gotActor    audit.Actor
 
 	editedCard   db.ApprovalCard
 	editErr      error
@@ -44,10 +47,12 @@ func (f *fakeApproval) GetCardForOrg(context.Context, uuid.UUID, uuid.UUID) (db.
 func (f *fakeApproval) History(context.Context, uuid.UUID) ([]db.ApprovalCardState, error) {
 	return f.history, f.err
 }
-func (f *fakeApproval) ConfirmIndividualForOrg(context.Context, uuid.UUID, uuid.UUID, approval.Binding, time.Time) (recommendation.ConfirmOutcome, error) {
+func (f *fakeApproval) ConfirmIndividualForOrg(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ approval.Binding, _ time.Time, actor audit.Actor) (recommendation.ConfirmOutcome, error) {
+	f.gotActor = actor
 	return f.outcome, f.confirmErr
 }
-func (f *fakeApproval) ConfirmBulkSelectionForOrg(context.Context, uuid.UUID, uuid.UUID, int32, time.Time) (recommendation.BulkConfirmOutcome, error) {
+func (f *fakeApproval) ConfirmBulkSelectionForOrg(_ context.Context, _ uuid.UUID, _ uuid.UUID, _ int32, _ time.Time, actor audit.Actor) (recommendation.BulkConfirmOutcome, error) {
+	f.gotActor = actor
 	return f.bulkOutcome, f.bulkErr
 }
 func (f *fakeApproval) EditPriceForOrg(context.Context, uuid.UUID, uuid.UUID, money.Money, time.Time) (db.ApprovalCard, error) {
@@ -155,6 +160,37 @@ func TestConfirmApproval_ApprovedIsExecutionPendingS18(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &out)
 	if out.State != gateway.ApprovalState(approval.StateApproved) || !out.ExecutionPending {
 		t.Fatalf("approved card must report executionPending; got state=%s pending=%v", out.State, out.ExecutionPending)
+	}
+}
+
+// TestConfirmApproval_ActorDerivedFromPrincipalNotBody proves the AUD-001 actor a
+// confirmation records is derived from the authenticated session principal (stable
+// user id, role, and the screen surface) and NEVER from the request body (issue
+// #103). The request body carries only the card id and binding; there is no actor
+// field to supply, and the transport passes the principal-derived actor to the
+// service.
+func TestConfirmApproval_ActorDerivedFromPrincipalNotBody(t *testing.T) {
+	fa := newFakeAuth()
+	p := principal(perm.RoleOwner)
+	fa.principals["tok-owner"] = p
+	fake := &fakeApproval{outcome: recommendation.ConfirmOutcome{
+		State:            approval.StateApproved,
+		ExecutionPending: true,
+	}}
+	srv := NewServer(":0", BuildInfo{}, testLogger(), WithAuth(fa), WithApproval(fake), WithCookieSecure(false))
+
+	req := httptest.NewRequest(http.MethodPost, "/approvals/confirm", strings.NewReader(confirmBody(t, uuid.New(), uuid.New(), 1)))
+	req.Header.Set("Content-Type", "application/json")
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	want := audit.Actor{ID: p.UserID.String(), Role: string(perm.RoleOwner), Surface: "screen"}
+	if fake.gotActor != want {
+		t.Fatalf("actor = %+v; want %+v (derived from session principal, not request body)", fake.gotActor, want)
 	}
 }
 

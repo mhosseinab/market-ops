@@ -58,7 +58,7 @@ func TestConfirmBulkSelectionForOrg_CrossTenantSetFailsClosed(t *testing.T) {
 	orgB, _, _ := seedTenant(t, q)
 
 	// B confirms A's lineage → fail closed (uniform not-found), authorize NOTHING.
-	out, err := svc.ConfirmBulkSelectionForOrg(ctx, orgB, lineageA, versionA, time.Now().UTC())
+	out, err := svc.ConfirmBulkSelectionForOrg(ctx, orgB, lineageA, versionA, time.Now().UTC(), testActor())
 	if !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("cross-tenant bulk confirm: err=%v; want pgx.ErrNoRows (uniform not-found)", err)
 	}
@@ -74,13 +74,13 @@ func TestConfirmBulkSelectionForOrg_CrossTenantSetFailsClosed(t *testing.T) {
 	}
 
 	// An org with NO resolvable account also fails closed (no bulk path exists).
-	if _, err := svc.ConfirmBulkSelectionForOrg(ctx, uuid.New(), lineageA, versionA, time.Now().UTC()); !errors.Is(err, pgx.ErrNoRows) {
+	if _, err := svc.ConfirmBulkSelectionForOrg(ctx, uuid.New(), lineageA, versionA, time.Now().UTC(), testActor()); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("org with no account: err=%v; want pgx.ErrNoRows", err)
 	}
 
 	// Positive control: A's OWN operator confirms A's lineage and authorizes the member,
 	// proving the org gate does not break the owner's authoritative #90 flow.
-	ownOut, err := svc.ConfirmBulkSelectionForOrg(ctx, orgA, lineageA, versionA, time.Now().UTC())
+	ownOut, err := svc.ConfirmBulkSelectionForOrg(ctx, orgA, lineageA, versionA, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("owner bulk confirm: %v", err)
 	}

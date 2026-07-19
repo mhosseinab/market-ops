@@ -83,7 +83,7 @@ func TestConfirmBulkSelection_StaleVersionAuthorizesNothing(t *testing.T) {
 		t.Fatalf("mint v2: %v", err)
 	}
 
-	out, err := svc.ConfirmBulkSelection(ctx, lineage, v1, time.Now().UTC())
+	out, err := svc.ConfirmBulkSelection(ctx, lineage, v1, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("confirm bulk: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestConfirmBulkSelection_ValidAuthorizesExactlyOnce(t *testing.T) {
 	card := awaitingCard(t, svc, account, variant)
 	lineage, v1 := previewExecutableSet(t, svc, account, variant, card)
 
-	out, err := svc.ConfirmBulkSelection(ctx, lineage, v1, time.Now().UTC())
+	out, err := svc.ConfirmBulkSelection(ctx, lineage, v1, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("confirm bulk: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestConfirmBulkSelection_ValidAuthorizesExactlyOnce(t *testing.T) {
 	}
 
 	// Replay (resume): idempotent — already_authorized, still exactly one intent.
-	replay, err := svc.ConfirmBulkSelection(ctx, lineage, v1, time.Now().UTC())
+	replay, err := svc.ConfirmBulkSelection(ctx, lineage, v1, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("replay confirm: %v", err)
 	}
@@ -166,7 +166,7 @@ func TestConfirmBulkSelection_BlockedMemberNeverExecutes(t *testing.T) {
 		t.Fatalf("preview: %v", err)
 	}
 
-	out, err := svc.ConfirmBulkSelection(ctx, res.Set.LineageID, res.Set.Version, time.Now().UTC())
+	out, err := svc.ConfirmBulkSelection(ctx, res.Set.LineageID, res.Set.Version, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("confirm bulk: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestConfirmBulkSelection_SupersededMemberInvalidatedButOthersAuthorized(t *
 		t.Fatalf("edit price: %v", err)
 	}
 
-	out, err := svc.ConfirmBulkSelection(ctx, res.Set.LineageID, res.Set.Version, time.Now().UTC())
+	out, err := svc.ConfirmBulkSelection(ctx, res.Set.LineageID, res.Set.Version, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("confirm bulk: %v", err)
 	}
@@ -291,7 +291,7 @@ func TestConfirmBulkSelection_CrossAccountMemberRejected(t *testing.T) {
 func TestConfirmBulkSelection_UnknownLineageFailsClosed(t *testing.T) {
 	pool, _ := newPool(t)
 	svc := recommendation.NewService(pool)
-	if _, err := svc.ConfirmBulkSelection(context.Background(), uuid.New(), 1, time.Now().UTC()); err == nil {
+	if _, err := svc.ConfirmBulkSelection(context.Background(), uuid.New(), 1, time.Now().UTC(), testActor()); err == nil {
 		t.Fatalf("unknown lineage returned no error; want fail-closed")
 	}
 }

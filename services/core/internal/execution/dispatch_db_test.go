@@ -161,7 +161,7 @@ func TestConfirmDispatch_ClientDeathStillExecutes(t *testing.T) {
 	// The recommendation service that OWNS confirmation dispatches onto this client.
 	recSvc := recommendation.NewService(pool).SetExecutionDispatcher(recommendation.NewJobDispatcher(client))
 
-	outcome, err := recSvc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC())
+	outcome, err := recSvc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), audit.Actor{ID: "test-user", Role: "owner", Surface: "screen"})
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestConfirmDispatch_DuplicateDeliveryNoDuplicateWrite(t *testing.T) {
 	// Confirm to reach Approved (no worker running here; we drive the runner directly
 	// to simulate redelivery of the same intent deterministically).
 	recSvc := recommendation.NewService(pool)
-	if _, err := recSvc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC()); err != nil {
+	if _, err := recSvc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), audit.Actor{ID: "test-user", Role: "owner", Surface: "screen"}); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
 

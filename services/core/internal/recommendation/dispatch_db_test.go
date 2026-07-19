@@ -69,7 +69,7 @@ func TestConfirmDispatch_ApprovedEnqueuesOneIntentAtomically(t *testing.T) {
 	card := awaitingCard(t, svc, account, variant)
 	presented := bindingOf(t, card)
 
-	outcome, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC())
+	outcome, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
@@ -94,11 +94,11 @@ func TestConfirmDispatch_DuplicateConfirmOneIntent(t *testing.T) {
 	card := awaitingCard(t, svc, account, variant)
 	presented := bindingOf(t, card)
 
-	if _, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC()); err != nil {
+	if _, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), testActor()); err != nil {
 		t.Fatalf("first confirm: %v", err)
 	}
 	// Second confirm of the same control must fail closed (no live control).
-	if _, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC()); err != approval.ErrNoControl {
+	if _, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), testActor()); err != approval.ErrNoControl {
 		t.Fatalf("duplicate confirm err = %v; want ErrNoControl", err)
 	}
 	if got := countIntents(t, pool, card.ID); got != 1 {
@@ -123,7 +123,7 @@ func TestConfirmDispatch_TxFailureNoApprovedNoIntent(t *testing.T) {
 	card := awaitingCard(t, svc, account, variant)
 	presented := bindingOf(t, card)
 
-	_, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC())
+	_, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), testActor())
 	if !errors.Is(err, errDispatchBoom) {
 		t.Fatalf("confirm err = %v; want dispatch failure to propagate (rollback)", err)
 	}
@@ -159,7 +159,7 @@ func TestConfirmDispatch_SupersededNoIntent(t *testing.T) {
 		t.Fatalf("EditPrice (mint V2): %v", err)
 	}
 
-	outcome, err := svc.ConfirmIndividual(ctx, v1.ID, presentedV1, time.Now().UTC())
+	outcome, err := svc.ConfirmIndividual(ctx, v1.ID, presentedV1, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("confirm superseded: %v", err)
 	}
