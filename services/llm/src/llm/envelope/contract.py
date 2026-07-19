@@ -36,6 +36,7 @@ from llm.envelope.models import (
     Money,
     RawEvidenceValue,
 )
+from llm.flows.deep_links import validate_recovery_route
 
 # Inline tables stop at this many rows; beyond it the response summarizes and
 # deep-links instead of dumping rows into chat (CHAT-023).
@@ -441,7 +442,9 @@ class CannotAnswer(BaseModel):
     Emitted instead of a plausible-looking guess when required evidence is
     missing or an envelope fails grounding. Always names a deep link to the
     structured screen and the canonical reason key; ``violations`` records the
-    grounding codes for audit. Carries no authority and no numbers.
+    grounding codes for audit. Carries no authority and no numbers. The deep
+    link is constrained to the closed set of internal recovery routes so a
+    refusal can never become an open redirect or an unsafe surface (issue #56).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -452,3 +455,10 @@ class CannotAnswer(BaseModel):
     deep_link: str
     missing: list[str] = Field(default_factory=list)
     violations: list[str] = Field(default_factory=list)
+
+    @field_validator("deep_link")
+    @classmethod
+    def _validate_recovery_route(cls, v: str) -> str:
+        # A refusal always deep-links to a deterministic recovery route; a
+        # model-authored/free-form path fails closed (§12.4, issue #56).
+        return validate_recovery_route(v)

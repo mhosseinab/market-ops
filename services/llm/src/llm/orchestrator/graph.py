@@ -38,6 +38,7 @@ from langgraph.graph import END, START, StateGraph
 
 from llm.config import Settings
 from llm.envelope.models import TurnFailure
+from llm.flows.deep_links import SCREENS_FALLBACK
 from llm.flows.dispatch import contain
 from llm.intents.classifier import IntentClassifier
 from llm.metrics import ContainmentMetrics
@@ -71,7 +72,7 @@ class TurnResult:
         return self.failure is None
 
 
-_DEEP_LINK = "/app/screens"  # deterministic structured screen fallback (§12.4).
+_DEEP_LINK = SCREENS_FALLBACK  # deterministic recovery route (§12.4, issue #56).
 
 
 def _turn_failure(code: str, message: str) -> TurnFailure:
