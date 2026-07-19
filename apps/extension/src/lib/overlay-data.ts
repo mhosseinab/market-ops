@@ -1,5 +1,5 @@
 import type { components } from "@market-ops/gen-ts";
-import { FRESHNESS_AGING_MAX_MINUTES, FRESHNESS_FRESH_MAX_MINUTES } from "@market-ops/locale";
+import { type FreshnessState, freshnessState } from "@market-ops/locale";
 
 export type ObservedOffer = components["schemas"]["ObservedOffer"];
 export type ObservationTarget = components["schemas"]["ObservationTarget"];
@@ -13,12 +13,15 @@ export type ObservationTarget = components["schemas"]["ObservationTarget"];
 // counts, freshness buckets) — it NEVER derives a Money, a margin, or any
 // commercial value; price stays raw evidence (RawAmount), never promoted.
 //
-// `freshnessBucketOf` reads the SAME shared thresholds
-// (packages/locale/src/freshness.ts) as Market.tsx's FreshnessPill so the
-// overlay's freshness bucket is byte-identical to what a human sees on the
-// Market screen for the same offer (overlay-parity contract test) — a SINGLE
-// source of truth, not a duplicated magic number that could silently drift.
-export type FreshnessBucket = "fresh" | "aging" | "stale";
+// `freshnessBucketOf` DELEGATES to the shared, deadline-driven `freshnessState`
+// (packages/locale/src/freshness.ts) — the SAME derivation Market.tsx's
+// FreshnessPill uses — passing the offer's OWN authoritative `freshnessDeadline`
+// (a REQUIRED field on ObservedOffer, OBS-004). So the overlay's freshness
+// bucket is byte-identical to what a human sees on the Market screen for the
+// same offer at the same instant (overlay-parity test) — a SINGLE source of
+// truth, never a duplicated threshold that could silently drift, and a
+// priority-tier offer flips to Stale at ITS deadline, not a fixed six hours.
+export type FreshnessBucket = FreshnessState;
 
 export interface OverlayView {
   readonly targetId: string;
@@ -40,13 +43,12 @@ export interface OverlayView {
 
 const QUALIFYING_AVAILABILITY = new Set(["in_stock", "limited"]);
 
-// freshnessBucketOf uses the SHARED FRESHNESS_*_MAX_MINUTES constants —
-// exactly what apps/web's FreshnessPill compares `ageMinutes` against.
-export function freshnessBucketOf(capturedAtIso: string, nowMs: number): FreshnessBucket {
-  const ageMinutes = (nowMs - Date.parse(capturedAtIso)) / 60_000;
-  if (ageMinutes <= FRESHNESS_FRESH_MAX_MINUTES) return "fresh";
-  if (ageMinutes <= FRESHNESS_AGING_MAX_MINUTES) return "aging";
-  return "stale";
+// freshnessBucketOf DELEGATES to the shared deadline-driven `freshnessState`,
+// passing the offer's OWN freshnessDeadline — exactly what apps/web's
+// FreshnessPill derives. No fixed-threshold fork remains for these
+// deadline-carrying offers.
+export function freshnessBucketOf(offer: ObservedOffer, nowMs: number): FreshnessBucket {
+  return freshnessState(offer, nowMs);
 }
 
 // deriveOverlayView filters the account's Observed Offers down to the one
@@ -77,7 +79,7 @@ export function deriveOverlayView(
     offerCount: offers.length,
     sellerCount: sellerIds.size,
     lowestQualifying: lowest?.price ?? null,
-    freshness: primary ? freshnessBucketOf(primary.capturedAt, nowMs) : null,
+    freshness: primary ? freshnessBucketOf(primary, nowMs) : null,
     quality: primary?.quality ?? null,
   };
 }
