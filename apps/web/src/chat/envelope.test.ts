@@ -83,7 +83,7 @@ describe("parseEnvelope (defensive, contract-gap tolerant)", () => {
 
   it("an approval card carries ONLY its id — never a cached executable control (§8.1)", () => {
     const { cards } = parseEnvelope({
-      cards: [{ kind: "approval", cardId: "card-1", hasControl: true, price: { mantissa: 1 } }],
+      cards: [{ kind: "approval", cardId: "card-1", hasControl: true, price: { mantissa: "1" } }],
     });
     expect(cards).toEqual([{ kind: "approval", cardId: "card-1" }]);
     // No control payload survives parsing — the host re-fetches the live card.

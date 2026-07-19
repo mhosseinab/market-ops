@@ -72,6 +72,38 @@
       "exponent": -2,
       "rawDecimal": "92233720368547758.07",
       "expectedEn": "92,233,720,368,547,758.07"
+    },
+    {
+      "name": "2^53-1 last exactly-representable double",
+      "mantissa": "9007199254740991",
+      "currency": "IRR",
+      "exponent": 0,
+      "rawDecimal": "9007199254740991",
+      "expectedEn": "9,007,199,254,740,991"
+    },
+    {
+      "name": "2^53 first double-rounding boundary",
+      "mantissa": "9007199254740992",
+      "currency": "IRR",
+      "exponent": 0,
+      "rawDecimal": "9007199254740992",
+      "expectedEn": "9,007,199,254,740,992"
+    },
+    {
+      "name": "2^53+1 issue #73 reproduction (number path loses the low bit)",
+      "mantissa": "9007199254740993",
+      "currency": "IRR",
+      "exponent": 0,
+      "rawDecimal": "9007199254740993",
+      "expectedEn": "9,007,199,254,740,993"
+    },
+    {
+      "name": "int64 min mantissa exponent zero",
+      "mantissa": "-9223372036854775808",
+      "currency": "IRR",
+      "exponent": 0,
+      "rawDecimal": "-9223372036854775808",
+      "expectedEn": "−9,223,372,036,854,775,808"
     }
   ]
 }

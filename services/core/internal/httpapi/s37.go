@@ -513,7 +513,7 @@ func toActionSummary(c db.ApprovalCard) gateway.ActionSummary {
 		RecommendationId: c.RecommendationID,
 		Version:          int64(c.Version),
 		State:            gateway.ApprovalState(c.State),
-		Price:            gateway.MoneyAmount{Mantissa: c.PriceMantissa, Currency: c.PriceCurrency, Exponent: int(c.PriceExponent)},
+		Price:            gateway.MoneyAmount{Mantissa: wireMantissa(c.PriceMantissa), Currency: c.PriceCurrency, Exponent: int(c.PriceExponent)},
 		IdempotencyKey:   &c.IdempotencyKey,
 		ExpiresAt:        c.ExpiresAt,
 		CreatedAt:        &c.CreatedAt,

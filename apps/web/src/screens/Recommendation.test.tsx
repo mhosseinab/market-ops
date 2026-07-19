@@ -156,12 +156,12 @@ describe("StateMachineView — §8.4 stages", () => {
 describe("ContributionBreakdown", () => {
   it("renders the deductions, totals, readiness, and rounding rule verbatim", () => {
     const contribution: Contribution = {
-      amount: { mantissa: 2000000, currency: "IRR", exponent: 0 },
-      netProceeds: { mantissa: 12000000, currency: "IRR", exponent: 0 },
+      amount: { mantissa: "2000000", currency: "IRR", exponent: 0 },
+      netProceeds: { mantissa: "12000000", currency: "IRR", exponent: 0 },
       deductions: [
         {
           component: "commission",
-          amount: { mantissa: 1400000, currency: "IRR", exponent: 0 },
+          amount: { mantissa: "1400000", currency: "IRR", exponent: 0 },
           kind: "rate",
           version: 2,
         },

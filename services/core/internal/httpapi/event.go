@@ -124,7 +124,7 @@ func toGatewayEvent(e db.MarketEvent) gateway.MarketEvent {
 	}
 	if e.ExposureKnown && e.ExposureMantissa.Valid {
 		factors.Exposure.Amount = &gateway.MoneyAmount{
-			Mantissa: e.ExposureMantissa.Int64,
+			Mantissa: wireMantissa(e.ExposureMantissa.Int64),
 			Currency: e.ExposureCurrency,
 			Exponent: int(e.ExposureExponent),
 		}

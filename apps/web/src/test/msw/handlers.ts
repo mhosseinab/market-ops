@@ -125,7 +125,7 @@ export const handlers = [
       variantId: target.variantId,
       component: "cogs",
       version: 1,
-      amount: { mantissa: 8900000, currency: "IRR", exponent: 0 },
+      amount: { mantissa: "8900000", currency: "IRR", exponent: 0 },
       effectiveFrom: "2026-07-17T09:00:00Z",
       source: "single_value",
     }),

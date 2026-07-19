@@ -161,7 +161,7 @@ func toApprovalCardView(card db.ApprovalCard, history []db.ApprovalCardState) (g
 		State:            gateway.ApprovalState(card.State),
 		Binding:          binding,
 		Price: gateway.MoneyAmount{
-			Mantissa: card.PriceMantissa,
+			Mantissa: wireMantissa(card.PriceMantissa),
 			Currency: card.PriceCurrency,
 			Exponent: int(card.PriceExponent),
 		},

@@ -21,15 +21,15 @@ func postSimulate(t *testing.T, body string) *httptest.ResponseRecorder {
 }
 
 const simBodyHappy = `{
-  "currentPrice": {"mantissa": 1000, "currency": "IRR", "exponent": 0},
+  "currentPrice": {"mantissa": "1000", "currency": "IRR", "exponent": 0},
   "components": [
-    {"component": "cogs", "kind": "absolute", "amount": {"mantissa": 800, "currency": "IRR", "exponent": 0}, "version": 1},
+    {"component": "cogs", "kind": "absolute", "amount": {"mantissa": "800", "currency": "IRR", "exponent": 0}, "version": 1},
     {"component": "commission", "kind": "rate", "rateBasisPoints": 0, "version": 1}
   ],
   "readiness": "complete",
   "config": {
-    "boundary": {"known": true, "min": {"mantissa": 900, "currency": "IRR", "exponent": 0}, "max": {"mantissa": 1100, "currency": "IRR", "exponent": 0}},
-    "contributionFloor": {"mantissa": 100, "currency": "IRR", "exponent": 0},
+    "boundary": {"known": true, "min": {"mantissa": "900", "currency": "IRR", "exponent": 0}, "max": {"mantissa": "1100", "currency": "IRR", "exponent": 0}},
+    "contributionFloor": {"mantissa": "100", "currency": "IRR", "exponent": 0},
     "strategy": "hold",
     "strategyEnabled": true,
     "objective": "track_strategy"
@@ -55,11 +55,11 @@ func TestSimulatePolicy_HappyNeverApprovable(t *testing.T) {
 	if res.Proposal == nil {
 		t.Fatalf("expected a proposal, got blockers %+v", res.Blockers)
 	}
-	if res.Proposal.Price.Mantissa != 1000 || res.Proposal.Contribution.Mantissa != 200 {
-		t.Fatalf("proposal price/contrib = %d/%d, want 1000/200", res.Proposal.Price.Mantissa, res.Proposal.Contribution.Mantissa)
+	if res.Proposal.Price.Mantissa != "1000" || res.Proposal.Contribution.Mantissa != "200" {
+		t.Fatalf("proposal price/contrib = %s/%s, want 1000/200", res.Proposal.Price.Mantissa, res.Proposal.Contribution.Mantissa)
 	}
-	if res.Contribution.Amount.Mantissa != 200 || !res.Contribution.Executable {
-		t.Fatalf("base contribution = %d exec=%v, want 200/true", res.Contribution.Amount.Mantissa, res.Contribution.Executable)
+	if res.Contribution.Amount.Mantissa != "200" || !res.Contribution.Executable {
+		t.Fatalf("base contribution = %s exec=%v, want 200/true", res.Contribution.Amount.Mantissa, res.Contribution.Executable)
 	}
 }
 

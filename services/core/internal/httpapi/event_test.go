@@ -143,7 +143,7 @@ func TestListEventsMapping(t *testing.T) {
 	if !k.Factors.Exposure.Known || k.Factors.Exposure.Amount == nil {
 		t.Fatalf("known exposure must carry an amount: %+v", k.Factors.Exposure)
 	}
-	if k.Factors.Exposure.Amount.Mantissa != 40 || k.Factors.Exposure.Amount.Currency != "IRR" {
+	if k.Factors.Exposure.Amount.Mantissa != "40" || k.Factors.Exposure.Amount.Currency != "IRR" {
 		t.Errorf("exposure amount mismapped: %+v", *k.Factors.Exposure.Amount)
 	}
 

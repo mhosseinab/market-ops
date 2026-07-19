@@ -1570,11 +1570,8 @@ export interface components {
         MarginReadinessState: "complete" | "partial" | "stale" | "missing";
         /** @description An exact monetary amount as the (mantissa, currency, exponent) triple (PRD §9.1). Value = mantissa × 10^exponent currency units. There is NO float: mantissa is an exact integer. A cost amount is representable because the account's entry currency is known; it stays excluded from executable paths until S16+S35. */
         MoneyAmount: {
-            /**
-             * Format: int64
-             * @description Exact integer mantissa.
-             */
-            mantissa: number;
+            /** @description Exact int64 mantissa as a signed base-10 decimal STRING (PRD §9.1, never-cut MONEY CORRECTNESS). String-encoded — never a JSON number — so full int64 precision survives every generated client boundary (a JavaScript number silently rounds int64 values above 2^53). Consumers MUST convert the string directly to a big integer and reject any value outside the signed int64 range or not matching `^-?[0-9]+$`; there is NO float on any money path. */
+            mantissa: string;
             /** @description ISO-4217 currency code. */
             currency: string;
             /** @description Base-10 exponent applied to the mantissa. */
