@@ -23,15 +23,21 @@ import (
 type fakeRecorder struct {
 	thresholds map[event.Type]event.Threshold
 	seen       map[string]bool
+	open       map[string]bool // dedup keys with a currently-open event (condition-clear)
 	recorded   []event.Candidate
+	resolved   []string
 	recErr     error
 	thrErr     error
+	resolveErr error
+	expireErr  error
+	expired    int64 // number ExpireStaleAll reports swept
 }
 
 func newFakeRecorder() *fakeRecorder {
 	return &fakeRecorder{
 		thresholds: map[event.Type]event.Threshold{},
 		seen:       map[string]bool{},
+		open:       map[string]bool{},
 	}
 }
 
@@ -49,7 +55,33 @@ func (f *fakeRecorder) RecordFor(_ context.Context, _ uuid.UUID, c event.Candida
 	f.recorded = append(f.recorded, c)
 	deduped := f.seen[c.DedupKey]
 	f.seen[c.DedupKey] = true
+	f.open[c.DedupKey] = true // a recorded candidate leaves an open event
 	return event.RecordResult{Deduped: deduped}, nil
+}
+
+// ExpireStaleAll reports the configured sweep count; it does not model per-key
+// expiry (the DB-backed lifecycle tests cover the real transition). Default 0 keeps
+// unrelated producer tests unaffected.
+func (f *fakeRecorder) ExpireStaleAll(_ context.Context, _ time.Time) (int64, error) {
+	if f.expireErr != nil {
+		return 0, f.expireErr
+	}
+	return f.expired, nil
+}
+
+// ResolveOpen mirrors the real service's monotonic idempotency: it resolves an open
+// key exactly once (returns true, then clears it) and is a no-op (false) for a key
+// that is not open — never resurrecting a terminal event.
+func (f *fakeRecorder) ResolveOpen(_ context.Context, dedupKey string) (bool, error) {
+	if f.resolveErr != nil {
+		return false, f.resolveErr
+	}
+	if f.open[dedupKey] {
+		delete(f.open, dedupKey)
+		f.resolved = append(f.resolved, dedupKey)
+		return true, nil
+	}
+	return false, nil
 }
 
 // fiveTransitions returns one materialising transition per detector type, all for
@@ -284,7 +316,7 @@ func TestProducerEmitsObservabilityFields(t *testing.T) {
 			continue
 		}
 		found = true
-		for _, k := range []string{"scanned", "produced", "deduped", "dormant", "errors"} {
+		for _, k := range []string{"scanned", "produced", "deduped", "dormant", "resolved", "expired", "errors"} {
 			if _, ok := m[k]; !ok {
 				t.Errorf("summary log missing field %q", k)
 			}
@@ -292,5 +324,76 @@ func TestProducerEmitsObservabilityFields(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("no producer summary log line emitted; got: %s", buf.String())
+	}
+}
+
+// TestProducerResolvesClearedConditionAndIsMonotonic proves the type-aware
+// condition-clear path (issue #66): when a detector reports its triggering
+// condition no longer holds AND an open event exists for that identity, the pass
+// RESOLVES it — and a replayed clearance is a monotonic no-op that never resurrects
+// the terminal event.
+func TestProducerResolvesClearedConditionAndIsMonotonic(t *testing.T) {
+	account, variant := uuid.New(), uuid.New()
+	now := time.Now().UTC()
+	rec := newFakeRecorder()
+	// Pre-existing open winning_state event for this variant (dedup key mirrors the
+	// domain: "<type>:<variant>" with empty scope).
+	rec.open["winning_state:"+variant.String()] = true
+	// A DORMANT winning_state transition (steady non-winning — condition cleared).
+	src := staticSource{transitions: []event.Transition{
+		{Account: account, Category: "*", Type: event.TypeWinningState, WinningState: &event.WinningStateInput{
+			Variant: variant, WasWinning: false, IsWinning: false,
+			Exposure: event.UnknownExposure(),
+			Evidence: event.Evidence{Quality: event.QualitySupported, Ref: "r"},
+			Now:      now, TTL: time.Hour,
+		}},
+	}}
+	p := event.NewProducer(rec, src, nil)
+
+	first, err := p.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if first.Resolved != 1 || first.Dormant != 0 || first.Produced != 0 {
+		t.Fatalf("cleared condition must resolve exactly once: resolved=%d dormant=%d produced=%d",
+			first.Resolved, first.Dormant, first.Produced)
+	}
+	if len(rec.resolved) != 1 || rec.resolved[0] != "winning_state:"+variant.String() {
+		t.Fatalf("resolve must target the open dedup key, got %v", rec.resolved)
+	}
+
+	// Replay the SAME clearance: nothing open now, so it is a no-op (dormant), never a
+	// second resolve — monotonic lifecycle (EVT-003).
+	second, err := p.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("second pass: %v", err)
+	}
+	if second.Resolved != 0 || second.Dormant != 1 {
+		t.Fatalf("replayed clearance must be a no-op: resolved=%d dormant=%d", second.Resolved, second.Dormant)
+	}
+}
+
+// TestProducerExpirySweepCountedAndSurfacesError proves the durable expiry sweep is
+// driven by the pass (issue #66): the count is reported, and a sweep failure is
+// surfaced for River retry rather than swallowed.
+func TestProducerExpirySweepCountedAndSurfacesError(t *testing.T) {
+	rec := newFakeRecorder()
+	rec.expired = 3
+	m, err := event.NewProducer(rec, staticSource{}, nil).RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if m.Expired != 3 {
+		t.Fatalf("expiry sweep count must be reported, got expired=%d", m.Expired)
+	}
+
+	rec2 := newFakeRecorder()
+	rec2.expireErr = errors.New("sweep db down")
+	m2, err := event.NewProducer(rec2, staticSource{}, nil).RunOnce(context.Background())
+	if err == nil {
+		t.Fatal("a sweep failure must be surfaced for retry, got nil error")
+	}
+	if m2.Errors != 1 {
+		t.Fatalf("errors metric = %d, want 1", m2.Errors)
 	}
 }
