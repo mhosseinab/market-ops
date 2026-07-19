@@ -49,17 +49,39 @@ type VariantPage struct {
 
 // variantsEnvelope is the minimal decode of the DK variants list response. Items
 // are kept as raw messages so each can be both projected and snapshotted
-// verbatim; the pager drives pagination.
+// verbatim; the pager drives pagination. Every level is a pointer so the
+// connector can tell an ABSENT field from a present zero value — a bare `{}` (no
+// data/pager) is a malformed page, not a successful empty last page (issue #7).
 type variantsEnvelope struct {
-	Status string `json:"status"`
-	Data   struct {
-		Items []json.RawMessage `json:"items"`
-		Pager struct {
-			Page       int `json:"page"`
-			TotalPages int `json:"total_pages"`
-			TotalRows  int `json:"total_rows"`
-		} `json:"pager"`
-	} `json:"data"`
+	Status string        `json:"status"`
+	Data   *variantsData `json:"data"`
+}
+
+type variantsData struct {
+	Items *[]json.RawMessage `json:"items"`
+	Pager *variantsPager     `json:"pager"`
+}
+
+type variantsPager struct {
+	Page       *int `json:"page"`
+	TotalPages *int `json:"total_pages"`
+	TotalRows  *int `json:"total_rows"`
+}
+
+// VariantsPayloadError is a typed parser-drift error (§10.4): the DK variants
+// response parsed as JSON but is semantically invalid for the S10 canonical
+// model — a missing/inconsistent envelope or pager, or an item lacking a
+// positive marketplace-native identity. It fails the page CLOSED: the catalog
+// sync records it, leaves next_page unchanged, commits no page data, and runs no
+// reconciliation. Ambiguous/incomplete provider payloads are quarantined with
+// evidence, never coerced into a "successful empty page" or zero-valued identity.
+type VariantsPayloadError struct {
+	Page   int
+	Reason string
+}
+
+func (e *VariantsPayloadError) Error() string {
+	return fmt.Sprintf("connector: invalid variants payload on page %d: %s", e.Page, e.Reason)
 }
 
 // variantItemDTO decodes the DK variant fields the catalog needs. price_sale is
@@ -118,23 +140,59 @@ func (c *DKClient) FetchVariantsPage(ctx context.Context, accessToken string, pa
 		return VariantPage{}, fmt.Errorf("connector: decode variants page %d: %w", page, err)
 	}
 
+	// Validate the envelope + pager BEFORE building a VariantPage. A missing data
+	// envelope or pager is malformed, NOT an empty last page — never silently
+	// coerce absent pagination into a successful terminal page (issue #7).
+	if env.Data == nil {
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: "missing data envelope"}
+	}
+	if env.Data.Items == nil {
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: "missing data.items"}
+	}
+	if env.Data.Pager == nil {
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: "missing data.pager"}
+	}
+	pg := env.Data.Pager
+	if pg.Page == nil || pg.TotalPages == nil || pg.TotalRows == nil {
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: "incomplete pager (page, total_pages, total_rows all required)"}
+	}
+	items := *env.Data.Items
+	switch {
+	case *pg.Page < 1:
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("non-positive pager page %d", *pg.Page)}
+	case *pg.TotalPages < 1:
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("non-positive pager total_pages %d", *pg.TotalPages)}
+	case *pg.TotalRows < 0:
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("negative pager total_rows %d", *pg.TotalRows)}
+	case *pg.Page > *pg.TotalPages:
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("pager page %d exceeds total_pages %d", *pg.Page, *pg.TotalPages)}
+	case len(items) == 0 && *pg.TotalRows > 0:
+		// DK's total_pages = ceil(total_rows/page_size), so every page in range
+		// carries at least one item when rows exist; an empty page that still
+		// claims rows is an inconsistent/truncated payload.
+		return VariantPage{}, &VariantsPayloadError{Page: page, Reason: fmt.Sprintf("empty items with total_rows %d", *pg.TotalRows)}
+	}
+
 	out := VariantPage{
-		Page:       env.Data.Pager.Page,
-		TotalPages: env.Data.Pager.TotalPages,
-		TotalRows:  env.Data.Pager.TotalRows,
+		Page:       *pg.Page,
+		TotalPages: *pg.TotalPages,
+		TotalRows:  *pg.TotalRows,
 	}
-	if out.Page == 0 {
-		out.Page = page
-	}
-	if out.TotalPages == 0 {
-		out.TotalPages = out.Page // no pager total ⇒ treat current page as last.
-	}
-	for _, raw := range env.Data.Items {
+	for idx, raw := range items {
 		var dto variantItemDTO
 		d := json.NewDecoder(bytes.NewReader(raw))
 		d.UseNumber()
 		if err := d.Decode(&dto); err != nil {
-			return VariantPage{}, fmt.Errorf("connector: decode variant item on page %d: %w", page, err)
+			return VariantPage{}, fmt.Errorf("connector: decode variant item %d on page %d: %w", idx, page, err)
+		}
+		// Identity quarantine (CAT-001): every required marketplace-native id must
+		// be present and positive. A missing or zero id can never be materialised
+		// as a canonical Product/Variant/Listing/Owned Offer.
+		if dto.ProductID < 1 || dto.ID < 1 || dto.ProductVariantID < 1 {
+			return VariantPage{}, &VariantsPayloadError{
+				Page:   page,
+				Reason: fmt.Sprintf("item %d has non-positive native id (product_id=%d, id=%d, product_variant_id=%d)", idx, dto.ProductID, dto.ID, dto.ProductVariantID),
+			}
 		}
 		item := VariantItem{
 			NativeProductID: dto.ProductID,
