@@ -669,6 +669,77 @@ func TestDedupMaterialConflictNotDiscarded(t *testing.T) {
 	}
 }
 
+// TestTargetResyncsOnIdentityNativeIdChange is the issue #41 regression: the
+// observation target denormalizes the identity's native product/variant ids used
+// to route capture. If a Confirmed identity's native identifiers change while the
+// row stays active and Confirmed, the target's denormalized routing ids MUST NOT
+// go stale — otherwise subsequent observations are fetched/attributed with stale
+// identity data even though the canonical Confirmed mapping has moved. Migration
+// 0029 wires an AFTER UPDATE trigger on market_product_identities that resyncs the
+// target's denormalized columns in the SAME transaction, leaving no active stale
+// target (identity quarantine, OBS-001/OBS-007).
+//
+// DB-active: deferred to CI (real postgres:18); skipped without DATABASE_URL.
+func TestTargetResyncsOnIdentityNativeIdChange(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant, nv, np := seedVariant(t, q)
+	identity := insertConfirmedIdentity(t, pool, account, variant, nv, np)
+
+	svc := obs.NewService(pool)
+	created, err := svc.SyncTargetsFromConfirmed(ctx, account)
+	if err != nil || len(created) != 1 {
+		t.Fatalf("sync targets: %v (n=%d)", err, len(created))
+	}
+	target := created[0]
+	if target.NativeVariantID != nv || target.NativeProductID != np {
+		t.Fatalf("target seeded with wrong native ids: (%d,%d) want (%d,%d)",
+			target.NativeVariantID, target.NativeProductID, nv, np)
+	}
+
+	// The canonical Confirmed identity's native identifiers change in place while
+	// the row stays active + Confirmed (e.g. a DK redirect handled without a full
+	// reopen). This is exactly the update-in-place path the sync predicate missed.
+	newNV, newNP := nv+1, np+1
+	tag, err := pool.Exec(ctx, `
+		UPDATE market_product_identities
+		   SET native_variant_id = $2, native_product_id = $3, version = version + 1, updated_at = now()
+		 WHERE id = $1`, identity, newNV, newNP)
+	if err != nil {
+		t.Fatalf("update identity native ids: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("want 1 identity row updated, got %d", tag.RowsAffected())
+	}
+
+	// The target must now match the current Confirmed identity fields — the trigger
+	// resynced the denormalized routing ids in the same transaction.
+	got, err := q.GetObservationTarget(ctx, target.ID)
+	if err != nil {
+		t.Fatalf("reload target: %v", err)
+	}
+	if got.NativeVariantID != newNV || got.NativeProductID != newNP {
+		t.Fatalf("stale target after identity native-id change: (%d,%d) want (%d,%d)",
+			got.NativeVariantID, got.NativeProductID, newNV, newNP)
+	}
+	if !got.Active {
+		t.Fatal("target must remain active for the still-Confirmed identity")
+	}
+
+	// No active stale target may survive: every active target for this identity
+	// carries the current native ids.
+	targets, err := svc.ListTargets(ctx, account)
+	if err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+	for _, tg := range targets {
+		if tg.IdentityID == identity && (tg.NativeVariantID != newNV || tg.NativeProductID != newNP) {
+			t.Fatalf("active stale target left behind: (%d,%d) want (%d,%d)",
+				tg.NativeVariantID, tg.NativeProductID, newNV, newNP)
+		}
+	}
+}
+
 func containsRoute(routes []byte, want string) bool {
 	// routes is jsonb; a substring check is sufficient for the fixed route tokens.
 	return len(routes) > 0 && contains(string(routes), want)
