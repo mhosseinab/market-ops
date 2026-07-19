@@ -26,6 +26,23 @@
 --      threshold_id without a version (or a version without an id) is an unprovable
 --      citation and fails closed.
 --
+--      SCOPE (issue #69 follow-up). The full resolution + in-force check runs on
+--      INSERT and, on UPDATE, ONLY when a provenance-relevant column actually
+--      changes (threshold_id, threshold_version, last_evidence_at, event_type,
+--      marketplace_account_id). This still covers every path that (re)establishes a
+--      citation — the plain INSERT and the RecordEvent dedup DO UPDATE, which
+--      re-sets threshold_id/threshold_version/last_evidence_at from a freshly
+--      re-resolved candidate. It deliberately does NOT re-run on pure append-only
+--      LIFECYCLE transitions (ResolveEvent, ResolveOpenEventByDedupKey,
+--      ExpireStaleEvents/All), which touch only `state`/timestamps. Without this
+--      gate a BACKDATED superseding materiality_thresholds version could retroactively
+--      make an already-recorded, in-force-at-detection citation read as "superseded",
+--      so a later lifecycle UPDATE would abort with 23514 — and because the
+--      account-wide expiry sweep is ONE statement, a single poisoned row would stall
+--      expiry for EVERY tenant (stale events stay actionable, dedup keys never freed
+--      — an EVT-003 recurrence and a §4.6 tenant-isolation break). Provenance recorded
+--      at detection is immutable; re-judging it against later configuration is wrong.
+--
 --      A thresholdless NON-floor event stays legal: winning-state "lost" and
 --      suppression/boundary fires are transition-driven and consult no knob, and a
 --      movement type simply carries no threshold when none is configured. The
@@ -63,6 +80,27 @@ LANGUAGE plpgsql AS $$
 DECLARE
     thr materiality_thresholds%ROWTYPE;
 BEGIN
+    -- (0) LIFECYCLE PASS-THROUGH (issue #69 follow-up). Provenance recorded at
+    -- detection is immutable and was validated when it was written. On a pure
+    -- append-only lifecycle UPDATE — state/timestamp-only transitions from
+    -- ResolveEvent, ResolveOpenEventByDedupKey, ExpireStaleEvents/All — none of the
+    -- provenance-relevant columns change, so there is nothing to re-validate and the
+    -- row must pass untouched. Re-running the resolution + in-force check here would
+    -- let a BACKDATED superseding threshold version retroactively poison an already
+    -- valid citation and abort the lifecycle write (23514), stalling the account-wide
+    -- expiry sweep for EVERY tenant. INSERT and any provenance-MUTATING UPDATE (the
+    -- RecordEvent dedup DO UPDATE re-sets id/version/last_evidence_at) still run the
+    -- full binding below.
+    IF TG_OP = 'UPDATE'
+       AND NEW.threshold_id IS NOT DISTINCT FROM OLD.threshold_id
+       AND NEW.threshold_version IS NOT DISTINCT FROM OLD.threshold_version
+       AND NEW.last_evidence_at IS NOT DISTINCT FROM OLD.last_evidence_at
+       AND NEW.event_type IS NOT DISTINCT FROM OLD.event_type
+       AND NEW.marketplace_account_id IS NOT DISTINCT FROM OLD.marketplace_account_id
+    THEN
+        RETURN NEW;
+    END IF;
+
     -- (A) contribution_floor is the EXPLICIT thresholdless exception (EVT-002): its
     -- materiality is the S16 policy floor, not a versioned knob. It must NEVER cite a
     -- materiality threshold, and no other type may borrow that exemption.

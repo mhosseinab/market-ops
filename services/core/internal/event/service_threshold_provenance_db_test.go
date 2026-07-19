@@ -2,12 +2,16 @@ package event_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
 )
 
@@ -212,9 +216,31 @@ func TestThresholdRetentionCannotEraseProvenance(t *testing.T) {
 	}
 
 	// A direct delete of the governing threshold must be REJECTED while an event
-	// still cites it — provenance cannot be erased.
-	if _, err := pool.Exec(ctx, `DELETE FROM materiality_thresholds WHERE id = $1`, cp); err == nil {
+	// still cites it — provenance cannot be erased. Area follow-up #1: assert the FK
+	// ITSELF is ON DELETE NO ACTION (SQLSTATE 23503 foreign_key_violation), not merely
+	// that the delete is caught downstream by the both-or-neither trigger (23514).
+	// Under the old SET NULL reference the delete would still "fail" via the trigger,
+	// so a regression reverting NO ACTION → SET NULL would slip through unless the
+	// rejecting layer is pinned to the FK.
+	_, err := pool.Exec(ctx, `DELETE FROM materiality_thresholds WHERE id = $1`, cp)
+	if err == nil {
 		t.Fatal("deleting a governing threshold must be rejected (reproducibility)")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
+		t.Fatalf("delete must be rejected by the FK itself (ON DELETE NO ACTION → 23503 foreign_key_violation), got %v", err)
+	}
+	// Belt and suspenders: the constraint's delete action is 'a' (NO ACTION), so the
+	// intent is checkable from the catalog directly and a future SET NULL revert is
+	// caught even if the runtime error code ever changes.
+	var confdeltype string
+	if err := pool.QueryRow(ctx, `
+		SELECT confdeltype FROM pg_constraint
+		WHERE conname = 'market_events_threshold_id_fkey'`).Scan(&confdeltype); err != nil {
+		t.Fatalf("read FK delete action: %v", err)
+	}
+	if confdeltype != "a" {
+		t.Fatalf("market_events_threshold_id_fkey must be ON DELETE NO ACTION (confdeltype='a'), got %q", confdeltype)
 	}
 
 	// The threshold row is still present and reproducible.
@@ -230,5 +256,128 @@ func TestThresholdRetentionCannotEraseProvenance(t *testing.T) {
 	// one statement (the deferred NO ACTION check finds no dangling reference).
 	if _, err := pool.Exec(ctx, `DELETE FROM marketplace_accounts WHERE id = $1`, account); err != nil {
 		t.Fatalf("account teardown must cascade cleanly: %v", err)
+	}
+}
+
+// insertProvenanceEventReturning inserts a market_events row like insertProvenanceEvent
+// but with explicit control over the expiry deadline and returns the new row id, so a
+// test can later drive a lifecycle transition (resolve / account-wide expiry sweep) or
+// a provenance-mutating UPDATE against that exact row.
+func insertProvenanceEventReturning(t *testing.T, pool *pgxpool.Pool, account, variant uuid.UUID, etype event.Type, thresholdID *uuid.UUID, thresholdVersion *int32, detectedAt, expiresAt time.Time) uuid.UUID {
+	t.Helper()
+	ctx := context.Background()
+	var idArg, verArg any
+	if thresholdID != nil {
+		idArg = *thresholdID
+	}
+	if thresholdVersion != nil {
+		verArg = *thresholdVersion
+	}
+	var id uuid.UUID
+	err := pool.QueryRow(ctx, `
+		INSERT INTO market_events (
+			marketplace_account_id, variant_id, event_type, severity, state,
+			dedup_key, threshold_id, threshold_version, exposure_known,
+			confidence_bp, urgency_bp, evidence_quality,
+			first_detected_at, last_evidence_at, expires_at
+		) VALUES (
+			$1, $2, $3, 'warning', 'open',
+			$4, $5, $6, false,
+			5000, 5000, 'supported',
+			$7::timestamptz, $7::timestamptz, $8::timestamptz
+		) RETURNING id`,
+		account, variant, string(etype), "prov:"+uuid.NewString(), idArg, verArg, detectedAt, expiresAt).Scan(&id)
+	if err != nil {
+		t.Fatalf("insert provenance event: %v", err)
+	}
+	return id
+}
+
+// TestBackdatedThresholdDoesNotStallLifecycleAcrossTenants is the issue #69 blocker
+// regression (§4.6 tenant-isolation + event-dedup, EVT-003). A citation that was in
+// force AT DETECTION is immutable; appending a BACKDATED superseding
+// materiality_thresholds version (effective_from <= the event's last_evidence_at, with
+// a greater (effective_from, version) than the cited row) must NOT retroactively make
+// that recorded citation abort a later append-only LIFECYCLE UPDATE. Before the fix the
+// unguarded BEFORE INSERT OR UPDATE trigger re-ran the in-force check on EVERY update:
+//
+//	(a) a resolve UPDATE on the poisoned row aborted with 23514, and
+//	(b) the account-wide ExpireStaleEventsAll sweep — ONE statement — aborted whole,
+//	    so a HEALTHY event in ANOTHER tenant never expired (cross-tenant expiry stall,
+//	    dedup keys never freed).
+//
+// The provenance-MUTATING UPDATE path (c) must still reject, so the binding is only
+// relaxed for state/timestamp-only transitions.
+func TestBackdatedThresholdDoesNotStallLifecycleAcrossTenants(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+
+	accountA, variantA := seedVariant(t, q)
+	accountB, variantB := seedVariant(t, q)
+
+	// Account A: a competitor_price threshold v1 in force since now-4h.
+	cpA := seedThreshold(t, pool, accountA, "*", event.TypeCompetitorPrice, 1, now.Add(-4*time.Hour))
+
+	// A poisoned-but-already-recorded event citing (cpA, v1) at detection now-2h. It
+	// was legitimately in force then; it is STALE now (expires_at now-1h) so the sweep
+	// must touch it.
+	poisonedStale := insertProvenanceEventReturning(t, pool, accountA, variantA,
+		event.TypeCompetitorPrice, ptrUUID(cpA), ptrInt32(1),
+		now.Add(-2*time.Hour), now.Add(-1*time.Hour))
+
+	// A second poisoned-but-recorded event citing (cpA, v1), still OPEN (expires now+1h),
+	// used to prove a plain resolve transition survives.
+	poisonedOpen := insertProvenanceEventReturning(t, pool, accountA, variantA,
+		event.TypeCompetitorPrice, ptrUUID(cpA), ptrInt32(1),
+		now, now.Add(time.Hour))
+
+	// Account B (foreign tenant): a healthy competitor_price event with NO superseding
+	// version, also stale now. Its expiry must not be collateral-damaged by A's poison.
+	cpB := seedThreshold(t, pool, accountB, "*", event.TypeCompetitorPrice, 1, now.Add(-4*time.Hour))
+	healthyStaleB := insertProvenanceEventReturning(t, pool, accountB, variantB,
+		event.TypeCompetitorPrice, ptrUUID(cpB), ptrInt32(1),
+		now.Add(-2*time.Hour), now.Add(-1*time.Hour))
+
+	// NOW append the BACKDATED superseding version: (now-3h, v2) > (now-4h, v1) and its
+	// effective_from (now-3h) precedes both events' detection instants — so the resolver
+	// would today read cpA v1 as "superseded", poisoning the recorded citations.
+	_ = seedThreshold(t, pool, accountA, "*", event.TypeCompetitorPrice, 2, now.Add(-3*time.Hour))
+
+	// (a) A plain resolve (state/timestamp-only) of the poisoned open event must SUCCEED.
+	if _, err := q.ResolveEvent(ctx, db.ResolveEventParams{ID: poisonedOpen, ResolvedAt: pgtype.Timestamptz{Time: now, Valid: true}}); err != nil {
+		t.Fatalf("resolve of a poisoned-provenance event must succeed (lifecycle-only UPDATE): %v", err)
+	}
+
+	// (b) The account-wide expiry sweep must SUCCEED despite the poisoned stale row, and
+	// the foreign tenant's healthy stale event must actually expire (no cross-tenant abort).
+	n, err := q.ExpireStaleEventsAll(ctx, now)
+	if err != nil {
+		t.Fatalf("account-wide expiry sweep must not abort on a poisoned row (cross-tenant stall): %v", err)
+	}
+	if n < 2 {
+		t.Fatalf("sweep must expire both stale events (A poisoned + B healthy), affected %d", n)
+	}
+	assertState(t, pool, poisonedStale, "expired")
+	assertState(t, pool, healthyStaleB, "expired")
+
+	// (c) A genuine provenance-MUTATING UPDATE (changing the cited version to a
+	// non-existent v99) must STILL be rejected — the binding is only relaxed for
+	// lifecycle-only transitions, never for citations being rewritten.
+	if _, err := pool.Exec(ctx,
+		`UPDATE market_events SET threshold_version = 99 WHERE id = $1`, poisonedStale); err == nil {
+		t.Fatal("mutating a citation to an inconsistent version must still be rejected")
+	}
+}
+
+func assertState(t *testing.T, pool *pgxpool.Pool, id uuid.UUID, want string) {
+	t.Helper()
+	var got string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT state FROM market_events WHERE id = $1`, id).Scan(&got); err != nil {
+		t.Fatalf("read event state: %v", err)
+	}
+	if got != want {
+		t.Fatalf("event %s: state = %q, want %q", id, got, want)
 	}
 }
