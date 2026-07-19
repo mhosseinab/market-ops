@@ -10,6 +10,7 @@ import (
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
@@ -28,7 +29,7 @@ import (
 type ApprovalService interface {
 	GetCardForOrg(ctx context.Context, organizationID, id uuid.UUID) (db.ApprovalCard, error)
 	History(ctx context.Context, cardID uuid.UUID) ([]db.ApprovalCardState, error)
-	ConfirmIndividualForOrg(ctx context.Context, organizationID, cardID uuid.UUID, presented approval.Binding, now time.Time) (recommendation.ConfirmOutcome, error)
+	ConfirmIndividualForOrg(ctx context.Context, organizationID, cardID uuid.UUID, presented approval.Binding, now time.Time, actor audit.Actor) (recommendation.ConfirmOutcome, error)
 	// ConfirmBulkSelectionForOrg authoritatively confirms a bulk approval bound to
 	// one exact selection-set version (issue #90, CHAT-052), scoped to the caller's
 	// account (issue #102). It resolves the caller's account and predicates the
@@ -37,7 +38,7 @@ type ApprovalService interface {
 	// not-found) and never authorizes or probes a foreign selection set; #90's
 	// per-item authoritative flow (durable per-item results, tenant account_mismatch
 	// rejection) is preserved unchanged.
-	ConfirmBulkSelectionForOrg(ctx context.Context, organizationID, lineage uuid.UUID, boundVersion int32, now time.Time) (recommendation.BulkConfirmOutcome, error)
+	ConfirmBulkSelectionForOrg(ctx context.Context, organizationID, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (recommendation.BulkConfirmOutcome, error)
 	// EditPriceForOrg mints a new card version with the edited price (CHAT-044,
 	// PD-3 item 2, S37), scoped to the caller's account.
 	EditPriceForOrg(ctx context.Context, organizationID, cardID uuid.UUID, newPrice money.Money, now time.Time) (db.ApprovalCard, error)
@@ -92,7 +93,7 @@ func (s *gatewayServer) ConfirmApproval(
 		return gateway.ConfirmApprovaldefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
 	presented := fromGatewayBinding(req.Body.Binding)
-	outcome, err := s.approval.ConfirmIndividualForOrg(ctx, orgFromCtx(ctx), req.Body.CardId, presented, time.Now().UTC())
+	outcome, err := s.approval.ConfirmIndividualForOrg(ctx, orgFromCtx(ctx), req.Body.CardId, presented, time.Now().UTC(), confirmActor(ctx))
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -131,7 +132,7 @@ func (s *gatewayServer) ConfirmBulkApproval(
 	if req.Body == nil {
 		return gateway.ConfirmBulkApprovaldefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	outcome, err := s.approval.ConfirmBulkSelectionForOrg(ctx, orgFromCtx(ctx), req.Body.SelectionSetLineage, int32(req.Body.BoundVersion), time.Now().UTC())
+	outcome, err := s.approval.ConfirmBulkSelectionForOrg(ctx, orgFromCtx(ctx), req.Body.SelectionSetLineage, int32(req.Body.BoundVersion), time.Now().UTC(), confirmActor(ctx))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return gateway.ConfirmBulkApprovaldefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
@@ -262,6 +263,21 @@ func sortUUIDs(ids []uuid.UUID) {
 			ids[j-1], ids[j] = ids[j], ids[j-1]
 		}
 	}
+}
+
+// confirmActor builds the AUD-001 actor for a confirmation from the authenticated
+// session principal ONLY. The identity (stable user id + role) and surface come
+// from the injected principal, NEVER from the request body — a request cannot
+// supply or override who activated the structured control (free-text containment,
+// §8; issue #103). It mirrors executionActorFrom's shape so a confirmation and the
+// downstream execution of the same action are attributed to the same principal id.
+// The route is behind the auth middleware, so a principal is always present; the
+// empty-surface fallback is defensive and matches the execution path.
+func confirmActor(ctx context.Context) audit.Actor {
+	if p, ok := principalFrom(ctx); ok {
+		return audit.Actor{ID: p.UserID.String(), Role: string(p.Role), Surface: "screen"}
+	}
+	return audit.Actor{Surface: "screen"}
 }
 
 func approvalErr(err error) gateway.ErrorEnvelope {

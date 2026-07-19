@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/identity"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
@@ -40,13 +41,20 @@ type ExecutionDispatcher interface {
 type Service struct {
 	pool       *pgxpool.Pool
 	dispatcher ExecutionDispatcher
+	// auditAppend is the AUD-001 audit-append seam. It defaults to audit.Append and
+	// is only swapped by white-box tests (export_test.go) to force an append failure
+	// and prove a confirmation rolls back atomically when its audit cannot commit
+	// (issue #103). Production always uses audit.Append.
+	auditAppend func(ctx context.Context, q *db.Queries, ev audit.Event) (db.AuditRecord, error)
 }
 
 // NewService builds a recommendation/approval Service bound to the pool. The
 // execution dispatcher is optional (nil until wired via SetExecutionDispatcher):
 // without it, a confirmation still commits Approved but enqueues no durable intent
 // — the pre-#92 behaviour, kept for the Draft-only chat plane and tests.
-func NewService(pool *pgxpool.Pool) *Service { return &Service{pool: pool} }
+func NewService(pool *pgxpool.Pool) *Service {
+	return &Service{pool: pool, auditAppend: audit.Append}
+}
 
 // SetExecutionDispatcher wires the durable execution-intent dispatcher (issue #92).
 // It is called once during startup, AFTER the River client exists and BEFORE the
@@ -326,7 +334,19 @@ type ConfirmOutcome struct {
 // performs no write. The lineage lock is shared with the Draft-minting path
 // (mintDraftCard), so a concurrent version mint and a confirm serialize and a
 // stale approval can never win the race.
-func (s *Service) ConfirmIndividual(ctx context.Context, cardID uuid.UUID, presented approval.Binding, now time.Time) (ConfirmOutcome, error) {
+//
+// AUD-001 (issue #103): a genuine Approved outcome appends EXACTLY ONE immutable
+// confirmation audit record — the authenticated actor, surface, APR-001 bindings,
+// and a card snapshot — on THIS transaction, so the audit commits ATOMICALLY with
+// the Approved state. If the audit append fails the whole confirmation rolls back
+// (fail closed): a state-changing approval can never exist without its immutable
+// evidence. The actor is supplied by the caller from authenticated context ONLY
+// (never a request body); it is identity, never free-text authority. A non-approval
+// outcome (Superseded→Invalidated, a changed binding→Invalidated, a lapse→Expired)
+// writes NO confirmation event — its required non-approval evidence is the
+// append-only approval_card_states transition AdvanceTx already records; it must not
+// masquerade as an activation.
+func (s *Service) ConfirmIndividual(ctx context.Context, cardID uuid.UUID, presented approval.Binding, now time.Time, actor audit.Actor) (ConfirmOutcome, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return ConfirmOutcome{}, err
@@ -403,16 +423,33 @@ func (s *Service) ConfirmIndividual(ctx context.Context, cardID uuid.UUID, prese
 	if err != nil {
 		return ConfirmOutcome{}, err
 	}
-	// Durable execution dispatch (issue #92): only a genuinely Approved card enqueues
-	// the execution intent, and it enqueues on THIS transaction (tx) so the intent
-	// commits atomically with the Approved state. A dispatch failure rolls the whole
-	// confirmation back (fail closed): neither Approved nor an intent is committed, so
-	// the card can be re-confirmed rather than being left Approved with no processing.
-	// A superseded/invalidated outcome never reaches here (it returned above), so a
-	// stale control never dispatches (APR-001).
-	if res.Card.State == approval.StateApproved && s.dispatcher != nil {
-		if err := s.dispatcher.DispatchApprovedTx(ctx, tx, advanced); err != nil {
+	// AUD-001 confirmation audit (issue #103): ONLY a genuinely Approved card writes
+	// a confirmation event, and it writes on THIS transaction (q over tx) so the
+	// immutable audit commits ATOMICALLY with the Approved state. An append failure
+	// rolls the whole confirmation back (fail closed): the card stays
+	// AwaitingConfirmation and can be re-confirmed rather than being left Approved
+	// with no evidence of who activated the control. The append precedes the durable
+	// dispatch below, so a rollback from either seam discards BOTH the audit and the
+	// state. A non-approval outcome never reaches here (it returned above), so it
+	// never fabricates a confirmation event — its append-only state-history row is
+	// its required non-approval evidence.
+	if res.Card.State == approval.StateApproved {
+		if _, err := s.auditAppend(ctx, q, audit.Event{
+			ActionID:     advanced.ActionID,
+			CardID:       advanced.ID,
+			AccountID:    advanced.MarketplaceAccountID,
+			Type:         audit.EventConfirmation,
+			Actor:        actor,
+			Binding:      card.Binding,
+			CardSnapshot: confirmationSnapshot(advanced),
+			Detail:       confirmationDetail(presented),
+		}); err != nil {
 			return ConfirmOutcome{}, err
+		}
+		if s.dispatcher != nil {
+			if err := s.dispatcher.DispatchApprovedTx(ctx, tx, advanced); err != nil {
+				return ConfirmOutcome{}, err
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -424,6 +461,36 @@ func (s *Service) ConfirmIndividual(ctx context.Context, cardID uuid.UUID, prese
 		Reason:           res.Reason,
 		ExecutionPending: res.Card.State == approval.StateApproved,
 	}, nil
+}
+
+// confirmationSnapshot is the AUD-001 card snapshot recorded with a confirmation
+// event: the exact card that was Approved (id/lineage version/state/action) and its
+// money-typed price rendered as raw components (never a float). It is JSON-safe so
+// the trail reproduces the approved card without the conversation.
+func confirmationSnapshot(card db.ApprovalCard) map[string]any {
+	return map[string]any{
+		"card_id":           card.ID.String(),
+		"recommendation_id": card.RecommendationID.String(),
+		"version":           card.Version,
+		"state":             card.State,
+		"action_id":         card.ActionID.String(),
+		"price": map[string]any{
+			"mantissa": card.PriceMantissa,
+			"currency": card.PriceCurrency,
+			"exponent": card.PriceExponent,
+		},
+		"expires_at": card.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	}
+}
+
+// confirmationDetail is the AUD-001 confirmation-event detail: it records that a
+// structured control was activated and the action the presented control was bound
+// to. It carries identifiers only — never a chat message body or free text.
+func confirmationDetail(presented approval.Binding) map[string]any {
+	return map[string]any{
+		"event":               "structured_control_activated",
+		"presented_action_id": presented.ActionID.String(),
+	}
 }
 
 // confirmReason renders the persisted history reason for a confirmation outcome.

@@ -10,10 +10,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/identity"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
+
+// testActor is the authenticated AUD-001 actor a confirmation records (issue #103).
+// It stands in for the transport-derived session principal in service-level DB tests.
+func testActor() audit.Actor {
+	return audit.Actor{ID: "test-user", Role: "owner", Surface: "screen"}
+}
 
 // newPool connects to DATABASE_URL (schema applied via `task db:reset`). Skips
 // when unset so the suite still runs where no Postgres is provisioned.

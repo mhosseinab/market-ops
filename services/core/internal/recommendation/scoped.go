@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
@@ -80,7 +81,10 @@ func (s *Service) GetRecommendationForOrg(ctx context.Context, organizationID, i
 // with NO state change and NO execution intent. The account column on a card is
 // immutable (append-only lineage), so this pre-check is airtight; the confirmation
 // itself then runs its own serialized, FROM-guarded transaction unchanged.
-func (s *Service) ConfirmIndividualForOrg(ctx context.Context, organizationID, cardID uuid.UUID, presented approval.Binding, now time.Time) (ConfirmOutcome, error) {
+// The actor is the authenticated principal carried by the transport (issue #103);
+// it is threaded into the atomic AUD-001 confirmation append and is never sourced
+// from request input.
+func (s *Service) ConfirmIndividualForOrg(ctx context.Context, organizationID, cardID uuid.UUID, presented approval.Binding, now time.Time, actor audit.Actor) (ConfirmOutcome, error) {
 	account, err := s.accountForOrg(ctx, organizationID)
 	if err != nil {
 		return ConfirmOutcome{}, err
@@ -91,7 +95,7 @@ func (s *Service) ConfirmIndividualForOrg(ctx context.Context, organizationID, c
 	}); err != nil {
 		return ConfirmOutcome{}, err // foreign/missing card → uniform not-found, no side effect.
 	}
-	return s.ConfirmIndividual(ctx, cardID, presented, now)
+	return s.ConfirmIndividual(ctx, cardID, presented, now, actor)
 }
 
 // EditPriceForOrg mints a new card version with the edited price ONLY when the
@@ -163,7 +167,7 @@ func (s *Service) PreviewBulkSelectionForOrg(ctx context.Context, organizationID
 // ConfirmBulkSelection then runs unchanged, so its version binding, per-item
 // authorization, idempotency, and per-member account_mismatch rejection are preserved
 // exactly (not weakened).
-func (s *Service) ConfirmBulkSelectionForOrg(ctx context.Context, organizationID, lineage uuid.UUID, boundVersion int32, now time.Time) (BulkConfirmOutcome, error) {
+func (s *Service) ConfirmBulkSelectionForOrg(ctx context.Context, organizationID, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (BulkConfirmOutcome, error) {
 	account, err := s.accountForOrg(ctx, organizationID)
 	if err != nil {
 		return BulkConfirmOutcome{}, err
@@ -176,5 +180,5 @@ func (s *Service) ConfirmBulkSelectionForOrg(ctx context.Context, organizationID
 	}); err != nil {
 		return BulkConfirmOutcome{}, err
 	}
-	return s.ConfirmBulkSelection(ctx, lineage, boundVersion, now)
+	return s.ConfirmBulkSelection(ctx, lineage, boundVersion, now, actor)
 }

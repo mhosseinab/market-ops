@@ -31,6 +31,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 )
 
@@ -100,7 +101,7 @@ type BulkConfirmOutcome struct {
 // authorized in its OWN transaction (inside ConfirmIndividual), so one member's
 // failure never rolls back another's authorization — partial failure is durable and
 // a resume retries only the still-eligible members.
-func (s *Service) ConfirmBulkSelection(ctx context.Context, lineage uuid.UUID, boundVersion int32, now time.Time) (BulkConfirmOutcome, error) {
+func (s *Service) ConfirmBulkSelection(ctx context.Context, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (BulkConfirmOutcome, error) {
 	q := db.New(s.pool)
 	current, err := q.GetCurrentSelectionSet(ctx, lineage)
 	if err != nil {
@@ -138,7 +139,7 @@ func (s *Service) ConfirmBulkSelection(ctx context.Context, lineage uuid.UUID, b
 			out.Items = append(out.Items, item)
 			continue
 		}
-		s.authorizeBulkMember(ctx, current.MarketplaceAccountID, &item, now)
+		s.authorizeBulkMember(ctx, current.MarketplaceAccountID, &item, now, actor)
 		if item.State == BulkItemAuthorized || item.State == BulkItemAlreadyAuthorized {
 			authorizedAny = true
 		}
@@ -155,7 +156,7 @@ func (s *Service) ConfirmBulkSelection(ctx context.Context, lineage uuid.UUID, b
 // NEVER approves directly: it re-resolves the recommendation's current card, enforces
 // tenant integrity, and delegates to ConfirmIndividual, whose gates fail closed for a
 // superseded, expired, non-control-bearing, or already-decided card.
-func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, item *BulkItemResult, now time.Time) {
+func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, item *BulkItemResult, now time.Time, actor audit.Actor) {
 	if item.RecommendationID == uuid.Nil {
 		item.State = BulkItemInvalidated
 		item.Reason = "no_recommendation"
@@ -192,7 +193,7 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 	// control. ConfirmIndividual re-verifies control-bearing, authoritative-current,
 	// and expiry against the live card, so a changed/superseded/expired member fails
 	// closed here — bulk cannot approve what an individual confirm could not.
-	outcome, err := s.ConfirmIndividual(ctx, card.ID, domainCard.Binding, now)
+	outcome, err := s.ConfirmIndividual(ctx, card.ID, domainCard.Binding, now, actor)
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrNoControl):

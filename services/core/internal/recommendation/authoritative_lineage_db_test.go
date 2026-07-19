@@ -78,7 +78,7 @@ func TestConfirmIndividual_SupersededCardFailsClosed(t *testing.T) {
 	}
 
 	// Confirming V1 with its perfectly-replayed binding must fail closed.
-	outcome, err := svc.ConfirmIndividual(ctx, v1.ID, presentedV1, time.Now().UTC())
+	outcome, err := svc.ConfirmIndividual(ctx, v1.ID, presentedV1, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("ConfirmIndividual (superseded V1): unexpected error %v", err)
 	}
@@ -141,7 +141,7 @@ func TestConfirmIndividual_EveryDimensionInvalidatesControl(t *testing.T) {
 			card := awaitingCard(t, svc, account, variant)
 			presented := bindingOf(t, card)
 			c.mutate(&presented)
-			outcome, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC())
+			outcome, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), testActor())
 			if err != nil {
 				t.Fatalf("ConfirmIndividual: %v", err)
 			}
@@ -172,7 +172,7 @@ func TestConfirmIndividual_CurrentCardApprovesAndReplayIsSafe(t *testing.T) {
 	card := awaitingCard(t, svc, account, variant)
 	presented := bindingOf(t, card)
 
-	outcome, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC())
+	outcome, err := svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), testActor())
 	if err != nil {
 		t.Fatalf("ConfirmIndividual (current card): %v", err)
 	}
@@ -185,7 +185,7 @@ func TestConfirmIndividual_CurrentCardApprovesAndReplayIsSafe(t *testing.T) {
 
 	// Idempotent replay: the card is now Approved (no live control). A replay must
 	// not re-approve or produce a second execution intent — it fails closed.
-	_, err = svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC())
+	_, err = svc.ConfirmIndividual(ctx, card.ID, presented, time.Now().UTC(), testActor())
 	if err != approval.ErrNoControl {
 		t.Fatalf("replay of an already-confirmed control: err = %v; want ErrNoControl", err)
 	}
@@ -232,7 +232,7 @@ func TestConfirmIndividual_SerializesAgainstConcurrentMint(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		o, e := svc.ConfirmIndividual(ctx, v1.ID, presentedV1, time.Now().UTC())
+		o, e := svc.ConfirmIndividual(ctx, v1.ID, presentedV1, time.Now().UTC(), testActor())
 		done <- result{o, e}
 	}()
 
