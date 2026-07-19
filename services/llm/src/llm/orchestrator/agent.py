@@ -121,17 +121,24 @@ class PerToolTimeoutMiddleware(AgentMiddleware[Any, Any, Any]):
         )
         future = executor.submit(ctx.run, self._invoke_with_token, token, handler, request)
         try:
-            return future.result(timeout=self._timeout_seconds)
-        except concurrent.futures.TimeoutError as exc:
-            # Signal cancellation so the operation stops at its own seam, then give
-            # the worker a BOUNDED window to unwind. The token — not the abandoned
-            # thread — is the containment boundary.
-            token.cancel()
-            finished = self._await_bounded(future)
-            if not finished:
-                self._report_uncancelled_worker(request)
+            try:
+                return future.result(timeout=self._timeout_seconds)
+            except concurrent.futures.TimeoutError as exc:
+                # Signal cancellation so the operation stops at its own seam, then
+                # give the worker a BOUNDED window to unwind. The token — not the
+                # abandoned thread — is the containment boundary. This cancel +
+                # bounded-join + incident report runs BEFORE the finally below.
+                token.cancel()
+                finished = self._await_bounded(future)
+                if not finished:
+                    self._report_uncancelled_worker(request)
+                raise self._timeout_error(request) from exc
+        finally:
+            # Deterministic cleanup on EVERY path — success, timeout, and any
+            # non-timeout exception passthrough — so the per-call worker thread is
+            # never left for GC to reap (issue #25). Idempotent and non-blocking:
+            # the timeout branch has already cancelled + bounded-joined the worker.
             executor.shutdown(wait=False)
-            raise self._timeout_error(request) from exc
 
     async def awrap_tool_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:  # noqa: ANN401
         token = CancelToken()

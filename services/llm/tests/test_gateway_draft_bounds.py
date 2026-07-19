@@ -13,6 +13,12 @@ from __future__ import annotations
 import httpx
 import pytest
 from llm.flows.gateway_draft import DraftUnavailable, GatewayDraftPort
+from llm.orchestrator.cancellation import (
+    CancelToken,
+    ToolCancelledError,
+    reset_cancel_token,
+    set_cancel_token,
+)
 
 
 def _ok_body(**extra: object) -> dict[str, object]:
@@ -100,6 +106,39 @@ def test_retried_draft_uses_a_stable_idempotency_key() -> None:
 
     assert keys[0] is not None
     assert keys[0] == keys[1]  # a retry of the same create reuses the key
+
+
+def test_cancelled_token_aborts_the_write_before_it_is_issued() -> None:
+    """A cancelled request-scoped token aborts the Draft POST before it is sent.
+
+    The per-tool timeout cancels the request-scoped token; the outbound Draft
+    transport reads it and fails closed to NO ticket without issuing the write —
+    the token is genuinely authoritative, not merely advisory (issue #25 FIX 2).
+    """
+    issued = {"n": 0}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        issued["n"] += 1
+        return httpx.Response(200, json=_ok_body(recommendation_version="rec-9"))
+
+    port = GatewayDraftPort(
+        "http://gateway.internal",
+        "read-draft-token",
+        httpx.Client(transport=httpx.MockTransport(handle)),
+        timeout_seconds=1.0,
+    )
+    token = CancelToken()
+    token.cancel()
+    reset = set_cancel_token(token)
+    try:
+        with pytest.raises(ToolCancelledError):
+            port.create_recommendation_draft(
+                account_id="acc-1", entity_id="p-1", recommendation_id="rec-9"
+            )
+    finally:
+        reset_cancel_token(reset)
+
+    assert issued["n"] == 0  # no POST issued: fails closed to no ticket
 
 
 def test_distinct_drafts_get_distinct_idempotency_keys() -> None:

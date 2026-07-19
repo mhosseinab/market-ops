@@ -9,9 +9,11 @@ timed-out read or Draft could otherwise commit a late, invisible write.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import threading
 import time
+from unittest import mock
 
 import pytest
 from llm.orchestrator.agent import (
@@ -81,6 +83,67 @@ def test_cooperative_tool_observes_cancellation_and_no_worker_lingers() -> None:
     t = worker_thread["t"]
     t.join(timeout=1.0)
     assert not t.is_alive()
+
+
+class _RecordingExecutor(concurrent.futures.ThreadPoolExecutor):
+    """A ThreadPoolExecutor that records whether it was deterministically shut down.
+
+    Relying on GC to reap the worker thread is the exact bounded-resource leak the
+    #25 blocker calls out (CPython's refcount collection can mask it), so the test
+    asserts ``shutdown`` was actually CALLED, not merely that the thread happened
+    to die.
+    """
+
+    instances: list[_RecordingExecutor] = []
+
+    def __init__(self, max_workers: int | None = None, thread_name_prefix: str = "") -> None:
+        super().__init__(max_workers=max_workers, thread_name_prefix=thread_name_prefix)
+        self.shutdown_calls = 0
+        _RecordingExecutor.instances.append(self)
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        self.shutdown_calls += 1
+        super().shutdown(wait=wait, cancel_futures=cancel_futures)
+
+
+def test_executor_shut_down_on_success_path() -> None:
+    """The per-call executor is deterministically shut down on the SUCCESS path.
+
+    The refactor moved ``shutdown`` into the TimeoutError branch only, so a
+    successful ``future.result`` left the ``max_workers=1`` worker thread to GC —
+    a bounded-resource leak (#25 blocker). A ``finally`` restores the cleanup.
+    """
+    _RecordingExecutor.instances.clear()
+    mw = PerToolTimeoutMiddleware(timeout_seconds=1.0, cleanup_grace_seconds=1.0)
+    with mock.patch("concurrent.futures.ThreadPoolExecutor", _RecordingExecutor):
+        assert mw.wrap_tool_call(_Req("read_catalog"), _passthrough) == "ok"
+
+    assert len(_RecordingExecutor.instances) == 1
+    assert _RecordingExecutor.instances[0].shutdown_calls >= 1
+
+
+def test_executor_shut_down_on_exception_passthrough() -> None:
+    """The executor is shut down when the tool raises a NON-timeout error too.
+
+    A tool exception propagates through ``future.result`` (whose traceback pins the
+    frame — and thus the executor — so GC does NOT reap it). The ``finally`` must
+    still shut the executor down.
+    """
+
+    class _Boom(Exception):
+        pass
+
+    def handler(request: object) -> str:
+        raise _Boom("tool failed")
+
+    _RecordingExecutor.instances.clear()
+    mw = PerToolTimeoutMiddleware(timeout_seconds=1.0, cleanup_grace_seconds=1.0)
+    with mock.patch("concurrent.futures.ThreadPoolExecutor", _RecordingExecutor):
+        with pytest.raises(_Boom):
+            mw.wrap_tool_call(_Req("read_margin"), handler)
+
+    assert len(_RecordingExecutor.instances) == 1
+    assert _RecordingExecutor.instances[0].shutdown_calls >= 1
 
 
 def test_uncancellable_tool_is_flagged_as_an_incident() -> None:

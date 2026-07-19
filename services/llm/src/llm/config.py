@@ -21,7 +21,7 @@ import os
 from enum import StrEnum
 from typing import Any
 
-from pydantic import SecretStr
+from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +30,14 @@ class ProviderKind(StrEnum):
 
     MOCK = "mock"
     OPENAI_COMPATIBLE = "openai_compatible"
+
+
+# Default per-request deadline for a Draft write (seconds). The single source for
+# the transport default (:class:`~llm.flows.gateway_draft.GatewayDraftPort` imports
+# it). It MUST stay strictly below ``per_tool_timeout_seconds`` so the transport
+# aborts the in-flight POST at its own deadline (httpx closes the connection, no
+# ticket) BEFORE the per-tool middleware fires — enforced by ``Settings`` (#25).
+DEFAULT_DRAFT_TIMEOUT_SECONDS = 10.0
 
 
 class Settings(BaseSettings):
@@ -73,6 +81,11 @@ class Settings(BaseSettings):
     per_tool_call_run_limit: int = 4
     # Per-tool timeout (seconds).
     per_tool_timeout_seconds: float = 15.0
+    # Draft transport per-request deadline (seconds). MUST be strictly less than
+    # ``per_tool_timeout_seconds`` (validated below): the transport must abort a
+    # hung POST at its own deadline — failing closed to no ticket — before the
+    # per-tool middleware fires and abandons the write on a worker thread (#25).
+    draft_timeout_seconds: float = DEFAULT_DRAFT_TIMEOUT_SECONDS
     # Bounded cleanup grace after a per-tool timeout: the window the middleware
     # waits for a cancelled tool's worker to unwind before reporting it as an
     # uncancelled-worker incident (issue #25). Cooperative tools exit well within
@@ -110,6 +123,26 @@ class Settings(BaseSettings):
     # LangSmith cloud — a gated operation).
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr = SecretStr("")
+
+    @model_validator(mode="after")
+    def _validate_timeout_ordering(self) -> Settings:
+        """Fail closed on a Draft deadline that is not strictly before the tool bound.
+
+        If ``draft_timeout_seconds >= per_tool_timeout_seconds`` the per-tool
+        middleware could fire FIRST while the POST is still running to its own,
+        later deadline — abandoning the in-flight write on a worker thread instead
+        of aborting it at the transport. The ordering is a correctness invariant
+        (#25), so a misordered config is rejected at load time, not tuned around.
+        """
+        if self.draft_timeout_seconds >= self.per_tool_timeout_seconds:
+            raise ValueError(
+                "draft_timeout_seconds "
+                f"({self.draft_timeout_seconds}) must be strictly less than "
+                f"per_tool_timeout_seconds ({self.per_tool_timeout_seconds}): the "
+                "Draft transport must abort a hung POST at its own deadline before "
+                "the per-tool middleware fires (issue #25)."
+            )
+        return self
 
     def is_ci(self) -> bool:
         """True when running under CI. LangSmith is force-disabled here."""

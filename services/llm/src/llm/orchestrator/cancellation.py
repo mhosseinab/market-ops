@@ -78,6 +78,20 @@ def current_cancel_token() -> CancelToken | None:
     return _current.get()
 
 
+def raise_if_cancelled() -> None:
+    """Raise :class:`ToolCancelledError` if the request-scoped token is cancelled.
+
+    The module-level counterpart to :meth:`CancelToken.raise_if_cancelled`: an
+    outbound transport calls this at a cancellation checkpoint (e.g. before issuing
+    a network write) so a cancelled tool call fails closed at its own seam instead
+    of completing behind an abandoned worker thread. A no-op when no tool call is
+    in flight (token is ``None``).
+    """
+    token = _current.get()
+    if token is not None:
+        token.raise_if_cancelled()
+
+
 def set_cancel_token(token: CancelToken) -> contextvars.Token[CancelToken | None]:
     """Publish ``token`` as the active cancellation token; returns the reset handle."""
     return _current.set(token)
