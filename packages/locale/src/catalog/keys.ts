@@ -189,6 +189,7 @@ export const MESSAGE_KEYS = [
   // Structured failure (§12.4)
   "chat.failure.title",
   "chat.failure.deepLink",
+  "chat.failure.transportBody",
 
   // ── S26 screens ──────────────────────────────────────────────────────────
   // Shared actions / common
