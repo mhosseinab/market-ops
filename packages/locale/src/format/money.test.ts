@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { REGION_IR } from "../config";
-import fixtures from "./money.fixtures.json";
 import { renderMoney } from "./money";
+import fixtures from "./money.fixtures.json";
 
 // Derive the `en`-locale rendering from the locale-independent `rawDecimal`
 // (ASCII '-' and '.') that both TS and Go agree on: U+2212 minus, comma-grouped
