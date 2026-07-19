@@ -115,12 +115,13 @@ export function Actions() {
       // A write action renders its EXE-003 external state; a recommend-only action
       // has none (it never wrote to the marketplace) and is shown unavailable here
       // until the multi-mode queue renders its EXE-005 state (issue #106, deferred).
-      render: (r) =>
-        r.externalState ? (
+      render: (r) => {
+        return r.externalState ? (
           <StatusBadge state={EXTERNAL_TO_STATUS[r.externalState]} />
         ) : (
           unavailableNode(unavailable)
-        ),
+        );
+      },
     },
     {
       id: "reconciled",
