@@ -188,6 +188,109 @@ func TestRouteCAloneNeverManufacturesVerified(t *testing.T) {
 	}
 }
 
+// TestDriftDowngradePersistsAcrossFreshProcess is the issue #47 acceptance: a
+// detected drift event must DURABLY downgrade the affected target's current view
+// so a FRESH process can no longer read the pre-drift value as current. It seeds a
+// Confirmed target, ingests a healthy in-stock capture (whose derived current
+// offer satisfies the current-data gate), then drives ObserveTarget down the
+// parse-drift path wired to the REAL observation.Service as both ingestor and
+// downgrader. Re-reading through a brand-new Service over the same pool must show
+// the offer downgraded to stale/unavailable — the current-data gate FALSE.
+func TestDriftDowngradePersistsAcrossFreshProcess(t *testing.T) {
+	pool, q := dbPool(t)
+	ctx := context.Background()
+	account, _, targetID, nativeVariant, nativeProduct := seedConfirmedTarget(t, pool, q)
+
+	base := time.Now().UTC()
+	svc := observation.NewService(pool).WithClock(func() time.Time { return base })
+	capt := observation.Capture{
+		TargetID:        targetID,
+		Account:         account,
+		NativeVariantID: nativeVariant,
+		NativeSellerID:  "71001",
+		Route:           observation.RouteC,
+		SourceType:      observation.SourcePublicWebEndpoint,
+		SourceURL:       "https://api.digikala.com/v2/product/1/",
+		ParserVersion:   routec.ParserVersion,
+		EvidenceRef:     "routec-test",
+		Price:           money.NewRawAmount("450000000", "450000000", "IRR-rial"),
+		Availability:    observation.InStock,
+		CapturedAt:      base,
+		Confidence:      observation.ConfPartiallyVerified,
+		SchemaValid:     true,
+	}
+	res, err := svc.Ingest(ctx, capt)
+	if err != nil {
+		t.Fatalf("seed healthy ingest: %v", err)
+	}
+	// Pre-drift, the current offer reads as CURRENT (Unverified satisfies the gate).
+	if !res.Quality.SatisfiesCurrentDataGate() {
+		t.Fatalf("pre-drift offer must read current, got quality %q", res.Quality)
+	}
+
+	// Drive a parse-drift observe wired to the real Service (ingestor + downgrader).
+	f := &fakeFetcher{result: routec.FetchResult{
+		StatusCode: 200,
+		Body:       golden(t, "drift_missing_product.json"),
+		Signal:     routec.SignalOK,
+	}}
+	obs := routec.NewObserver(routec.DefaultConfig(), routec.ObserverDeps{
+		Fetcher:    f,
+		Ingestor:   svc,
+		Downgrader: svc,
+		Kill:       routec.NewMemKillSwitchStore(),
+		Now:        func() time.Time { return base },
+	})
+	ref := routec.TargetRef{
+		Account: account, TargetID: targetID,
+		NativeVariantID: nativeVariant, NativeProductID: nativeProduct,
+		Tier: observation.TierPriority,
+	}
+	out, err := obs.ObserveTarget(ctx, routec.Snapshot{}, ref)
+	if err != nil {
+		t.Fatalf("observe drift: %v", err)
+	}
+	if out.Skipped != routec.SkipParseDrift {
+		t.Fatalf("skip reason: got %q want parse_drift", out.Skipped)
+	}
+	if out.PersistedDowngrades != 1 {
+		t.Fatalf("expected exactly one persisted downgrade, got %d", out.PersistedDowngrades)
+	}
+
+	// FRESH process: a brand-new Service struct over the same pool re-reads the view.
+	fresh := observation.NewService(pool)
+	offers, err := fresh.ListObservedOffers(ctx, account)
+	if err != nil {
+		t.Fatalf("fresh list observed offers: %v", err)
+	}
+	var found bool
+	for _, o := range offers {
+		if o.TargetID != targetID {
+			continue
+		}
+		found = true
+		qual := observation.Quality(o.Quality)
+		if qual != observation.Stale && qual != observation.Unavailable {
+			t.Fatalf("drifted offer quality: got %q want stale/unavailable", qual)
+		}
+		if qual.SatisfiesCurrentDataGate() {
+			t.Fatal("drifted offer must NOT satisfy the current-data gate across a fresh process")
+		}
+	}
+	if !found {
+		t.Fatal("expected the target's current offer to still exist (downgraded, not deleted)")
+	}
+
+	// Idempotent: a second downgrade does not loosen the already-restricted state.
+	n, err := fresh.DowngradeCurrentForDrift(ctx, targetID, "parse_drift")
+	if err != nil {
+		t.Fatalf("second downgrade: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("re-running the downgrade must be a no-op, downgraded %d", n)
+	}
+}
+
 // TestKillSwitchStoreRoundTrip exercises the durable kill-switch store: engage at
 // each layer, load a snapshot, evaluate layered blocking, and disengage.
 func TestKillSwitchStoreRoundTrip(t *testing.T) {

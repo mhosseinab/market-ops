@@ -22,14 +22,16 @@ func NewObserverForPool(pool *pgxpool.Pool, cfg Config, httpClient *http.Client)
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
 	fetcher := NewHTTPFetcher(httpClient, 10*time.Second, cfg.ByteBudget)
+	store := observation.NewService(pool)
 	return NewObserver(cfg, ObserverDeps{
-		Fetcher:  fetcher,
-		Ingestor: observation.NewService(pool),
-		Kill:     NewDBKillSwitchStore(pool),
-		Source:   NewDBTargetSource(pool),
-		Drift:    NewDriftGuard(),
-		Now:      time.Now,
-		Rand:     rand.New(rand.NewSource(time.Now().UnixNano())),
+		Fetcher:    fetcher,
+		Ingestor:   store,
+		Downgrader: store,
+		Kill:       NewDBKillSwitchStore(pool),
+		Source:     NewDBTargetSource(pool),
+		Drift:      NewDriftGuard(),
+		Now:        time.Now,
+		Rand:       rand.New(rand.NewSource(time.Now().UnixNano())),
 	})
 }
 

@@ -196,6 +196,26 @@ WHERE marketplace_account_id = $1
   AND freshness_deadline < $2
   AND quality NOT IN ('stale', 'unavailable');
 
+-- name: DowngradeObservedOffersForDrift :execrows
+-- §10.4 parser-drift stop rule on the derived current view: when Route C detects
+-- drift for a target (parse failure, failed canary, product-identity mismatch, or
+-- an already-paused guard), the target's LIVE current offers must stop reading as
+-- current before any consumer sees them. Each live offer is downgraded so it can no
+-- longer satisfy the current-data gate: to 'unavailable' when it carries no usable
+-- value (a disappeared offer), else to 'stale' (renders age-only). Mirrors
+-- PausedQuality (Stale if had value, else Unavailable). This touches ONLY the
+-- derived projection — the append-only observations evidence table is never
+-- modified. Idempotent and one-directional: offers already stale/unavailable/
+-- conflicted are excluded, so a re-run is a no-op and a more-restrictive state is
+-- never loosened.
+UPDATE observed_offers SET
+    quality    = CASE WHEN availability_status = 'disappeared'
+                      THEN 'unavailable' ELSE 'stale' END,
+    updated_at = now()
+WHERE target_id = $1
+  AND ended_at IS NULL
+  AND quality NOT IN ('stale', 'unavailable', 'conflicted');
+
 -- name: ListObservedOffers :many
 SELECT * FROM observed_offers
 WHERE marketplace_account_id = $1

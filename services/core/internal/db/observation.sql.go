@@ -245,6 +245,35 @@ func (q *Queries) DeactivateObservationTargetsForIdentity(ctx context.Context, i
 	return items, nil
 }
 
+const downgradeObservedOffersForDrift = `-- name: DowngradeObservedOffersForDrift :execrows
+UPDATE observed_offers SET
+    quality    = CASE WHEN availability_status = 'disappeared'
+                      THEN 'unavailable' ELSE 'stale' END,
+    updated_at = now()
+WHERE target_id = $1
+  AND ended_at IS NULL
+  AND quality NOT IN ('stale', 'unavailable', 'conflicted')
+`
+
+// §10.4 parser-drift stop rule on the derived current view: when Route C detects
+// drift for a target (parse failure, failed canary, product-identity mismatch, or
+// an already-paused guard), the target's LIVE current offers must stop reading as
+// current before any consumer sees them. Each live offer is downgraded so it can no
+// longer satisfy the current-data gate: to 'unavailable' when it carries no usable
+// value (a disappeared offer), else to 'stale' (renders age-only). Mirrors
+// PausedQuality (Stale if had value, else Unavailable). This touches ONLY the
+// derived projection — the append-only observations evidence table is never
+// modified. Idempotent and one-directional: offers already stale/unavailable/
+// conflicted are excluded, so a re-run is a no-op and a more-restrictive state is
+// never loosened.
+func (q *Queries) DowngradeObservedOffersForDrift(ctx context.Context, targetID uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, downgradeObservedOffersForDrift, targetID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getObservationTarget = `-- name: GetObservationTarget :one
 SELECT id, marketplace_account_id, identity_id, variant_id, native_variant_id, native_product_id, tier, cadence_seconds, freshness_deadline_seconds, active, created_at, updated_at FROM observation_targets WHERE id = $1
 `
