@@ -35,6 +35,14 @@ import (
 // Pending Reconciliation. Only a pending action reconciles.
 var ErrNotPending = errors.New("reconcile: action is not pending reconciliation")
 
+// ErrUnknownResolution — ReconcilePending was handed a resolution outside the
+// CLOSED {Accepted, Failed} set (§8.4 PendingReconciliation edges). The action is
+// LEFT in Pending Reconciliation (fail closed, EXE-003): an unrecognised
+// resolution NEVER terminalises a pending write, and NO DB read or state change
+// occurs. Before this guard an unrecognised value silently defaulted to Failed,
+// destroying the pending state on inference — a never-cut violation.
+var ErrUnknownResolution = errors.New("reconcile: unknown resolution; pending reconciliation preserved")
+
 // CardStore is the §8.4 card-state seam (satisfied by *recommendation.Service).
 // AdvanceTx lets the state transition commit atomically with its AUD-001 audit row.
 type CardStore interface {
@@ -74,12 +82,48 @@ const (
 	ResolveFailed   Resolution = "failed"
 )
 
+// Valid reports whether r is a DECLARED resolution. The set is closed; anything
+// else fails closed and must never resolve a pending action.
+func (r Resolution) Valid() bool {
+	switch r {
+	case ResolveAccepted, ResolveFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+// resolve maps a DECLARED resolution onto its terminal external+card state with
+// EXHAUSTIVE handling. An undeclared resolution returns ErrUnknownResolution and
+// NO state — the caller must leave the action in Pending Reconciliation (EXE-003,
+// unknown input leaves state unchanged). This replaces the prior
+// "default-to-Failed" logic, which inferred a terminal state from an unrecognised
+// value.
+func resolve(r Resolution) (execution.ExternalState, approval.State, error) {
+	switch r {
+	case ResolveAccepted:
+		return execution.StateAccepted, approval.StateAccepted, nil
+	case ResolveFailed:
+		return execution.StateFailed, approval.StateFailed, nil
+	default:
+		return "", "", ErrUnknownResolution
+	}
+}
+
 // ReconcilePending resolves a Pending Reconciliation action to a terminal state
 // from observed evidence (a post-write read-back or a periodic owned-offer
 // reconciliation). It advances the card PendingReconciliation → {Accepted,
 // Failed}, records the reconciliation and terminal audit, and opens the OUT-001
 // outcome window. It refuses any action that is not pending.
 func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, resolution Resolution, detail string) error {
+	// Fail closed FIRST: an undeclared resolution errors before any DB read or
+	// state change, so the action stays in Pending Reconciliation (EXE-003). Only a
+	// declared resolution ({Accepted, Failed}) may terminalise a pending write.
+	terminal, cardState, err := resolve(resolution)
+	if err != nil {
+		return err
+	}
+
 	q := db.New(s.pool)
 	exec, err := q.GetActionExecutionByAction(ctx, actionID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -90,13 +134,6 @@ func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, reso
 	}
 	if execution.ExternalState(exec.ExternalState) != execution.StatePendingReconciliation {
 		return ErrNotPending
-	}
-
-	terminal := execution.StateFailed
-	cardState := approval.StateFailed
-	if resolution == ResolveAccepted {
-		terminal = execution.StateAccepted
-		cardState = approval.StateAccepted
 	}
 
 	card, err := s.cards.GetCard(ctx, exec.CardID)
