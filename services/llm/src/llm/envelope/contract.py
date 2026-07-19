@@ -54,6 +54,41 @@ class Provenance(StrEnum):
 ENGINE_PROVENANCES = frozenset({Provenance.MARGIN_ENGINE, Provenance.PRICING_ENGINE})
 
 
+class ComparisonKind(StrEnum):
+    """What two operands of a comparison represent — the entity-binding axis.
+
+    A comparison is either a *temporal* before/after reading of the SAME entity
+    at two capture times, or a *cross-entity* A/B comparison of two DISTINCT
+    entities. The kind fixes what a coherent entity binding looks like: the
+    grounding walker rejects a temporal comparison whose two operands name
+    different entities, and a cross-entity comparison whose two operands name the
+    same entity (issue #55). This is structural provenance, not model guesswork.
+    """
+
+    TEMPORAL = "temporal"  # same entity, two capture times (before/after)
+    CROSS_ENTITY = "cross_entity"  # two distinct entities (A vs B)
+
+
+class ComparisonRelation(StrEnum):
+    """The claimed direction of a comparison, checked against the signed delta.
+
+    The relation describes how the RIGHT operand relates to the LEFT (baseline)
+    operand, i.e. the sign of ``left − right``:
+
+    * :attr:`DECREASE` — ``right < left`` (``left − right > 0``);
+    * :attr:`INCREASE` — ``right > left`` (``left − right < 0``);
+    * :attr:`UNCHANGED` — ``right == left`` (``left − right == 0``).
+
+    The grounding walker (issue #55) recomputes the signed relation from the
+    typed operand mantissas/counts and rejects a claimed relation that does not
+    agree — a model can never assert a direction the numbers don't support.
+    """
+
+    INCREASE = "increase"
+    DECREASE = "decrease"
+    UNCHANGED = "unchanged"
+
+
 class SourceRef(BaseModel):
     """A reference to the typed service response field a value was copied from.
 
@@ -239,11 +274,24 @@ class Calculation(BaseModel):
 
 
 class Comparison(BaseModel):
-    """A before/after (or A/B) comparison — CHAT-021.
+    """A before/after (or A/B) comparison — CHAT-021, issue #55.
 
     Carries BOTH values, the delta, and BOTH capture timestamps. The walker
     rejects a comparison missing any side, the delta, or either timestamp, so a
     comparison can never imply a trend from a single reading.
+
+    Beyond token presence, the comparison is a STRUCTURAL relation whose whole
+    provenance tuple is bound and checkable (issue #55): each operand names the
+    entity it belongs to (:attr:`left_entity` / :attr:`right_entity` — technical
+    LTR identifiers), the comparison declares its :attr:`kind` (temporal vs
+    cross-entity) and its claimed :attr:`relation` (direction). The grounding
+    walker re-derives unit/type coherence, the exact integer delta, the
+    entity binding, and the signed direction from the typed operands and REJECTS
+    any incoherent combination — so individually-sourced numbers can never be
+    recombined into a numerically false comparison. Entity identifiers are held
+    permissively (empty allowed at construction); the walker is the single
+    enforcement point (``COMPARISON_UNBOUND_ENTITY``), mirroring
+    :class:`SourceRef`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -254,6 +302,10 @@ class Comparison(BaseModel):
     delta: SourcedValue
     left_captured_at: str
     right_captured_at: str
+    kind: ComparisonKind
+    relation: ComparisonRelation
+    left_entity: str
+    right_entity: str
 
 
 class ExposureTotal(BaseModel):

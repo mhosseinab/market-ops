@@ -16,6 +16,8 @@ from llm.envelope.contract import (
     Calculation,
     Claim,
     Comparison,
+    ComparisonKind,
+    ComparisonRelation,
     InlineTable,
     Provenance,
     Recommendation,
@@ -38,6 +40,14 @@ def _money_value() -> SourcedValue:
         source=MARGIN_SRC,
         provenance=Provenance.MARGIN_ENGINE,
         money=Money(mantissa=990000, currency="IRR", exponent=0),
+    )
+
+
+def _money_of(mantissa: int) -> SourcedValue:
+    return SourcedValue(
+        source=MARGIN_SRC,
+        provenance=Provenance.MARGIN_ENGINE,
+        money=Money(mantissa=mantissa, currency="IRR", exponent=0),
     )
 
 
@@ -103,10 +113,14 @@ def test_number_word_in_calculation_label_is_rejected() -> None:
 
 def test_number_word_in_comparison_label_is_rejected() -> None:
     env = ResponseEnvelope(
-        comparisons=[Comparison(label="move over three days", left=_money_value(),
-                                right=_money_value(), delta=_money_value(),
+        comparisons=[Comparison(label="move over three days",
+                                left=_money_of(990000), right=_money_of(880000),
+                                delta=_money_of(110000),
                                 left_captured_at="2026-07-16T10:00:00Z",
-                                right_captured_at="2026-07-17T10:00:00Z")]
+                                right_captured_at="2026-07-17T10:00:00Z",
+                                kind=ComparisonKind.TEMPORAL,
+                                relation=ComparisonRelation.DECREASE,
+                                left_entity="sku-1", right_entity="sku-1")]
     )
     assert "NUMBER_WORD_IN_TEXT" in _codes(env)
 

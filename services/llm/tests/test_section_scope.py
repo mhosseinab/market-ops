@@ -20,6 +20,8 @@ from llm.envelope.contract import (
     CannotAnswer,
     Claim,
     Comparison,
+    ComparisonKind,
+    ComparisonRelation,
     ExposureTotal,
     Provenance,
     ResponseEnvelope,
@@ -61,6 +63,14 @@ def _margin_money() -> SourcedValue:
         source=MARGIN_SRC,
         provenance=Provenance.MARGIN_ENGINE,
         money=Money(mantissa=120000, currency="IRR"),
+    )
+
+
+def _margin_money_of(mantissa: int) -> SourcedValue:
+    return SourcedValue(
+        source=MARGIN_SRC,
+        provenance=Provenance.MARGIN_ENGINE,
+        money=Money(mantissa=mantissa, currency="IRR", exponent=0),
     )
 
 
@@ -163,10 +173,14 @@ def test_correctly_scoped_envelope_passes_unchanged() -> None:
                         evidence=[OBS_EVIDENCE])
         ],
         comparisons=[
-            Comparison(label="price vs last read", left=_margin_money(),
-                       right=_margin_money(), delta=_margin_money(),
+            Comparison(label="price vs last read",
+                       left=_margin_money_of(120000), right=_margin_money_of(100000),
+                       delta=_margin_money_of(20000),
                        left_captured_at="2026-07-16T10:00:00Z",
-                       right_captured_at="2026-07-17T10:00:00Z")
+                       right_captured_at="2026-07-17T10:00:00Z",
+                       kind=ComparisonKind.TEMPORAL,
+                       relation=ComparisonRelation.DECREASE,
+                       left_entity="sku-1", right_entity="sku-1")
         ],
         exposure=ExposureTotal(known=True, total=_margin_money()),
     )
@@ -214,15 +228,19 @@ def test_comparison_source_from_another_section_is_rejected() -> None:
         comparisons=[
             Comparison(
                 label="price move",
-                left=_margin_money(),
-                right=_margin_money(),
+                left=_margin_money_of(120000),
+                right=_margin_money_of(100000),
                 delta=SourcedValue(
                     source=DK_SRC,  # wrong section
                     provenance=Provenance.MARGIN_ENGINE,
-                    money=Money(mantissa=1000, currency="IRR"),
+                    money=Money(mantissa=20000, currency="IRR", exponent=0),
                 ),
                 left_captured_at="2026-07-16T10:00:00Z",
                 right_captured_at="2026-07-17T10:00:00Z",
+                kind=ComparisonKind.TEMPORAL,
+                relation=ComparisonRelation.DECREASE,
+                left_entity="sku-1",
+                right_entity="sku-1",
             )
         ],
     )
