@@ -57,6 +57,12 @@ const (
 	SkipFetchSignal  SkipReason = "fetch_signal"
 	SkipParseDrift   SkipReason = "parse_drift"
 	SkipCanaryFailed SkipReason = "canary_failed"
+	// SkipIdentityMismatch is recorded when a well-formed product-detail response
+	// carries a product id that is NOT the scheduled target's native product id
+	// (redirect, challenge fallback, or upstream mismatch). Identity quarantine
+	// (§4.6): no evidence is ingested, the target is left unchanged, and the event
+	// is treated as upstream parser drift (§10.4).
+	SkipIdentityMismatch SkipReason = "identity_mismatch"
 )
 
 // ObserveOutcome reports what one ObserveTarget call did.
@@ -219,6 +225,18 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 		o.drift.ReportCanary(canary)
 		breaker.Observe(SignalDrift)
 		return ObserveOutcome{Skipped: SkipCanaryFailed, Signal: SignalOK, DowngradedQuality: PausedQuality(true)}, nil
+	}
+	// Identity quarantine (§4.6, OBS-001): the authoritative response product id
+	// MUST equal the scheduled target's native product id before any evidence is
+	// accepted. A different id means the fetch resolved to another product (a
+	// redirect, challenge fallback, or upstream mismatch); its price/availability
+	// must NEVER be attributed to this target. This is a data-integrity reject that
+	// IS upstream drift (§10.4): pause extraction and feed the breaker exactly like
+	// the parse-drift / canary paths, but ingest nothing and relabel nothing.
+	if parsed.ProductID != ref.NativeProductID {
+		o.drift.ReportDrift(fmt.Sprintf("product identity mismatch: response=%d target=%d", parsed.ProductID, ref.NativeProductID))
+		breaker.Observe(SignalDrift)
+		return ObserveOutcome{Skipped: SkipIdentityMismatch, Signal: SignalOK, DowngradedQuality: PausedQuality(true)}, nil
 	}
 
 	captures := o.buildCaptures(ref, parsed)
@@ -425,7 +443,7 @@ func (s *SweepSummary) tally(o ObserveOutcome) {
 		s.SkippedBreak++
 	case SkipBudget:
 		s.SkippedBudget++
-	case SkipDriftPaused, SkipParseDrift, SkipCanaryFailed:
+	case SkipDriftPaused, SkipParseDrift, SkipCanaryFailed, SkipIdentityMismatch:
 		s.Downgraded++
 	case SkipFetchSignal:
 		// counted as observed-but-deferred; no ingest
