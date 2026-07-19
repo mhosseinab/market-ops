@@ -16,7 +16,8 @@
       "!**/node_modules",
       "!**/*.tsbuildinfo",
       "!deploy/grafana/dashboards",
-      "!apps/web/dev-public/mockServiceWorker.js"
+      "!apps/web/dev-public/mockServiceWorker.js",
+      "!tools/copylint/fixtures"
     ]
   },
   "formatter": {
