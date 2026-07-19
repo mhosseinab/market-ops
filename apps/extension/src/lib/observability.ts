@@ -31,6 +31,12 @@ export type MetricName =
   | "capture_gated"
   | "on_demand_latency_ms"
   | "watchlist_add"
+  // The credential-scoped Confirmed-owned-target sync (#145, GET
+  // /ext/owned-targets): `owned_targets_sync{outcome}` records ok vs. a
+  // fail-closed clear (unavailable), and `owned_targets_count` gauges the
+  // current projected target count.
+  | "owned_targets_sync"
+  | "owned_targets_count"
   | "schedule_cycle"
   | "schedule_request_denied"
   | "schedule_circuit_stop";

@@ -6,6 +6,10 @@ import type { components } from "@market-ops/gen-ts";
 export type CaptureUpload = components["schemas"]["CaptureUpload"];
 export type PairingCredential = components["schemas"]["PairingCredential"];
 export type RawAmount = components["schemas"]["RawAmount"];
+// The credential-scoped owned-target read (#145, GET /ext/owned-targets) returns
+// the account's ObservationTargetList; the extension consumes it read-only and
+// projects only the fields the EXT-004 gate needs.
+export type ObservationTargetList = components["schemas"]["ObservationTargetList"];
 export type AvailabilityStatus = CaptureUpload["availabilityStatus"];
 
 // ParsedOffer is the single current offer extracted from the product-detail API

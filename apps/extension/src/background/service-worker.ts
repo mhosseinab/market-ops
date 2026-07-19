@@ -39,10 +39,18 @@ const watchlistGateway = createWatchlistGateway();
 const overlayReadGateway = createOverlayReadGateway();
 const historyReadGateway = createHistoryReadGateway();
 // Confirmed owned targets: server-authoritative, starts EMPTY (fail closed —
-// EXT-004). Populated by the S31 authenticated targets sync.
+// EXT-004). Populated by syncOwnedTargets() from the credential-scoped read
+// (GET /ext/owned-targets, #145) on worker start, after pairing, and periodically.
 const ownedTargets = new OwnedTargetIndex();
 
 void initDevErrorReporting("service-worker");
+
+// On service-worker start (cold start / re-spawn), rebuild the Confirmed-owned-
+// target projection from the server (#145). The projection lives in memory and is
+// lost on re-spawn; without this the index would stay EMPTY and passive/on-demand
+// capture would be inert until the next pair. It fails closed (no credential or an
+// unavailable read leaves the index empty).
+void syncOwnedTargets();
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 1 });
@@ -50,9 +58,19 @@ chrome.runtime.onInstalled.addListener(() => {
   // per-cycle allocation (EXT-012), never the alarm period itself.
   chrome.alarms.create(SCHEDULE_ALARM, { periodInMinutes: 15 });
 });
+// A browser restart re-spawns the worker with an empty in-memory projection —
+// re-sync so capture is not silently inert after startup.
+chrome.runtime.onStartup?.addListener(() => {
+  void syncOwnedTargets();
+});
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === FLUSH_ALARM) void flush();
-  if (a.name === SCHEDULE_ALARM) void runScheduleCycleIfEnabled();
+  if (a.name === SCHEDULE_ALARM) {
+    // Periodically re-sync owned targets to pick up account/identity changes
+    // (a newly Confirmed variant, or a de-confirmed one that must drop out).
+    void syncOwnedTargets();
+    void runScheduleCycleIfEnabled();
+  }
 });
 
 chrome.runtime.onMessage.addListener((msg: ExtMessage, sender, sendResponse) => {
@@ -87,10 +105,35 @@ async function handle(msg: ExtMessage, sender: chrome.runtime.MessageSender): Pr
       return handleRetryDeadLetter(msg.dedupKey);
     case "discardDeadLetter":
       return handleDiscardDeadLetter(msg.dedupKey);
-    case "setOwnedTargets":
-      ownedTargets.replaceAll(msg.targets);
-      return { ok: true };
   }
+}
+
+// syncOwnedTargets refreshes the local Confirmed-owned-target projection from the
+// SERVER-AUTHORITATIVE credential-scoped read (#145, EXT-004). The marketplace
+// account is derived server-side from the stored capture credential — never
+// chosen here. It FAILS CLOSED at every step:
+//   - no stored credential ⇒ clear the index (nothing is owned until paired);
+//   - a null result (401 revoked/expired, 5xx, network) ⇒ clear the index —
+//     never keep a stale/guessed set, so capture stays disabled rather than
+//     resurrecting a de-confirmed mapping;
+//   - a real result ⇒ ATOMICALLY replace the whole index (the server is the sole
+//     authority; the extension never merges partial owned sets).
+async function syncOwnedTargets(): Promise<void> {
+  const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
+  if (!cred) {
+    ownedTargets.replaceAll([]);
+    return;
+  }
+  const result = await gateway.fetchOwnedTargets(cred.credential);
+  if (result === null) {
+    // Fail closed: clear rather than retain stale/guessed ownership.
+    ownedTargets.replaceAll([]);
+    incr("owned_targets_sync", { outcome: "unavailable" });
+    return;
+  }
+  ownedTargets.replaceAll(result);
+  gauge("owned_targets_count", result.length);
+  incr("owned_targets_sync", { outcome: "ok" });
 }
 
 // Diagnostic-only, capability-gated page-context injection (docs/09). Gated on
@@ -230,6 +273,10 @@ async function handlePair(code: string): Promise<ExtResponse> {
     // Persist ONLY the allow-listed capture-credential fields (EXT-001).
     await store.set(KEY_CREDENTIAL, sanitizeCredential(cred));
     await setCapability("ready");
+    // Immediately populate the Confirmed-owned-target projection from the server
+    // so passive/on-demand capture is live right after pairing — never inert
+    // until the next alarm (#145).
+    await syncOwnedTargets();
     log("info", "paired");
     return { ok: true, state: await popupState() };
   } catch (e) {
@@ -255,7 +302,7 @@ async function handleRevoke(): Promise<ExtResponse> {
   // A revoked credential must not leave a stale Confirmed-owned-target index
   // behind: capability alone already fail-closes handleAddToWatchlist/
   // handleGetOverlayView, but clearing the index too means there is no
-  // window where a re-pair (without a fresh setOwnedTargets sync) could ever
+  // window where a re-pair (before syncOwnedTargets re-runs) could ever
   // resolve a target from PRE-revocation state.
   ownedTargets.replaceAll([]);
   log("info", "credential_cleared");

@@ -12,9 +12,9 @@ T = TypeVar("T", bound="PairingCredential")
 
 @_attrs_define
 class PairingCredential:
-    """A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY
-    /observation/capture and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores
-    only this value.
+    """A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY the capture
+    upload (POST /observation/capture) and the credential-scoped owned-target read (GET /ext/owned-targets), and is
+    bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value.
 
         Attributes:
             credential (str): The raw capture credential; presented as a Bearer on uploads.

@@ -43,6 +43,37 @@ func (s *gatewayServer) ListObservationTargets(
 	return gateway.ListObservationTargets200JSONResponse(gateway.ObservationTargetList{Items: out}), nil
 }
 
+// ListOwnedTargets returns the paired account's active Confirmed owned
+// observation targets (#145, EXT-004). The marketplace account is derived SOLELY
+// from the capture credential injected by the middleware (captureAccountFrom) —
+// there is NO caller-supplied account, so an extension can never read another
+// seller's targets. Absent credential context ⇒ fail closed with 401 (the
+// middleware normally guarantees it, but the handler never trusts a missing
+// account). Only active Confirmed identities have a target (OBS-001), so a
+// NeedsReview/Rejected/Obsolete/deactivated identity is never returned.
+func (s *gatewayServer) ListOwnedTargets(
+	ctx context.Context, _ gateway.ListOwnedTargetsRequestObject,
+) (gateway.ListOwnedTargetsResponseObject, error) {
+	if s.observation == nil {
+		return gateway.ListOwnedTargets503JSONResponse(observationUnavailableErr()), nil
+	}
+	account, ok := captureAccountFrom(ctx)
+	if !ok {
+		// No capture credential ⇒ no tenant authority. Fail closed; never a
+		// human-session fallback and never a caller-supplied account.
+		return gateway.ListOwnedTargets401JSONResponse(noSessionErr()), nil
+	}
+	rows, err := s.observation.ListTargets(ctx, account)
+	if err != nil {
+		return gateway.ListOwnedTargetsdefaultJSONResponse{StatusCode: 500, Body: observationErr(err)}, nil
+	}
+	out := make([]gateway.ObservationTarget, 0, len(rows))
+	for _, t := range rows {
+		out = append(out, toGatewayTarget(t))
+	}
+	return gateway.ListOwnedTargets200JSONResponse(gateway.ObservationTargetList{Items: out}), nil
+}
+
 // ListObservedOffers returns the account's derived current Observed Offers.
 func (s *gatewayServer) ListObservedOffers(
 	ctx context.Context, req gateway.ListObservedOffersRequestObject,

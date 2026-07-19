@@ -404,6 +404,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ext/owned-targets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the paired account's Confirmed owned observation targets (EXT-004).
+         * @description The credential-scoped owned-target READ the browser extension calls to learn WHICH variants are the account's Confirmed owned targets (PRD §14 EXT-004, OBS-001). The marketplace account is derived SOLELY from the presented capture credential (captureAuth) — there is NO query or path parameter, so an extension can never select another seller's account (tenant authority is credential-derived, never caller-supplied). The server returns the SAME active targets as GET /observation/targets for that account (a target exists ONLY for an active Confirmed identity — a NeedsReview/Rejected/Obsolete/deactivated identity is never returned), so the extension's local owned-target projection can never resolve an unconfirmed product into the commercial path. A revoked/expired/unknown credential fails closed with 401.
+         */
+        get: operations["listOwnedTargets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cost/import/preview": {
         parameters: {
             query?: never;
@@ -1533,7 +1553,7 @@ export interface components {
         PairingClaimRequest: {
             code: string;
         };
-        /** @description A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY /observation/capture and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value. */
+        /** @description A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY the capture upload (POST /observation/capture) and the credential-scoped owned-target read (GET /ext/owned-targets), and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value. */
         PairingCredential: {
             /** @description The raw capture credential; presented as a Bearer on uploads. */
             credential: string;
@@ -3215,6 +3235,53 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    listOwnedTargets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The paired account's active Confirmed owned observation targets. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ObservationTargetList"];
+                };
+            };
+            /** @description No valid capture credential (revoked, expired, or unknown) — fail closed. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description The observation plane is not configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
             /** @description Unexpected error. */
             default: {
