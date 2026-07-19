@@ -4,7 +4,8 @@ import { useLocale, useT } from "../app/i18n";
 import { AppLink } from "../components/AppLink";
 import { QueueCard } from "../components/QueueCard";
 import { ViewState } from "../components/ViewState";
-import { ageMinutes, formatCount } from "../data/format";
+import { formatCount } from "../data/format";
+import { freshnessState } from "../data/freshness";
 import { useConnectorStatus, useNeedsReview, useObservedOffers, useSession } from "../data/hooks";
 
 // Operations (design screen 10 / OPS-002, internal): the internal data-quality &
@@ -47,7 +48,7 @@ export function Operations() {
 
   const offers = useMemo(() => offersQuery.data?.items ?? [], [offersQuery.data]);
   const conflictedCount = offers.filter((o) => o.quality === "conflicted").length;
-  const staleCount = offers.filter((o) => ageMinutes(o.capturedAt, now) > 360).length;
+  const staleCount = offers.filter((o) => freshnessState(o, now) === "stale").length;
   const mappingCount = needsReviewQuery.data?.items.length ?? 0;
   const failedSyncCount =
     connectorQuery.data && connectorQuery.data.connectionState !== "connected" ? 1 : 0;

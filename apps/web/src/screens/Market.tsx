@@ -1,6 +1,6 @@
-import { FRESHNESS_AGING_MAX_MINUTES, FRESHNESS_FRESH_MAX_MINUTES } from "@market-ops/locale";
 import { useMemo } from "react";
 import { useLocale, useT } from "../app/i18n";
+import { useNow } from "../app/useNow";
 import { AppLink } from "../components/AppLink";
 import { Banner } from "../components/Banner";
 import { FreshnessPill, QualityBadge } from "../components/badges";
@@ -9,7 +9,8 @@ import { type Column, DataTable } from "../components/DataTable";
 import { LtrToken } from "../components/LtrToken";
 import { Section } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
-import { ageMinutes, formatCount, formatInstant } from "../data/format";
+import { formatCount, formatInstant } from "../data/format";
+import { freshnessState, freshnessTransitions } from "../data/freshness";
 import { useConnectorAction, useObservationTargets, useObservedOffers } from "../data/hooks";
 import type { ObservationTarget, ObservedOffer, QualityState } from "../data/types";
 
@@ -39,20 +40,20 @@ interface WatchRow {
 // don't fight over an inline ternary. Freshness pill, or an em-dash placeholder.
 function FreshnessCell({ offer, now }: { offer?: ObservedOffer; now: number }) {
   if (!offer) return <LtrToken text="—" />;
-  return <FreshnessPill ageMinutes={ageMinutes(offer.capturedAt, now)} />;
+  return <FreshnessPill state={freshnessState(offer, now)} />;
 }
 
-// Thresholds are the SHARED constants (packages/locale) — the SAME ones
-// FreshnessPill and the extension overlay's freshnessBucketOf compare
-// against, so this bucketing can never silently drift from either.
+// Buckets by the SHARED deadline-driven derivation (apps/web/src/data/freshness
+// → packages/locale) — the SAME `freshnessState` the row pill and the extension
+// overlay use, at the SAME `now`, so counts can never silently drift.
 function freshnessSegments(offers: readonly ObservedOffer[], now: number): CoverageSegment[] {
   let fresh = 0;
   let aging = 0;
   let stale = 0;
   for (const o of offers) {
-    const age = ageMinutes(o.capturedAt, now);
-    if (age <= FRESHNESS_FRESH_MAX_MINUTES) fresh += 1;
-    else if (age <= FRESHNESS_AGING_MAX_MINUTES) aging += 1;
+    const state = freshnessState(o, now);
+    if (state === "fresh") fresh += 1;
+    else if (state === "aging") aging += 1;
     else stale += 1;
   }
   return [
@@ -71,7 +72,14 @@ export function Market() {
 
   const targets = useMemo(() => targetsQuery.data?.items ?? [], [targetsQuery.data]);
   const offers = useMemo(() => offersQuery.data?.items ?? [], [offersQuery.data]);
-  const now = Date.now();
+
+  // A page left open must flip an offer to Stale AT its authoritative deadline
+  // without navigation (OBS-004). `now` advances via a single timer aimed at
+  // the nearest future freshness transition across the visible offers, so the
+  // row badge, the coverage bars, and any action/bulk gate all read the SAME
+  // instant. Memoize the transition list so useNow only reschedules on change.
+  const transitions = useMemo(() => offers.flatMap((o) => freshnessTransitions(o)), [offers]);
+  const now = useNow(transitions);
 
   const offerByTarget = useMemo(() => {
     const map = new Map<string, ObservedOffer>();

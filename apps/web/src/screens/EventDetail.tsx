@@ -14,6 +14,7 @@ import { MoneyView } from "../components/MoneyView";
 import { Section } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
 import { ageMinutes, formatInstant } from "../data/format";
+import { freshnessStateFromAge } from "../data/freshness";
 import { useEvent } from "../data/hooks";
 import type { EventLifecycleState, EventSeverity, EventType, QualityState } from "../data/types";
 
@@ -76,7 +77,7 @@ export function EventDetail() {
             <div className="event-detail__head">
               <EventTypeBadge type={EVENT_TYPE_NUM[event.type]} />
               <QualityBadge state={event.evidenceQuality as QualityState} />
-              <FreshnessPill ageMinutes={ageMinutes(event.lastEvidenceAt)} />
+              <FreshnessPill state={freshnessStateFromAge(ageMinutes(event.lastEvidenceAt))} />
               <LtrToken text={String(event.variantId)} />
             </div>
 
