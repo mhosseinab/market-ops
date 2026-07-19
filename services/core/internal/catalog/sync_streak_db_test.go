@@ -84,6 +84,57 @@ func TestSyncStreak_SeedFromDurableState(t *testing.T) {
 	}
 }
 
+// TestSyncStreak_MultiRetrySingleRun_LiveEqualsDurable is the blocker-1 core
+// (issue #146): ONE run that fails across MULTIPLE River retry attempts must
+// advance the streak by exactly 1 on the LIVE path, and the value a fresh tracker
+// re-derives from the SAME durable history via SeedFromDurableState must equal it
+// — no false page from retries (a), no collapse-to-1 that silences an active page
+// on restart (b). A post-restart retry of the same run must not double-count.
+func TestSyncStreak_MultiRetrySingleRun_LiveEqualsDurable(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	_, account := seedOrgAccount(t, q)
+
+	tel := catalog.NewSyncTelemetry(nil)
+	run, err := q.CreateCatalogSyncRun(ctx, db.CreateCatalogSyncRunParams{
+		MarketplaceAccountID: account, Kind: string(catalog.KindIncremental),
+	})
+	if err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+
+	// River retries the SAME run three times; each Resume fails on the failing source.
+	failing := catalog.NewSyncer(pool, failingSource{}, 2).WithTelemetry(tel)
+	for i := 0; i < 3; i++ {
+		if err := failing.Resume(ctx, account, run.ID); err == nil {
+			t.Fatalf("attempt %d: expected the failing sync to error", i+1)
+		}
+	}
+	if got := tel.StreakFor(account); got != 1 {
+		t.Fatalf("one run failing across 3 retries must yield streak 1 (not a false page), got %d", got)
+	}
+
+	// Restart: a fresh tracker seeded from the SAME durable history must re-derive
+	// the identical value — no collapse that would silence an active streak.
+	fresh := catalog.NewSyncTelemetry(nil)
+	if err := fresh.SeedFromDurableState(ctx, pool); err != nil {
+		t.Fatalf("seed from durable state: %v", err)
+	}
+	if got := fresh.StreakFor(account); got != 1 {
+		t.Fatalf("re-derived streak must equal the live value (1), got %d", got)
+	}
+
+	// A further retry of the SAME run after restart must not double-count on top of
+	// the seeded value.
+	failingAfter := catalog.NewSyncer(pool, failingSource{}, 2).WithTelemetry(fresh)
+	if err := failingAfter.Resume(ctx, account, run.ID); err == nil {
+		t.Fatal("expected the post-restart retry to error")
+	}
+	if got := fresh.StreakFor(account); got != 1 {
+		t.Fatalf("a post-restart retry of an already-counted run must not double-count, got %d", got)
+	}
+}
+
 // failingSource always errors on fetch, driving a sync-attempt failure.
 type failingSource struct{}
 

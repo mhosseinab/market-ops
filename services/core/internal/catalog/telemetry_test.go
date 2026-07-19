@@ -23,7 +23,8 @@ func TestSyncStreak_FailureSuccessInterleavedNeverTrips(t *testing.T) {
 	seq := []SyncDisposition{SyncHTTP5xx, SyncSuccess, SyncHTTP5xx, SyncSuccess, SyncHTTP5xx}
 	var peak int64
 	for _, d := range seq {
-		v := tel.recordSyncResult(ctx, acct, d)
+		// Each disposition is a DISTINCT run (a new runID), as it is in production.
+		v := tel.recordSyncResult(ctx, acct, uuid.New(), d)
 		if v > peak {
 			peak = v
 		}
@@ -44,9 +45,9 @@ func TestSyncStreak_ThreeConsecutiveReachesThreshold(t *testing.T) {
 	ctx := context.Background()
 
 	got := []int64{
-		tel.recordSyncResult(ctx, acct, SyncHTTP5xx),
-		tel.recordSyncResult(ctx, acct, SyncTransport),
-		tel.recordSyncResult(ctx, acct, SyncTyped),
+		tel.recordSyncResult(ctx, acct, uuid.New(), SyncHTTP5xx),
+		tel.recordSyncResult(ctx, acct, uuid.New(), SyncTransport),
+		tel.recordSyncResult(ctx, acct, uuid.New(), SyncTyped),
 	}
 	want := []int64{1, 2, 3}
 	for i := range want {
@@ -63,13 +64,44 @@ func TestSyncStreak_SuccessResetsExistingStreak(t *testing.T) {
 	acct := uuid.New()
 	ctx := context.Background()
 
-	tel.recordSyncResult(ctx, acct, SyncHTTP5xx)
-	tel.recordSyncResult(ctx, acct, SyncHTTP4xx)
+	tel.recordSyncResult(ctx, acct, uuid.New(), SyncHTTP5xx)
+	tel.recordSyncResult(ctx, acct, uuid.New(), SyncHTTP4xx)
 	if got := tel.streakFor(acct); got != 2 {
 		t.Fatalf("precondition: streak should be 2, got %d", got)
 	}
-	if got := tel.recordSyncResult(ctx, acct, SyncSuccess); got != 0 {
+	if got := tel.recordSyncResult(ctx, acct, uuid.New(), SyncSuccess); got != 0 {
 		t.Fatalf("a success must reset the streak to 0, got %d", got)
+	}
+}
+
+// TestSyncStreak_SameRunCountedOnce is the blocker-1 regression (issue #146): a
+// SINGLE run that fails across MULTIPLE retry attempts must advance the streak by
+// exactly ONE, so a run River retries >=3 times can never drive the gauge to the
+// page threshold on its own. A different run then advances the streak normally, and
+// that run succeeding resets it and clears its per-run guard.
+func TestSyncStreak_SameRunCountedOnce(t *testing.T) {
+	tel := newSyncTelemetry(nil)
+	acct := uuid.New()
+	run := uuid.New()
+	ctx := context.Background()
+
+	// Same run, three failing attempts (River backoff retries) => streak 1, not 3.
+	tel.recordSyncResult(ctx, acct, run, SyncHTTP5xx)
+	tel.recordSyncResult(ctx, acct, run, SyncTransport)
+	if got := tel.recordSyncResult(ctx, acct, run, SyncTyped); got != 1 {
+		t.Fatalf("one run failing across 3 attempts must count once; streak = %d, want 1", got)
+	}
+
+	// A DISTINCT run that fails advances the streak.
+	other := uuid.New()
+	if got := tel.recordSyncResult(ctx, acct, other, SyncHTTP5xx); got != 2 {
+		t.Fatalf("a second failed run must advance to 2; got %d", got)
+	}
+
+	// That run succeeding resets the streak and clears its guard, so a fresh run id
+	// reusing the value (a new run) is counted again from a reset baseline.
+	if got := tel.recordSyncResult(ctx, acct, other, SyncSuccess); got != 0 {
+		t.Fatalf("a success must reset the streak to 0; got %d", got)
 	}
 }
 
@@ -80,8 +112,8 @@ func TestSyncStreak_PerAccountIsolation(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
 	ctx := context.Background()
 
-	tel.recordSyncResult(ctx, a, SyncHTTP5xx)
-	tel.recordSyncResult(ctx, a, SyncHTTP5xx)
+	tel.recordSyncResult(ctx, a, uuid.New(), SyncHTTP5xx)
+	tel.recordSyncResult(ctx, a, uuid.New(), SyncHTTP5xx)
 	if got := tel.streakFor(b); got != 0 {
 		t.Fatalf("account b's streak must be unaffected by account a's failures, got %d", got)
 	}
@@ -124,27 +156,37 @@ func TestClassifySyncFailure_AllDispositions(t *testing.T) {
 // acceptance test 6). Rows arrive newest-first per account.
 func TestDeriveStreaks_FromDurableState(t *testing.T) {
 	a, b, c := uuid.New(), uuid.New(), uuid.New()
+	aFail1, aRun2 := uuid.New(), uuid.New()
 	rows := []SyncRunOutcome{
 		// account a: two trailing failures since the last completed run => streak 2.
-		{Account: a, Status: "failed", HasError: true},
-		{Account: a, Status: "running", HasError: true}, // an interrupted retry counts as a failure
-		{Account: a, Status: "completed", HasError: false},
-		{Account: a, Status: "failed", HasError: true},
+		{Account: a, RunID: aFail1, Status: "failed", HasError: true},
+		{Account: a, RunID: aRun2, Status: "running", HasError: true}, // an interrupted retry counts as a failure
+		{Account: a, RunID: uuid.New(), Status: "completed", HasError: false},
+		{Account: a, RunID: uuid.New(), Status: "failed", HasError: true},
 		// account b: most recent run completed => streak 0.
-		{Account: b, Status: "completed", HasError: false},
-		{Account: b, Status: "failed", HasError: true},
+		{Account: b, RunID: uuid.New(), Status: "completed", HasError: false},
+		{Account: b, RunID: uuid.New(), Status: "failed", HasError: true},
 		// account c: a clean in-flight run over an older failure => the failure still
 		// counts (unresolved), the clean running row is neutral => streak 1.
-		{Account: c, Status: "running", HasError: false},
-		{Account: c, Status: "failed", HasError: true},
-		{Account: c, Status: "completed", HasError: false},
+		{Account: c, RunID: uuid.New(), Status: "running", HasError: false},
+		{Account: c, RunID: uuid.New(), Status: "failed", HasError: true},
+		{Account: c, RunID: uuid.New(), Status: "completed", HasError: false},
 	}
-	got := deriveStreaks(rows)
+	got, counted := deriveStreaks(rows)
 	want := map[uuid.UUID]int64{a: 2, b: 0, c: 1}
 	for acct, w := range want {
 		if got[acct] != w {
 			t.Fatalf("deriveStreaks account %s = %d, want %d", acct, got[acct], w)
 		}
+	}
+	// The counted set carries the run ids that produced account a's trailing streak
+	// (the failed run + the still-retrying running-with-error run), so a restart
+	// re-seed of the per-run guard never double-counts that in-flight run.
+	if _, ok := counted[aFail1]; !ok {
+		t.Fatalf("counted set must include the trailing failed run %s", aFail1)
+	}
+	if _, ok := counted[aRun2]; !ok {
+		t.Fatalf("counted set must include the still-retrying running-with-error run %s", aRun2)
 	}
 }
 
@@ -156,11 +198,33 @@ func TestSeed_RestoresStreakAcrossRestart(t *testing.T) {
 	acct := uuid.New()
 	ctx := context.Background()
 
-	tel.seed(map[uuid.UUID]int64{acct: 2})
+	tel.seed(map[uuid.UUID]int64{acct: 2}, nil)
 	if got := tel.streakFor(acct); got != 2 {
 		t.Fatalf("seed should restore streak 2, got %d", got)
 	}
-	if got := tel.recordSyncResult(ctx, acct, SyncHTTP5xx); got != 3 {
+	// A NEW run (its id was not in the seeded guard) advances the seeded streak.
+	if got := tel.recordSyncResult(ctx, acct, uuid.New(), SyncHTTP5xx); got != 3 {
 		t.Fatalf("a failure after a seeded streak of 2 should reach 3, got %d", got)
+	}
+}
+
+// TestSeed_SeededRunNotDoubleCounted proves the blocker-1 restart guard: after a
+// restart re-seeds both the streak AND the run ids that produced it, a further
+// failing attempt of one of those SAME runs (River still retrying it) does NOT
+// advance the streak a second time — the live value stays equal to the durable one.
+func TestSeed_SeededRunNotDoubleCounted(t *testing.T) {
+	tel := newSyncTelemetry(nil)
+	acct := uuid.New()
+	inflight := uuid.New()
+	ctx := context.Background()
+
+	// Durable state re-derived to streak 3, with `inflight` among the counted runs.
+	tel.seed(map[uuid.UUID]int64{acct: 3}, map[uuid.UUID]struct{}{inflight: {}})
+	if got := tel.streakFor(acct); got != 3 {
+		t.Fatalf("seed should restore streak 3, got %d", got)
+	}
+	// The same in-flight run failing again post-restart must be idempotent.
+	if got := tel.recordSyncResult(ctx, acct, inflight, SyncHTTP5xx); got != 3 {
+		t.Fatalf("a retry of an already-counted run must not double-count; got %d, want 3", got)
 	}
 }

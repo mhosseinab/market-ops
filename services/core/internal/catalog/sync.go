@@ -55,11 +55,14 @@ func (s *Syncer) WithTelemetry(t *SyncTelemetry) *Syncer {
 	return s
 }
 
-// recordResult forwards one terminal sync disposition to the shared tracker when
-// telemetry is attached. Nil-safe: the sync path is unaffected when it is not.
-func (s *Syncer) recordResult(ctx context.Context, account uuid.UUID, d SyncDisposition) {
+// recordResult forwards one sync-run disposition to the shared tracker when
+// telemetry is attached. The runID makes recording per-run-idempotent: a run
+// retried across multiple attempts advances the streak by exactly one, matching the
+// durable re-derivation (issue #146). Nil-safe: the sync path is unaffected when no
+// tracker is wired.
+func (s *Syncer) recordResult(ctx context.Context, account, runID uuid.UUID, d SyncDisposition) {
 	if s.telemetry != nil {
-		s.telemetry.recordSyncResult(ctx, account, d)
+		s.telemetry.recordSyncResult(ctx, account, runID, d)
 	}
 }
 
@@ -100,12 +103,17 @@ func (s *Syncer) resume(ctx context.Context, account, runID uuid.UUID, maxPages 
 	for {
 		run, err := q.GetCatalogSyncRun(ctx, runID)
 		if err != nil {
+			// Could not LOAD the run: an infrastructure fault, not a sync-attempt
+			// disposition. Durable run state is unchanged, so the streak must not move
+			// here — deriveStreaks would not count this either (live == durable).
 			return fmt.Errorf("catalog: load sync run: %w", err)
 		}
 		if run.Status == "completed" {
 			return nil
 		}
 		if run.MarketplaceAccountID != account {
+			// Ownership/routing guard, not a sync outcome: never record a streak
+			// increment for a run that does not belong to this account.
 			return fmt.Errorf("catalog: sync run %s does not belong to account %s", runID, account)
 		}
 		if maxPages > 0 && processed >= maxPages {
@@ -121,12 +129,17 @@ func (s *Syncer) resume(ctx context.Context, account, runID uuid.UUID, maxPages 
 				ID:    runID,
 				Error: err.Error(),
 			}); serr != nil {
+				// The durable error could not be persisted, so durable state will not
+				// show this run as failing. Do NOT record a streak increment here — that
+				// would diverge the live gauge from the durable re-derivation. Return the
+				// joined error and let River retry.
 				return errors.Join(err, fmt.Errorf("catalog: record run error: %w", serr))
 			}
 			// Authoritative sync-failure boundary: advance the §20.1 consecutive-
-			// failure streak by this attempt's disposition (issue #146). Recorded
-			// after the durable error is persisted so telemetry mirrors durable state.
-			s.recordResult(ctx, account, classifySyncFailure(err))
+			// failure streak for THIS run (issue #146). Recorded after the durable error
+			// is persisted so telemetry mirrors durable state, and keyed by runID so a
+			// run retried across many attempts counts exactly once (== deriveStreaks).
+			s.recordResult(ctx, account, runID, classifySyncFailure(err))
 			return err
 		}
 		processed++
@@ -288,8 +301,9 @@ func (s *Syncer) finish(ctx context.Context, q *db.Queries, account, runID uuid.
 		return fmt.Errorf("catalog: complete run: %w", err)
 	}
 	// Authoritative sync-success boundary: a completed run RESETS the §20.1
-	// consecutive-failure streak to zero (issue #146).
-	s.recordResult(ctx, account, SyncSuccess)
+	// consecutive-failure streak to zero and clears this run from the per-run guard
+	// (issue #146).
+	s.recordResult(ctx, account, runID, SyncSuccess)
 	return nil
 }
 

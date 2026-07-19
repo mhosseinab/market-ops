@@ -20,6 +20,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/analytics"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
 	"github.com/mhosseinab/market-ops/services/core/internal/briefing"
+	"github.com/mhosseinab/market-ops/services/core/internal/catalog"
 	"github.com/mhosseinab/market-ops/services/core/internal/config"
 	"github.com/mhosseinab/market-ops/services/core/internal/connector"
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
@@ -139,12 +140,40 @@ func run() error {
 		// Wire the DK connector when its own prerequisites are present. It fails
 		// CLOSED: a missing/invalid CONNECTOR_ENCRYPTION_KEY leaves the
 		// /connector routes returning a structured error, never a healthy state.
+		//
+		// catalogDeps arms the catalog-sync workers (below, in the job pipeline) with
+		// the process-wide sync-streak tracker feeding the §20.1
+		// ConnectorSyncFailureStreak alert (issue #146). It is populated ONLY when the
+		// connector is wired; otherwise no sync runs, so the gauge has no honest
+		// producer and the workers stay unregistered.
+		var catalogDeps *catalog.WorkerDeps
 		connSvc, connErr := buildConnector(ctx, logger, pool, queries)
 		if connErr != nil {
 			logger.Warn("connector not wired; /connector routes fail closed", "error", connErr)
 		} else if connSvc != nil {
 			serverOpts = append(serverOpts, httpapi.WithConnector(connSvc))
 			logger.Info("connector wired")
+
+			// Arm the §20.1 connector-sync failure-streak producer. NewSyncTelemetry
+			// binds to the global OTel meter obs.Init already installed above; a metric
+			// wiring hiccup degrades to no-op instruments, never breaking the sync path.
+			// SeedFromDurableState re-derives in-flight streaks from durable
+			// catalog_sync_runs so a restart never silently zeroes a real failing streak
+			// (and emits those gauge values at boot). It is read-only and nil-safe: a
+			// seed error is logged and the tracker simply starts empty — the sync path is
+			// unaffected.
+			syncTel := catalog.NewSyncTelemetry(logger)
+			if err := syncTel.SeedFromDurableState(ctx, pool); err != nil {
+				logger.Warn("catalog sync-streak seed failed; streak starts empty", "error", err.Error())
+			}
+			catalogDeps = &catalog.WorkerDeps{
+				Connector: connSvc,
+				Pool:      pool,
+				PageSize:  catalog.DefaultPageSize,
+				Logger:    logger,
+				Telemetry: syncTel,
+			}
+			logger.Info("catalog sync telemetry armed; workers emit connector_sync_failure_streak (§20.1)")
 		}
 
 		// Wire the cost plane (CST-001..003): CSV import preview/commit, single-
@@ -281,7 +310,7 @@ func run() error {
 			OutcomeClose:     closer.RunOnce,
 			BriefingGenerate: briefingSvc.GenerateAll,
 			DigestGenerate:   digestRunner(digestSvc),
-		})
+		}, catalogDeps)
 		if jobsErr != nil {
 			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)
 		} else {
@@ -343,7 +372,7 @@ func run() error {
 // lifecycle is owned by the caller.
 func buildConnector(
 	_ context.Context, logger *slog.Logger, _ *pgxpool.Pool, queries *db.Queries,
-) (httpapi.ConnectorService, error) {
+) (*connector.Service, error) {
 	// Encryption key is mandatory: without it we cannot seal tokens at rest, so
 	// we refuse to wire the connector at all.
 	cipher, err := connector.NewCipherFromEnv(os.Getenv)
@@ -378,13 +407,21 @@ func digestRunner(svc *notify.DigestService) jobs.RunOnceFunc {
 // that drains the client on shutdown. It fails soft: a wiring error is returned so
 // the caller can log it and keep serving screens (the periodic passes are
 // advisory, never on the approval/write critical path).
-func startJobPipeline(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, runners jobs.ExecutionRunners) (func(), error) {
+func startJobPipeline(ctx context.Context, logger *slog.Logger, pool *pgxpool.Pool, runners jobs.ExecutionRunners, catalogDeps *catalog.WorkerDeps) (func(), error) {
 	if err := jobs.Migrate(ctx, pool); err != nil {
 		return nil, err
 	}
 	workers, err := jobs.NewWorkers(logger, runners)
 	if err != nil {
 		return nil, err
+	}
+	// Register the catalog-sync workers on the SAME registry so a running sync emits
+	// the §20.1 connector_sync_failure_streak gauge (issue #146). Nil-safe: without a
+	// wired connector there is no catalogDeps and the workers stay unregistered.
+	if catalogDeps != nil {
+		if err := catalog.RegisterWorkers(workers, *catalogDeps); err != nil {
+			return nil, err
+		}
 	}
 	client, err := jobs.NewClient(pool, workers, logger)
 	if err != nil {

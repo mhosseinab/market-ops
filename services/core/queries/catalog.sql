@@ -87,8 +87,10 @@ LIMIT 1;
 -- READ-ONLY durable ordered sync-run state for restart re-derivation of the §20.1
 -- connector-sync failure streak (issue #146). Newest-first per account; the
 -- telemetry seam (catalog.deriveStreaks) counts the leading consecutive non-success
--- runs since the last completed run. Pure SELECT: never mutates a run row.
-SELECT marketplace_account_id, status, error
+-- runs since the last completed run. The run id is carried so the seam can re-seed
+-- its per-run idempotency guard: a run still being retried after a restart is never
+-- double-counted on the live path. Pure SELECT: never mutates a run row.
+SELECT id, marketplace_account_id, status, error
 FROM catalog_sync_runs
 ORDER BY marketplace_account_id, started_at DESC;
 

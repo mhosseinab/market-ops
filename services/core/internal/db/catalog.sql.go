@@ -347,12 +347,13 @@ func (q *Queries) InsertCatalogPayloadSnapshot(ctx context.Context, arg InsertCa
 }
 
 const listRecentCatalogSyncOutcomes = `-- name: ListRecentCatalogSyncOutcomes :many
-SELECT marketplace_account_id, status, error
+SELECT id, marketplace_account_id, status, error
 FROM catalog_sync_runs
 ORDER BY marketplace_account_id, started_at DESC
 `
 
 type ListRecentCatalogSyncOutcomesRow struct {
+	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
 	Status               string
 	Error                string
@@ -361,7 +362,9 @@ type ListRecentCatalogSyncOutcomesRow struct {
 // READ-ONLY durable ordered sync-run state for restart re-derivation of the §20.1
 // connector-sync failure streak (issue #146). Newest-first per account; the
 // telemetry seam (catalog.deriveStreaks) counts the leading consecutive non-success
-// runs since the last completed run. Pure SELECT: never mutates a run row.
+// runs since the last completed run. The run id is carried so the seam can re-seed
+// its per-run idempotency guard: a run still being retried after a restart is never
+// double-counted on the live path. Pure SELECT: never mutates a run row.
 func (q *Queries) ListRecentCatalogSyncOutcomes(ctx context.Context) ([]ListRecentCatalogSyncOutcomesRow, error) {
 	rows, err := q.db.Query(ctx, listRecentCatalogSyncOutcomes)
 	if err != nil {
@@ -371,7 +374,12 @@ func (q *Queries) ListRecentCatalogSyncOutcomes(ctx context.Context) ([]ListRece
 	items := []ListRecentCatalogSyncOutcomesRow{}
 	for rows.Next() {
 		var i ListRecentCatalogSyncOutcomesRow
-		if err := rows.Scan(&i.MarketplaceAccountID, &i.Status, &i.Error); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.MarketplaceAccountID,
+			&i.Status,
+			&i.Error,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

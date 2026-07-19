@@ -56,8 +56,9 @@ func (d SyncDisposition) failure() bool   { return d != SyncSuccess }
 // catalog_sync_runs), never a mutation.
 type SyncRunOutcome struct {
 	Account  uuid.UUID
-	Status   string // "completed" | "failed" | "running"
-	HasError bool   // the run's error column is non-empty
+	RunID    uuid.UUID // the run's stable id: seeds the per-run idempotency guard
+	Status   string    // "completed" | "failed" | "running"
+	HasError bool      // the run's error column is non-empty
 }
 
 // syncTelemetry owns the §20.1 connector-sync failure-streak signal. It maintains
@@ -78,6 +79,14 @@ type SyncTelemetry struct {
 
 	mu     sync.Mutex
 	streak map[uuid.UUID]int64
+	// countedRuns is the per-run idempotency guard (issue #146, blocker 1): the set
+	// of run ids that have already contributed a failure increment. A single run
+	// that fails across MULTIPLE River retry attempts must advance the streak by
+	// exactly ONE — the same value the durable re-derivation (deriveStreaks) yields,
+	// which also counts a run at most once. Without this guard a run retried >=3
+	// times would drive the live gauge to >=3 and page falsely, then collapse back
+	// to 1 on restart. A run id is cleared when that run succeeds.
+	countedRuns map[uuid.UUID]struct{}
 }
 
 // NewSyncTelemetry builds the process-wide sync-streak tracker for the binary to
@@ -109,26 +118,46 @@ func newSyncTelemetry(logger *slog.Logger) *SyncTelemetry {
 		results, _ = noopSyncMeter.Int64Counter("connector.sync_results")
 	}
 	return &SyncTelemetry{
-		logger:  logger.With("component", "catalog_sync"),
-		streaks: gauge,
-		results: results,
-		streak:  make(map[uuid.UUID]int64),
+		logger:      logger.With("component", "catalog_sync"),
+		streaks:     gauge,
+		results:     results,
+		streak:      make(map[uuid.UUID]int64),
+		countedRuns: make(map[uuid.UUID]struct{}),
 	}
 }
 
 // noopSyncMeter backs an instrument when the real meter errors, so it is never nil.
 var noopSyncMeter = otel.Meter("noop")
 
-// recordSyncResult updates the account's consecutive-failure streak from ONE
-// terminal sync disposition and emits the current streak value as a bounded gauge
-// plus a by-disposition result counter. A success resets the streak to zero; every
-// failure disposition increments it. Returns the new streak value.
-func (t *SyncTelemetry) recordSyncResult(ctx context.Context, account uuid.UUID, d SyncDisposition) int64 {
+// recordSyncResult folds ONE sync-run disposition into the account's consecutive-
+// failure streak and emits the current value as a bounded gauge plus a
+// by-disposition result counter. Semantics (issue #146, blocker 1) — a run
+// contributes AT MOST ONE increment, so the live streak equals the durable
+// re-derivation (deriveStreaks) for the same history:
+//
+//   - the FIRST failure disposition seen for a runID increments the streak by one
+//     and records the run in the per-run guard;
+//   - any FURTHER failure for that same runID (a subsequent River retry attempt of
+//     the same run) is idempotent — it neither increments the streak nor re-emits,
+//     so one run retried N times never drives the gauge to N;
+//   - a success resets the streak to zero and clears the run from the guard.
+//
+// Returns the current streak value.
+func (t *SyncTelemetry) recordSyncResult(ctx context.Context, account, runID uuid.UUID, d SyncDisposition) int64 {
 	t.mu.Lock()
 	if d.failure() {
+		if _, already := t.countedRuns[runID]; already {
+			// This run already advanced the streak on an earlier attempt. Ignore the
+			// repeat so a multi-retry run counts once (live == durable re-derivation).
+			v := t.streak[account]
+			t.mu.Unlock()
+			return v
+		}
+		t.countedRuns[runID] = struct{}{}
 		t.streak[account]++
 	} else {
 		t.streak[account] = 0
+		delete(t.countedRuns, runID)
 	}
 	v := t.streak[account]
 	t.mu.Unlock()
@@ -168,11 +197,17 @@ func (t *SyncTelemetry) StreakFor(account uuid.UUID) int64 { return t.streakFor(
 
 // seed restores per-account streaks (typically from deriveStreaks over durable
 // sync-run state) and re-emits each gauge value, so a process restart continues a
-// real failing streak instead of starting from zero.
-func (t *SyncTelemetry) seed(streaks map[uuid.UUID]int64) {
+// real failing streak instead of starting from zero. It also re-populates the
+// per-run idempotency guard with the run ids that produced the durable streak, so a
+// run still being retried after a restart is NOT counted a second time on the live
+// path (issue #146, blocker 1: no double-count on top of the seeded value).
+func (t *SyncTelemetry) seed(streaks map[uuid.UUID]int64, countedRuns map[uuid.UUID]struct{}) {
 	t.mu.Lock()
 	for acct, v := range streaks {
 		t.streak[acct] = v
+	}
+	for id := range countedRuns {
+		t.countedRuns[id] = struct{}{}
 	}
 	snapshot := make(map[uuid.UUID]int64, len(streaks))
 	for acct := range streaks {
@@ -201,6 +236,7 @@ func (t *SyncTelemetry) SeedFromDurableState(ctx context.Context, pool *pgxpool.
 	for i, r := range rows {
 		outcomes[i] = SyncRunOutcome{
 			Account:  r.MarketplaceAccountID,
+			RunID:    r.ID,
 			Status:   r.Status,
 			HasError: r.Error != "",
 		}
@@ -232,6 +268,10 @@ func classifySyncFailure(err error) SyncDisposition {
 			return SyncHTTP5xx
 		}
 	}
+	// Fail-safe: an unparseable/unrecognised status shape (parser drift, a novel
+	// error string, or a non-4xx/5xx class) falls through to SyncTransport — still a
+	// FAILURE disposition. classifySyncFailure has no path that returns SyncSuccess,
+	// so a misread error can never silently reset the streak.
 	return SyncTransport
 }
 
@@ -242,8 +282,13 @@ func classifySyncFailure(err error) SyncDisposition {
 // clean 'running' run (in-flight, no error yet) is neutral and does not reset an
 // older unresolved streak. This is the restart re-derivation the §20.1 trip wire
 // needs so a process restart never silently zeroes a real streak.
-func deriveStreaks(rows []SyncRunOutcome) map[uuid.UUID]int64 {
+// It returns the per-account streak AND the set of run ids that contributed a
+// failure increment, so seed can re-populate the live per-run idempotency guard —
+// a run still being retried after a restart must not be counted again on top of the
+// seeded streak (issue #146, blocker 1).
+func deriveStreaks(rows []SyncRunOutcome) (map[uuid.UUID]int64, map[uuid.UUID]struct{}) {
 	out := make(map[uuid.UUID]int64)
+	counted := make(map[uuid.UUID]struct{})
 	done := make(map[uuid.UUID]bool)
 	for _, r := range rows {
 		if done[r.Account] {
@@ -255,9 +300,10 @@ func deriveStreaks(rows []SyncRunOutcome) map[uuid.UUID]int64 {
 			done[r.Account] = true
 		case r.Status == "failed" || (r.Status == "running" && r.HasError):
 			out[r.Account]++
+			counted[r.RunID] = struct{}{}
 		default:
 			// clean 'running' (in-flight, no error): neutral, keep scanning older runs.
 		}
 	}
-	return out
+	return out, counted
 }
