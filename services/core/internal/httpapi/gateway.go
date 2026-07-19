@@ -52,6 +52,11 @@ type gatewayServer struct {
 	// llmChat is the internal Python LLM plane seam (§19.3). Nil ⇒ /chat returns
 	// a structured provider_unavailable state; screens are unaffected.
 	llmChat LLMChatService
+	// conversations is the GATEWAY-owned conversation durability store (CHAT-008).
+	// Nil ⇒ /chat proxies without persisting (no DB wired); when present, every
+	// turn's user + terminal assistant record is persisted and a cross-org
+	// conversation is denied before the turn is proxied.
+	conversations ChatConversationStore
 	// draft backs the /chat/cards/* Draft-only routes (CHAT-041/050/061). Nil ⇒
 	// those routes fail closed with a structured error; no Draft is ever minted on
 	// an unwired plane.

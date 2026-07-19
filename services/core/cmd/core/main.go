@@ -22,6 +22,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/briefing"
 	"github.com/mhosseinab/market-ops/services/core/internal/config"
 	"github.com/mhosseinab/market-ops/services/core/internal/connector"
+	"github.com/mhosseinab/market-ops/services/core/internal/conversation"
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
@@ -190,6 +191,14 @@ func run() error {
 		serverOpts = append(serverOpts, httpapi.WithNotify(notifyStore))
 		analyticsEmitter = analytics.NewEmitter(pool)
 		logger.Info("notification store + analytics emitter wired")
+
+		// Wire the GATEWAY-owned conversation durability store (CHAT-008): the
+		// /chat path persists each turn's user + terminal assistant record under
+		// the caller's organization and denies a cross-org conversation before
+		// proxying. The LLM plane never touches this store (no DB credential,
+		// §19.3); the gateway owns conversation identity.
+		serverOpts = append(serverOpts, httpapi.WithChatConversations(conversation.NewStore(pool)))
+		logger.Info("chat conversation durability store wired")
 
 		// Wire the observation store (PRD §7.3 OBS-*) so the Route B capture-upload
 		// ingestion and the observed-offer/evidence reads are served. Ingestion is
