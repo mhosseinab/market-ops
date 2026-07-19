@@ -156,11 +156,23 @@ func TestMachinePrincipalCannotWriteGuardrailsEditPriceOrBulkMint(t *testing.T) 
 	}
 }
 
-// TestMachinePrincipalCanReadRecommendationDetailGuardrailsAndWatchlist proves
-// the machine plane's L1 read envelope DOES cover the new consolidated reads —
-// the containment is specifically on the three writes above, not a blanket
-// denial of the new surface.
-func TestMachinePrincipalCanReadRecommendationDetailGuardrailsAndWatchlist(t *testing.T) {
+// TestMachinePrincipalCannotReadRoutesWithoutADeclaringTypedTool pins the
+// corrected §12.3 never-cut envelope after issue #26: the machine credential's
+// authority must NOT exceed the typed tool registry manifest. The consolidated
+// S37 reads /recommendations/detail (read.recommendation_detail), /guardrails
+// (read.guardrails), and /watchlist (read.watchlist) are gated on L1 read
+// actions that NO typed model-visible tool declares (the registry's read tools
+// map onto exactly connector.inspect, read.connection_status, read.cost_readiness
+// and read.current_strategy — services/llm/.../registry.py). Previously the
+// machine grant set was computed from EVERY L1 Matrix action, so these routes
+// were reachable by the machine token even though no reviewed LLM tool declared
+// the capability — the exact over-grant issue #26 identifies. They must now be
+// DENIED (403) at the wire for the machine principal, while remaining L1 reads
+// for human sessions. Restoring a machine read of any such route requires adding
+// a typed read tool that declares its perm_action AND regenerating
+// contracts/llm_gateway_envelope.json (the cross-language drift test enforces
+// exact equality).
+func TestMachinePrincipalCannotReadRoutesWithoutADeclaringTypedTool(t *testing.T) {
 	fa := newFakeAuth()
 	srv := NewServer(":0", BuildInfo{}, testLogger(),
 		WithAuth(fa), WithCookieSecure(false), WithGatewayToken(testGatewayToken),
@@ -175,8 +187,8 @@ func TestMachinePrincipalCanReadRecommendationDetailGuardrailsAndWatchlist(t *te
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		req.Header.Set("Authorization", "Bearer "+testGatewayToken)
 		srv.Handler.ServeHTTP(rec, req)
-		if rec.Code == http.StatusForbidden || rec.Code == http.StatusUnauthorized {
-			t.Fatalf("GET %s with the machine bearer token = %d, want a permitted (non-401/403) status", path, rec.Code)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("GET %s with the machine bearer token = %d, want 403 (no typed tool declares this read action — issue #26)", path, rec.Code)
 		}
 	}
 }

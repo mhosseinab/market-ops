@@ -347,6 +347,38 @@ class ToolRegistry:
         }
 
 
+def gateway_envelope_manifest() -> dict[str, Any]:
+    """The LLM_GATEWAY_TOKEN capability envelope, derived from THIS registry.
+
+    This is the single cross-language source of truth for the machine
+    credential's authority (issue #26, PRD §12.3): the machine principal may
+    reach EXACTLY the unique ``perm_action`` values of the typed READ tools plus
+    the ``draft.*`` actions of the DRAFT tools — nothing more. In particular it
+    can never contain a human-facing session/surface action (``session.read``,
+    ``session.logout``, ``chat.converse``): no such tool exists in the registry,
+    so no such action can appear here.
+
+    The committed ``contracts/llm_gateway_envelope.json`` is generated from this
+    function; the Go core asserts its machine envelope equals that file, and the
+    Python test ``test_gateway_envelope_manifest.py`` asserts this function
+    equals that file. The pair fails CLOSED when either plane drifts: a new/renamed
+    tool perm_action changes this manifest (and the committed file, and the Go
+    envelope must follow), and a widened Go envelope breaks against the file.
+    """
+    registry = build_registry()
+    read_actions = sorted(
+        {s.perm_action for s in registry.specs() if s.kind is ToolKind.READ}
+    )
+    draft_actions = sorted(
+        {s.perm_action for s in registry.specs() if s.kind is ToolKind.DRAFT}
+    )
+    return {
+        "version": "s20",
+        "read_actions": read_actions,
+        "draft_actions": draft_actions,
+    }
+
+
 def build_registry(
     *, read_runner_overrides: dict[str, Callable[..., dict[str, Any]]] | None = None
 ) -> ToolRegistry:

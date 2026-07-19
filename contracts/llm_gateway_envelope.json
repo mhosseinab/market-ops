@@ -1,0 +1,14 @@
+{
+  "version": "s20",
+  "read_actions": [
+    "connector.inspect",
+    "read.connection_status",
+    "read.cost_readiness",
+    "read.current_strategy"
+  ],
+  "draft_actions": [
+    "draft.level2_proposal",
+    "draft.recommendation",
+    "draft.selection_set"
+  ]
+}
