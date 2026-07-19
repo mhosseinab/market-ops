@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -26,18 +27,28 @@ var ErrInvalidCandidate = errors.New("event: invalid candidate")
 // owns no money calculation — exposure arrives already computed from the margin
 // plane (S16); price signals are raw evidence (money quarantine).
 type Service struct {
-	pool *pgxpool.Pool
-	now  func() time.Time
+	pool   *pgxpool.Pool
+	now    func() time.Time
+	ranker *Ranker
 }
 
-// NewService builds an event Service bound to the pool.
+// NewService builds an event Service bound to the pool. The Today ranker carries an
+// instance logger + telemetry so the money-correctness quarantine seam (issue #71)
+// is live in production; use WithLogger to inject a non-default logger.
 func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool, now: time.Now}
+	return &Service{pool: pool, now: time.Now, ranker: NewRanker(nil)}
 }
 
 // WithClock overrides the clock (tests only).
 func (s *Service) WithClock(now func() time.Time) *Service {
 	s.now = now
+	return s
+}
+
+// WithLogger rebinds the Today ranker to a specific logger (its quarantine warnings
+// then flow through the caller's structured logger). Returns s for chaining.
+func (s *Service) WithLogger(logger *slog.Logger) *Service {
+	s.ranker = NewRanker(logger)
 	return s
 }
 
@@ -124,7 +135,7 @@ func (s *Service) Today(ctx context.Context, account uuid.UUID) ([]Ranked, error
 	if err != nil {
 		return nil, err
 	}
-	return Rank(rows), nil
+	return s.ranker.Rank(ctx, rows), nil
 }
 
 // ListOpen returns the account's open events without ranking (list endpoint).

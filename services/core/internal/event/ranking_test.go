@@ -1,6 +1,8 @@
 package event_test
 
 import (
+	"math"
+	"math/big"
 	"testing"
 	"time"
 
@@ -11,6 +13,23 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
+
+// mkEventCE builds a KNOWN-exposure market-event row with an explicit currency
+// and exponent, so the money-correctness ranking tests (issue #71) can exercise
+// exponent normalization and mixed-currency quarantine.
+func mkEventCE(id uuid.UUID, sev string, mantissa int64, currency string, exponent int16, confBp, urgBp int32, detected time.Time) db.MarketEvent {
+	return db.MarketEvent{
+		ID:               id,
+		Severity:         sev,
+		ExposureKnown:    true,
+		ExposureCurrency: currency,
+		ExposureExponent: exponent,
+		ExposureMantissa: pgtype.Int8{Int64: mantissa, Valid: true},
+		ConfidenceBp:     confBp,
+		UrgencyBp:        urgBp,
+		FirstDetectedAt:  detected,
+	}
+}
 
 // TestExposureUnknownIsNotZero is the EVT-005 unit invariant: an unknown exposure
 // is distinct from a zero amount, and its Amount() never yields a usable number.
@@ -127,6 +146,148 @@ func TestUnknownExposureNeverBecomesNumber(t *testing.T) {
 		// rendered as a real amount.
 		if unknownRanked.Factors.ExposureCurrency != "" {
 			t.Fatal("unknown exposure must not expose a currency (would imply a real amount)")
+		}
+	}
+}
+
+// TestRankEquivalentExponentsTieExactly is the issue #71 money-correctness
+// invariant: two exposures with the SAME real value expressed at different
+// exponents (1000@exp2 == 100000@exp0 in the same currency) must produce an
+// EXACTLY equal composite score — never ordered by raw mantissa. The prior bug
+// discarded the exponent, so 100000@exp0 outranked its equal 1000@exp2.
+func TestRankEquivalentExponentsTieExactly(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// 1000 × 10^2 = 100000 ; 100000 × 10^0 = 100000 — identical real value.
+	a := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000101"), "warning", 1000, "IRR", 2, 5000, 5000, base)
+	b := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000102"), "warning", 100000, "IRR", 0, 5000, 5000, base)
+
+	ranked := event.Rank([]db.MarketEvent{a, b})
+	if ranked[0].Score == nil || ranked[1].Score == nil {
+		t.Fatal("both known-exposure events must carry a composite score")
+	}
+	if ranked[0].Score.Cmp(ranked[1].Score) != 0 {
+		t.Fatalf("equal real values at different exponents must score EXACTLY equal; got %s vs %s",
+			ranked[0].Score, ranked[1].Score)
+	}
+}
+
+// TestRankLargerCanonicalValueRanksHigher proves ordering follows the REAL money
+// magnitude (mantissa × 10^exponent) across positive, zero, AND negative
+// exponents — not the raw mantissa (issue #71).
+func TestRankLargerCanonicalValueRanksHigher(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// Real values: e1 = 5×10^3 = 5000 ; e2 = 100×10^0 = 100 ; e3 = 3000×10^-2 = 30.
+	// Raw-mantissa ordering (3000 > 100 > 5) is the OPPOSITE of the real ordering.
+	e1 := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000201"), "warning", 5, "IRR", 3, 5000, 5000, base)
+	e2 := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000202"), "warning", 100, "IRR", 0, 5000, 5000, base)
+	e3 := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000203"), "warning", 3000, "IRR", -2, 5000, 5000, base)
+
+	ranked := event.Rank([]db.MarketEvent{e3, e1, e2})
+	got := []uuid.UUID{ranked[0].Event.ID, ranked[1].Event.ID, ranked[2].Event.ID}
+	want := []uuid.UUID{e1.ID, e2.ID, e3.ID}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("ranking must follow real money magnitude, got %v want %v", got, want)
+		}
+	}
+}
+
+// TestRankNonPositiveMantissaClampsToZero keeps the credit-never-outranks-a-loss
+// invariant across exponent normalization: a negative-mantissa exposure clamps to
+// a zero magnitude and cannot outrank even a tiny real loss.
+func TestRankNonPositiveMantissaClampsToZero(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	loss := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000301"), "info", 1, "IRR", 0, 1000, 1000, base)
+	credit := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000302"), "critical", -1_000_000, "IRR", 0, 10000, 10000, base)
+
+	ranked := event.Rank([]db.MarketEvent{credit, loss})
+	if ranked[0].Event.ID != loss.ID {
+		t.Fatalf("a real loss must outrank a (clamped) credit; got %v first", ranked[0].Event.ID)
+	}
+	if ranked[1].Score == nil || ranked[1].Score.Sign() != 0 {
+		t.Fatalf("non-positive mantissa must clamp to a zero magnitude, got %v", ranked[1].Score)
+	}
+}
+
+// TestRankLargeInt64MantissaStaysExact proves the composite score is EXACT big.Int
+// arithmetic near math.MaxInt64 — no float, no overflow.
+func TestRankLargeInt64MantissaStaysExact(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	big1 := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000401"), "warning", math.MaxInt64, "IRR", 0, 10000, 10000, base)
+	half := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000402"), "warning", math.MaxInt64/2, "IRR", 0, 10000, 10000, base)
+
+	ranked := event.Rank([]db.MarketEvent{half, big1})
+	if ranked[0].Event.ID != big1.ID {
+		t.Fatalf("larger exact mantissa must rank first, got %v", ranked[0].Event.ID)
+	}
+	// Exact expected score: MaxInt64 × 10000 × 10000, computed in big.Int.
+	want := new(big.Int).SetInt64(math.MaxInt64)
+	want.Mul(want, big.NewInt(10000))
+	want.Mul(want, big.NewInt(10000))
+	if ranked[0].Score.Cmp(want) != 0 {
+		t.Fatalf("large-mantissa score must be exact; got %s want %s", ranked[0].Score, want)
+	}
+}
+
+// TestRankMixedCurrencyQuarantine is the issue #71 fail-closed invariant: a
+// known-exposure event whose currency is NOT the canonical (majority) currency is
+// QUARANTINED — it keeps ExposureKnown=true but gets a nil Score, is placed in a
+// non-comparable band AFTER the comparable-known band, and is never magnitude-
+// compared against the canonical band (even with a huge mantissa). The full order
+// is deterministic regardless of input order.
+func TestRankMixedCurrencyQuarantine(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	// Canonical = IRR (2 known events). USD is the minority → quarantined, despite a
+	// mantissa large enough to dominate if it were (wrongly) compared cross-currency.
+	irrA := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000501"), "warning", 100, "IRR", 0, 9000, 9000, base)
+	irrB := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000502"), "warning", 50, "IRR", 0, 9000, 9000, base)
+	usd := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000503"), "critical", math.MaxInt64, "USD", 0, 10000, 10000, base)
+
+	inputs := [][]db.MarketEvent{
+		{irrA, irrB, usd},
+		{usd, irrB, irrA},
+		{irrB, usd, irrA},
+	}
+	var first []uuid.UUID
+	for idx, in := range inputs {
+		ranked := event.Rank(in)
+		// Comparable IRR band first (magnitude order irrA > irrB), then quarantined USD.
+		if ranked[0].Event.ID != irrA.ID || ranked[1].Event.ID != irrB.ID || ranked[2].Event.ID != usd.ID {
+			t.Fatalf("input %d: quarantined non-canonical currency must sit after the comparable band; got %v",
+				idx, []uuid.UUID{ranked[0].Event.ID, ranked[1].Event.ID, ranked[2].Event.ID})
+		}
+		q := ranked[2]
+		if q.Score != nil {
+			t.Fatalf("input %d: quarantined event must carry a nil Score (never cross-currency compared)", idx)
+		}
+		if !q.Factors.ExposureKnown {
+			t.Fatalf("input %d: quarantined event must KEEP ExposureKnown=true", idx)
+		}
+		if q.Factors.ExposureCurrency != "USD" {
+			t.Fatalf("input %d: quarantined event must retain its own currency", idx)
+		}
+		seq := []uuid.UUID{ranked[0].Event.ID, ranked[1].Event.ID, ranked[2].Event.ID}
+		if first == nil {
+			first = seq
+		} else {
+			for i := range seq {
+				if seq[i] != first[i] {
+					t.Fatalf("input %d: order not deterministic across input permutations", idx)
+				}
+			}
+		}
+	}
+}
+
+// TestRankSingleCurrencyQuarantinesNothing proves that when only one currency is
+// present, no event is quarantined (the majority IS canonical).
+func TestRankSingleCurrencyQuarantinesNothing(t *testing.T) {
+	base := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	a := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000601"), "warning", 10, "IRR", 0, 5000, 5000, base)
+	b := mkEventCE(uuid.MustParse("00000000-0000-0000-0000-000000000602"), "warning", 20, "IRR", 0, 5000, 5000, base)
+	for _, r := range event.Rank([]db.MarketEvent{a, b}) {
+		if r.Score == nil {
+			t.Fatalf("single-currency known events must all be comparable (non-nil score)")
 		}
 	}
 }
