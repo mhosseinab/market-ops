@@ -1,6 +1,7 @@
 package recommendation_test
 
 import (
+	"bytes"
 	"context"
 	"testing"
 	"time"
@@ -194,6 +195,72 @@ func TestPreviewBulkSelectionAggregateImpactUnknownOnCurrencyMismatch(t *testing
 	}
 	if result.AggregateImpact != nil {
 		t.Fatalf("AggregateImpact = %+v, want nil/unknown — a currency mismatch must never yield a silent partial sum", *result.AggregateImpact)
+	}
+}
+
+// persistRecommendationUnavailableContribution persists a recommendation whose
+// proposed contribution is UNAVAILABLE (the policy engine produced no proposal),
+// so its ProposedContributionAvailable column is false — the #141 fixture.
+func persistRecommendationUnavailableContribution(t *testing.T, svc *recommendation.Service, account, variant uuid.UUID) uuid.UUID {
+	t.Helper()
+	in := baseValidInput(t)
+	in.AccountID = account
+	in.VariantID = variant
+	in.EventID = uuid.Nil
+	in.Policy.Proposed = nil // no proposal ⇒ proposed contribution is Unavailable
+	rec := recommendation.Assemble(in)
+	row, err := svc.Persist(context.Background(), uuid.New(), rec)
+	if err != nil {
+		t.Fatalf("persist recommendation (unavailable contribution): %v", err)
+	}
+	return row.ID
+}
+
+// TestPreviewBulkSelection_AggregateUnavailableWhenMemberContributionMissing is
+// the #141 end-to-end proof: one member with UNAVAILABLE contribution evidence
+// makes the WHOLE aggregate unavailable (never a partial known total), and the
+// operator-facing preview response and the persisted, immutable selection-set
+// version bind the IDENTICAL aggregate + fingerprint. Deferred to CI (needs a
+// database).
+func TestPreviewBulkSelectionAggregateUnavailableWhenMemberContributionMissing(t *testing.T) {
+	pool, q := newPool(t)
+	account, variantA := seedVariant(t, q)
+	variantB := seedSecondVariant(t, q, account)
+	svc := recommendation.NewService(pool)
+
+	available, err := money.New(300, "IRR", 0)
+	if err != nil {
+		t.Fatalf("money.New(IRR): %v", err)
+	}
+	recA := persistRecommendationWithContribution(t, svc, account, variantA, available)
+	recB := persistRecommendationUnavailableContribution(t, svc, account, variantB)
+
+	result, err := svc.PreviewBulkSelection(context.Background(), account, uuid.Nil, "bulk-missing-contribution",
+		nil, []recommendation.PreviewMemberInput{
+			{VariantID: variantA, RecommendationID: recA},
+			{VariantID: variantB, RecommendationID: recB},
+		})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if len(result.Members) != 2 {
+		t.Fatalf("members = %d, want 2 (a missing contribution must not drop a member from the SET, only the aggregate)", len(result.Members))
+	}
+	if result.AggregateImpact != nil {
+		t.Fatalf("AggregateImpact = %+v, want nil/unknown — one member without contribution evidence must never yield a partial known total of 300", *result.AggregateImpact)
+	}
+
+	// Response and the persisted, sealed version must bind the SAME aggregate state
+	// and the SAME membership fingerprint — they can never disagree (#141).
+	persisted, err := svc.GetSelectionSet(context.Background(), result.Set.ID)
+	if err != nil {
+		t.Fatalf("get persisted selection set: %v", err)
+	}
+	if persisted.AggregateImpactKnown {
+		t.Fatalf("persisted AggregateImpactKnown = true, want false — the stored version must record the SAME unavailable aggregate the response reports")
+	}
+	if !bytes.Equal(persisted.MembershipFingerprint, recommendation.MembershipFingerprint(result.Members, result.AggregateImpact)) {
+		t.Fatal("persisted membership fingerprint differs from the response's (membership+aggregate) fingerprint — confirmation would bind a version that disagrees with the preview")
 	}
 }
 

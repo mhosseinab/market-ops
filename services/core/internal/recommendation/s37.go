@@ -160,15 +160,17 @@ func (s *Service) PreviewBulkSelection(ctx context.Context, account, lineage uui
 // resolveBulkMembers resolves each requested member's SERVER-side disposition from
 // its own persisted recommendation (never a client assertion), failing closed
 // (ErrUnknownMember) on a recommendation that does not exist or does not belong to
-// account/variant, and computes the aggregate impact. A cross-currency/exponent
-// mismatch flips the WHOLE aggregate to unknown (quarantine-over-inference) rather
-// than presenting an understated partial total. It reads on the caller's q so the
-// resolution and the subsequent seal share one transaction.
+// account/variant, and computes the aggregate impact via aggregateContribution.
+// The aggregate is known ONLY when EVERY member has available, compatible,
+// non-overflowing contribution evidence; a missing contribution or a
+// cross-currency/exponent mismatch or overflow flips the WHOLE aggregate to
+// unknown (quarantine-over-inference, issue #141) rather than presenting an
+// understated partial total. It reads on the caller's q so the resolution and the
+// subsequent seal share one transaction — the returned aggregate is bound
+// identically into the response and the sealed version.
 func (s *Service) resolveBulkMembers(ctx context.Context, q *db.Queries, account uuid.UUID, members []PreviewMemberInput) ([]PreviewMemberView, *money.Money, error) {
 	views := make([]PreviewMemberView, 0, len(members))
-	var impact money.Money
-	haveImpact := false
-	impactUnavailable := false
+	contribs := make([]memberContribution, 0, len(members))
 	for _, m := range members {
 		row, err := q.GetRecommendation(ctx, m.RecommendationID)
 		if err != nil {
@@ -182,37 +184,78 @@ func (s *Service) resolveBulkMembers(ctx context.Context, q *db.Queries, account
 		}
 		disp := dispositionOf(row)
 		views = append(views, PreviewMemberView{VariantID: m.VariantID, RecommendationID: m.RecommendationID, Disposition: disp})
+		contribs = append(contribs, memberContribution{
+			Available: row.ProposedContributionAvailable,
+			Mantissa:  row.ProposedContributionMantissa.Int64,
+			Currency:  row.ProposedContributionCurrency,
+			Exponent:  int8(row.ProposedContributionExponent),
+		})
+	}
+	impactPtr, err := aggregateContribution(contribs)
+	if err != nil {
+		return nil, nil, err
+	}
+	return views, impactPtr, nil
+}
 
-		if row.ProposedContributionAvailable && !impactUnavailable {
-			contrib, err := money.New(row.ProposedContributionMantissa.Int64, row.ProposedContributionCurrency, int8(row.ProposedContributionExponent))
-			if err != nil {
-				return nil, nil, err
-			}
-			if !haveImpact {
-				impact = contrib
-				haveImpact = true
-				continue
-			}
-			summed, err := impact.Add(contrib)
-			if err != nil {
-				// A cross-currency/exponent mismatch means the aggregate can no
-				// longer be trusted as a complete sum. Quarantine-over-inference:
-				// NEVER present a partial/understated total as if it were the
-				// whole picture — flip the WHOLE aggregate to unknown rather than
-				// silently dropping this member's contribution from the running
-				// total (§9.1, "no swallowed error returning a default downstream
-				// treats as success").
-				haveImpact = false
-				impactUnavailable = true
-				continue
-			}
-			impact = summed
+// memberContribution is one selection member's contribution evidence, decoupled
+// from persistence so the aggregate-completeness rule is a pure, DB-free unit
+// (issue #141). When Available is false the money triple is meaningless and is
+// never read.
+type memberContribution struct {
+	Available bool
+	Mantissa  int64
+	Currency  string
+	Exponent  int8
+}
+
+// aggregateContribution folds member contributions into ONE selection aggregate
+// (issue #141). The aggregate is KNOWN (non-nil) only when EVERY member has
+// available, mutually compatible, non-overflowing contribution evidence — a
+// selection aggregate is a complete sum or it is nothing.
+//
+//   - Any member whose contribution evidence is UNAVAILABLE flips the WHOLE
+//     aggregate to unknown (nil). A missing contribution is UNKNOWN, never zero;
+//     presenting a partial sum as a complete known total is the #141 defect.
+//   - A currency/exponent mismatch or int64 overflow while summing likewise flips
+//     the aggregate to unknown — quarantine-over-inference, never an understated
+//     partial (§9.1).
+//   - A malformed currency code is a data fault that fails closed as a hard error
+//     (never a silent unknown that could be mistaken for a routine unavailable
+//     aggregate).
+//
+// The returned pointer is bound identically into both the operator-facing preview
+// response and the sealed selection-set version (membership_fingerprint), so the
+// two can never disagree.
+func aggregateContribution(contribs []memberContribution) (*money.Money, error) {
+	var impact money.Money
+	haveImpact := false
+	for _, c := range contribs {
+		if !c.Available {
+			return nil, nil
 		}
+		contrib, err := money.New(c.Mantissa, c.Currency, c.Exponent)
+		if err != nil {
+			return nil, err
+		}
+		if !haveImpact {
+			impact = contrib
+			haveImpact = true
+			continue
+		}
+		summed, err := impact.Add(contrib)
+		if err != nil {
+			// Cross-currency/exponent mismatch or int64 overflow: the aggregate
+			// can no longer be a trusted complete sum. Fail closed to unknown
+			// rather than silently dropping a contribution from the running total.
+			return nil, nil
+		}
+		impact = summed
 	}
-	if haveImpact {
-		return views, &impact, nil
+	if !haveImpact {
+		return nil, nil
 	}
-	return views, nil, nil
+	return &impact, nil
 }
 
 // dispositionOf derives a member's SERVER-side bulk disposition from its
