@@ -23,6 +23,14 @@ violation of the §12.2 response contract, then :func:`validate_grounding` raise
   catalog by a drift test).
 * **CHAT-023** — an inline table is capped at 20 rows; beyond that it must
   summarize and deep-link.
+* **Issue #54 (section-evidence policy)** — schema-valid provenance is not enough:
+  each §12.2 category section must satisfy its *semantics* declared in the
+  deterministic :data:`SECTION_POLICY` matrix — a minimum evidence-backed source
+  count (``INSUFFICIENT_SOURCES``), the evidence category its values may carry
+  (``WRONG_EVIDENCE_CATEGORY``), and, for current-state sections, at least one
+  current (non-stale) source unless staleness is disclosed
+  (``STALE_TEMPORAL_EVIDENCE``). These apply to every PRESENT section regardless of
+  the #51 catalog; an empty section carries no requirement.
 
 The validator never mutates and never "repairs" — it fails closed.
 """
@@ -101,6 +109,81 @@ CANONICAL_QUALITY_KEYS: frozenset[str] = frozenset(
         "freshness.stale",
     }
 )
+
+# --- issue #54: the deterministic section-evidence policy matrix -------------
+#
+# Schema-valid provenance is not enough (issue #54): each response SECTION must
+# also satisfy its *semantics* — a minimum number of evidence-backed sources, the
+# evidence category its values may carry, and (for current-state sections) at
+# least one CURRENT source. These three rules are declared ONCE, as data, in
+# :data:`SECTION_POLICY`, so section semantics read from a single table rather
+# than scattered conditionals (DRY/KISS). The walker below enforces the table.
+#
+# FRESHNESS DEFINITION (deterministic, no clock, no inference): staleness is read
+# from the canonical evidence QUALITY label, never from wall-clock arithmetic. An
+# evidence ref is *stale* iff its ``quality`` is one of :data:`STALE_QUALITY_KEYS`
+# (``freshness.stale`` / ``state.stale`` — the only canonical labels that denote a
+# reading past its freshness window; note ``state.expired`` is a state_key value,
+# not an admissible evidence quality). An evidence ref is *current* iff it is
+# well-formed and its quality is NOT stale (``freshness.fresh``, ``freshness.aging``,
+# ``state.verified``, ``state.supported`` … all read as current). A temporal
+# claim is rejected (``STALE_TEMPORAL_EVIDENCE``) when it carries evidence, every
+# well-formed ref is stale, and it is NOT honestly disclosing staleness via a
+# stale state_key (:data:`STALE_DISCLOSURE_STATE_KEYS`). Disclosing staleness is a
+# grounded report, not a false current claim, so it stays legal — this is exactly
+# how the data-quality suite surfaces a stale reading AS stale.
+STALE_QUALITY_KEYS: frozenset[str] = frozenset({"freshness.stale", "state.stale"})
+
+# A claim whose state_key openly declares staleness is DISCLOSING, not asserting
+# current validity — it is exempt from the temporal freshness requirement.
+STALE_DISCLOSURE_STATE_KEYS: frozenset[str] = frozenset({"state.stale", "state.expired"})
+
+
+@dataclass(frozen=True)
+class SectionPolicy:
+    """Deterministic per-section evidence policy (issue #54).
+
+    * ``min_sources`` — a PRESENT (non-empty) section must carry at least this many
+      claims each backed by a well-formed evidence ref; fewer ⇒ ``INSUFFICIENT_SOURCES``.
+      An empty section carries no requirement (an absent section is legal).
+    * ``allowed_provenances`` — the evidence category(ies) a claim's value may carry;
+      a value outside the set ⇒ ``WRONG_EVIDENCE_CATEGORY``.
+    * ``temporal`` — a current-state section: a claim asserting current validity on
+      stale-only evidence (with no current source) ⇒ ``STALE_TEMPORAL_EVIDENCE``,
+      unless the claim discloses staleness via a stale state_key.
+    """
+
+    min_sources: int
+    allowed_provenances: frozenset[Provenance]
+    temporal: bool
+
+
+# The single source of section semantics. It governs the three §12.2 evidence
+# *category* sections — the ones that carry a variable number of evidenced claims,
+# a required provenance category, and (for the two current-state readings) a
+# freshness requirement. The remaining single-value sections keep their dedicated
+# §12.2 rules (compose, don't fork): ``deterministic_calculations`` — category via
+# CALCULATION_NOT_FROM_ENGINE, minimum via the mandatory sourced result
+# (FABRICATED_NUMBER on an unsourced one); ``comparisons`` — temporal coverage via
+# the CHAT-021 dual-timestamp rule (COMPARISON_INCOMPLETE); ``exposure`` — category
+# via EXPOSURE_NOT_FROM_MARGIN_ENGINE, minimum via the known⟺total contract.
+SECTION_POLICY: dict[str, SectionPolicy] = {
+    "observed_facts": SectionPolicy(
+        min_sources=1,
+        allowed_provenances=frozenset({Provenance.OBSERVED}),
+        temporal=True,
+    ),
+    "dk_signals": SectionPolicy(
+        min_sources=1,
+        allowed_provenances=frozenset({Provenance.DK_SIGNAL}),
+        temporal=True,
+    ),
+    "seller_config": SectionPolicy(
+        min_sources=1,
+        allowed_provenances=frozenset({Provenance.SELLER_CONFIG}),
+        temporal=False,
+    ),
+}
 
 # Any decimal digit — ASCII, Persian (U+06F0–U+06F9), or Arabic-Indic
 # (U+0660–U+0669). NO model-visible free-text slot may contain one: a number
@@ -441,6 +524,69 @@ def _check_source_scope(
         )
 
 
+def _claim_is_evidenced(claim: Claim) -> bool:
+    """A claim counts as a source only when it carries a well-formed evidence ref."""
+    return any(_evidence_ok(ev) for ev in claim.evidence)
+
+
+def _claim_has_current_evidence(claim: Claim) -> bool:
+    """True when the claim has a well-formed, non-stale (current) evidence ref."""
+    return any(
+        _evidence_ok(ev) and ev.quality not in STALE_QUALITY_KEYS
+        for ev in claim.evidence
+    )
+
+
+def _check_section_policy(
+    section: str, claims: list[Claim], policy: SectionPolicy, out: list[Violation]
+) -> None:
+    """Issue #54: enforce one section's minimum sources, category, and freshness.
+
+    An empty section is legal (no claims ⇒ no requirement). For a present section
+    the walker fails closed on: fewer evidence-backed sources than ``min_sources``
+    (INSUFFICIENT_SOURCES), a value whose provenance is not an allowed category
+    (WRONG_EVIDENCE_CATEGORY), and — for a temporal section — a claim asserting
+    current validity on stale-only evidence (STALE_TEMPORAL_EVIDENCE). The details
+    name only categories/section positions, never a rejected number or free text.
+    """
+    if not claims:
+        return
+
+    evidenced = sum(1 for c in claims if _claim_is_evidenced(c))
+    if evidenced < policy.min_sources:
+        out.append(
+            Violation(
+                "INSUFFICIENT_SOURCES",
+                f"{section}: present section has {evidenced} evidence-backed source(s) "
+                f"below the required minimum {policy.min_sources} (§12.2 section policy, #54)",
+            )
+        )
+
+    for i, claim in enumerate(claims):
+        where = f"{section}[{i}]"
+        if claim.value is not None and claim.value.provenance not in policy.allowed_provenances:
+            out.append(
+                Violation(
+                    "WRONG_EVIDENCE_CATEGORY",
+                    f"{where}.value: provenance {claim.value.provenance.value!r} is not an "
+                    f"allowed evidence category for this section (§12.2 section policy, #54)",
+                )
+            )
+        if (
+            policy.temporal
+            and _claim_is_evidenced(claim)
+            and not _claim_has_current_evidence(claim)
+            and claim.state_key not in STALE_DISCLOSURE_STATE_KEYS
+        ):
+            out.append(
+                Violation(
+                    "STALE_TEMPORAL_EVIDENCE",
+                    f"{where}: current-state claim rests on stale-only evidence with no "
+                    f"current source, and does not disclose staleness (§12.2 freshness, #54)",
+                )
+            )
+
+
 def _check_section_scopes(
     env: ResponseEnvelope, catalog: AvailabilityCatalog, out: list[Violation]
 ) -> None:
@@ -500,6 +646,11 @@ def find_violations(
     ):
         for i, claim in enumerate(claims):
             _check_claim(claim, f"{section}[{i}]", out)
+
+    # Issue #54: section-evidence semantics (minimum sources / required category /
+    # temporal coverage) for the §12.2 category sections, from the ONE matrix.
+    for name, policy in SECTION_POLICY.items():
+        _check_section_policy(name, getattr(env, name), policy, out)
 
     for i, calc in enumerate(env.deterministic_calculations):
         _check_calculation(calc, f"deterministic_calculations[{i}]", out)
