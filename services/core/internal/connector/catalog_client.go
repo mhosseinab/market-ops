@@ -162,6 +162,15 @@ func (c *DKClient) FetchVariantsPage(ctx context.Context, accessToken string, pa
 // client. Token handling stays inside the connector (the catalog layer never
 // touches sealed tokens).
 func (s *Service) FetchVariantsPage(ctx context.Context, accountID uuid.UUID, page, size int) (VariantPage, error) {
+	// Capability gate FIRST (§15.2 never-cut): catalog sync depends on BOTH
+	// OwnedOfferRead and CatalogRead. Any non-Supported state (Unknown,
+	// Unsupported, Degraded) fails closed here, BEFORE the token is decrypted and
+	// before any DK request. This is the single enforcement point shared by
+	// direct connector callers and River-driven sync (both route through this
+	// Service method via catalog.connectorSource).
+	if err := s.requireCapabilities(ctx, accountID, OwnedOfferRead, CatalogRead); err != nil {
+		return VariantPage{}, err
+	}
 	token, err := s.accessTokenFor(ctx, accountID)
 	if err != nil {
 		return VariantPage{}, err
