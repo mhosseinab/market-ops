@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 )
@@ -84,6 +85,16 @@ type gatewayServer struct {
 	watchlistSvc WatchlistService
 	// logger emits the structured boundary logs for the S23 handlers/job. Nil-safe.
 	logger *slog.Logger
+	// chatTurnWriteBudget is the HARD per-turn write ceiling applied to the
+	// streaming POST /chat route (issue #24). Zero ⇒ defaultChatTurnWriteBudget.
+	// It replaces the ordinary server WriteTimeout for that ONE long-lived SSE
+	// route so a valid multi-second turn is not truncated mid-stream, while still
+	// bounding the turn (an overrun terminates observably, never unbounded).
+	chatTurnWriteBudget time.Duration
+	// writeTimeout is the ordinary (non-streaming) server WriteTimeout. Zero ⇒ the
+	// 15s default. Streaming /chat overrides this per-request; every other route
+	// keeps it (issue #24 acceptance #4).
+	writeTimeout time.Duration
 }
 
 // Compile-time assertion that we implement the full generated interface.

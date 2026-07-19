@@ -186,18 +186,36 @@ func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option)
 		handler = newAuthMiddleware(gs.auth, gs.gatewayToken, gs.pairing).wrap(handler)
 	}
 
-	// RED/latency + trace-context extraction is the OUTERMOST layer so it times
-	// the whole request (auth included) and continues an inbound web → gateway
-	// trace into every core span. It is safe with a no-op OTel provider.
+	// RED/latency + trace-context extraction times the whole request (auth
+	// included) and continues an inbound web → gateway trace into every core span.
+	// It is safe with a no-op OTel provider.
 	handler = newREDMetrics().wrap(handler)
+
+	// The chat-stream guard is the OUTERMOST layer so it sees the raw connection
+	// writer and can replace the ordinary absolute WriteTimeout with a bounded
+	// per-turn write deadline on the long-lived POST /chat SSE route ONLY (issue
+	// #24). Every other route is untouched and keeps writeTimeout below.
+	turnBudget := gs.chatTurnWriteBudget
+	if turnBudget <= 0 {
+		turnBudget = defaultChatTurnWriteBudget
+	}
+	handler = newChatStreamGuard(turnBudget, logger)(handler)
+
+	writeTimeout := gs.writeTimeout
+	if writeTimeout <= 0 {
+		writeTimeout = 15 * time.Second
+	}
 
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
-		WriteTimeout:      15 * time.Second,
-		IdleTimeout:       60 * time.Second,
-		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelError),
+		// Ordinary non-streaming routes retain this absolute write deadline
+		// (issue #24 acceptance #4); the streaming /chat route overrides it per
+		// request via the chat-stream guard's bounded per-turn budget.
+		WriteTimeout: writeTimeout,
+		IdleTimeout:  60 * time.Second,
+		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 }
