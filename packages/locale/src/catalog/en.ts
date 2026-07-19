@@ -214,6 +214,8 @@ export const en: Catalog = {
   "onboarding.connect.title": "Connect Digikala",
   "onboarding.connect.authCodeLabel": "Digikala authorization code",
   "onboarding.connect.submit": "Connect",
+  "onboarding.connect.error": "Reconnecting failed. Check the authorization code and try again.",
+  "onboarding.refresh.error": "Re-probing capabilities failed. Please try again.",
   "onboarding.action.refresh": "Re-probe capabilities",
   "onboarding.action.reconnect": "Reconnect",
   "onboarding.action.disconnect": "Disconnect",

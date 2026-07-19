@@ -241,6 +241,8 @@ export const MESSAGE_KEYS = [
   "onboarding.connect.title",
   "onboarding.connect.authCodeLabel",
   "onboarding.connect.submit",
+  "onboarding.connect.error",
+  "onboarding.refresh.error",
   "onboarding.action.refresh",
   "onboarding.action.reconnect",
   "onboarding.action.disconnect",
