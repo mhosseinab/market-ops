@@ -33,10 +33,12 @@ GOOD_EVIDENCE = EvidenceRef(
 )
 
 
-def _sourced_money() -> SourcedValue:
+def _observed_offer_value() -> SourcedValue:
+    # An observed_fact carries an OBSERVED value (issue #54 section-evidence policy):
+    # a margin-engine figure belongs in deterministic_calculations, not here.
     return SourcedValue(
-        source=SourceRef(tool="read_contribution", response_field="contribution.total"),
-        provenance=Provenance.MARGIN_ENGINE,
+        source=SourceRef(tool="read_observation", response_field="offer.price"),
+        provenance=Provenance.OBSERVED,
         money=Money(mantissa=990000, currency="IRR"),
     )
 
@@ -49,7 +51,7 @@ def test_compose_places_model_text_only_in_inference() -> None:
         catalog=UNSCOPED,
         model_inference="The offer sits just above your floor.",
         observed_facts=[Claim(statement="lowest qualifying offer", evidence=[GOOD_EVIDENCE],
-                              value=_sourced_money())],
+                              value=_observed_offer_value())],
     )
     assert isinstance(env, ResponseEnvelope)
     assert env.model_inference == "The offer sits just above your floor."
@@ -99,7 +101,8 @@ def test_compose_or_refuse_returns_envelope_when_grounded() -> None:
     result = compose_or_refuse(
         catalog=UNSCOPED,
         model_inference="A short natural-language note.",
-        observed_facts=[Claim(statement="ok", evidence=[GOOD_EVIDENCE], value=_sourced_money())],
+        observed_facts=[Claim(statement="ok", evidence=[GOOD_EVIDENCE],
+                              value=_observed_offer_value())],
     )
     assert isinstance(result, ResponseEnvelope)
 
