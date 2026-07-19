@@ -137,6 +137,62 @@ func TestCrossOrgConversationDenied(t *testing.T) {
 	}
 }
 
+// TestAccountContextResolvesStoredAccount proves the CHAT-009 authoritative read
+// (issue #27): AccountContext returns the STORED marketplace account for a
+// conversation, returns nil for a no-account conversation, and denies a
+// foreign-org id — all WITHOUT appending anything.
+func TestAccountContextResolvesStoredAccount(t *testing.T) {
+	pool, q := newPool(t)
+	store := conversation.NewStore(pool)
+	ctx := context.Background()
+	orgA, userA := seedOrgUser(t, q)
+	orgB, userB := seedOrgUser(t, q)
+
+	// A conversation bound to a specific marketplace account.
+	account := uuid.New()
+	bound, err := store.BeginTurn(ctx, conversation.OpenParams{
+		OrganizationID: orgA, UserID: userA, MarketplaceAccountID: &account,
+	}, "bound turn")
+	if err != nil {
+		t.Fatalf("BeginTurn bound: %v", err)
+	}
+	got, err := store.AccountContext(ctx, orgA, bound.ID)
+	if err != nil {
+		t.Fatalf("AccountContext bound: %v", err)
+	}
+	if got == nil || *got != account {
+		t.Fatalf("AccountContext = %v, want stored account %s", got, account)
+	}
+
+	// A no-account conversation resolves to nil (the no-account context).
+	free, err := store.BeginTurn(ctx, conversation.OpenParams{OrganizationID: orgA, UserID: userA}, "free turn")
+	if err != nil {
+		t.Fatalf("BeginTurn free: %v", err)
+	}
+	got, err = store.AccountContext(ctx, orgA, free.ID)
+	if err != nil {
+		t.Fatalf("AccountContext free: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("AccountContext no-account = %v, want nil", got)
+	}
+
+	// Another org cannot resolve org A's conversation ⇒ denied (fail closed).
+	_ = userB
+	if _, err := store.AccountContext(ctx, orgB, bound.ID); err != conversation.ErrConversationDenied {
+		t.Fatalf("cross-org AccountContext err = %v, want ErrConversationDenied", err)
+	}
+
+	// The authoritative read appended nothing: only the original user turn exists.
+	msgs, err := store.Messages(ctx, bound.ID)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("AccountContext must not append: message count = %d, want 1", len(msgs))
+	}
+}
+
 // TestDeletingConversationLeavesAuditIntact proves audit independence (CHAT-008):
 // deleting conversation data does not touch action/audit records.
 func TestDeletingConversationLeavesAuditIntact(t *testing.T) {
