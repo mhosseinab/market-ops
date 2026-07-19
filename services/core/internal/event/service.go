@@ -21,6 +21,20 @@ import (
 // malformed event.
 var ErrInvalidCandidate = errors.New("event: invalid candidate")
 
+// ErrAccountNotFound is returned by the org-scoped handler-facing methods when the
+// marketplace account id is not owned by the authenticated organization (issue #67,
+// S8-AUTHZ-001). It is returned identically for a genuinely-absent account and one
+// owned by a DIFFERENT organization, so a response never reveals whether a foreign
+// account UUID exists. The guard runs before any read, so a cross-org request has no
+// side effect.
+var ErrAccountNotFound = errors.New("event: account not found")
+
+// ErrEventNotFound is returned by the org-scoped detail/relevance methods when the
+// event id does not resolve within the authenticated organization (issue #67). A
+// foreign event id (owned by a different org) is indistinguishable from an unknown
+// one — no cross-tenant existence oracle.
+var ErrEventNotFound = errors.New("event: event not found")
+
 // Service records detected events, dedups within the open lifecycle window
 // (EVT-003), maintains the versioned materiality thresholds (EVT-002), computes
 // the ranked Today feed (EVT-004), and stores relevance feedback (EVT-005). It
@@ -104,6 +118,7 @@ func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate)
 		return RecordResult{}, err
 	}
 	updated, err := q.UpdateOpenEvent(ctx, db.UpdateOpenEventParams{
+		MarketplaceAccountID:  account,
 		DedupKey:              c.DedupKey,
 		Severity:              string(c.Severity),
 		ThresholdID:           optionalUUID(c.ThresholdID),
@@ -143,9 +158,89 @@ func (s *Service) ListOpen(ctx context.Context, account uuid.UUID) ([]db.MarketE
 	return db.New(s.pool).ListOpenEvents(ctx, account)
 }
 
-// Get returns a single event by id (detail endpoint).
+// Get returns a single event by id (detail endpoint). It is UNSCOPED and is used
+// only by internal callers that have already established the account scope; the
+// authenticated gateway path uses GetForOrg (issue #67).
 func (s *Service) Get(ctx context.Context, id uuid.UUID) (db.MarketEvent, error) {
 	return db.New(s.pool).GetEvent(ctx, id)
+}
+
+// assertOwned is the organization ownership guard (issue #67, S8-AUTHZ-001), reusing
+// the same GetOrgMarketplaceAccountID guard the connector uses. It resolves the
+// account id ONLY when it belongs to organizationID; a foreign or unknown account
+// yields ErrAccountNotFound. It runs before any read so a cross-organization request
+// produces no side effect and reveals nothing.
+func (s *Service) assertOwned(ctx context.Context, organizationID, account uuid.UUID) error {
+	_, err := db.New(s.pool).GetOrgMarketplaceAccountID(ctx, db.GetOrgMarketplaceAccountIDParams{
+		ID:             account,
+		OrganizationID: organizationID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrAccountNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ListOpenForOrg is the authenticated list path (issue #67): it verifies the
+// requested account belongs to the authenticated organization BEFORE serving. A
+// foreign/unknown account returns ErrAccountNotFound with no data leaked.
+func (s *Service) ListOpenForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]db.MarketEvent, error) {
+	if err := s.assertOwned(ctx, organizationID, account); err != nil {
+		return nil, err
+	}
+	return s.ListOpen(ctx, account)
+}
+
+// TodayForOrg is the authenticated Today-feed path (issue #67): it asserts account
+// ownership within the organization, then delegates to the account-scoped ranking so
+// the feed is byte-for-byte the internal ranker's output. Foreign/unknown account →
+// ErrAccountNotFound.
+func (s *Service) TodayForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]Ranked, error) {
+	if err := s.assertOwned(ctx, organizationID, account); err != nil {
+		return nil, err
+	}
+	return s.Today(ctx, account)
+}
+
+// GetForOrg is the authenticated detail path (issue #67). The query itself is
+// org-scoped: a foreign event id resolves to no row and returns ErrEventNotFound,
+// indistinguishable from an unknown id (no existence oracle).
+func (s *Service) GetForOrg(ctx context.Context, organizationID, id uuid.UUID) (db.MarketEvent, error) {
+	row, err := db.New(s.pool).GetEventForOrg(ctx, db.GetEventForOrgParams{
+		ID:             id,
+		OrganizationID: organizationID,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.MarketEvent{}, ErrEventNotFound
+	}
+	if err != nil {
+		return db.MarketEvent{}, err
+	}
+	return row, nil
+}
+
+// RecordRelevanceForOrg is the authenticated relevance-append path (issue #67,
+// append-only EVT-005). The INSERT ... SELECT writes ONLY when the target event
+// belongs to the authenticated organization; a foreign/unknown event id inserts zero
+// rows and returns ErrEventNotFound — no cross-tenant write, no existence oracle.
+func (s *Service) RecordRelevanceForOrg(ctx context.Context, organizationID, eventID, user uuid.UUID, relevance, note string) (db.EventRelevanceFeedback, error) {
+	rec, err := db.New(s.pool).InsertRelevanceFeedbackForOrg(ctx, db.InsertRelevanceFeedbackForOrgParams{
+		OrganizationID: organizationID,
+		EventID:        eventID,
+		UserID:         optionalUUID(user),
+		Relevance:      relevance,
+		Note:           note,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.EventRelevanceFeedback{}, ErrEventNotFound
+	}
+	if err != nil {
+		return db.EventRelevanceFeedback{}, err
+	}
+	return rec, nil
 }
 
 // Resolve advances an open event to resolved (§15.1), freeing its dedup key.
@@ -180,10 +275,11 @@ func (s *Service) ExpireStaleAll(ctx context.Context, now time.Time) (int64, err
 // reports whether a row transitioned. A no-op (no open event — already
 // resolved/expired, or never opened) returns false and transitions nothing, so a
 // replay of the same clearance never resurrects a terminal event (EVT-003).
-func (s *Service) ResolveOpen(ctx context.Context, dedupKey string) (bool, error) {
+func (s *Service) ResolveOpen(ctx context.Context, account uuid.UUID, dedupKey string) (bool, error) {
 	n, err := db.New(s.pool).ResolveOpenEventByDedupKey(ctx, db.ResolveOpenEventByDedupKeyParams{
-		DedupKey:   dedupKey,
-		ResolvedAt: pgtype.Timestamptz{Time: s.now(), Valid: true},
+		MarketplaceAccountID: account,
+		DedupKey:             dedupKey,
+		ResolvedAt:           pgtype.Timestamptz{Time: s.now(), Valid: true},
 	})
 	if err != nil {
 		return false, err
