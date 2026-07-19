@@ -643,6 +643,7 @@ export const en: Catalog = {
   "ext.overlay.offers": "Offers",
   "ext.overlay.sellers": "Sellers",
   "ext.overlay.lowestQualifying": "Lowest qualifying offer",
+  "ext.overlay.comparisonUnavailable": "Comparison unavailable — incompatible price units",
   "ext.overlay.readPending": "Overlay data is not available yet.",
   "ext.history.title": "Price history",
   "ext.history.gap": "No data",

@@ -23,6 +23,27 @@ export type ObservationTarget = components["schemas"]["ObservationTarget"];
 // priority-tier offer flips to Stale at ITS deadline, not a fixed six hours.
 export type FreshnessBucket = FreshnessState;
 
+export type RawAmount = components["schemas"]["RawAmount"];
+
+// Lowest-qualifying comparison result (issue #157). Raw marketplace prices stay
+// QUARANTINED evidence (RawAmount): their source unit is validation-gated (Gate
+// 0a) and NOT yet canonicalized to Money — no currency, no exponent, no
+// conversion (PRD §9.1 / §4.6 money-unit quarantine). Ordering raw amounts is
+// valid ONLY within a single, exactly-matching source-unit token. Across
+// incompatible units the overlay reports the comparison UNAVAILABLE (the
+// conflicting unit tokens are retained on `conflicted` as evidence for a future
+// diagnostic, not rendered) — it NEVER performs client-authored conversion and
+// NEVER emits one cross-unit minimum.
+export type LowestQualifying =
+  // No qualifying (in-stock/limited) offer exists — honest absence.
+  | { readonly kind: "none" }
+  // Exactly one compatible source unit among qualifying offers: the lowest raw
+  // amount within that unit, preserved verbatim as evidence.
+  | { readonly kind: "single"; readonly amount: RawAmount }
+  // Two or more incompatible source-unit tokens (or an unknown/blank token that
+  // stays quarantined, never inferred) — comparison unavailable.
+  | { readonly kind: "conflicted"; readonly units: readonly string[] };
+
 export interface OverlayView {
   readonly targetId: string;
   // The gateway-generated STRING id (ObservationTarget.variantId) — the SAME
@@ -35,8 +56,13 @@ export interface OverlayView {
   readonly variantId: string;
   readonly offerCount: number;
   readonly sellerCount: number;
-  /** Raw evidence only — never a Money. Null when no in-stock/limited offer exists. */
-  readonly lowestQualifying: components["schemas"]["RawAmount"] | null;
+  /**
+   * Raw evidence only — never a Money, and never a cross-unit ordering. See
+   * {@link LowestQualifying}: `single` only when every qualifying offer shares
+   * one source unit; `conflicted` when incompatible units are present; `none`
+   * when nothing qualifies (issue #157).
+   */
+  readonly lowestQualifying: LowestQualifying;
   readonly freshness: FreshnessBucket | null;
   readonly quality: components["schemas"]["ObservedOffer"]["quality"] | null;
 }
@@ -63,10 +89,7 @@ export function deriveOverlayView(
   const sellerIds = new Set(offers.map((o) => o.nativeSellerId).filter((s): s is string => !!s));
 
   const qualifying = offers.filter((o) => QUALIFYING_AVAILABILITY.has(o.availabilityStatus));
-  const lowest = qualifying.reduce<ObservedOffer | null>((best, o) => {
-    if (best === null) return o;
-    return bigIntOf(o.price.value) < bigIntOf(best.price.value) ? o : best;
-  }, null);
+  const lowestQualifying = lowestWithinCompatibleUnit(qualifying);
 
   // "Representative" offer for freshness/quality is the most-recently captured
   // one — the same row Market.tsx's `offerByTarget` map keeps (first-wins over
@@ -78,10 +101,36 @@ export function deriveOverlayView(
     variantId: target.variantId,
     offerCount: offers.length,
     sellerCount: sellerIds.size,
-    lowestQualifying: lowest?.price ?? null,
+    lowestQualifying,
     freshness: primary ? freshnessBucketOf(primary, nowMs) : null,
     quality: primary?.quality ?? null,
   };
+}
+
+// lowestWithinCompatibleUnit orders qualifying offers ONLY when every one shares
+// a single source-unit token (issue #157). Compatibility is EXACT token identity
+// — there is no verified unit mapping/canonicalization yet (Gate 0a pending), so
+// any difference, including a blank/absent token (which stays quarantined and is
+// NEVER inferred, RawAmount contract / PRD §9.1), makes two amounts incomparable
+// and yields an explicit `conflicted`. No client-authored conversion, ever.
+function lowestWithinCompatibleUnit(qualifying: readonly ObservedOffer[]): LowestQualifying {
+  if (qualifying.length === 0) return { kind: "none" };
+
+  const units = [...new Set(qualifying.map((o) => o.price.unit))].sort();
+
+  // More than one distinct token, or a single blank/whitespace token (unknown
+  // unit), cannot be ordered — quarantine over inference.
+  const soleUnit = units.length === 1 ? units[0] : undefined;
+  if (soleUnit === undefined || soleUnit.trim() === "") {
+    return { kind: "conflicted", units };
+  }
+
+  // Every qualifying offer shares one unit: compare raw digit-strings via BigInt
+  // (never float/Number — PRD §9.1 no-float-on-money-path posture).
+  const lowest = qualifying.reduce((best, o) =>
+    bigIntOf(o.price.value) < bigIntOf(best.price.value) ? o : best,
+  );
+  return { kind: "single", amount: lowest.price };
 }
 
 function bigIntOf(raw: string): bigint {

@@ -641,6 +641,7 @@ export const faIR: Catalog = {
   "ext.overlay.offers": "پیشنهادها",
   "ext.overlay.sellers": "فروشندگان",
   "ext.overlay.lowestQualifying": "کمترین پیشنهاد واجد شرایط",
+  "ext.overlay.comparisonUnavailable": "مقایسه ممکن نیست — واحدهای قیمت ناسازگار",
   "ext.overlay.readPending": "داده‌های همپوشان هنوز در دسترس نیست.",
   "ext.history.title": "تاریخچهٔ قیمت",
   "ext.history.gap": "بدون داده",

@@ -214,11 +214,17 @@ function lowestQualifyingRow(doc: Document, view: OverlayView): HTMLElement {
   const el = doc.createElement("div");
   el.dataset.role = "lowest";
   el.append(`${t("ext.overlay.lowestQualifying")}: `);
-  el.append(
-    view.lowestQualifying
-      ? ltrToken(doc, "lowest-value", view.lowestQualifying.text)
-      : doc.createTextNode(t("common.notAvailable")),
-  );
+  const lowest = view.lowestQualifying;
+  if (lowest.kind === "single") {
+    // Raw evidence text, LTR-isolated (bidi-safe on the RTL page).
+    el.append(ltrToken(doc, "lowest-value", lowest.amount.text));
+  } else if (lowest.kind === "conflicted") {
+    // Incompatible source units present (issue #157): never a cross-unit
+    // minimum — say the comparison is unavailable instead of guessing.
+    el.append(doc.createTextNode(t("ext.overlay.comparisonUnavailable")));
+  } else {
+    el.append(doc.createTextNode(t("common.notAvailable")));
+  }
   return el;
 }
 
