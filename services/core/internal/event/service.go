@@ -63,10 +63,23 @@ var ErrEvidenceFieldInapplicable = errors.New("event: cited observation does not
 // owns no money calculation — exposure arrives already computed from the margin
 // plane (S16); price signals are raw evidence (money quarantine).
 type Service struct {
-	pool   *pgxpool.Pool
-	now    func() time.Time
-	ranker *Ranker
-	log    *slog.Logger
+	pool     *pgxpool.Pool
+	now      func() time.Time
+	ranker   *Ranker
+	log      *slog.Logger
+	notifier MarketEventNotifier
+}
+
+// MarketEventNotifier durably enqueues a NOT-001 in-app/digest notification for a
+// FRESHLY-OPENED market event (issue #110). Its enqueue runs INSIDE the event-write
+// transaction, so the notification intent commits ATOMICALLY with the market event:
+// a rollback discards BOTH, and a committed new event always carries its delivery
+// intent. It is optional (nil until wired via SetNotifier) — without it the event
+// write is exactly the pre-#110 behaviour (tests, Draft-only plane). The concrete
+// implementation is *notify.JobDispatcher; this consumer-defined interface keeps the
+// event → notify dependency out of the import graph (ISP, no cycle).
+type MarketEventNotifier interface {
+	MarketEventTx(ctx context.Context, tx pgx.Tx, account, eventID, variant uuid.UUID) error
 }
 
 // logger returns the service's structured logger, defaulting to slog.Default() when
@@ -96,6 +109,15 @@ func (s *Service) WithClock(now func() time.Time) *Service {
 func (s *Service) WithLogger(logger *slog.Logger) *Service {
 	s.ranker = NewRanker(logger)
 	s.log = logger
+	return s
+}
+
+// SetNotifier wires the durable market-event notification producer (issue #110). It
+// is called once during startup, AFTER the River client exists and BEFORE the HTTP
+// server serves, so there is no concurrent access to the field. Returns s for
+// chaining.
+func (s *Service) SetNotifier(n MarketEventNotifier) *Service {
+	s.notifier = n
 	return s
 }
 
@@ -169,19 +191,46 @@ func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate)
 		// A cited observation must be loaded, ownership/freshness/field-applicability
 		// validated, and its quality/provenance copied into the event in ONE account-
 		// scoped transaction (issue #70). Wrap the pooled write so the load and the write
-		// cannot straddle a concurrent change.
+		// cannot straddle a concurrent change. writeEventTx also enqueues the #110
+		// fresh-open notification inside that same tx.
 		return s.writeEventTx(ctx, account, c)
 	}
-	// No cited observation: writeEvent's derivation rejects a self-certified verified/
-	// supported quality before any DB write, so the pooled handle is safe here.
+	if s.notifier != nil {
+		// No cited observation, but a notification producer is wired (production): run
+		// the upsert inside a transaction (via the same writeEventTx helper) so a
+		// freshly-opened event's NOT-001 delivery intent is enqueued ATOMICALLY with the
+		// event write — a rollback discards both, a commit carries both. Inside the tx
+		// the ON CONFLICT lock makes writeEvent converge on the first attempt.
+		return s.writeEventTx(ctx, account, c)
+	}
+	// No cited observation and no notifier (tests / Draft-only plane): writeEvent's
+	// derivation rejects a self-certified verified/supported quality before any DB
+	// write, so the pooled handle is safe here.
 	return s.writeEvent(ctx, db.New(s.pool), account, c)
+}
+
+// enqueueMarketEventNotification enqueues a NOT-001 market_event delivery intent on
+// the caller's transaction ONLY for a genuinely FRESH open (OutcomeOpened, and not an
+// already-consumed no-op). A dedup update / ignored-stale replay / already-consumed
+// transition opened no new event, so it enqueues nothing — a replayed source
+// transition is idempotent (no duplicate notification), while a distinct new event
+// is never collapsed. A nil notifier is a no-op, so the pooled (no-notifier) path is
+// unaffected.
+func (s *Service) enqueueMarketEventNotification(ctx context.Context, tx pgx.Tx, account uuid.UUID, res RecordResult) error {
+	if s.notifier == nil || res.AlreadyConsumed || res.Outcome != OutcomeOpened {
+		return nil
+	}
+	return s.notifier.MarketEventTx(ctx, tx, account, res.Event.ID, res.Event.VariantID)
 }
 
 // writeEventTx runs writeEvent inside a single account-scoped transaction so the
 // observation load+validate and the event upsert commit atomically (issue #70): the
 // derived quality/provenance can never be computed against an observation that changed
-// between the load and the write. A derivation or write failure rolls the whole tx back
-// (fail closed), leaving no partially-applied event.
+// between the load and the write. It ALSO enqueues the #110 fresh-open market-event
+// notification inside the SAME tx, before commit, so a rolled-back transition enqueues
+// nothing (a nil notifier makes the enqueue a no-op). A derivation, write, or enqueue
+// failure rolls the whole tx back (fail closed), leaving no partially-applied event
+// and no orphan notification.
 func (s *Service) writeEventTx(ctx context.Context, account uuid.UUID, c Candidate) (RecordResult, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -190,6 +239,9 @@ func (s *Service) writeEventTx(ctx context.Context, account uuid.UUID, c Candida
 	defer func() { _ = tx.Rollback(ctx) }()
 	res, err := s.writeEvent(ctx, db.New(tx), account, c)
 	if err != nil {
+		return RecordResult{}, err
+	}
+	if err := s.enqueueMarketEventNotification(ctx, tx, account, res); err != nil {
 		return RecordResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -400,6 +452,13 @@ func (s *Service) recordConsumed(ctx context.Context, account uuid.UUID, c Candi
 		LastPriceRawValue:    con.CurrValue,
 	}); err != nil {
 		return RecordResult{}, fmt.Errorf("event: advance cursor: %w", err)
+	}
+
+	// Enqueue the NOT-001 market_event delivery intent for a fresh open, ATOMICALLY
+	// with the event write + cursor advance in THIS transaction (issue #110). A
+	// dedup/already-consumed pass opened no new event, so it enqueues nothing.
+	if err := s.enqueueMarketEventNotification(ctx, tx, account, res); err != nil {
+		return RecordResult{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

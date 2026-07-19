@@ -78,6 +78,24 @@ type Service struct {
 	resolver Resolver
 	now      func() time.Time
 	tel      *telemetry
+	notifier FailureNotifier
+}
+
+// FailureNotifier durably enqueues a NOT-001 URGENT notification for an execution or
+// safety failure (issue #110). Each enqueue runs INSIDE the transaction that commits
+// the failing transition + its append-only audit rows, so the notification intent
+// commits ATOMICALLY with the failure: a rollback discards BOTH. It is optional (nil
+// until wired via SetNotifier) — without it the failure paths are exactly the pre-#110
+// behaviour (tests). The concrete implementation is *notify.JobDispatcher; this
+// consumer-defined interface keeps the execution → notify dependency out of the
+// import graph (ISP, no cycle).
+type FailureNotifier interface {
+	// ExecutionFailureTx enqueues an execution_failure for a definitively Failed
+	// external write (EXE-003), keyed by the action-execution row id.
+	ExecutionFailureTx(ctx context.Context, tx pgx.Tx, account, actionID, execID uuid.UUID) error
+	// SafetyFailureTx enqueues a safety_failure for a gate-blocked (invalidated) card
+	// (EXE-001), keyed by the card id, carrying the bounded gate token as the reason.
+	SafetyFailureTx(ctx context.Context, tx pgx.Tx, account, actionID, cardID uuid.UUID, gate string) error
 }
 
 // NewService wires the executor. A nil clock defaults to time.Now (UTC).
@@ -95,12 +113,18 @@ func (s *Service) WithClock(now func() time.Time) *Service { s.now = now; return
 // WithLogger overrides the structured logger (tests, and to attach request scope).
 func (s *Service) WithLogger(logger *slog.Logger) *Service { s.tel = newTelemetry(logger); return s }
 
+// SetNotifier wires the durable failure-notification producer (issue #110). It is
+// called once during startup, AFTER the River client exists and BEFORE the HTTP
+// server serves, so there is no concurrent access to the field. Returns s for
+// chaining.
+func (s *Service) SetNotifier(n FailureNotifier) *Service { s.notifier = n; return s }
+
 // advanceWithAudit advances a card from → to and appends its AUD-001 audit record
 // in ONE transaction, so a state transition NEVER commits without its audit row
 // (AUD-001 never-cut). On an audit-append failure the whole transaction rolls back
 // (fail closed) and the failure is surfaced as a metric + structured error log —
 // never swallowed. It returns the advanced card.
-func (s *Service) advanceWithAudit(ctx context.Context, card db.ApprovalCard, from, to approval.State, reason string, ev audit.Event) (db.ApprovalCard, error) {
+func (s *Service) advanceWithAudit(ctx context.Context, card db.ApprovalCard, from, to approval.State, reason string, ev audit.Event, withinTx ...func(ctx context.Context, tx pgx.Tx) error) (db.ApprovalCard, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return db.ApprovalCard{}, err
@@ -116,11 +140,34 @@ func (s *Service) advanceWithAudit(ctx context.Context, card db.ApprovalCard, fr
 		s.tel.auditWriteFailed(ctx, card.ActionID, err)
 		return db.ApprovalCard{}, err // rollback via defer: state change reverts.
 	}
+	// Optional in-transaction hooks (issue #110): a durable notification intent is
+	// enqueued here so it commits ATOMICALLY with the state change + audit — a
+	// rollback from any seam discards all three. A hook failure fails the whole
+	// transition closed (never a committed state with a lost/duplicated notification).
+	for _, h := range withinTx {
+		if err := h(ctx, tx); err != nil {
+			return db.ApprovalCard{}, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		s.tel.auditWriteFailed(ctx, card.ActionID, err)
 		return db.ApprovalCard{}, err
 	}
 	return advanced, nil
+}
+
+// safetyFailureHook builds the in-transaction enqueue closure for a gate-blocked
+// (safety) failure (issue #110). It is passed to advanceWithAudit so the durable
+// safety_failure notification commits ATOMICALLY with the Revalidating → Invalidated
+// transition + its audit. A nil notifier yields a no-op hook (pre-#110 / tests). The
+// reason is the bounded gate token — a technical identifier, never free text.
+func (s *Service) safetyFailureHook(account, actionID, cardID uuid.UUID, gate Gate) func(context.Context, pgx.Tx) error {
+	return func(ctx context.Context, tx pgx.Tx) error {
+		if s.notifier == nil {
+			return nil
+		}
+		return s.notifier.SafetyFailureTx(ctx, tx, account, actionID, cardID, string(gate))
+	}
 }
 
 // Mode is the execution mode of a completed Execute call.
@@ -224,7 +271,7 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
 				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
 				CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason},
-			}); err != nil {
+			}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil {
 			return ExecuteResult{}, err
 		}
 		return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite, Blocked: true, FailedGate: gate.Failed}, nil
@@ -388,6 +435,18 @@ func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, r
 		}
 	}
 
+	// Enqueue the NOT-001 URGENT execution_failure notification ATOMICALLY with the
+	// terminal Failed state + its audit (issue #110). Only a definitively Failed
+	// write notifies: an Accepted/Rejected result or an unknown PendingReconciliation
+	// (which reconciliation later resolves) does not. Keyed by the execution row id,
+	// so a concurrent duplicate write that adopts the same record collapses at the
+	// store. A nil notifier is a no-op (pre-#110 / tests).
+	if extState == StateFailed && s.notifier != nil {
+		if err := s.notifier.ExecutionFailureTx(ctx, tx, rc.AccountID, card.ActionID, claimed.ID); err != nil {
+			return err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		s.tel.auditWriteFailed(ctx, card.ActionID, err)
 		return err
@@ -427,7 +486,7 @@ func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard,
 				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
 				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
 				CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason, "mode": ModeRecommendOnly},
-			}); err != nil {
+			}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil {
 			return ExecuteResult{}, err
 		}
 		return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeRecommendOnly, Blocked: true, FailedGate: gate.Failed}, nil

@@ -434,6 +434,27 @@ func run() error {
 				}
 				return targetRetirer.MappingReopened(c, ev)
 			},
+			// Durable notification-delivery consumer (issue #110, NOT-001): each
+			// authoritative lifecycle transition (market event open, execution failure,
+			// safety failure) enqueues one notification_deliver intent transactionally
+			// with its owning commit; this worker drives the idempotent Store.Deliver
+			// for it exactly-once-effectively. Delivery is idempotent on (account,
+			// dedup_key), so an at-least-once retry never creates a duplicate product
+			// event; a delivery error is returned so River retries (a committed
+			// transition's notification is never lost).
+			NotificationDeliver: func(c context.Context, args jobs.NotificationDeliverArgs) error {
+				_, err := notifyStore.Deliver(c, notify.DeliverParams{
+					Account:    args.Account,
+					EventID:    args.EventID,
+					DedupKey:   args.DedupKey,
+					Category:   notify.Category(args.Category),
+					Severity:   args.Severity,
+					TitleKey:   args.TitleKey,
+					BodyKey:    args.BodyKey,
+					BodyParams: args.Params,
+				})
+				return err
+			},
 		}, catalogDeps)
 		if jobsErr != nil {
 			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)
@@ -447,6 +468,15 @@ func run() error {
 			// reopen atomically enqueues its durable delivery intent (issue #49). Set
 			// before the HTTP server serves — no concurrent access to the field.
 			identitySvc.SetReopenDispatcher(identity.NewJobReopenDispatcher(jobsClient))
+			// Wire the durable notification producers now that the River client exists,
+			// so a freshly-opened market event, an execution failure, and a safety
+			// failure each atomically enqueue their NOT-001 delivery intent with the
+			// owning transition (issue #110). Set before the HTTP server serves — no
+			// concurrent access to the fields. The single dispatcher satisfies both the
+			// event and execution consumer interfaces.
+			notifyDispatcher := notify.NewJobDispatcher(jobsClient)
+			eventSvc.SetNotifier(notifyDispatcher)
+			execSvc.SetNotifier(notifyDispatcher)
 			// Wire the catalog-sync enqueuer now that the River client exists, so the
 			// onboarding "Sync catalog" control can initiate an idempotent incremental
 			// sync (issue #76, ACC-004/ACC-005). Nil-safe: without a wired connector
