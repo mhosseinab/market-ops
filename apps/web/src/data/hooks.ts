@@ -15,6 +15,7 @@ import type {
   MarginReadiness,
   MarketEvent,
   OutcomeView,
+  RecommendationDetail,
   RetryActionResult,
   SessionInfo,
   SingleCostEntryRequest,
@@ -45,6 +46,8 @@ export const queryKeys = {
   needsReview: (accountId: string) => ["needs-review", accountId] as const,
   today: (accountId: string) => ["today", accountId] as const,
   event: (eventId: string) => ["event", eventId] as const,
+  recommendationDetail: (recommendationId: string) =>
+    ["recommendation-detail", recommendationId] as const,
   approvalCard: (cardId: string) => ["approval-card", cardId] as const,
   session: () => ["session"] as const,
   actionExecution: (actionId: string) => ["action-execution", actionId] as const,
@@ -163,6 +166,24 @@ export function useEvent(eventId: string | undefined) {
       unwrap(
         await gateway.GET("/event", {
           params: { query: { eventId: eventId as string } },
+        }),
+      ),
+  });
+}
+
+// The AUTHORITATIVE PRC-001 record for one persisted recommendation version
+// (S37 read seam): objective, current/proposed price + contribution, the §9.2
+// deduction breakdown, allowed range, evidence quality/age, readiness,
+// assumptions, and blockers (PRC-002, in policy order). A pure read — it never
+// advances state or mints a control (§8). Rendered verbatim; nothing recomputed.
+export function useRecommendationDetail(recommendationId: string | undefined) {
+  return useQuery({
+    enabled: Boolean(recommendationId),
+    queryKey: queryKeys.recommendationDetail(recommendationId ?? ""),
+    queryFn: async (): Promise<RecommendationDetail> =>
+      unwrap(
+        await gateway.GET("/recommendations/detail", {
+          params: { query: { recommendationId: recommendationId as string } },
         }),
       ),
   });

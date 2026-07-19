@@ -12,6 +12,7 @@ import type {
   ObservationTarget,
   ObservedOffer,
   OutcomeView,
+  RecommendationDetail,
   SessionInfo,
   TodayFeed,
 } from "../../data/types";
@@ -252,6 +253,82 @@ export const confirmApproved: ApprovalConfirmResult = {
   state: "approved",
   reason: "",
   executionPending: true,
+};
+
+export const LINEAGE_ID = "a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1";
+
+/**
+ * The AUTHORITATIVE PRC-001 record (S37 read) the approval card is minted from.
+ * Every optional field is present so the screen renders server truth, not a
+ * placeholder. `blockers` is empty (approvable), `simulation` is false.
+ */
+export const recommendationDetail: RecommendationDetail = {
+  id: RECOMMENDATION_ID,
+  marketplaceAccountId: ACCOUNT_ID,
+  variantId: VARIANT_ID,
+  lineageId: LINEAGE_ID,
+  version: 1,
+  eventId: EVENT_ID,
+  objective: "maximize_contribution",
+  currentPrice: { mantissa: 14350000, currency: "IRR", exponent: 0 },
+  proposedPrice: { mantissa: 13900000, currency: "IRR", exponent: 0 },
+  currentContribution: { mantissa: 1800000, currency: "IRR", exponent: 0 },
+  proposedContribution: { mantissa: 2100000, currency: "IRR", exponent: 0 },
+  contributionDeductions: [
+    {
+      component: "commission",
+      amount: { mantissa: 1400000, currency: "IRR", exponent: 0 },
+      kind: "rate",
+      version: 2,
+    },
+    {
+      component: "cogs",
+      amount: { mantissa: 8900000, currency: "IRR", exponent: 0 },
+      kind: "absolute",
+      version: 5,
+    },
+  ],
+  allowedRange: {
+    known: true,
+    min: { mantissa: 13000000, currency: "IRR", exponent: 0 },
+    max: { mantissa: 15000000, currency: "IRR", exponent: 0 },
+  },
+  readiness: "complete",
+  evidenceQuality: "verified",
+  evidenceObservationId: OBSERVATION_ID,
+  evidenceAsOf: "2026-07-17T09:30:00Z",
+  assumptions: ["commission_rate_stable", "no_promotion_overlap"],
+  blockers: [],
+  approvable: true,
+  simulation: false,
+  expiresAt: "2026-07-17T12:00:00Z",
+};
+
+/**
+ * A blocked, simulation-only record with optional money fields ABSENT (so the
+ * surface must render present-or-unavailable-with-reason, never blank) and an
+ * UNKNOWN allowed range. Two blockers exercise the PRC-002 policy-order render.
+ */
+export const recommendationDetailBlocked: RecommendationDetail = {
+  id: RECOMMENDATION_ID,
+  marketplaceAccountId: ACCOUNT_ID,
+  variantId: VARIANT_ID,
+  lineageId: LINEAGE_ID,
+  version: 2,
+  objective: "track_strategy",
+  currentPrice: { mantissa: 14350000, currency: "IRR", exponent: 0 },
+  contributionDeductions: [],
+  allowedRange: { known: false },
+  readiness: "missing",
+  evidenceQuality: "conflicted",
+  assumptions: [],
+  blockers: [
+    { code: "boundary_unknown", message: "مرز قیمت بازار نامشخص است" },
+    { code: "cost_missing", message: "بهای تمام‌شده ثبت نشده است" },
+  ],
+  approvable: false,
+  simulation: true,
+  expiresAt: "2026-07-17T12:00:00Z",
 };
 
 /** APR-001 invalidation: a bound dimension changed under the control. */

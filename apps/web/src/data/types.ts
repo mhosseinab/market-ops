@@ -53,6 +53,13 @@ export type ApprovalStateHistoryEntry = components["schemas"]["ApprovalStateHist
 export type Contribution = components["schemas"]["Contribution"];
 export type ContributionDeduction = components["schemas"]["ContributionDeduction"];
 
+// The authoritative PRC-001 recommendation record (S37 read seam). Rendered
+// verbatim; money/policy/readiness are never recomputed on the surface.
+export type RecommendationDetail = components["schemas"]["RecommendationDetail"];
+export type RecommendationBlocker = components["schemas"]["RecommendationBlocker"];
+export type PolicyObjective = components["schemas"]["PolicyObjective"];
+export type PolicyBoundary = components["schemas"]["PolicyBoundary"];
+
 // ── S28: Actions/outcomes, bulk approval, settings, operations ──────────────
 export type SessionInfo = components["schemas"]["SessionInfo"];
 export type UserRole = components["schemas"]["UserRole"];

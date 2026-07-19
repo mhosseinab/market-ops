@@ -61,12 +61,20 @@ function validateSearch(search: Record<string, unknown>): {
   variantId?: string;
   eventId?: string;
   cardId?: string;
+  recommendationId?: string;
   actionId?: string;
 } {
-  const out: { variantId?: string; eventId?: string; cardId?: string; actionId?: string } = {};
+  const out: {
+    variantId?: string;
+    eventId?: string;
+    cardId?: string;
+    recommendationId?: string;
+    actionId?: string;
+  } = {};
   if (typeof search.variantId === "string") out.variantId = search.variantId;
   if (typeof search.eventId === "string") out.eventId = search.eventId;
   if (typeof search.cardId === "string") out.cardId = search.cardId;
+  if (typeof search.recommendationId === "string") out.recommendationId = search.recommendationId;
   if (typeof search.actionId === "string") out.actionId = search.actionId;
   return out;
 }

@@ -1,6 +1,12 @@
 import type { MessageKey } from "@market-ops/locale";
 import { useT } from "../app/i18n";
-import type { Contribution, CostComponent } from "../data/types";
+import type {
+  Contribution,
+  ContributionDeduction,
+  CostComponent,
+  MarginReadinessState,
+  MoneyAmount,
+} from "../data/types";
 import { ReadinessBadge } from "./badges";
 import { LtrToken } from "./LtrToken";
 import { MoneyView } from "./MoneyView";
@@ -22,32 +28,63 @@ const COMPONENT_LABEL: Record<CostComponent, MessageKey> = {
   returns: "costComponent.returns",
 };
 
-export function ContributionBreakdown({ contribution }: { contribution: Contribution }) {
+// Renders the deterministic §9.2 breakdown VERBATIM. Two callers supply it:
+//   • the approval flow, which has a full `Contribution` (net proceeds + rounding
+//     rule + total);
+//   • the authoritative RecommendationDetail read, which carries the persisted
+//     `deductions` + `total` + `readiness` but genuinely has no net-proceeds or
+//     rounding-rule field — those lines are simply omitted, never fabricated.
+export function ContributionBreakdown({
+  contribution,
+  deductions,
+  total,
+  netProceeds,
+  readiness,
+  roundingRule,
+}: {
+  contribution?: Contribution;
+  deductions?: ContributionDeduction[];
+  total?: MoneyAmount;
+  netProceeds?: MoneyAmount;
+  readiness?: MarginReadinessState;
+  roundingRule?: string;
+}) {
   const t = useT();
+  const lines = contribution?.deductions ?? deductions ?? [];
+  const totalAmount = contribution?.amount ?? total;
+  const net = contribution?.netProceeds ?? netProceeds;
+  const rd = contribution?.readiness ?? readiness;
+  const rule = contribution?.roundingRule ?? roundingRule;
   return (
     <div className="contribution" data-testid="contribution-breakdown">
       <ul className="contribution__lines">
-        {contribution.deductions.map((d) => (
+        {lines.map((d) => (
           <li key={`${d.component}-${d.version}`} className="contribution__line">
             <span className="contribution__name">{t(COMPONENT_LABEL[d.component])}</span>
             <MoneyView amount={d.amount} />
           </li>
         ))}
-        <li className="contribution__line contribution__line--total">
-          <span className="contribution__name">{t("rec.contribution.netProceeds")}</span>
-          <MoneyView amount={contribution.netProceeds} />
-        </li>
-        <li className="contribution__line contribution__line--total">
-          <span className="contribution__name">{t("rec.contribution.total")}</span>
-          <MoneyView amount={contribution.amount} />
-        </li>
+        {net ? (
+          <li className="contribution__line contribution__line--total">
+            <span className="contribution__name">{t("rec.contribution.netProceeds")}</span>
+            <MoneyView amount={net} />
+          </li>
+        ) : null}
+        {totalAmount ? (
+          <li className="contribution__line contribution__line--total">
+            <span className="contribution__name">{t("rec.contribution.total")}</span>
+            <MoneyView amount={totalAmount} />
+          </li>
+        ) : null}
       </ul>
       <div className="contribution__meta">
-        <ReadinessBadge state={contribution.readiness} />
-        <span className="muted">
-          {t("rec.contribution.roundingRule", { rule: "" })}
-          <LtrToken text={contribution.roundingRule} />
-        </span>
+        {rd ? <ReadinessBadge state={rd} /> : null}
+        {rule ? (
+          <span className="muted">
+            {t("rec.contribution.roundingRule", { rule: "" })}
+            <LtrToken text={rule} />
+          </span>
+        ) : null}
       </div>
     </div>
   );
