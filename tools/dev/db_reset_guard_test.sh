@@ -18,17 +18,42 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-# psql stub: writes a marker so the test can assert whether the guard would have
-# reached a real psql call. The guard must NEVER invoke psql on a REJECT path.
+# psql stub: writes a marker so the test can assert whether the DESTRUCTIVE step
+# was reached. The guard itself never calls psql — so testing the guard ALONE
+# makes any "marker absent" assertion vacuous (it can never be set). We instead
+# drive a HARNESS that mirrors the Taskfile db:reset seam: guard as cmd[0], the
+# destructive psql step as cmd[1]. On a REJECT the guard exits non-zero and (via
+# `set -e`) the harness aborts BEFORE the psql stub → marker ABSENT. On an ACCEPT
+# the guard exits 0 and the harness REACHES the psql stub → marker PRESENT. The
+# accept-reaches-stub cases are what make every "marker absent" assertion
+# meaningful by contrast. (`task` is unavailable in unit tests; this shell
+# harness reproduces the exact "guard then psql" ordering of Taskfile.yml
+# db:reset — the documented seam limitation.)
 stub_dir="$work/bin"
 mkdir -p "$stub_dir"
 marker="$work/psql_invoked"
 cat >"$stub_dir/psql" <<STUB
 #!/usr/bin/env bash
+# Never echoes its arguments (which would carry DATABASE_URL) — only the marker.
 echo "STUB-PSQL-CALLED" >>"$marker"
 exit 0
 STUB
 chmod +x "$stub_dir/psql"
+
+# Harness: mirror Taskfile db:reset — run the guard first, and ONLY if it
+# approves (exit 0) proceed to the destructive psql step. `set -e` guarantees a
+# non-zero guard aborts the harness before psql. Arguments to psql intentionally
+# mirror the maintenance DROP; the stub ignores them and never prints them.
+harness="$work/reset_harness.sh"
+cat >"$harness" <<HARNESS
+#!/usr/bin/env bash
+set -euo pipefail
+bash "$guard"
+# Reached only when the guard APPROVED. Mirror the destructive maintenance psql
+# so the marker proves the DROP path would have been entered.
+psql "\${DATABASE_URL:-}" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS placeholder WITH (FORCE);"
+HARNESS
+chmod +x "$harness"
 
 failures=0
 
@@ -59,7 +84,7 @@ run_case() {
 
   local out rc
   set +e
-  out="$(env -i "${env_args[@]}" bash "$guard" 2>&1)"
+  out="$(env -i "${env_args[@]}" bash "$harness" 2>&1)"
   rc=$?
   set -e
 
@@ -83,6 +108,13 @@ run_case() {
 
   if [[ "$expect_psql" == "no" && -f "$marker" ]]; then
     echo "FAIL [$name]: psql stub WAS invoked on a reject path (marker present)" >&2
+    ok=0
+  fi
+
+  # Contrast assertion: an APPROVED target must demonstrably REACH the psql stub,
+  # otherwise every "marker absent" reject assertion would be vacuous.
+  if [[ "$expect_psql" == "yes" && ! -f "$marker" ]]; then
+    echo "FAIL [$name]: approved target did NOT reach the psql stub (marker absent); the guard/harness seam is broken" >&2
     ok=0
   fi
 
@@ -203,6 +235,14 @@ run_case "reject-encoded-port-keyword" 1 no "query|encod|allow" \
 
 run_case "reject-encoded-service-keyword" 1 no "query|encod|allow" \
   "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?%73ervice=prod"
+
+# `%64bname` decodes to `dbname` (libpq connection-target keyword → re-targets DB).
+run_case "reject-encoded-dbname-keyword" 1 no "query|encod|allow" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?%64bname=production"
+
+# `ser%76ice` decodes to `service` with the encoded char mid-key.
+run_case "reject-encoded-service-mid-key" 1 no "query|encod|allow" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?ser%76ice=prod"
 
 # REJECT: an unknown (non-allowlisted) but UNENCODED query key also fails closed
 # now — the allowlist is the primary defense; the '%' reject is belt-and-suspenders.
