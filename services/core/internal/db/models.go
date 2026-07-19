@@ -253,6 +253,17 @@ type CostProfile struct {
 	CreatedAt            time.Time
 }
 
+type EventInputTransition struct {
+	InputKey             string
+	MarketplaceAccountID uuid.UUID
+	TargetID             uuid.UUID
+	NativeSellerID       string
+	OfferIdentity        string
+	PrevObservationID    uuid.UUID
+	CurrObservationID    uuid.UUID
+	ConsumedAt           time.Time
+}
+
 type EventRelevanceFeedback struct {
 	ID        uuid.UUID
 	EventID   uuid.UUID
@@ -390,6 +401,7 @@ type MarketplaceAccount struct {
 	DisplayName     string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	OwnedSellerID   pgtype.Text
 }
 
 type MaterialityThreshold struct {
@@ -467,6 +479,17 @@ type Observation struct {
 	IdentityValid        bool
 	Confidence           string
 	ParsingWarnings      []byte
+}
+
+type ObservationConsumerCursor struct {
+	TargetID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	NativeSellerID       string
+	OfferIdentity        string
+	LastObservationID    uuid.UUID
+	LastCapturedAt       time.Time
+	LastPriceRawValue    string
+	UpdatedAt            time.Time
 }
 
 type ObservationDedup struct {

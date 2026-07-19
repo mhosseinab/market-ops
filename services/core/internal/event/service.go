@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -100,10 +101,16 @@ const (
 // that event in place (OutcomeUpdated) or was an ignored strictly-older replay
 // (OutcomeIgnoredStale) — so no duplicate Today item is created in either case.
 // Outcome carries the precise disposition for callers/telemetry that need it.
+// AlreadyConsumed is true when the candidate carried a Consumption whose input
+// transition was already ingested (issue #212): no event is written and no cursor
+// moves backward — the transition is an idempotent no-op. It is orthogonal to
+// Deduped/Outcome, which describe the event-write disposition when a fresh
+// consumption (or a non-consumed candidate) actually reaches the monotonic upsert.
 type RecordResult struct {
-	Event   db.MarketEvent
-	Deduped bool
-	Outcome RecordOutcome
+	Event           db.MarketEvent
+	Deduped         bool
+	Outcome         RecordOutcome
+	AlreadyConsumed bool
 }
 
 // recordMaxAttempts bounds the retry loop that reconciles a monotonic-guard skip
@@ -113,32 +120,54 @@ type RecordResult struct {
 // a fresh event. A small bound is sufficient and prevents unbounded spinning.
 const recordMaxAttempts = 4
 
-// RecordFor persists a detected candidate for the owning account in ONE atomic,
-// monotonic, race-safe upsert (issue #68). RecordEvent either OPENS a new event or,
-// on a dedup collision, refreshes the existing open event in place — never in two
-// statements, so there is no window in which a concurrent Resolve/Expire can drop
-// the occurrence (DEFECT B). The DB-side monotonic guard skips a strictly-older
-// replay (DEFECT A): last_evidence_at / evidence / severity never move backward.
+// RecordFor persists a detected candidate for the owning account. A candidate that
+// carried a Consumption (issue #212) is committed through recordConsumed, which folds
+// the ingestion-idempotency claim, the event write, and the durable cursor advance
+// into ONE transaction (ingestion dedup is a SEPARATE concern from lifecycle dedup,
+// and both crash windows are closed: a crash before commit leaves the cursor
+// unchanged for a safe replay; a crash after commit can never create a second event).
+// A non-consumed candidate goes straight to the pool-bound writeEvent.
 //
-// Outcomes: the returned row's state distinguishes an OPEN (state 'open') from a
-// dedup UPDATE (state 'updated'). A guard skip returns no row (pgx.ErrNoRows); that
-// is an idempotent success — RecordFor fetches the current open event and reports
-// OutcomeIgnoredStale. If the open row was concurrently resolved/expired between the
-// skip and the fetch, the key is now free, so RecordFor retries and the next attempt
-// opens a fresh event — the occurrence is never lost.
-//
-// EVT-005 is preserved end to end — an unknown exposure is stored with no numeric
-// value (the table CHECK rejects a fabricated number on both the insert and update
+// Either way the event write itself is #68's ONE atomic, monotonic, race-safe
+// RecordEvent upsert: it OPENS a new event or, on a dedup collision, refreshes the
+// existing open event in place — never in two statements, so no window lets a
+// concurrent Resolve/Expire drop the occurrence (DEFECT B). The DB-side monotonic
+// guard skips a strictly-older replay (DEFECT A): last_evidence_at / evidence /
+// severity never move backward. EVT-005 holds end to end — an unknown exposure is
+// stored with no numeric value (the table CHECK rejects a fabricated number on both
 // arms of the upsert).
 func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate) (RecordResult, error) {
 	if !c.Type.Valid() || !c.Evidence.Quality.Valid() || c.DedupKey == "" {
 		return RecordResult{}, ErrInvalidCandidate
 	}
+	if c.Consumption != nil {
+		return s.recordConsumed(ctx, account, c)
+	}
+	return s.writeEvent(ctx, db.New(s.pool), account, c)
+}
+
+// writeEvent performs the #68 monotonic open-or-update against any db.Queries (pool-
+// or transaction-bound), so the pooled RecordFor path and the tx-bound recordConsumed
+// path share one event-write seam (DRY). It runs RecordEvent — the single atomic
+// upsert — and classifies the row's state: 'open' ⇒ a fresh OPEN (OutcomeOpened),
+// otherwise a dedup UPDATE in place (OutcomeUpdated, Deduped). A guard skip returns no
+// row (pgx.ErrNoRows); that is an idempotent success — writeEvent fetches the current
+// open event and reports OutcomeIgnoredStale (Deduped), so a strictly-older replay
+// never regresses the event and never opens a duplicate.
+//
+// The bounded loop reconciles the one cross-statement race the pooled path can hit:
+// if the open row was resolved/expired between the guard skip and the fetch, the
+// dedup key is now free, so the next attempt opens a fresh event and the occurrence
+// is never lost. Inside recordConsumed's transaction this branch cannot occur — the
+// upsert's ON CONFLICT locks the conflicting open row for the life of the tx, so the
+// fetch always finds it and writeEvent converges on the first attempt. If it somehow
+// did not converge it returns an error, rolling the consume tx back for a safe replay
+// (fail closed) rather than committing a half-applied cursor.
+func (s *Service) writeEvent(ctx context.Context, q *db.Queries, account uuid.UUID, c Candidate) (RecordResult, error) {
 	detail, err := marshalDetail(c.Evidence.Detail)
 	if err != nil {
 		return RecordResult{}, err
 	}
-	q := db.New(s.pool)
 	params := db.RecordEventParams{
 		MarketplaceAccountID:  account,
 		VariantID:             c.Variant,
@@ -195,6 +224,89 @@ func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate)
 		// so the dedup key is now free. Retry: the next upsert opens a fresh event.
 	}
 	return RecordResult{}, errors.New("event: record did not converge; dedup key churned concurrently")
+}
+
+// recordConsumed writes a candidate derived from an observation stream (issue #212)
+// atomically: in ONE transaction it (1) claims the input transition in the append-
+// only event_input_transitions ledger (ingestion dedup), (2) writes the event only
+// when the claim is fresh (lifecycle dedup), and (3) advances the durable per-stream
+// cursor monotonically. Because all three commit together, a crash before commit
+// leaves the cursor unchanged for a safe replay, and a crash after commit can never
+// produce a second event — even after resolve/expire frees the lifecycle dedup key.
+func (s *Service) recordConsumed(ctx context.Context, account uuid.UUID, c Candidate) (RecordResult, error) {
+	con := c.Consumption
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return RecordResult{}, fmt.Errorf("event: begin consume tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	// (1) INGESTION IDEMPOTENCY (append-only). 1 row ⇒ fresh consumption; 0 rows ⇒
+	// the transition was already consumed in a prior pass — skip the event write.
+	claimed, err := q.InsertInputTransition(ctx, db.InsertInputTransitionParams{
+		InputKey:             con.InputKey,
+		MarketplaceAccountID: account,
+		TargetID:             con.Target,
+		NativeSellerID:       con.NativeSellerID,
+		OfferIdentity:        con.OfferIdentity,
+		PrevObservationID:    con.PrevObsID,
+		CurrObservationID:    con.CurrObsID,
+	})
+	if err != nil {
+		return RecordResult{}, fmt.Errorf("event: claim input transition: %w", err)
+	}
+
+	var res RecordResult
+	if claimed == 0 {
+		// Already consumed: no event. Still advance the cursor (monotonic upsert) to
+		// self-heal a cursor that lagged its ledger (e.g. a lost cursor write).
+		res = RecordResult{AlreadyConsumed: true}
+	} else {
+		res, err = s.writeEvent(ctx, q, account, c)
+		if err != nil {
+			return RecordResult{}, err
+		}
+	}
+
+	// (3) Advance the durable per-stream cursor. Monotonic: it moves forward only.
+	if err := q.AdvanceObservationCursor(ctx, db.AdvanceObservationCursorParams{
+		TargetID:             con.Target,
+		MarketplaceAccountID: account,
+		NativeSellerID:       con.NativeSellerID,
+		OfferIdentity:        con.OfferIdentity,
+		LastObservationID:    con.CurrObsID,
+		LastCapturedAt:       con.CurrCapturedAt,
+		LastPriceRawValue:    con.CurrValue,
+	}); err != nil {
+		return RecordResult{}, fmt.Errorf("event: advance cursor: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return RecordResult{}, fmt.Errorf("event: commit consume tx: %w", err)
+	}
+	return res, nil
+}
+
+// AdvanceConsumedCursor moves a consumed stream's durable cursor forward to a high-
+// water observation (issue #212). It advances over IMMATERIAL / same-value
+// observations that produced no event, so a stable stream drains and stops
+// re-occupying the bounded page every pass (no sibling-stream starvation). The
+// underlying upsert is MONOTONIC, so this never rewinds a cursor a material write
+// already advanced further, and it writes no event and no ledger row.
+func (s *Service) AdvanceConsumedCursor(ctx context.Context, con Consumption) error {
+	if err := db.New(s.pool).AdvanceObservationCursor(ctx, db.AdvanceObservationCursorParams{
+		TargetID:             con.Target,
+		MarketplaceAccountID: con.Account,
+		NativeSellerID:       con.NativeSellerID,
+		OfferIdentity:        con.OfferIdentity,
+		LastObservationID:    con.CurrObsID,
+		LastCapturedAt:       con.CurrCapturedAt,
+		LastPriceRawValue:    con.CurrValue,
+	}); err != nil {
+		return fmt.Errorf("event: advance consumed cursor: %w", err)
+	}
+	return nil
 }
 
 // Today returns the account's open events ranked for the Today feed (EVT-004):

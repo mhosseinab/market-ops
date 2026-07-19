@@ -155,6 +155,12 @@ type CompetitorPriceInput struct {
 	Now           time.Time
 	TTL           time.Duration
 	Threshold     Threshold
+	// Consumption binds this input to the durable observation-consumption seam
+	// (issue #212): the input-transition idempotency key + cursor advance. It is set
+	// by the ObservationSource and carried through onto the Candidate so RecordFor
+	// can commit the event, the ingestion-idempotency ledger row, and the durable
+	// cursor advance in one transaction. nil for non-observation callers/tests.
+	Consumption *Consumption
 }
 
 // DetectCompetitorPrice fires when a competitor's price moved by at least the
@@ -183,8 +189,12 @@ func DetectCompetitorPrice(in CompetitorPriceInput) (Candidate, bool) {
 	ev.Detail["curr_value"] = in.CurrValue
 	ev.Detail["unit"] = in.Unit
 	ev.Detail["move_bp"] = strconv.FormatInt(moveBp, 10)
-	return candidate(TypeCompetitorPrice, in.Variant, in.Target, in.OfferIdentity, sev,
-		in.Exposure, ev, in.Now, in.TTL, in.Threshold), true
+	c := candidate(TypeCompetitorPrice, in.Variant, in.Target, in.OfferIdentity, sev,
+		in.Exposure, ev, in.Now, in.TTL, in.Threshold)
+	// Carry the durable-consumption seam onto the candidate so RecordFor can commit
+	// the ingestion-idempotency ledger row + cursor advance atomically with the event.
+	c.Consumption = in.Consumption
+	return c, true
 }
 
 // movementBasisPoints returns |curr-prev|/prev in basis points using integer

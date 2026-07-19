@@ -37,6 +37,14 @@ type Recorder interface {
 	// terminal event, so a replayed clearance is idempotent. Scoping to the account
 	// means a clearance in one tenant never resolves another tenant's same-key event.
 	ResolveOpen(ctx context.Context, account uuid.UUID, dedupKey string) (bool, error)
+	// AdvanceConsumedCursor moves a consumed observation stream's durable cursor
+	// forward to a high-water observation (issue #212), monotonically. It writes no
+	// event and no ledger row — it only records that a stream's IMMATERIAL / same-
+	// value tail has been evaluated, so a stable stream cannot starve its siblings by
+	// re-occupying the bounded drain page every pass. Safe over immaterial
+	// observations because none carried an event; the producer holds it back only for
+	// a stream whose material record errored this pass.
+	AdvanceConsumedCursor(ctx context.Context, con Consumption) error
 }
 
 // Transition is one detected input transition awaiting event production. Exactly
@@ -76,7 +84,14 @@ type ProducerMetrics struct {
 	Dormant  int // non-material transitions with no open event to clear
 	Resolved int // condition-clear transitions that resolved an open event (§15.1)
 	Expired  int // events swept to 'expired' past their deadline (§15.1 durable sweep)
-	Errors   int // per-transition failures surfaced for retry
+	Skipped  int // consumed transitions already ingested (issue #212 ingestion dedup)
+	// StreamBlocked counts consumed transitions deliberately deferred to the next
+	// pass because an EARLIER material transition in the same stream errored this
+	// pass (issue #212 burst partial-failure). Distinct from Errors: the tail is held
+	// back IN CAPTURED ORDER so nothing advances past the errored predecessor — it is
+	// not itself a failure, so telemetry must not conflate the two.
+	StreamBlocked int
+	Errors        int // per-transition failures surfaced for retry
 }
 
 // Producer is the runtime market-event producer (EVT-001..005): it consumes input
@@ -147,6 +162,22 @@ func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
 		return m, errors.Join(errs...)
 	}
 
+	// materialized tracks dedup keys that a MATERIAL candidate recorded earlier in
+	// THIS pass (issue #212 burst safety). When the durable source drains a burst
+	// (A→B material, then B→C below-threshold) both pairs are evaluated in order; the
+	// trailing immaterial B→C shares A→B's dedup key. Without this guard the dormant
+	// B→C would resolve the event A→B just opened, effectively losing the material
+	// intermediate movement. A dormant transition therefore does NOT resolve an event
+	// that was materially recorded for the same key this pass; cross-pass clears
+	// (issue #66) are unaffected — the key is only marked within a single pass.
+	materialized := make(map[string]bool)
+
+	// blockedStream holds consumed streams whose MATERIAL record errored this pass
+	// (issue #212). Their durable cursor must NOT be advanced to the drain high-water
+	// afterwards, or the failed transition would be skipped instead of retried. Keyed
+	// by target|seller|offer.
+	blockedStream := make(map[string]bool)
+
 	for _, tr := range transitions {
 		m.Scanned++
 		cand, ok, derr := p.evaluate(ctx, tr)
@@ -169,6 +200,13 @@ func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
 				p.tel.dormant.Add(ctx, 1)
 				continue
 			}
+			if materialized[key] {
+				// A material candidate for this key was recorded earlier in this same
+				// pass (a burst); a trailing immaterial transition must not resolve it.
+				m.Dormant++
+				p.tel.dormant.Add(ctx, 1)
+				continue
+			}
 			resolved, rerr := p.rec.ResolveOpen(ctx, tr.Account, key)
 			if rerr != nil {
 				m.Errors++
@@ -185,19 +223,68 @@ func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
 			}
 			continue
 		}
+		if cand.Consumption != nil && blockedStream[consumptionStreamKey(*cand.Consumption)] {
+			// An EARLIER material transition in this stream errored this pass (issue #212
+			// burst partial-failure). Recording this later transition would advance the
+			// durable cursor PAST the errored predecessor in its own transaction, so the
+			// next pass would read strictly after it and the predecessor's material
+			// movement would be permanently dropped (no event, no Today item; a River
+			// retry cannot recover it). Defer the whole tail to the next pass IN CAPTURED
+			// ORDER — the unadvanced cursor re-derives the errored predecessor first. This
+			// is a deliberate hold-back, not a failure, so emit its OWN signal (distinct
+			// from the transient error) and do NOT count it toward Errors.
+			m.StreamBlocked++
+			p.tel.streamBlocked.Add(ctx, 1)
+			continue
+		}
 		res, rerr := p.rec.RecordFor(ctx, tr.Account, cand)
 		if rerr != nil {
 			m.Errors++
 			p.tel.errors.Add(ctx, 1)
 			errs = append(errs, fmt.Errorf("event producer: record %s: %w", tr.Type, rerr))
+			if cand.Consumption != nil {
+				// The material record failed to commit — hold this stream's cursor back
+				// so the transition is retried, never skipped by the high-water advance.
+				blockedStream[consumptionStreamKey(*cand.Consumption)] = true
+			}
 			continue
 		}
-		if res.Deduped {
+		switch {
+		case res.AlreadyConsumed:
+			// The input transition was already ingested in a prior pass (issue #212
+			// ingestion dedup) — no event written, no duplicate Today item. This is
+			// the crash-after-commit backstop, not a lifecycle dedup.
+			m.Skipped++
+			p.tel.skipped.Add(ctx, 1)
+		case res.Deduped:
 			m.Deduped++
 			p.tel.deduped.Add(ctx, 1)
-		} else {
+			materialized[cand.DedupKey] = true
+		default:
 			m.Produced++
 			p.tel.produced.Add(ctx, 1)
+			materialized[cand.DedupKey] = true
+		}
+	}
+
+	// (3) DRAIN HIGH-WATER ADVANCE (issue #212). After the pass, advance each consumed
+	// stream's durable cursor to the newest observation it drained, so IMMATERIAL /
+	// same-value tails are consumed and a stable stream cannot starve its siblings by
+	// re-occupying the bounded page every pass. A stream whose material record errored
+	// this pass is held back (retried next pass). Material writes already advanced the
+	// cursor atomically; this monotonic upsert only carries it over their immaterial
+	// tail. Best-effort: an advance failure is surfaced for retry but never fabricates
+	// or loses an event (none is at stake here).
+	if adv, ok := p.source.(interface{ DrainedStreams() []Consumption }); ok {
+		for _, mark := range adv.DrainedStreams() {
+			if blockedStream[consumptionStreamKey(mark)] {
+				continue
+			}
+			if aerr := p.rec.AdvanceConsumedCursor(ctx, mark); aerr != nil {
+				m.Errors++
+				p.tel.errors.Add(ctx, 1)
+				errs = append(errs, fmt.Errorf("event producer: advance cursor: %w", aerr))
+			}
 		}
 	}
 
@@ -208,6 +295,13 @@ func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
 	return m, nil
 }
 
+// consumptionStreamKey identifies the durable stream a consumed transition belongs
+// to (target|native_seller_id|offer_identity) — the granularity at which the cursor
+// advances and the high-water hold-back is tracked.
+func consumptionStreamKey(con Consumption) string {
+	return con.Target.String() + "|" + con.NativeSellerID + "|" + con.OfferIdentity
+}
+
 // logSummary emits the structured per-pass summary on the producer boundary (shared
 // field schema). Logged on every pass so an empty/all-dormant/sweep-only pass is
 // observable, never silent.
@@ -215,7 +309,7 @@ func (p *Producer) logSummary(ctx context.Context, m ProducerMetrics) {
 	p.logger.InfoContext(ctx, "market event production pass",
 		"scanned", m.Scanned, "produced", m.Produced, "deduped", m.Deduped,
 		"dormant", m.Dormant, "resolved", m.Resolved, "expired", m.Expired,
-		"errors", m.Errors)
+		"skipped", m.Skipped, "stream_blocked", m.StreamBlocked, "errors", m.Errors)
 }
 
 // transitionDedupKey computes the dedup identity a transition concerns, whether or
@@ -349,12 +443,14 @@ func (p *Producer) resolveThreshold(ctx context.Context, tr Transition, asOf tim
 // CLAUDE.md observability). Counter construction failures degrade to no-op so a
 // telemetry hiccup never breaks production.
 type producerTelemetry struct {
-	produced metric.Int64Counter
-	deduped  metric.Int64Counter
-	dormant  metric.Int64Counter
-	resolved metric.Int64Counter
-	expired  metric.Int64Counter
-	errors   metric.Int64Counter
+	produced      metric.Int64Counter
+	deduped       metric.Int64Counter
+	dormant       metric.Int64Counter
+	resolved      metric.Int64Counter
+	expired       metric.Int64Counter
+	skipped       metric.Int64Counter
+	streamBlocked metric.Int64Counter
+	errors        metric.Int64Counter
 }
 
 const producerInstrumentation = "github.com/mhosseinab/market-ops/services/core/internal/event"
@@ -374,6 +470,9 @@ func newProducerTelemetry() *producerTelemetry {
 		dormant:  ctr("event.producer.dormant", "non-material transitions the producer evaluated but did not record"),
 		resolved: ctr("event.producer.resolved", "open events resolved because their triggering condition cleared (§15.1)"),
 		expired:  ctr("event.producer.expired", "open events swept to expired past their deadline (§15.1 durable sweep)"),
-		errors:   ctr("event.producer.errors", "producer per-transition failures surfaced for retry"),
+		skipped:  ctr("event.producer.skipped", "consumed input transitions already ingested; no duplicate event (issue #212)"),
+		streamBlocked: ctr("event.producer.stream_blocked",
+			"consumed transitions deferred to the next pass because an earlier material transition in the same stream errored (issue #212 burst partial-failure)"),
+		errors: ctr("event.producer.errors", "producer per-transition failures surfaced for retry"),
 	}
 }
