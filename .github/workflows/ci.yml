@@ -90,6 +90,7 @@ jobs:
               - 'deploy/**'
               - 'runbooks/**'
               - 'tools/obs/**'
+              - 'tools/integration/**'
               - 'Taskfile.yml'
               - '.github/workflows/**'
             workflow:
@@ -310,6 +311,11 @@ jobs:
         run: pip install promql-parser pyyaml || true
       # §18 dashboard JSON drift + PromQL/series + §20.1 alert-rule/runbook checks.
       - run: task obs:validate
+      # Docker-free guard that the S32 integration entrypoints never destroy a
+      # developer's fixed deploy/.env (issue #166). No Docker/DB needed — the
+      # compose-based integration suite itself still runs push-only.
+      - name: verify integration scripts preserve deploy/.env
+        run: bash tools/integration/env_preservation_test.sh
 
   ts:
     name: ts

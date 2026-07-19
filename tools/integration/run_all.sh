@@ -19,20 +19,29 @@ set -uo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-COMPOSE="docker compose -f deploy/compose.test.yml"
 export SEEDE2E_PASSWORD="${SEEDE2E_PASSWORD:-s32-integration-owner-password}"
 export SEEDE2E_EMAIL="${SEEDE2E_EMAIL:-owner@dev.local}"
 
 # Belt-and-suspenders second propagation path for the SAME owner credential:
-# deploy/compose.test.yml's `core` service now REQUIRES SEEDE2E_EMAIL/
+# deploy/compose.test.yml's `core`/`migrate` services REQUIRE SEEDE2E_EMAIL/
 # SEEDE2E_PASSWORD (`${VAR:?...}`, no in-YAML default — a diverging default
 # there previously let the container-seeded password silently differ from
 # what the host-side replay/Playwright send, producing a confusing 401 with
-# an otherwise-healthy stack). Writing deploy/.env makes Compose's own
-# project-directory .env auto-load a second, independent path to the exact
-# same value as this shell's export, so `docker compose up` cannot resolve a
-# different credential than $SEEDE2E_EMAIL/$SEEDE2E_PASSWORD below use.
-printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > deploy/.env
+# an otherwise-healthy stack). We MUST NOT write the FIXED project file
+# deploy/.env for this — it can hold a developer's real deployment config and
+# secrets, and must survive success, failure, and interruption byte-for-byte
+# (issue #166). Instead we hand `docker compose` a PRIVATE, per-run env file via
+# `--env-file` (0600), giving Compose a second, independent path to the exact
+# same value as this shell's export so `docker compose up` cannot resolve a
+# different credential than $SEEDE2E_EMAIL/$SEEDE2E_PASSWORD below use. The path
+# is exported as MARKET_OPS_COMPOSE_ENV_FILE so the child journey scripts reuse
+# this one orchestrator-owned file; this trap removes it at the very end. mktemp
+# gives a unique path, so parallel `run_all.sh` invocations never collide.
+COMPOSE_ENV_FILE="$(mktemp "${TMPDIR:-/tmp}/market-ops-compose-env.XXXXXX")"
+chmod 600 "$COMPOSE_ENV_FILE"
+printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > "$COMPOSE_ENV_FILE"
+export MARKET_OPS_COMPOSE_ENV_FILE="$COMPOSE_ENV_FILE"
+COMPOSE="docker compose --env-file $COMPOSE_ENV_FILE -f deploy/compose.test.yml"
 echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
 
 declare -A RESULT
@@ -46,16 +55,19 @@ report() {
 
 cleanup() {
   $COMPOSE down -v >/dev/null 2>&1 || true
-  rm -f deploy/.env
+  # Remove ONLY the private, per-run env file this orchestrator created — never
+  # the fixed project file deploy/.env (issue #166).
+  rm -f "$COMPOSE_ENV_FILE"
 }
 trap cleanup EXIT
 
 # --- scenario 1: kill-switch journey (stops+restarts its own stack) --------
 echo "### 1/6 kill-switch journey (CHAT-009) ###"
-# Tell the child script this orchestrator owns deploy/.env's lifecycle (its
-# own cleanup trap, below) so the child does not delete it out from under
-# scenarios 2-5's later `compose up`.
-if MARKET_OPS_RUN_ALL_ORCHESTRATED=1 bash tools/integration/run_killswitch_journey.sh; then
+# The exported MARKET_OPS_COMPOSE_ENV_FILE tells the child to reuse this
+# orchestrator's private env file (and not remove it), so scenarios 2-5's later
+# `compose up` still resolve the same credential; this orchestrator's own trap
+# removes it at the end.
+if bash tools/integration/run_killswitch_journey.sh; then
   report "1. kill-switch journey (CHAT-009)" "PASS"
 else
   report "1. kill-switch journey (CHAT-009)" "FAIL"
@@ -129,12 +141,12 @@ fi
 # Scenarios 2-5 left a stack up WITH the LLM plane live; the cold-start journey
 # must boot with the LLM plane ABSENT from the first boot, so tear that stack
 # down first. Like scenario 1 this child owns its own up/down lifecycle (its EXIT
-# trap `compose down -v`) and, told MARKET_OPS_RUN_ALL_ORCHESTRATED=1, leaves
-# deploy/.env for this orchestrator's own cleanup trap.
+# trap `compose down -v`) and, via the exported MARKET_OPS_COMPOSE_ENV_FILE,
+# reuses this orchestrator's private env file without removing it.
 echo "### tearing the (llm-live) stack down before the cold-start scenario ###"
 $COMPOSE down -v >/dev/null 2>&1 || true
 echo "### 6/6 cold-start LLM-unhealthy isolation (CHAT-009) ###"
-if MARKET_OPS_RUN_ALL_ORCHESTRATED=1 bash tools/integration/run_coldstart_llm_unhealthy_journey.sh; then
+if bash tools/integration/run_coldstart_llm_unhealthy_journey.sh; then
   report "6. cold-start LLM-unhealthy isolation (CHAT-009)" "PASS"
 else
   report "6. cold-start LLM-unhealthy isolation (CHAT-009)" "FAIL"
