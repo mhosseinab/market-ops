@@ -31,9 +31,21 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
 
-// DefaultMovementCap is the default maximum price movement: 5% == 500 basis
-// points (§9.3). An account may configure a SMALLER cap (stricter) only.
-var DefaultMovementCap = money.NewBasisPoints(500)
+// movementCapMaxBp is the HARD maximum price movement: 5% == 500 basis points
+// (§9.3, PRC-004). It is an immutable, unexported constant — the never-cut
+// ceiling is compile-time data, never mutable runtime state, so no caller can
+// widen the default or the accepted maximum. validateCap compares against this
+// literal directly, and DefaultMovementCap constructs a fresh value from it.
+const movementCapMaxBp int64 = 500
+
+// DefaultMovementCap returns the default maximum price movement as a FRESH
+// money.BasisPoints value: 5% == 500 basis points (§9.3). An account may
+// configure a SMALLER cap (stricter) only. It is a function returning a new
+// value — not an assignable package variable — so the hard ceiling can never be
+// mutated or widened through it (PRC-004).
+func DefaultMovementCap() money.BasisPoints {
+	return money.NewBasisPoints(movementCapMaxBp)
+}
 
 // DefaultCooldown is the default minimum interval between price actions: 60
 // minutes (§9.3). An account may configure a LONGER cooldown (stricter) only.
@@ -130,7 +142,7 @@ type ConfigParams struct {
 // is rejected. Nil cap/cooldown take the default. This is the ONLY sanctioned way
 // to build a Config for evaluation.
 func NewConfig(p ConfigParams) (Config, error) {
-	movementCap := DefaultMovementCap
+	movementCap := DefaultMovementCap()
 	if p.MovementCap != nil {
 		movementCap = *p.MovementCap
 	}
@@ -174,7 +186,7 @@ func validateCap(cap money.BasisPoints) error {
 	if cap.Value() < 0 {
 		return ErrInvalidMovementCap
 	}
-	if cap.Value() > DefaultMovementCap.Value() {
+	if cap.Value() > movementCapMaxBp {
 		return ErrMovementCapTooLoose
 	}
 	return nil
