@@ -149,18 +149,23 @@ func TestDeletingConversationLeavesAuditIntact(t *testing.T) {
 	actionID := uuid.New()
 	snapshot, _ := json.Marshal(map[string]string{"k": "v"})
 	if _, err := q.AppendAuditRecord(ctx, db.AppendAuditRecordParams{
-		ActionID:  actionID,
-		EventType: "draft_created",
+		ActionID: actionID,
+		// event_type is CHECK-constrained (migration 0013): it must be one of the
+		// APR-001 lifecycle events. "recommend_only" is the advisory, non-executing
+		// record — apt for a fixture that only needs an audit row to survive a
+		// conversation delete.
+		EventType: "recommend_only",
 		Actor:     "actor@example.com",
 		ActorRole: "owner",
 		Surface:   "screens",
-		// evidence_versions is jsonb NOT NULL DEFAULT '{}' (migration 0013). The
-		// generated INSERT binds this column explicitly, so a nil []byte would
-		// write an EXPLICIT NULL and violate the constraint — pass the empty JSON
-		// object, mirroring every other audit DB fixture (e.g. reconcile,
-		// execution service DB tests).
+		// evidence_versions, card_snapshot, and detail are all jsonb NOT NULL
+		// DEFAULT '{}' (migration 0013). The generated INSERT binds each column
+		// explicitly, so a nil []byte writes an EXPLICIT NULL that defeats the
+		// DEFAULT and violates the constraint — pass the empty JSON object for
+		// each, mirroring every other audit DB fixture (reconcile, execution).
 		EvidenceVersions: []byte("{}"),
 		CardSnapshot:     snapshot,
+		Detail:           []byte("{}"),
 		TerminalState:    "draft",
 	}); err != nil {
 		t.Fatalf("append audit: %v", err)
