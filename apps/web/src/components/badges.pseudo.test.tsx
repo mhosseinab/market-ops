@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { PseudoHarness } from "../test/pseudoHarness";
 import { EventTypeBadge, FreshnessPill, QualityBadge, ReadinessBadge, StatusBadge } from "./badges";
+import { ConnectorHealthPill } from "./ConnectorHealthPill";
 import { EmptyState } from "./EmptyState";
 
 // LOC-011 pseudo-localization suite. Under the pseudo pack every user-facing
@@ -29,10 +30,15 @@ describe("pseudo-localization renders (LOC-011)", () => {
         <StatusBadge state="pendingReconciliation" />
         <EventTypeBadge type={1} />
         <FreshnessPill state="aging" />
+        <ConnectorHealthPill health="unknown" />
+        <ConnectorHealthPill health="disconnected" />
+        <ConnectorHealthPill health="probing" />
+        <ConnectorHealthPill health="degraded" />
+        <ConnectorHealthPill health="supported" />
         <EmptyState />
       </PseudoHarness>,
     );
-    for (const el of container.querySelectorAll(".badge, .screen-empty p")) {
+    for (const el of container.querySelectorAll(".badge, .connection-pill, .screen-empty p")) {
       assertPseudo(el.textContent ?? "");
     }
   });

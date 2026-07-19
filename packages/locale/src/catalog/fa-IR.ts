@@ -57,6 +57,10 @@ export const faIR: Catalog = {
   "topbar.chat.toggle": "دستیار گفتگو",
   "topbar.connection.healthy": "اتصال سالم",
   "topbar.connection.degraded": "اتصال ناپایدار",
+  "topbar.connection.disconnected": "اتصال قطع شده",
+  "topbar.connection.probing": "در حال بررسی اتصال",
+  "topbar.connection.unknown": "وضعیت اتصال نامشخص",
+  "topbar.connection.aria": "وضعیت اتصال: {status}",
   "topbar.briefingUnseen": "خلاصهٔ روزانهٔ دیده‌نشده",
 
   "state.verified": "تاییدشده",

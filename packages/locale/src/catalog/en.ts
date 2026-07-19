@@ -57,6 +57,10 @@ export const en: Catalog = {
   "topbar.chat.toggle": "Chat assistant",
   "topbar.connection.healthy": "Connection healthy",
   "topbar.connection.degraded": "Connection unstable",
+  "topbar.connection.disconnected": "Connection lost",
+  "topbar.connection.probing": "Verifying connection",
+  "topbar.connection.unknown": "Connection status unknown",
+  "topbar.connection.aria": "Connection status: {status}",
   "topbar.briefingUnseen": "Unseen daily briefing",
 
   "state.verified": "Verified",

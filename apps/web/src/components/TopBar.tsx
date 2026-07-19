@@ -2,6 +2,9 @@ import { useRouterState } from "@tanstack/react-router";
 import { useAppState } from "../app/appState";
 import { useLocale, useT } from "../app/i18n";
 import { DEFAULT_ROUTE, ROUTES } from "../app/navConfig";
+import { deriveConnectorHealth } from "../data/connectorHealth";
+import { useConnectorStatus } from "../data/hooks";
+import { ConnectorHealthPill } from "./ConnectorHealthPill";
 
 // Top bar: route title/subtitle, connection-health pill, density/theme/chat
 // toggles, and the language switch that flips the whole app (demonstrates the
@@ -14,6 +17,13 @@ export function TopBar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const route = ROUTES.find((r) => r.path === pathname) ?? DEFAULT_ROUTE;
 
+  // Connector health is DERIVED from the current typed connector state and fails
+  // closed (issue #18): while the status is pending/errored the data is absent,
+  // so the shared rule resolves to a non-positive health rather than a stale
+  // "healthy" pill. The pill NEVER reads positive unless a probe confirmed it.
+  const connectorQuery = useConnectorStatus();
+  const health = deriveConnectorHealth(connectorQuery.data);
+
   return (
     <header className="top-bar">
       <div className="top-bar__titles">
@@ -21,10 +31,7 @@ export function TopBar() {
         <span className="top-bar__sub">{t(route.subKey)}</span>
       </div>
 
-      <span className="connection-pill tone-pos">
-        <span className="badge__dot" aria-hidden />
-        {t("topbar.connection.healthy")}
-      </span>
+      <ConnectorHealthPill health={health} />
 
       <button
         type="button"
