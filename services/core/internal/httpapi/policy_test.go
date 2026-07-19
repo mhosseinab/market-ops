@@ -63,6 +63,36 @@ func TestSimulatePolicy_HappyNeverApprovable(t *testing.T) {
 	}
 }
 
+func TestSimulatePolicy_NonCompleteReadinessNotApprovable(t *testing.T) {
+	// Issue #59 seam check: a non-Complete readiness is threaded through to the
+	// policy engine and never yields an approvable/executable result, even though
+	// the price stages pass. Simulations are already non-approvable; this also
+	// asserts the base contribution reports executable=false for the state.
+	for _, st := range []string{"partial", "stale", "missing"} {
+		st := st
+		t.Run(st, func(t *testing.T) {
+			body := strings.Replace(simBodyHappy, `"readiness": "complete",`, `"readiness": "`+st+`",`, 1)
+			rec := postSimulate(t, body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+			}
+			var res gateway.PolicySimulationResult
+			if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if res.Approvable {
+				t.Fatalf("readiness %s must not be approvable", st)
+			}
+			if res.Contribution.Executable {
+				t.Fatalf("readiness %s must report executable=false", st)
+			}
+			if gateway.MarginReadinessState(st) != res.Contribution.Readiness {
+				t.Fatalf("readiness echoed = %q, want %q", res.Contribution.Readiness, st)
+			}
+		})
+	}
+}
+
 func TestSimulatePolicy_LooseCapRejected(t *testing.T) {
 	// PRC-004: a movement cap looser than the 5% default is rejected.
 	body := strings.Replace(simBodyHappy,

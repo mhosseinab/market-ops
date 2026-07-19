@@ -4,6 +4,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
 
@@ -88,20 +89,29 @@ type Proposal struct {
 
 // Result is the outcome of an evaluation: at most one Proposal, and the ordered
 // blockers that prevented one (empty when a proposal exists). Simulation marks a
-// non-executable "what-if" that NEVER carries an approval control.
+// non-executable "what-if" that NEVER carries an approval control. Readiness is
+// the verified margin-readiness state (CST-003) the result was evaluated under;
+// it is stamped from EvaluateInput and gates approvability (only Complete may
+// drive an executable recommendation, PRD §9.2).
 type Result struct {
 	Proposed   *Proposal
 	Blockers   []Blocker
 	Simulation bool
+	Readiness  cost.State
 }
 
 // Approvable reports whether this result is eligible to be bound to an approval
-// control downstream (S17). A simulation is NEVER approvable, and a result with
-// any blocker or no proposal is not approvable. This method does not itself
-// create any control — it only states eligibility; the structured, version-bound
-// control is minted outside this package.
+// control downstream (S17). It fails CLOSED: a simulation is NEVER approvable, a
+// result with any blocker or no proposal is not approvable, AND the verified
+// margin readiness must be exactly Complete (CST-003 / PRD §9.2 — Partial, Stale,
+// Missing, or an unset/unknown state can never yield an approval control). This
+// method does not itself create any control — it only states eligibility; the
+// structured, version-bound control is minted outside this package.
 func (r Result) Approvable() bool {
-	return !r.Simulation && r.Proposed != nil && len(r.Blockers) == 0
+	return !r.Simulation &&
+		r.Proposed != nil &&
+		len(r.Blockers) == 0 &&
+		r.Readiness == cost.StateComplete
 }
 
 // ContributionFunc returns the contribution amount at a candidate price. The
@@ -111,14 +121,23 @@ func (r Result) Approvable() bool {
 type ContributionFunc func(price money.Money) (money.Money, error)
 
 // EvaluateInput is the pure input to Evaluate. It carries the validated Config,
-// the current price, a contribution oracle, the evaluation clock, and the last
-// action instant (nil ⇒ no prior action, so cooldown cannot bind).
+// the current price, a contribution oracle, the evaluation clock, the last action
+// instant (nil ⇒ no prior action, so cooldown cannot bind), and the verified
+// margin-readiness state governing the contribution.
+//
+// Readiness is the verified CST-003 state the contribution oracle was derived
+// under (the caller resolves it from the in-force cost profile, CST-002). It is a
+// REQUIRED proof of executability: only cost.StateComplete admits an approvable
+// result, and an unset/unknown value fails closed. Policy imports only the light
+// cost.State enum (not the margin engine) so the ordering/zero-floor property
+// tests keep using arbitrary monotone contribution models.
 type EvaluateInput struct {
 	Config       Config
 	CurrentPrice money.Money
 	Contribution ContributionFunc
 	Now          time.Time
 	LastActionAt *time.Time
+	Readiness    cost.State
 }
 
 // Evaluate runs the six stages in order and returns either a Proposal (all hard
@@ -132,6 +151,24 @@ type EvaluateInput struct {
 // by the hard floor and the zero-cross guard. No stages-5/6 choice can produce an
 // output that violates a hard stage — a fact the property tests prove.
 func Evaluate(in EvaluateInput) (Result, error) {
+	res, err := evaluate(in)
+	if err != nil {
+		return Result{}, err
+	}
+	// Stamp the verified readiness so Approvable() can enforce the Complete-only
+	// gate (CST-003 / PRD §9.2) structurally, regardless of how the result is
+	// consumed downstream. The proposal is still returned as ANALYSIS for a
+	// non-Complete readiness (Partial may be analyzed), but Approvable() will
+	// refuse to treat it as executable.
+	res.Readiness = in.Readiness
+	return res, nil
+}
+
+// evaluate runs the six ordered stages and returns the proposal or the ordered
+// blockers. It is readiness-agnostic; the exported Evaluate stamps the verified
+// readiness onto the result so the approvability gate stays a single source of
+// truth.
+func evaluate(in EvaluateInput) (Result, error) {
 	if err := in.Config.validate(); err != nil {
 		return Result{}, err
 	}

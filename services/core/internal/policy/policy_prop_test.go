@@ -6,6 +6,7 @@ import (
 
 	"pgregory.net/rapid"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
 
@@ -89,6 +90,7 @@ func genInput(t *rapid.T) EvaluateInput {
 		CurrentPrice: newIRR(current),
 		Contribution: mkPropContrib(newIRR(cogs), commBp),
 		Now:          propNow,
+		Readiness:    cost.StateComplete,
 	}
 	if rapid.Bool().Draw(t, "hasPriorAction") {
 		off, err := time.ParseDuration(rapid.SampledFrom(propLastOffsets).Draw(t, "lastOffset"))
