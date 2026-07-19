@@ -70,6 +70,13 @@ type Querier interface {
 	// index uq_mpi_one_active_confirmed_per_variant rejects a second active Confirmed
 	// for the same variant, enforcing CAT-002 at commit time.
 	ConfirmIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
+	// Reconcile the bytes a completed fetch actually transferred. This is an atomic
+	// increment on the current window row (never a read-then-write that could lose a
+	// concurrent update); it creates the row if the window has no reserve yet. Byte
+	// overshoot on the final reserved request is bounded by design — the request that
+	// pushes bytes past the ceiling was already admitted; the next reserve's byte
+	// predicate then denies further fetches.
+	ConsumeByteBudget(ctx context.Context, arg ConsumeByteBudgetParams) error
 	// CST-002 point-in-time lookup: the EXACT in-force version of each component for
 	// a variant at timestamp $2 — the row with the greatest effective_from <= $2 per
 	// component. Reproduces the exact cost profile that produced a historical number,
@@ -243,6 +250,10 @@ type Querier interface {
 	GetActiveConfirmedIdentityForVariant(ctx context.Context, variantID uuid.UUID) (MarketProductIdentity, error)
 	GetApprovalCard(ctx context.Context, id uuid.UUID) (ApprovalCard, error)
 	GetBriefingByAccountDay(ctx context.Context, arg GetBriefingByAccountDayParams) (Briefing, error)
+	// Read the durable spend for one (account, window) so the scheduler can size the
+	// sweep (Snapshot -> State -> PlanSweep). A missing row means the window is
+	// untouched: the caller treats pgx.ErrNoRows as zero spend (full headroom).
+	GetBudgetUsage(ctx context.Context, arg GetBudgetUsageParams) (GetBudgetUsageRow, error)
 	GetCatalogSyncRun(ctx context.Context, id uuid.UUID) (CatalogSyncRun, error)
 	// ORG-SCOPED: only returns the row when the account belongs to the organization.
 	GetConnectorConnection(ctx context.Context, arg GetConnectorConnectionParams) (ConnectorConnection, error)
@@ -598,6 +609,20 @@ type Querier interface {
 	// either way the mapping leaves the executable set. The caller emits the
 	// recommendation-invalidation event in the same transaction.
 	ReopenConfirmedIdentity(ctx context.Context, arg ReopenConfirmedIdentityParams) (MarketProductIdentity, error)
+	// Route C durable daily-budget accounting (issue #48). route_budget_usage holds
+	// one mutable counter row per (account, window bucket). Reset is bucket-key
+	// rollover: a new window is a new row, so these queries never DELETE or rewrite a
+	// prior window. The LIMITS are supplied by the caller (config-driven), not stored.
+	// Atomically reserve ONE request against the durable daily total. This is the
+	// SINGLE, conditional statement that admits: for a brand-new window it inserts
+	// (1,0) only when both limits leave headroom; for an existing window it bumps
+	// requests_used by 1 ONLY WHILE the durable count is strictly below the request
+	// limit AND bytes are below the byte limit. The composite PK serializes concurrent
+	// callers on one row, so racing the last unit admits at most the remainder. A
+	// denied reserve (limit reached, or a zero/negative limit) matches nothing and
+	// RETURNS NO ROW — the caller reads pgx.ErrNoRows as "denied" and skips the fetch.
+	// $3 = request limit, $4 = byte limit.
+	ReserveRequestBudget(ctx context.Context, arg ReserveRequestBudgetParams) (int32, error)
 	// Return a capability to 'unknown' (disconnect). Clears last_verified_at so a
 	// stale verification can never read as current. ORG-SCOPED: a foreign account
 	// matches zero rows, so no capability of another organization is ever reset.

@@ -678,6 +678,14 @@ type RecommendationInvalidationEvent struct {
 	EmittedAt            time.Time
 }
 
+type RouteBudgetUsage struct {
+	AccountID    uuid.UUID
+	WindowKey    time.Time
+	RequestsUsed int32
+	BytesUsed    int64
+	UpdatedAt    time.Time
+}
+
 type RouteKillSwitch struct {
 	ID        uuid.UUID
 	Scope     string

@@ -127,7 +127,7 @@ type Observer struct {
 	cfg        Config
 	fetcher    Fetcher
 	limiter    *Limiter
-	budget     *Budget
+	budget     BudgetReserver
 	breakers   *breakerRegistry
 	drift      *DriftGuard
 	ingestor   Ingestor
@@ -146,8 +146,13 @@ type ObserverDeps struct {
 	Kill       KillSwitchStore
 	Source     TargetSource
 	Drift      *DriftGuard
-	Now        func() time.Time
-	Rand       *rand.Rand
+	// Budget is the AUTHORITATIVE admission source. Production wires the durable
+	// DBBudget (issue #48) so the daily total survives restart and is shared across
+	// scheduler executions; when nil the observer falls back to an in-memory budget
+	// sized from Config for offline unit tests (the sole admitter in that process).
+	Budget BudgetReserver
+	Now    func() time.Time
+	Rand   *rand.Rand
 }
 
 // NewObserver wires an Observer from config and dependencies. A nil clock uses
@@ -174,11 +179,19 @@ func NewObserver(cfg Config, deps ObserverDeps) *Observer {
 	if deps.Downgrader == nil {
 		panic("routec: NewObserver requires a non-nil Downgrader (durable drift-downgrade seam, §10.4/#47)")
 	}
+	budget := deps.Budget
+	if budget == nil {
+		// Offline default: an in-memory budget sized from Config. Production wires the
+		// durable DBBudget so the hard daily ceiling survives restart and is shared
+		// across processes (issue #48); the in-memory default is the sole admitter in
+		// a single test process and never admits alongside the durable store.
+		budget = NewBudget(cfg.RequestBudget, cfg.ByteBudget, cfg.BudgetWindow, now)
+	}
 	return &Observer{
 		cfg:        cfg,
 		fetcher:    deps.Fetcher,
 		limiter:    NewLimiter(cfg.PerAccountConcurrency, cfg.PerHostConcurrency),
-		budget:     NewBudget(cfg.RequestBudget, cfg.ByteBudget, cfg.BudgetWindow, now),
+		budget:     budget,
 		breakers:   newBreakerRegistry(cfg.Breaker, now),
 		drift:      drift,
 		ingestor:   deps.Ingestor,
@@ -225,8 +238,16 @@ func (o *Observer) ObserveTarget(ctx context.Context, snap Snapshot, ref TargetR
 		return ObserveOutcome{Skipped: SkipBreakerOpen}, nil
 	}
 	// Reserve the FIRST attempt's budget before taking a concurrency slot; if the
-	// account is out of budget we skip without occupying a slot.
-	if !o.budget.Reserve(ref.Account) {
+	// account is out of budget we skip without occupying a slot. The reserve is an
+	// ATOMIC conditional against the DURABLE daily total (issue #48), so concurrent
+	// scheduler executions racing the last unit collectively admit at most the
+	// configured remainder. FAIL CLOSED: a store error DENIES admission (never
+	// fetches) and is surfaced with its seam, never swallowed into an admit.
+	admitted, berr := o.budget.Reserve(ctx, ref.Account)
+	if berr != nil {
+		return ObserveOutcome{}, fmt.Errorf("routec: reserve budget: %w", berr)
+	}
+	if !admitted {
 		return ObserveOutcome{Skipped: SkipBudget}, nil
 	}
 
@@ -339,14 +360,28 @@ func (o *Observer) fetchWithRetry(ctx context.Context, breaker *Breaker, ref Tar
 				return res, ctx.Err()
 			}
 			// A retry needs its own budget and an open circuit; if either denies,
-			// stop and defer with the prior fault.
-			if !breaker.Allow() || !o.budget.Reserve(ref.Account) {
+			// stop and defer with the prior fault. The retry reserve is the SAME
+			// atomic durable reserve as the first attempt (issue #48). FAIL CLOSED: a
+			// store error on the retry reserve denies and is surfaced, never swallowed.
+			if !breaker.Allow() {
+				break
+			}
+			admitted, rerr := o.budget.Reserve(ctx, ref.Account)
+			if rerr != nil {
+				return res, fmt.Errorf("routec: reserve retry budget: %w", rerr)
+			}
+			if !admitted {
 				break
 			}
 		}
 		var fetchErr error
 		res, fetchErr = o.fetcher.Fetch(ctx, req)
-		o.budget.Consume(ref.Account, res.Bytes)
+		if cerr := o.budget.Consume(ctx, ref.Account, res.Bytes); cerr != nil {
+			// The bytes were spent but could not be durably reconciled; fail closed so
+			// the durable total is never silently under-counted (which would let a
+			// later reserve overshoot the byte ceiling).
+			return res, fmt.Errorf("routec: consume byte budget: %w", cerr)
+		}
 		breaker.Observe(res.Signal)
 		if fetchErr == nil && res.Signal == SignalOK {
 			return res, nil
@@ -460,7 +495,16 @@ func (o *Observer) RunSweep(ctx context.Context, tier observation.Tier) (SweepSu
 			ids[i] = r.TargetID
 			byID[r.TargetID] = r
 		}
-		plan := PlanSweep(tier, ids, countCap, o.budget.Snapshot(account))
+		st, serr := o.budget.Snapshot(ctx, account)
+		if serr != nil {
+			// Cannot confirm this account's durable headroom: fail closed by skipping
+			// the account's sweep entirely (trim all) rather than planning against an
+			// assumed-full budget that could overshoot. Counted as a sweep error so the
+			// failure is observable, not silent.
+			summary.Errors++
+			continue
+		}
+		plan := PlanSweep(tier, ids, countCap, st)
 		summary.Trimmed += plan.Trimmed
 		for _, id := range plan.TargetIDs {
 			out, oerr := o.ObserveTarget(ctx, snap, byID[id])

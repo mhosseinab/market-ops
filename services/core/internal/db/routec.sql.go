@@ -9,8 +9,34 @@ import (
 	"context"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+const consumeByteBudget = `-- name: ConsumeByteBudget :exec
+INSERT INTO route_budget_usage (account_id, window_key, requests_used, bytes_used)
+VALUES ($1::uuid, $2::timestamptz, 0, $3::bigint)
+ON CONFLICT (account_id, window_key) DO UPDATE
+    SET bytes_used = route_budget_usage.bytes_used + $3::bigint,
+        updated_at = now()
+`
+
+type ConsumeByteBudgetParams struct {
+	AccountID uuid.UUID
+	WindowKey time.Time
+	Bytes     int64
+}
+
+// Reconcile the bytes a completed fetch actually transferred. This is an atomic
+// increment on the current window row (never a read-then-write that could lose a
+// concurrent update); it creates the row if the window has no reserve yet. Byte
+// overshoot on the final reserved request is bounded by design — the request that
+// pushes bytes past the ceiling was already admitted; the next reserve's byte
+// predicate then denies further fetches.
+func (q *Queries) ConsumeByteBudget(ctx context.Context, arg ConsumeByteBudgetParams) error {
+	_, err := q.db.Exec(ctx, consumeByteBudget, arg.AccountID, arg.WindowKey, arg.Bytes)
+	return err
+}
 
 const disengageAccountKillSwitch = `-- name: DisengageAccountKillSwitch :exec
 DELETE FROM route_kill_switches WHERE scope = 'account' AND account_id = $1
@@ -105,6 +131,32 @@ func (q *Queries) EngageTargetKillSwitch(ctx context.Context, arg EngageTargetKi
 	return err
 }
 
+const getBudgetUsage = `-- name: GetBudgetUsage :one
+SELECT requests_used, bytes_used
+FROM route_budget_usage
+WHERE account_id = $1::uuid AND window_key = $2::timestamptz
+`
+
+type GetBudgetUsageParams struct {
+	AccountID uuid.UUID
+	WindowKey time.Time
+}
+
+type GetBudgetUsageRow struct {
+	RequestsUsed int32
+	BytesUsed    int64
+}
+
+// Read the durable spend for one (account, window) so the scheduler can size the
+// sweep (Snapshot -> State -> PlanSweep). A missing row means the window is
+// untouched: the caller treats pgx.ErrNoRows as zero spend (full headroom).
+func (q *Queries) GetBudgetUsage(ctx context.Context, arg GetBudgetUsageParams) (GetBudgetUsageRow, error) {
+	row := q.db.QueryRow(ctx, getBudgetUsage, arg.AccountID, arg.WindowKey)
+	var i GetBudgetUsageRow
+	err := row.Scan(&i.RequestsUsed, &i.BytesUsed)
+	return i, err
+}
+
 const listEngagedKillSwitches = `-- name: ListEngagedKillSwitches :many
 SELECT scope, account_id, target_id, reason, engaged_by, engaged_at
 FROM route_kill_switches
@@ -148,4 +200,49 @@ func (q *Queries) ListEngagedKillSwitches(ctx context.Context) ([]ListEngagedKil
 		return nil, err
 	}
 	return items, nil
+}
+
+const reserveRequestBudget = `-- name: ReserveRequestBudget :one
+
+INSERT INTO route_budget_usage (account_id, window_key, requests_used, bytes_used)
+SELECT $1::uuid, $2::timestamptz, 1, 0
+WHERE $3::bigint > 0 AND $4::bigint > 0
+ON CONFLICT (account_id, window_key) DO UPDATE
+    SET requests_used = route_budget_usage.requests_used + 1,
+        updated_at    = now()
+    WHERE route_budget_usage.requests_used < $3::bigint
+      AND route_budget_usage.bytes_used    < $4::bigint
+RETURNING requests_used
+`
+
+type ReserveRequestBudgetParams struct {
+	AccountID    uuid.UUID
+	WindowKey    time.Time
+	RequestLimit int64
+	ByteLimit    int64
+}
+
+// Route C durable daily-budget accounting (issue #48). route_budget_usage holds
+// one mutable counter row per (account, window bucket). Reset is bucket-key
+// rollover: a new window is a new row, so these queries never DELETE or rewrite a
+// prior window. The LIMITS are supplied by the caller (config-driven), not stored.
+// Atomically reserve ONE request against the durable daily total. This is the
+// SINGLE, conditional statement that admits: for a brand-new window it inserts
+// (1,0) only when both limits leave headroom; for an existing window it bumps
+// requests_used by 1 ONLY WHILE the durable count is strictly below the request
+// limit AND bytes are below the byte limit. The composite PK serializes concurrent
+// callers on one row, so racing the last unit admits at most the remainder. A
+// denied reserve (limit reached, or a zero/negative limit) matches nothing and
+// RETURNS NO ROW — the caller reads pgx.ErrNoRows as "denied" and skips the fetch.
+// $3 = request limit, $4 = byte limit.
+func (q *Queries) ReserveRequestBudget(ctx context.Context, arg ReserveRequestBudgetParams) (int32, error) {
+	row := q.db.QueryRow(ctx, reserveRequestBudget,
+		arg.AccountID,
+		arg.WindowKey,
+		arg.RequestLimit,
+		arg.ByteLimit,
+	)
+	var requests_used int32
+	err := row.Scan(&requests_used)
+	return requests_used, err
 }
