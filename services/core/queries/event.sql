@@ -1,9 +1,10 @@
 -- Event engine queries (PRD §7.4 EVT-001..005, §15.1, §16). Write disciplines:
 --   * materiality_thresholds and event_relevance_feedback are APPEND-ONLY — there
 --     is deliberately NO UPDATE or DELETE query here (versioned config / history).
---   * market_events is the §15.1 lifecycle record: OpenEvent inserts a new open
---     row; UpdateOpenEvent mutates the SAME open record on a dedup hit (EVT-003);
---     Resolve/Expire advance its lifecycle. There is no arbitrary UPDATE.
+--   * market_events is the §15.1 lifecycle record: RecordEvent is ONE atomic,
+--     monotonic upsert that opens a new open row OR refreshes the existing one on a
+--     dedup hit (EVT-003) without a race window (issue #68); Resolve/Expire advance
+--     its lifecycle. There is no arbitrary UPDATE.
 
 -- name: InsertMaterialityThreshold :one
 -- APPEND-ONLY versioned materiality config (EVT-002). A new version for a
@@ -35,14 +36,35 @@ SELECT * FROM materiality_thresholds
 WHERE marketplace_account_id = $1
 ORDER BY category, event_type, version DESC;
 
--- name: OpenEvent :one
--- Open a NEW market event (EVT-001). The partial unique index
--- (uq_market_events_open_dedup) guarantees at most one open|updated row per
--- dedup_key: ON CONFLICT DO NOTHING means a concurrent/duplicate open collides
--- and returns NO row, so the caller falls back to UpdateOpenEvent — a duplicate
--- NEVER creates a second events row (EVT-003, §16). Exposure obeys EVT-005: an
--- unknown exposure passes exposure_known=false with NULL mantissa (the CHECK
--- rejects a fabricated number).
+-- name: RecordEvent :one
+-- Record a detected candidate in ONE atomic, monotonic, race-safe statement
+-- (EVT-001/EVT-003, issue #68). This folds the old OpenEvent+UpdateOpenEvent pair
+-- into a single upsert so there is NO window between "open" and "update" in which a
+-- concurrent Resolve/Expire can move the row out of the open|updated predicate and
+-- silently drop the occurrence (DEFECT B). Two outcomes, both driven by the ONE
+-- partial unique index (uq_market_events_open_dedup, tenant-scoped per issue #67):
+--
+--   * No open|updated row for (account, dedup_key) ⇒ the INSERT succeeds and OPENS
+--     a fresh event with state 'open'. A key freed by a prior Resolve/Expire opens
+--     cleanly here (EVT-003 recurrence), because the partial index only covers
+--     open|updated. The returned state 'open' is how the caller detects an OPEN.
+--
+--   * An open|updated row already exists ⇒ ON CONFLICT DO UPDATE refreshes it in
+--     place (state 'updated', bumps evidence_update_count) — ZERO new rows, so the
+--     Today feed still shows exactly one item (§16). The opening identity
+--     (first_detected_at, dedup_key) is preserved.
+--
+-- MONOTONIC GUARD (DEFECT A): the DO UPDATE applies ONLY when the incoming evidence
+-- instant is at least as new as the stored one
+-- (market_events.last_evidence_at <= EXCLUDED.last_evidence_at). EXCLUDED.last_evidence_at
+-- is the candidate's detection instant ($19, also written to last_evidence_at on
+-- insert). A strictly-OLDER replay fails the guard, updates NO row, and RETURNING
+-- yields no row — the service treats that as an idempotent no-op (the older replay is
+-- correctly ignored, never an error, and can never move last_evidence_at / evidence /
+-- severity backward). A same-instant re-detection (equal timestamp) still refreshes.
+--
+-- Exposure obeys EVT-005 on both paths via the table CHECK: an unknown exposure
+-- passes exposure_known=false with a NULL mantissa; a fabricated number is rejected.
 INSERT INTO market_events (
     marketplace_account_id, variant_id, target_id, event_type, severity, state,
     dedup_key, threshold_id, threshold_version,
@@ -58,43 +80,27 @@ INSERT INTO market_events (
     $15, $16, $17, $18,
     $19, $19, $20
 )
--- Dedup is TENANT-SCOPED (issue #67): at most one open|updated row per
--- (marketplace_account_id, dedup_key). A duplicate WITHIN the same account
--- collides and returns no row (→ UpdateOpenEvent); an identical logical key in a
--- DIFFERENT account is a distinct row and opens cleanly — tenants never collide.
-ON CONFLICT (marketplace_account_id, dedup_key) WHERE state IN ('open', 'updated') DO NOTHING
-RETURNING *;
-
--- name: UpdateOpenEvent :one
--- EVT-003 / §16: a duplicate detection UPDATES the open record in place — it
--- refreshes the evidence, factors, exposure, severity, and expiry, marks the row
--- 'updated', and bumps evidence_update_count. It produces ZERO new events rows,
--- so the Today feed still shows exactly one item. The dedup_key and the opening
--- identity are preserved. Exposure still obeys EVT-005 via the table CHECK.
---
--- The predicate is TENANT-SCOPED (issue #67): the update targets the open row of
--- the OWNING account only, so a same-key detection in a DIFFERENT account can
--- never mutate this account's open event.
-UPDATE market_events SET
+ON CONFLICT (marketplace_account_id, dedup_key) WHERE state IN ('open', 'updated')
+DO UPDATE SET
     state                   = 'updated',
-    severity                = $3,
-    threshold_id            = $4,
-    threshold_version       = $5,
-    exposure_known          = $6,
-    exposure_mantissa       = $7,
-    exposure_currency       = $8,
-    exposure_exponent       = $9,
-    confidence_bp           = $10,
-    urgency_bp              = $11,
-    evidence_observation_id = $12,
-    evidence_quality        = $13,
-    evidence_ref            = $14,
-    evidence_detail         = $15,
-    last_evidence_at        = $16,
-    expires_at              = $17,
-    evidence_update_count   = evidence_update_count + 1,
+    severity                = EXCLUDED.severity,
+    threshold_id            = EXCLUDED.threshold_id,
+    threshold_version       = EXCLUDED.threshold_version,
+    exposure_known          = EXCLUDED.exposure_known,
+    exposure_mantissa       = EXCLUDED.exposure_mantissa,
+    exposure_currency       = EXCLUDED.exposure_currency,
+    exposure_exponent       = EXCLUDED.exposure_exponent,
+    confidence_bp           = EXCLUDED.confidence_bp,
+    urgency_bp              = EXCLUDED.urgency_bp,
+    evidence_observation_id = EXCLUDED.evidence_observation_id,
+    evidence_quality        = EXCLUDED.evidence_quality,
+    evidence_ref            = EXCLUDED.evidence_ref,
+    evidence_detail         = EXCLUDED.evidence_detail,
+    last_evidence_at        = EXCLUDED.last_evidence_at,
+    expires_at              = EXCLUDED.expires_at,
+    evidence_update_count   = market_events.evidence_update_count + 1,
     updated_at              = now()
-WHERE marketplace_account_id = $1 AND dedup_key = $2 AND state IN ('open', 'updated')
+WHERE market_events.last_evidence_at <= EXCLUDED.last_evidence_at
 RETURNING *;
 
 -- name: GetOpenEventByDedupKey :one

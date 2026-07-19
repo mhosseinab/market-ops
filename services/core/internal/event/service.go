@@ -44,6 +44,16 @@ type Service struct {
 	pool   *pgxpool.Pool
 	now    func() time.Time
 	ranker *Ranker
+	log    *slog.Logger
+}
+
+// logger returns the service's structured logger, defaulting to slog.Default() when
+// none was injected. Used for the issue #68 monotonic-guard observability seam.
+func (s *Service) logger() *slog.Logger {
+	if s.log != nil {
+		return s.log
+	}
+	return slog.Default()
 }
 
 // NewService builds an event Service bound to the pool. The Today ranker carries an
@@ -63,23 +73,63 @@ func (s *Service) WithClock(now func() time.Time) *Service {
 // then flow through the caller's structured logger). Returns s for chaining.
 func (s *Service) WithLogger(logger *slog.Logger) *Service {
 	s.ranker = NewRanker(logger)
+	s.log = logger
 	return s
 }
 
+// RecordOutcome names which of the three lifecycle outcomes a RecordFor produced.
+// It exists so callers can distinguish an ignored strictly-older replay (issue #68)
+// from a genuine dedup-update without overloading the Deduped boolean.
+type RecordOutcome int
+
+const (
+	// OutcomeOpened: no open event existed for the dedup key, so a fresh one was
+	// opened (EVT-001), including the EVT-003 recurrence after a freed key.
+	OutcomeOpened RecordOutcome = iota
+	// OutcomeUpdated: an open event existed and the incoming evidence was at least
+	// as new, so it was refreshed in place (EVT-003), bumping evidence_update_count.
+	OutcomeUpdated
+	// OutcomeIgnoredStale: an open event existed but the incoming evidence was
+	// STRICTLY OLDER, so the monotonic guard skipped the update (issue #68 DEFECT A).
+	// This is an idempotent no-op success — the open event is returned unregressed.
+	OutcomeIgnoredStale
+)
+
 // RecordResult reports the outcome of recording a candidate. Deduped is true when
-// the candidate collided with an existing open event and UPDATED it in place
-// (EVT-003) instead of opening a new one — no duplicate Today item is created.
+// the candidate collided with an existing open event (EVT-003) — whether it UPDATED
+// that event in place (OutcomeUpdated) or was an ignored strictly-older replay
+// (OutcomeIgnoredStale) — so no duplicate Today item is created in either case.
+// Outcome carries the precise disposition for callers/telemetry that need it.
 type RecordResult struct {
 	Event   db.MarketEvent
 	Deduped bool
+	Outcome RecordOutcome
 }
 
-// RecordFor persists a detected candidate for the owning account. It first tries
-// to OPEN a new event; if the dedup key already has an open|updated record the
-// insert is a no-op (structural partial unique index) and RecordFor UPDATES that
-// open record instead (EVT-003 / §16 never-cut: a duplicate produces ZERO new
-// events rows). EVT-005 is preserved end to end — an unknown exposure is stored
-// with no numeric value.
+// recordMaxAttempts bounds the retry loop that reconciles a monotonic-guard skip
+// with a concurrently freed dedup key (see RecordFor). Each attempt is a single
+// atomic upsert; the loop only re-runs when an ignored-older replay finds the open
+// row was resolved/expired out from under it, in which case the next attempt opens
+// a fresh event. A small bound is sufficient and prevents unbounded spinning.
+const recordMaxAttempts = 4
+
+// RecordFor persists a detected candidate for the owning account in ONE atomic,
+// monotonic, race-safe upsert (issue #68). RecordEvent either OPENS a new event or,
+// on a dedup collision, refreshes the existing open event in place — never in two
+// statements, so there is no window in which a concurrent Resolve/Expire can drop
+// the occurrence (DEFECT B). The DB-side monotonic guard skips a strictly-older
+// replay (DEFECT A): last_evidence_at / evidence / severity never move backward.
+//
+// Outcomes: the returned row's state distinguishes an OPEN (state 'open') from a
+// dedup UPDATE (state 'updated'). A guard skip returns no row (pgx.ErrNoRows); that
+// is an idempotent success — RecordFor fetches the current open event and reports
+// OutcomeIgnoredStale. If the open row was concurrently resolved/expired between the
+// skip and the fetch, the key is now free, so RecordFor retries and the next attempt
+// opens a fresh event — the occurrence is never lost.
+//
+// EVT-005 is preserved end to end — an unknown exposure is stored with no numeric
+// value (the table CHECK rejects a fabricated number on both the insert and update
+// arms of the upsert).
 func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate) (RecordResult, error) {
 	if !c.Type.Valid() || !c.Evidence.Quality.Valid() || c.DedupKey == "" {
 		return RecordResult{}, ErrInvalidCandidate
@@ -89,7 +139,7 @@ func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate)
 		return RecordResult{}, err
 	}
 	q := db.New(s.pool)
-	opened, err := q.OpenEvent(ctx, db.OpenEventParams{
+	params := db.RecordEventParams{
 		MarketplaceAccountID:  account,
 		VariantID:             c.Variant,
 		TargetID:              optionalUUID(c.Target),
@@ -110,36 +160,41 @@ func (s *Service) RecordFor(ctx context.Context, account uuid.UUID, c Candidate)
 		EvidenceDetail:        detail,
 		FirstDetectedAt:       c.DetectedAt,
 		ExpiresAt:             c.ExpiresAt,
-	})
-	if err == nil {
-		return RecordResult{Event: opened, Deduped: false}, nil
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		return RecordResult{}, err
+	for attempt := 0; attempt < recordMaxAttempts; attempt++ {
+		row, err := q.RecordEvent(ctx, params)
+		if err == nil {
+			// state 'open' ⇒ inserted a fresh event; anything else ⇒ dedup update.
+			if row.State == string(LifecycleOpen) {
+				return RecordResult{Event: row, Deduped: false, Outcome: OutcomeOpened}, nil
+			}
+			return RecordResult{Event: row, Deduped: true, Outcome: OutcomeUpdated}, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return RecordResult{}, err
+		}
+		// No row returned ⇒ the monotonic guard skipped a strictly-older replay. The
+		// open event exists and must NOT be regressed; return it unchanged as an
+		// idempotent success.
+		current, ferr := q.GetOpenEventByDedupKey(ctx, db.GetOpenEventByDedupKeyParams{
+			MarketplaceAccountID: account,
+			DedupKey:             c.DedupKey,
+		})
+		if ferr == nil {
+			s.logger().DebugContext(ctx, "event record ignored strictly-older replay",
+				"event_id", current.ID.String(),
+				"dedup_key", c.DedupKey,
+				"stored_last_evidence_at", current.LastEvidenceAt,
+				"replay_detected_at", c.DetectedAt)
+			return RecordResult{Event: current, Deduped: true, Outcome: OutcomeIgnoredStale}, nil
+		}
+		if !errors.Is(ferr, pgx.ErrNoRows) {
+			return RecordResult{}, ferr
+		}
+		// The open row was resolved/expired between the guard skip and this fetch,
+		// so the dedup key is now free. Retry: the next upsert opens a fresh event.
 	}
-	updated, err := q.UpdateOpenEvent(ctx, db.UpdateOpenEventParams{
-		MarketplaceAccountID:  account,
-		DedupKey:              c.DedupKey,
-		Severity:              string(c.Severity),
-		ThresholdID:           optionalUUID(c.ThresholdID),
-		ThresholdVersion:      optionalInt4(c.ThresholdVersion, c.ThresholdID != uuid.Nil),
-		ExposureKnown:         c.Exposure.Known(),
-		ExposureMantissa:      exposureMantissa(c.Exposure),
-		ExposureCurrency:      exposureCurrency(c.Exposure),
-		ExposureExponent:      exposureExponent(c.Exposure),
-		ConfidenceBp:          int32(c.Confidence.Value()),
-		UrgencyBp:             int32(c.Urgency.Value()),
-		EvidenceObservationID: optionalUUID(c.Evidence.ObservationID),
-		EvidenceQuality:       string(c.Evidence.Quality),
-		EvidenceRef:           c.Evidence.Ref,
-		EvidenceDetail:        detail,
-		LastEvidenceAt:        c.DetectedAt,
-		ExpiresAt:             c.ExpiresAt,
-	})
-	if err != nil {
-		return RecordResult{}, err
-	}
-	return RecordResult{Event: updated, Deduped: true}, nil
+	return RecordResult{}, errors.New("event: record did not converge; dedup key churned concurrently")
 }
 
 // Today returns the account's open events ranked for the Today feed (EVT-004):

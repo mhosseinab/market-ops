@@ -412,9 +412,10 @@ type Querier interface {
 	// Event engine queries (PRD §7.4 EVT-001..005, §15.1, §16). Write disciplines:
 	//   * materiality_thresholds and event_relevance_feedback are APPEND-ONLY — there
 	//     is deliberately NO UPDATE or DELETE query here (versioned config / history).
-	//   * market_events is the §15.1 lifecycle record: OpenEvent inserts a new open
-	//     row; UpdateOpenEvent mutates the SAME open record on a dedup hit (EVT-003);
-	//     Resolve/Expire advance its lifecycle. There is no arbitrary UPDATE.
+	//   * market_events is the §15.1 lifecycle record: RecordEvent is ONE atomic,
+	//     monotonic upsert that opens a new open row OR refreshes the existing one on a
+	//     dedup hit (EVT-003) without a race window (issue #68); Resolve/Expire advance
+	//     its lifecycle. There is no arbitrary UPDATE.
 	// APPEND-ONLY versioned materiality config (EVT-002). A new version for a
 	// (category, event_type) is a new row with its own effective_from; prior versions
 	// are never mutated, so an event that stored a threshold_id reproduces its knobs.
@@ -620,18 +621,6 @@ type Querier interface {
 	// execute in the §10.3 matrix). The disagreeing capture is still retained as
 	// append-only evidence; last_observation_id points at it for traceability.
 	MarkObservedOfferConflicted(ctx context.Context, arg MarkObservedOfferConflictedParams) (ObservedOffer, error)
-	// Open a NEW market event (EVT-001). The partial unique index
-	// (uq_market_events_open_dedup) guarantees at most one open|updated row per
-	// dedup_key: ON CONFLICT DO NOTHING means a concurrent/duplicate open collides
-	// and returns NO row, so the caller falls back to UpdateOpenEvent — a duplicate
-	// NEVER creates a second events row (EVT-003, §16). Exposure obeys EVT-005: an
-	// unknown exposure passes exposure_known=false with NULL mantissa (the CHECK
-	// rejects a fabricated number).
-	// Dedup is TENANT-SCOPED (issue #67): at most one open|updated row per
-	// (marketplace_account_id, dedup_key). A duplicate WITHIN the same account
-	// collides and returns no row (→ UpdateOpenEvent); an identical logical key in a
-	// DIFFERENT account is a distinct row and opens cleanly — tenants never collide.
-	OpenEvent(ctx context.Context, arg OpenEventParams) (MarketEvent, error)
 	// Outcome window queries (PRD §7.5 OUT-001, §15.3). Both tables are APPEND-ONLY:
 	//   * outcome_windows — one seven-day window per reconciled action (INSERT/SELECT).
 	//   * outcome_results — the §15.3 result + confidence, computed once at close
@@ -644,6 +633,35 @@ type Querier interface {
 	// unresolved record is reconciled; the retry endpoint refuses any record still
 	// pending (EXE-003). The observed external ref (batch handle) is recorded verbatim.
 	ReconcileActionExecution(ctx context.Context, arg ReconcileActionExecutionParams) (ActionExecution, error)
+	// Record a detected candidate in ONE atomic, monotonic, race-safe statement
+	// (EVT-001/EVT-003, issue #68). This folds the old OpenEvent+UpdateOpenEvent pair
+	// into a single upsert so there is NO window between "open" and "update" in which a
+	// concurrent Resolve/Expire can move the row out of the open|updated predicate and
+	// silently drop the occurrence (DEFECT B). Two outcomes, both driven by the ONE
+	// partial unique index (uq_market_events_open_dedup, tenant-scoped per issue #67):
+	//
+	//   * No open|updated row for (account, dedup_key) ⇒ the INSERT succeeds and OPENS
+	//     a fresh event with state 'open'. A key freed by a prior Resolve/Expire opens
+	//     cleanly here (EVT-003 recurrence), because the partial index only covers
+	//     open|updated. The returned state 'open' is how the caller detects an OPEN.
+	//
+	//   * An open|updated row already exists ⇒ ON CONFLICT DO UPDATE refreshes it in
+	//     place (state 'updated', bumps evidence_update_count) — ZERO new rows, so the
+	//     Today feed still shows exactly one item (§16). The opening identity
+	//     (first_detected_at, dedup_key) is preserved.
+	//
+	// MONOTONIC GUARD (DEFECT A): the DO UPDATE applies ONLY when the incoming evidence
+	// instant is at least as new as the stored one
+	// (market_events.last_evidence_at <= EXCLUDED.last_evidence_at). EXCLUDED.last_evidence_at
+	// is the candidate's detection instant ($19, also written to last_evidence_at on
+	// insert). A strictly-OLDER replay fails the guard, updates NO row, and RETURNING
+	// yields no row — the service treats that as an idempotent no-op (the older replay is
+	// correctly ignored, never an error, and can never move last_evidence_at / evidence /
+	// severity backward). A same-instant re-detection (equal timestamp) still refreshes.
+	//
+	// Exposure obeys EVT-005 on both paths via the table CHECK: an unknown exposure
+	// passes exposure_known=false with a NULL mantissa; a fabricated number is rejected.
+	RecordEvent(ctx context.Context, arg RecordEventParams) (MarketEvent, error)
 	// Record the classified write result. FROM-guarded on the pending state so a
 	// definitive result is written exactly once; a row already resolved to a terminal
 	// state is not overwritten (idempotent result recording).
@@ -720,16 +738,6 @@ type Querier interface {
 	// and NO retention/pinned state, and a foreign conversation matches nothing and
 	// returns no row (no cross-org write).
 	TouchConversation(ctx context.Context, arg TouchConversationParams) (Conversation, error)
-	// EVT-003 / §16: a duplicate detection UPDATES the open record in place — it
-	// refreshes the evidence, factors, exposure, severity, and expiry, marks the row
-	// 'updated', and bumps evidence_update_count. It produces ZERO new events rows,
-	// so the Today feed still shows exactly one item. The dedup_key and the opening
-	// identity are preserved. Exposure still obeys EVT-005 via the table CHECK.
-	//
-	// The predicate is TENANT-SCOPED (issue #67): the update targets the open row of
-	// the OWNING account only, so a same-key detection in a DIFFERENT account can
-	// never mutate this account's open event.
-	UpdateOpenEvent(ctx context.Context, arg UpdateOpenEventParams) (MarketEvent, error)
 	UpsertAccountCostPolicy(ctx context.Context, arg UpsertAccountCostPolicyParams) (AccountCostPolicy, error)
 	// Establish or update the connection with sealed tokens (connect / refresh).
 	// ORG-SCOPED (S8-AUTHZ-001): the INSERT ... SELECT only materialises a row when
