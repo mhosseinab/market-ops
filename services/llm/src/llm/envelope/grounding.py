@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from llm.envelope.contract import (
     ENGINE_PROVENANCES,
     MAX_INLINE_ROWS,
+    AvailabilityCatalog,
     Calculation,
     Claim,
     Comparison,
@@ -42,6 +43,7 @@ from llm.envelope.contract import (
     InlineTable,
     Provenance,
     ResponseEnvelope,
+    SectionScope,
     SourcedValue,
 )
 from llm.envelope.models import EvidenceRef
@@ -299,8 +301,100 @@ def _check_table(table: InlineTable, where: str, out: list[Violation]) -> None:
         _check_no_digits(table.summary, f"{where}.summary", out, code="NUMBER_IN_TEXT")
 
 
-def find_violations(env: ResponseEnvelope) -> list[Violation]:
-    """Walk the envelope and collect every grounding violation (no raise)."""
+def _check_evidence_scope(
+    evidence: list[EvidenceRef], scope: SectionScope, where: str, out: list[Violation]
+) -> None:
+    """Issue #51: every cited evidence_id must be scoped to THIS section.
+
+    A globally-valid evidence_id that was made available for another section is
+    unscoped here — attaching it makes unsupported content look grounded. Empty
+    ids are left to :func:`_evidence_ok` (⇒ MISSING_EVIDENCE); only present ids
+    are membership-checked.
+    """
+    for j, ev in enumerate(evidence):
+        eid = ev.evidence_id.strip()
+        if eid and not scope.allows_evidence(eid):
+            out.append(
+                Violation(
+                    "UNSCOPED_EVIDENCE",
+                    f"{where}.evidence[{j}]: evidence_id {ev.evidence_id!r} is not in "
+                    f"this section's available evidence set (§12.2 provenance, #51)",
+                )
+            )
+
+
+def _check_source_scope(
+    value: SourcedValue | None, scope: SectionScope, where: str, out: list[Violation]
+) -> None:
+    """Issue #51: a value's SourceRef must be made available for THIS section.
+
+    A present source that is legitimate in another section but not scoped here is
+    rejected, so a wrong-section citation can never masquerade as support. An
+    absent source is handled by :func:`_check_sourced_numeric` (CHAT-002).
+    """
+    if value is not None and value.source.is_present() and not scope.allows_source(
+        value.source
+    ):
+        out.append(
+            Violation(
+                "SOURCE_OUT_OF_SECTION",
+                f"{where}: source {value.source.tool!r}."
+                f"{value.source.response_field!r} is not made available for this "
+                f"section (§12.2 provenance, #51)",
+            )
+        )
+
+
+def _check_section_scopes(
+    env: ResponseEnvelope, catalog: AvailabilityCatalog, out: list[Violation]
+) -> None:
+    """Enforce strict per-section membership of every evidence_id and SourceRef.
+
+    Only runs when an authoritative :class:`AvailabilityCatalog` (built from
+    validated tool outputs) is supplied; it fails closed on any ref that leaks
+    across the section it was made available for.
+    """
+    for section, claims, scope in (
+        ("observed_facts", env.observed_facts, catalog.observed_facts),
+        ("dk_signals", env.dk_signals, catalog.dk_signals),
+        ("seller_config", env.seller_config, catalog.seller_config),
+    ):
+        for i, claim in enumerate(claims):
+            where = f"{section}[{i}]"
+            _check_evidence_scope(claim.evidence, scope, where, out)
+            _check_source_scope(claim.value, scope, f"{where}.value", out)
+
+    calc_scope = catalog.deterministic_calculations
+    for i, calc in enumerate(env.deterministic_calculations):
+        where = f"deterministic_calculations[{i}]"
+        _check_evidence_scope(calc.evidence, calc_scope, where, out)
+        _check_source_scope(calc.result, calc_scope, f"{where}.result", out)
+
+    cmp_scope = catalog.comparisons
+    for i, cmp in enumerate(env.comparisons):
+        where = f"comparisons[{i}]"
+        _check_source_scope(cmp.left, cmp_scope, f"{where}.left", out)
+        _check_source_scope(cmp.right, cmp_scope, f"{where}.right", out)
+        _check_source_scope(cmp.delta, cmp_scope, f"{where}.delta", out)
+
+    if env.exposure is not None and env.exposure.total is not None:
+        _check_source_scope(
+            env.exposure.total, catalog.exposure, "exposure.total", out
+        )
+
+
+def find_violations(
+    env: ResponseEnvelope, catalog: AvailabilityCatalog | None = None
+) -> list[Violation]:
+    """Walk the envelope and collect every grounding violation (no raise).
+
+    When ``catalog`` is supplied, section-scoped membership (issue #51) is
+    enforced in addition to every existing rule: an evidence_id or SourceRef not
+    made available for its section is a violation even if it is globally valid in
+    another section. When ``catalog`` is ``None`` the scope check is skipped and
+    existing behavior is preserved for trusted authored inputs; a live composed
+    turn always supplies one.
+    """
     out: list[Violation] = []
 
     for section, claims in (
@@ -340,11 +434,21 @@ def find_violations(env: ResponseEnvelope) -> list[Violation]:
         env.model_inference, "model_inference", out, code="NUMBER_IN_MODEL_TEXT"
     )
 
+    # Issue #51: strict section-scoped membership of evidence IDs and SourceRefs.
+    if catalog is not None:
+        _check_section_scopes(env, catalog, out)
+
     return out
 
 
-def validate_grounding(env: ResponseEnvelope) -> None:
-    """Raise :class:`GroundingError` if the envelope is not fully grounded."""
-    violations = find_violations(env)
+def validate_grounding(
+    env: ResponseEnvelope, catalog: AvailabilityCatalog | None = None
+) -> None:
+    """Raise :class:`GroundingError` if the envelope is not fully grounded.
+
+    When ``catalog`` is supplied, a wrong-section evidence_id or SourceRef (issue
+    #51) is a grounding failure alongside the existing §12.2 rules.
+    """
+    violations = find_violations(env, catalog=catalog)
     if violations:
         raise GroundingError(violations)
