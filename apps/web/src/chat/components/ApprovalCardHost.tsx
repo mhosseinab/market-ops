@@ -17,15 +17,39 @@ import { DeepLinkButton } from "./DeepLinkButton";
 // re-fetches every card; a stale/cached executable control is never reused — the
 // rendered control reflects the server's CURRENT state (expired/invalidated →
 // disabled), regardless of any snapshot the transcript carried.
+//
+// Withholding is explicit, not just "we re-fetch": TanStack Query serves cached
+// card data SYNCHRONOUSLY on a remount/restore while that refetch runs in the
+// background (isPending is already false, isFetching is true). Gating on isPending
+// alone would let a cached executable control reach the reused S27 ApprovalCard
+// before the fresh read proves the card is still awaiting confirmation with the
+// same binding/version. `isFetchedAfterMount` flips true only once a read has
+// SETTLED for THIS mount (success OR error), so no cached hasControl/binding/
+// Confirm is ever reused — until then cached data backs only the loading skeleton.
 export function ApprovalCardHost({ cardId }: { cardId: string }) {
   const t = useT();
   const cardQuery = useApprovalCard(cardId);
   const confirm = useConfirmApproval(cardId);
-  const card = cardQuery.data;
+  const authoritative = cardQuery.isFetchedAfterMount;
+  // Cached data is withheld until the post-mount read settles; only an
+  // authoritative card ever backs an executable control.
+  const card = authoritative ? cardQuery.data : undefined;
 
+  // Per-card local approval state. A reused host instance whose cardId changes
+  // (transcript restore / switching cards) must NOT inherit the prior card's
+  // approval baseline or confirm result — reset synchronously on identity change
+  // (React's "adjust state during render" pattern) so no cross-card state leaks.
+  const [trackedCardId, setTrackedCardId] = useState(cardId);
   const [baseline, setBaseline] = useState<number | null>(null);
   const [result, setResult] = useState<ApprovalConfirmResult | null>(null);
+  if (cardId !== trackedCardId) {
+    setTrackedCardId(cardId);
+    setBaseline(null);
+    setResult(null);
+  }
   useEffect(() => {
+    // Anchor the APR-001 staleness baseline to the FIRST authoritative version,
+    // never a cached snapshot (card stays undefined until `authoritative`).
     if (card && baseline === null) setBaseline(card.version);
   }, [card, baseline]);
 
@@ -35,7 +59,7 @@ export function ApprovalCardHost({ cardId }: { cardId: string }) {
   return (
     <section className="chat-card chat-approval" data-testid="chat-approval-card">
       <ViewState
-        pending={cardQuery.isPending}
+        pending={!authoritative && !cardQuery.isError}
         error={cardQuery.isError}
         onRetry={() => void cardQuery.refetch()}
       >
