@@ -47,6 +47,7 @@ from llm.envelope.contract import (
     SourcedValue,
 )
 from llm.envelope.models import EvidenceRef
+from llm.intents.normalize import _fold_text, tokenize
 
 # Canonical state/readiness/freshness catalog keys (CHAT-022). These are the ONLY
 # keys a response may use to name a state — the copy-lint boundary. They are kept
@@ -108,6 +109,80 @@ CANONICAL_QUALITY_KEYS: frozenset[str] = frozenset(
 # always carries at least one of these digit characters.
 _DIGIT = re.compile(r"[0-9۰-۹٠-٩]")
 
+# CHAT-002 (issue #53): a quantity spelled OUT in words carries no digit glyph, so
+# the digit ban above never sees it — ``ده درصد`` / ``ten percent`` / ``دویست تومان``
+# would smuggle an unsourced quantity into a model-visible free-text slot. These
+# frozensets are the bounded EN+FA number-word deny-list; membership is checked on
+# whole, folded tokens (never substrings), so a legitimate word that merely
+# CONTAINS a number word (``often`` ⊃ ``ten``; ``درصد`` ⊃ ``صد``) is left alone.
+#
+# This is DATA, not a locale branch (localization boundary): a static token set is
+# reference data exactly like ``CANONICAL_STATE_KEYS`` above — there is no
+# per-locale control flow, the same detector runs on every response regardless of
+# language. We do NOT parse or sum number words; membership is the whole contract.
+# REJECT-ONLY containment: detect and add a Violation, never coerce or convert.
+#
+# Base cardinals + the multiplier words, both families. Tokens are matched
+# case-insensitively (``token.lower()``); Persian is unaffected by ``lower()``.
+_EN_NUMBER_WORDS: frozenset[str] = frozenset(
+    {
+        "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+        "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+        "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+        "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+        "hundred", "thousand", "million", "billion",
+        # Ordinals (defense-in-depth): the digit layer already catches ``11th``/
+        # ``1st`` glyph forms; the spelled ordinals below have no digit. Only the
+        # unambiguous teens+ ordinals are listed — ``first``/``second``/``third``
+        # are excluded because their function-word/time-unit use dominates.
+        "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth",
+        "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth",
+        "hundredth",
+    }
+)
+
+# Persian cardinals + multipliers + the atomic (non-decomposable) hundreds tokens
+# ``دویست``..``نهصد`` — ``صد`` alone would miss ``دویست``/``سیصد``/… entirely.
+#
+# DELIBERATE EXCLUSIONS (decided behavior, issue #53 finding 3):
+#   * ``یک`` (one) is ALSO the indefinite article "a/an" and dominates as such in
+#     Persian prose, and ``نه`` (nine) is ALSO the negator "no/not". Including
+#     either over-rejects legitimate prose, so both are OUT of the deny-list. Their
+#     residual coverage is intact: the GLYPH forms ``۱``/``۹``/``1``/``9`` are still
+#     caught by the digit ban above, so the only thing excluded is the spelled word.
+#   * ``ده`` (ten) doubles as an imperative "give" but is lower-frequency, so it
+#     STAYS in the set; its glyph form ``۱۰`` is caught by the digit layer anyway.
+_FA_NUMBER_WORDS: frozenset[str] = frozenset(
+    {
+        "صفر", "دو", "سه", "چهار", "پنج", "شش", "هفت", "هشت", "ده",
+        "یازده", "دوازده", "سیزده", "چهارده", "پانزده", "شانزده", "هفده",
+        "هجده", "نوزده", "بیست", "سی", "چهل", "پنجاه", "شصت", "هفتاد",
+        "هشتاد", "نود", "صد",
+        # Atomic hundreds — not composable from ``صد`` at the token layer.
+        "دویست", "سیصد", "چهارصد", "پانصد", "ششصد", "هفتصد", "هشتصد", "نهصد",
+        "هزار", "میلیون", "میلیارد",
+        # Ordinals (defense-in-depth). ``یک``/``نه`` stay excluded above, but their
+        # ordinal forms ``یکم``/``نهم`` are unambiguous quantities and ARE listed.
+        "چهارم", "پنجم", "ششم", "هفتم", "هشتم", "نهم", "دهم",
+        "اول", "یکم", "دوم", "سوم",
+    }
+)
+
+_NUMBER_WORDS: frozenset[str] = _EN_NUMBER_WORDS | _FA_NUMBER_WORDS
+
+
+def _has_number_word(text: str) -> bool:
+    """True if ``text`` contains a spelled-out number word as a WHOLE token.
+
+    The text is folded through the shared fa-IR character fold (Arabic Kaf/Yeh →
+    Persian) BEFORE matching, so an Arabic-glyph spelling (``دويست``) is caught
+    exactly like its Persian-glyph twin (``دویست``). Tokenization reuses the
+    boundary tokenizer (whitespace/punctuation split, ZWNJ preserved within a
+    token), so matching is whole-token only — never a substring (``درصد`` ⊅ trip
+    on ``صد``; ``often`` ⊅ trip on ``ten``).
+    """
+    return any(tok.lower() in _NUMBER_WORDS for tok in tokenize(_fold_text(text)))
+
 
 @dataclass(frozen=True)
 class Violation:
@@ -144,6 +219,14 @@ def _check_no_digits(text: str, where: str, out: list[Violation], *, code: str) 
     labels, missing-data notes, table summaries and cells) is digit-banned the
     same way ``model_inference`` is — a number must live in a sourced field, so
     moving a digit one field over cannot smuggle an unsourced number to the user.
+
+    A quantity SPELLED OUT in words (``ten percent`` / ``ده درصد`` / ``دویست
+    تومان``) carries no digit glyph, so it is banned in the SAME slots by the same
+    walk (issue #53). A distinct code is emitted so the two containment breaches
+    stay separable in audit: ``NUMBER_WORD_IN_MODEL_TEXT`` at the model-authored
+    inference slot (mirroring ``NUMBER_IN_MODEL_TEXT``), ``NUMBER_WORD_IN_TEXT``
+    everywhere else. Both may fire on one field (a digit AND a word) — each is an
+    independent violation.
     """
     if _DIGIT.search(text):
         out.append(
@@ -151,6 +234,19 @@ def _check_no_digits(text: str, where: str, out: list[Violation], *, code: str) 
                 code,
                 f"{where}: free text contains a digit; numbers must live in a sourced "
                 f"field, never in prose (CHAT-002)",
+            )
+        )
+    if _has_number_word(text):
+        word_code = (
+            "NUMBER_WORD_IN_MODEL_TEXT"
+            if code == "NUMBER_IN_MODEL_TEXT"
+            else "NUMBER_WORD_IN_TEXT"
+        )
+        out.append(
+            Violation(
+                word_code,
+                f"{where}: free text contains a spelled-out number word; quantities "
+                f"must live in a sourced field, never in prose (CHAT-002, #53)",
             )
         )
 
