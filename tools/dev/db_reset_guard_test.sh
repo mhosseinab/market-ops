@@ -161,6 +161,29 @@ run_case "reject-override-still-blocks-prod-env" 1 no "APP_ENV|ENVIRONMENT|prod"
   "DATABASE_URL=postgres://market_ops:supersecret@db.staging-host.internal:5432/market_ops?sslmode=disable" \
   "DB_RESET_ALLOW_NONLOCAL=1" "ENVIRONMENT=staging"
 
+# REJECT: libpq `host=` query keyword on a local-authority URL. The authority
+# host is localhost (would pass the allowlist) but the query re-targets a remote
+# host that psql/libpq honours — a no-override bypass. Must reject BEFORE psql.
+run_case "reject-query-host-override" 1 no "connection-target|query" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable&host=db.prod.internal"
+
+# REJECT: libpq `port=` query keyword pointing off-box.
+run_case "reject-query-port-override" 1 no "connection-target|query" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?port=6543"
+
+# REJECT: libpq `hostaddr=` query keyword mid-query.
+run_case "reject-query-hostaddr-override" 1 no "connection-target|query" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable&hostaddr=10.0.0.9"
+
+# REJECT: libpq `service=` query keyword (external connection service file).
+run_case "reject-query-service-override" 1 no "connection-target|query" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops?service=prod"
+
+# REJECT: target db name carrying SQL metacharacters that would flow into the
+# unquoted DROP DATABASE interpolation. Percent-encoded `";DROP` form.
+run_case "reject-db-name-metacharacters" 1 no "A-Za-z0-9|database name" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432/market_ops%22%3bDROP"
+
 if [[ "$failures" -ne 0 ]]; then
   echo "db_reset_guard_test: $failures case(s) failed" >&2
   exit 1

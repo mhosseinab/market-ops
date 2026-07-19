@@ -14,7 +14,13 @@ set -euo pipefail
 # Safety model (default = local/dev only):
 #   * Allowed hosts:  localhost, 127.0.0.1, ::1, [::1]. An empty/unparseable
 #     host (e.g. a bare local socket) is REJECTED by default.
-#   * Allowed db names: `market_ops` and any `market_ops*` / `*_dev` dev name.
+#   * Allowed db names: `market_ops` and any `market_ops*` / `*_dev` dev name,
+#     restricted to the [A-Za-z0-9_-] charset (no SQL metacharacters — the name
+#     is interpolated into the destructive DROP DATABASE statement).
+#   * Connection-target libpq query keywords (host, hostaddr, port, dbname,
+#     service) are ALWAYS rejected: libpq honours them over the vetted authority
+#     host, so they are a no-override bypass to a remote DROP. sslmode and other
+#     non-connection params are permitted.
 #   * Protected db names are ALWAYS rejected (even locally, even with override):
 #     postgres, template0, template1, production, prod, main, master.
 #   * Prod-like environments (APP_ENV/ENVIRONMENT/ENV in {prod, production,
@@ -42,6 +48,8 @@ Default allowlist (no override needed):
 
 Always rejected (even locally, even with the override):
   db    : postgres, template0, template1, production, prod, main, master
+  db    : any name with characters outside [A-Za-z0-9_-]
+  query : libpq connection-target keywords host/hostaddr/port/dbname/service
   env   : APP_ENV / ENVIRONMENT / ENV in {prod, production, staging}
 
 Non-local target override (deliberate, high-friction, SEPARATE from DATABASE_URL):
@@ -111,6 +119,43 @@ if [[ -z "$appdb" ]]; then
 fi
 if [[ -z "$host" ]]; then
   reject "could not parse a host from DATABASE_URL (empty/local-socket hosts are not allowed)"
+fi
+
+# --- Connection-target query keywords: ALWAYS rejected. ----------------------
+# libpq honours connection keywords supplied in the URI query string
+# (host, hostaddr, port, dbname, service), and they OVERRIDE the authority host
+# this guard validated (e.g. `.../market_ops?host=db.prod.internal` connects to
+# db.prod.internal, not localhost). The destructive db:reset re-attaches the
+# query to its maintenance URL, so an unvetted connection-target keyword is a
+# no-override bypass reaching a remote DROP. Fail closed on any of them, matched
+# as real query keys (not substrings) and case-insensitively. Non-connection
+# params such as sslmode remain allowed. The value is never printed.
+if [[ "$DATABASE_URL" == *\?* ]]; then
+  query="${DATABASE_URL#*\?}"
+  # libpq/URI param separator is '&'. Iterate keys only.
+  saved_ifs="$IFS"
+  IFS='&'
+  # shellcheck disable=SC2206  # deliberate word split on '&'
+  params=($query)
+  IFS="$saved_ifs"
+  for param in "${params[@]}"; do
+    [[ -z "$param" ]] && continue
+    key="${param%%=*}"
+    case "$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')" in
+      host | hostaddr | port | dbname | service)
+        reject "DATABASE_URL query string sets connection-target keyword '$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')', which libpq honours over the vetted host/database; remove it from DATABASE_URL (only non-connection params like sslmode are permitted)"
+        ;;
+    esac
+  done
+fi
+
+# --- Target database name: strict charset (no SQL metacharacters). -----------
+# The db name is interpolated into an unquoted `psql -c "DROP DATABASE ... "`
+# in db:reset, so a name with SQL metacharacters is an injection into that
+# destructive statement (e.g. market_ops";DROP DATABASE "production). Restrict
+# to a conservative, PostgreSQL-safe identifier charset BEFORE any psql runs.
+if [[ ! "$appdb" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  reject "target database name contains characters outside [A-Za-z0-9_-]; refusing to interpolate it into DROP DATABASE"
 fi
 
 # --- Protected db names: ALWAYS rejected (even locally, even with override). --
