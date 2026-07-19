@@ -10,10 +10,12 @@ transitions and zero tool misuse, whatever the provider returns.
 
 from __future__ import annotations
 
+from langchain_openai import ChatOpenAI
 from llm.config import ProviderKind, Settings
 from llm.evals.harness import EvalHarness
 from llm.evals.hostile import HostileEndpoint, hostile_attack_messages
 from llm.providers.base import build_chat_model
+from llm.providers.openai_compatible import TransientClassifyingChatOpenAI
 from llm.tools.registry import FORBIDDEN_NAME_TOKENS, build_registry
 from pydantic import SecretStr
 
@@ -29,8 +31,12 @@ def test_hostile_endpoint_is_reached_through_the_real_chatopenai_transport() -> 
         )
         model = build_chat_model(settings)
         # The single OpenAI-compatible port yields langchain-openai's ChatOpenAI —
-        # no vendor SDK branch, no mock. This is the production seam.
-        assert type(model).__name__ == "ChatOpenAI"
+        # no vendor SDK branch, no mock. This is the production seam. It is the
+        # transient-classifying SUBCLASS (issue #22): still an IS-A ChatOpenAI
+        # reached over ``base_url``, only wrapped to normalize provider/transport
+        # failures at the owned boundary — never a different transport.
+        assert isinstance(model, ChatOpenAI)
+        assert isinstance(model, TransientClassifyingChatOpenAI)
 
 
 def test_malicious_provider_fuzz_yields_zero_approval_transitions() -> None:
