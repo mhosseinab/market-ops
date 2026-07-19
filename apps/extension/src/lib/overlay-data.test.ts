@@ -68,7 +68,10 @@ describe("overlay-data — EXT-005 rendered, never recomputed", () => {
     const view = deriveOverlayView(target(), offers, NOW);
     expect(view.offerCount).toBe(3);
     expect(view.sellerCount).toBe(3);
-    expect(view.lowestQualifying?.value).toBe("120000");
+    expect(view.lowestQualifying).toEqual({
+      kind: "single",
+      amount: { text: "x", value: "120000", unit: "IRR-rial" },
+    });
   });
 
   it("carries the gateway-generated variantId (distinct from nativeVariantId/nativeProductId) — EXT-008 deep-link id space", () => {
@@ -86,10 +89,88 @@ describe("overlay-data — EXT-005 rendered, never recomputed", () => {
     expect(view.offerCount).toBe(1);
   });
 
-  it("lowestQualifying is null when NO offer qualifies — never a fabricated zero/placeholder price", () => {
+  it("lowestQualifying is an explicit 'none' when NO offer qualifies — never a fabricated zero/placeholder price", () => {
     const offers = [offer({ availabilityStatus: "unavailable" })];
     const view = deriveOverlayView(target(), offers, NOW);
-    expect(view.lowestQualifying).toBeNull();
+    expect(view.lowestQualifying).toEqual({ kind: "none" });
+  });
+
+  // Issue #157 — quarantine over inference (PRD §9.1 / §4.6). Raw prices carry a
+  // validation-gated, un-canonicalized source unit; ordering across incompatible
+  // units would fabricate a commercial ranking. The overlay must report the
+  // comparison unavailable, NEVER coerce one cross-unit minimum.
+  it("NEGATIVE: two qualifying offers with incompatible source units are NEVER cross-compared — explicit conflicted state, no fabricated minimum", () => {
+    const offers = [
+      offer({
+        id: "1",
+        nativeSellerId: "seller-a",
+        price: { text: "100 toman", value: "100", unit: "toman" },
+      }),
+      offer({
+        id: "2",
+        nativeSellerId: "seller-b",
+        price: { text: "900 IRR-rial", value: "900", unit: "IRR-rial" },
+      }),
+    ];
+    const view = deriveOverlayView(target(), offers, NOW);
+    // Must not order 100 toman "below" 900 rial (or vice versa).
+    expect(view.lowestQualifying.kind).toBe("conflicted");
+    if (view.lowestQualifying.kind === "conflicted") {
+      expect([...view.lowestQualifying.units].sort()).toEqual(["IRR-rial", "toman"]);
+    }
+  });
+
+  it("same-unit values order EXACTLY via BigInt beyond Number.MAX_SAFE_INTEGER — no float/Number conversion", () => {
+    // 9007199254740993 vs 9007199254740992: adjacent integers straddling 2^53
+    // that collapse to the same float. BigInt keeps them distinct.
+    const lower = "9007199254740992";
+    const higher = "9007199254740993";
+    const offers = [
+      offer({
+        id: "1",
+        nativeSellerId: "a",
+        price: { text: higher, value: higher, unit: "IRR-rial" },
+      }),
+      offer({
+        id: "2",
+        nativeSellerId: "b",
+        price: { text: lower, value: lower, unit: "IRR-rial" },
+      }),
+    ];
+    const view = deriveOverlayView(target(), offers, NOW);
+    expect(view.lowestQualifying).toEqual({
+      kind: "single",
+      amount: { text: lower, value: lower, unit: "IRR-rial" },
+    });
+  });
+
+  it("an unknown/blank source unit is quarantined — comparison unavailable, never inferred as compatible", () => {
+    const offers = [
+      offer({ id: "1", nativeSellerId: "a", price: { text: "100", value: "100", unit: "" } }),
+      offer({ id: "2", nativeSellerId: "b", price: { text: "200", value: "200", unit: "" } }),
+    ];
+    const view = deriveOverlayView(target(), offers, NOW);
+    expect(view.lowestQualifying.kind).toBe("conflicted");
+  });
+
+  it("single-unit result preserves the winning offer's ORIGINAL raw text/value/unit evidence verbatim", () => {
+    const offers = [
+      offer({
+        id: "1",
+        nativeSellerId: "a",
+        price: { text: "۱۲۰٬۰۰۰ تومان", value: "120000", unit: "toman" },
+      }),
+      offer({
+        id: "2",
+        nativeSellerId: "b",
+        price: { text: "۱۵۰٬۰۰۰ تومان", value: "150000", unit: "toman" },
+      }),
+    ];
+    const view = deriveOverlayView(target(), offers, NOW);
+    expect(view.lowestQualifying).toEqual({
+      kind: "single",
+      amount: { text: "۱۲۰٬۰۰۰ تومان", value: "120000", unit: "toman" },
+    });
   });
 
   it("freshnessBucketOf DELEGATES to the shared freshnessState — overlay bucket === Market derivation for the same offer/instant (EXT-005)", () => {
@@ -122,7 +203,7 @@ describe("overlay-data — EXT-005 rendered, never recomputed", () => {
       variantId: "variant-1",
       offerCount: 0,
       sellerCount: 0,
-      lowestQualifying: null,
+      lowestQualifying: { kind: "none" },
       freshness: null,
       quality: null,
     });

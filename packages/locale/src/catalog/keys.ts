@@ -686,6 +686,7 @@ export const MESSAGE_KEYS = [
   "ext.overlay.offers",
   "ext.overlay.sellers",
   "ext.overlay.lowestQualifying",
+  "ext.overlay.comparisonUnavailable",
   "ext.overlay.readPending",
   "ext.history.title",
   "ext.history.gap",

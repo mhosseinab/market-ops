@@ -31,7 +31,7 @@ function baseView(overrides: Partial<OverlayView> = {}): OverlayView {
     variantId: VARIANT_ID,
     offerCount: 0,
     sellerCount: 0,
-    lowestQualifying: null,
+    lowestQualifying: { kind: "none" },
     freshness: null,
     quality: null,
     ...overrides,
@@ -80,7 +80,10 @@ describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/c
     const view = baseView({
       offerCount: 3,
       sellerCount: 2,
-      lowestQualifying: { text: "120000 IRR-rial", value: "120000", unit: "IRR-rial" },
+      lowestQualifying: {
+        kind: "single",
+        amount: { text: "120000 IRR-rial", value: "120000", unit: "IRR-rial" },
+      },
       freshness: "fresh",
       quality: "verified",
     });
@@ -98,7 +101,10 @@ describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/c
     const view = baseView({
       offerCount: 1,
       sellerCount: 1,
-      lowestQualifying: { text: "120000 IRR-rial", value: "120000", unit: "IRR-rial" },
+      lowestQualifying: {
+        kind: "single",
+        amount: { text: "120000 IRR-rial", value: "120000", unit: "IRR-rial" },
+      },
       freshness: "fresh",
       quality: "verified",
     });
@@ -108,6 +114,22 @@ describe("overlay — EXT-010 overlay-only DOM effect, no automated navigation/c
     expect(token).not.toBeNull();
     expect(token?.classList.contains("market-ops-ltr")).toBe(true);
     expect(token?.textContent).toBe("120000 IRR-rial");
+  });
+
+  it("issue #157: a conflicted (incompatible-unit) comparison renders an explicit unavailable message — NO cross-unit value, no raw LTR token", () => {
+    const view = baseView({
+      offerCount: 2,
+      sellerCount: 2,
+      lowestQualifying: { kind: "conflicted", units: ["IRR-rial", "toman"] },
+      freshness: "fresh",
+      quality: "verified",
+    });
+    const root = mountOverlay();
+    renderOverlay(root, { kind: "ready", view, history: null }, NO_ACTIONS, ctx());
+    const lowestRow = root.querySelector('[data-role="lowest"]');
+    expect(lowestRow?.textContent).toContain("مقایسه ممکن نیست — واحدهای قیمت ناسازگار");
+    // No fabricated single value leaked into the raw-token slot.
+    expect(root.querySelector('[data-role="lowest-value"]')).toBeNull();
   });
 
   it("action buttons render ONLY when capability === ready (Unknown never enables dependent UI)", () => {
