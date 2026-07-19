@@ -139,6 +139,23 @@ func TestAggregateAccountConsistencyRejectsCrossAccountRefs(t *testing.T) {
 	}
 }
 
+// cleanupSharedKeyEvents makes a test's cross-tenant dedup_key duplicate TRANSIENT:
+// the tenant-scoped index (0023) lets two accounts hold the SAME open dedup_key at
+// once, but that duplicate must not OUTLIVE the test into the shared DB. Otherwise a
+// later goose-down — which restores 0011's original dedup_key-ONLY partial unique
+// index — collides on the shared key (SQLSTATE 23505) and `task migrate:verify`
+// fails. Coexistence is asserted in-test; it is never persisted. market_events is not
+// an append-only table, so deleting the test's own rows is sound.
+func cleanupSharedKeyEvents(t *testing.T, pool *pgxpool.Pool, accounts ...uuid.UUID) {
+	t.Helper()
+	t.Cleanup(func() {
+		if _, err := pool.Exec(context.Background(),
+			`DELETE FROM market_events WHERE marketplace_account_id = ANY($1)`, accounts); err != nil {
+			t.Errorf("cleanup shared-key market_events: %v", err)
+		}
+	})
+}
+
 // sharedKeyCandidate builds a candidate for a variant with an EXPLICIT dedup key, so
 // two accounts can be driven with a byte-identical dedup_key even though their
 // variants (and thus a detector-derived key) would differ. This isolates the
@@ -167,6 +184,7 @@ func TestDedupCoexistsAcrossAccounts(t *testing.T) {
 	ctx := context.Background()
 	accountA, variantA := seedVariant(t, q)
 	accountB, variantB := seedVariant(t, q)
+	cleanupSharedKeyEvents(t, pool, accountA, accountB)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
@@ -207,6 +225,7 @@ func TestConditionClearIsAccountScoped(t *testing.T) {
 	ctx := context.Background()
 	accountA, variantA := seedVariant(t, q)
 	accountB, variantB := seedVariant(t, q)
+	cleanupSharedKeyEvents(t, pool, accountA, accountB)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
