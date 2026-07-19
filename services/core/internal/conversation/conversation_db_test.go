@@ -47,6 +47,23 @@ func seedOrgUser(t *testing.T, q *db.Queries) (uuid.UUID, uuid.UUID) {
 	return org.ID, user.ID
 }
 
+// seedAccount creates a marketplace account for an org and returns its id.
+// conversations.marketplace_account_id is a FK to marketplace_accounts (migration
+// 0005), so a conversation may only bind an account that actually exists — a
+// random uuid would violate the constraint under a real DB.
+func seedAccount(t *testing.T, q *db.Queries, orgID uuid.UUID) uuid.UUID {
+	t.Helper()
+	acc, err := q.CreateMarketplaceAccount(context.Background(), db.CreateMarketplaceAccountParams{
+		OrganizationID:  orgID,
+		NativeAccountID: "native-" + uuid.NewString(),
+		DisplayName:     "conv-test account",
+	})
+	if err != nil {
+		t.Fatalf("create marketplace account: %v", err)
+	}
+	return acc.ID
+}
+
 // TestConversationContinuesAcrossRequestsAndPersistsRetention is the required
 // cross-boundary proof (CHAT-008): a first turn opens a conversation and stores
 // the user + assistant messages; a SECOND, separate BeginTurn call continues the
@@ -148,8 +165,10 @@ func TestAccountContextResolvesStoredAccount(t *testing.T) {
 	orgA, userA := seedOrgUser(t, q)
 	orgB, userB := seedOrgUser(t, q)
 
-	// A conversation bound to a specific marketplace account.
-	account := uuid.New()
+	// A conversation bound to a specific marketplace account. The account must be a
+	// real marketplace_accounts row: conversations.marketplace_account_id is a FK
+	// (migration 0005), so a random id would fail the insert under a real DB.
+	account := seedAccount(t, q, orgA)
 	bound, err := store.BeginTurn(ctx, conversation.OpenParams{
 		OrganizationID: orgA, UserID: userA, MarketplaceAccountID: &account,
 	}, "bound turn")
