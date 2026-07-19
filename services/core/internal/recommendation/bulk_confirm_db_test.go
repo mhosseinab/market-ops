@@ -227,6 +227,83 @@ func TestConfirmBulkSelection_SupersededMemberInvalidatedButOthersAuthorized(t *
 	}
 }
 
+// TestConfirmBulkSelection_CrossAccountMemberRejected is the tenant-integrity
+// negative test (never-cut, PRD §4.6): an executable member whose live approval
+// card belongs to a DIFFERENT marketplace_account_id than the selection set must
+// fail closed in authorizeBulkMember (account_mismatch), never be approved or
+// dispatched. The set is minted under account A (so its member resolves — the
+// recommendation belongs to A), but the member's live card was minted under a
+// different tenant (account B); the cross-account guard must reject it.
+func TestConfirmBulkSelection_CrossAccountMemberRejected(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	accountA, variantA := seedVariant(t, q)
+	accountB, _ := seedVariant(t, q) // a DIFFERENT tenant; a valid FK for the mis-tenanted card.
+	svc := recommendation.NewService(pool).SetExecutionDispatcher(realDispatcherFor(t, pool))
+
+	// A recommendation that BELONGS to account A (so PreviewBulkSelection accepts it
+	// and resolves it executable), but a live approval card minted under account B —
+	// the cross-account corruption the tenant guard must catch.
+	in := baseValidInput(t)
+	in.AccountID = accountA
+	in.VariantID = variantA
+	in.EventID = uuid.Nil
+	rec := recommendation.Assemble(in)
+	if !rec.Approvable() {
+		t.Fatalf("seed recommendation is not approvable")
+	}
+	persisted, err := svc.Persist(ctx, uuid.New(), rec)
+	if err != nil {
+		t.Fatalf("persist recommendation: %v", err)
+	}
+	card, err := svc.CreateCard(ctx, persisted.ID, uuid.New(), accountB, rec) // WRONG tenant.
+	if err != nil {
+		t.Fatalf("create cross-account card: %v", err)
+	}
+	// Drive the mis-tenanted card to a live, control-bearing state so, absent the
+	// tenant guard, it WOULD be an approvable control.
+	if _, err := svc.Advance(ctx, card.ID, approval.StateDraft, approval.StateReadyForReview, "ready"); err != nil {
+		t.Fatalf("advance draft→ready: %v", err)
+	}
+	if _, err := svc.Advance(ctx, card.ID, approval.StateReadyForReview, approval.StateAwaitingConfirmation, "open"); err != nil {
+		t.Fatalf("advance ready→awaiting: %v", err)
+	}
+
+	// Account A's selection set: its single member resolves executable (the
+	// recommendation belongs to A) — the preview cannot see the card's tenant.
+	res, err := svc.PreviewBulkSelection(ctx, accountA, uuid.Nil, "bulk-90", nil,
+		[]recommendation.PreviewMemberInput{{VariantID: variantA, RecommendationID: persisted.ID}})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if len(res.Members) != 1 || res.Members[0].Disposition != recommendation.DispositionExecutable {
+		t.Fatalf("seeded member not executable: %+v", res.Members)
+	}
+
+	out, err := svc.ConfirmBulkSelection(ctx, res.Set.LineageID, res.Set.Version, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("confirm bulk: %v", err)
+	}
+	item := itemFor(t, out.Items, persisted.ID)
+	if item.State != recommendation.BulkItemInvalidated {
+		t.Fatalf("cross-account member state = %s; want invalidated", item.State)
+	}
+	if item.Reason != "account_mismatch" {
+		t.Fatalf("cross-account member reason = %q; want account_mismatch", item.Reason)
+	}
+	// The mis-tenanted card stays a live control — never approved, never advanced.
+	if got := reloadState(t, svc, card.ID); got != approval.StateAwaitingConfirmation {
+		t.Fatalf("cross-account card advanced to %s; want awaiting_confirmation", got)
+	}
+	// Fail closed: no execution intent dispatched, and no pending-execution signal.
+	if got := countIntents(t, pool, card.ID); got != 0 {
+		t.Fatalf("cross-account confirm enqueued %d execution intents; want 0", got)
+	}
+	if out.ExecutionPending {
+		t.Fatalf("cross-account confirm reported ExecutionPending; want false")
+	}
+}
+
 // TestConfirmBulkSelection_UnknownLineageFailsClosed proves an unknown lineage is a
 // fail-closed error, never a silent empty success.
 func TestConfirmBulkSelection_UnknownLineageFailsClosed(t *testing.T) {
