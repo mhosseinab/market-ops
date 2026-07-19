@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
@@ -252,13 +253,17 @@ func moneyFromGateway(a gateway.MoneyAmount) (money.Money, error) {
 	if a.Exponent > 127 || a.Exponent < -128 {
 		return money.Money{}, errors.New("policy: money exponent out of int8 range")
 	}
-	return money.New(a.Mantissa, a.Currency, int8(a.Exponent))
+	mantissa, err := parseWireMantissa(a.Mantissa)
+	if err != nil {
+		return money.Money{}, fmt.Errorf("policy: invalid money mantissa %q: %w", a.Mantissa, err)
+	}
+	return money.New(mantissa, a.Currency, int8(a.Exponent))
 }
 
 // moneyToGateway renders a money.Money as the wire triple.
 func moneyToGateway(m money.Money) gateway.MoneyAmount {
 	return gateway.MoneyAmount{
-		Mantissa: m.Mantissa(),
+		Mantissa: wireMantissa(m.Mantissa()),
 		Currency: m.Currency(),
 		Exponent: int(m.Exponent()),
 	}

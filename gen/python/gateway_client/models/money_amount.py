@@ -15,12 +15,16 @@ class MoneyAmount:
     account's entry currency is known; it stays excluded from executable paths until S16+S35.
 
         Attributes:
-            mantissa (int): Exact integer mantissa.
+            mantissa (str): Exact int64 mantissa as a signed base-10 decimal STRING (PRD §9.1, never-cut MONEY CORRECTNESS).
+                String-encoded — never a JSON number — so full int64 precision survives every generated client boundary (a
+                JavaScript number silently rounds int64 values above 2^53). Consumers MUST convert the string directly to a big
+                integer and reject any value outside the signed int64 range or not matching `^-?[0-9]+$`; there is NO float on
+                any money path.
             currency (str): ISO-4217 currency code.
             exponent (int): Base-10 exponent applied to the mantissa.
     """
 
-    mantissa: int
+    mantissa: str
     currency: str
     exponent: int
 

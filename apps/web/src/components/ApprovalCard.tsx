@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useLocale, useT } from "../app/i18n";
-import { formatInstant } from "../data/format";
+import { formatInstant, mantissaToWire } from "../data/format";
 import type { ApprovalBinding, ApprovalCardView, MoneyAmount } from "../data/types";
 import { LtrToken } from "./LtrToken";
 import { MoneyView } from "./MoneyView";
@@ -18,12 +18,15 @@ import { MoneyView } from "./MoneyView";
 // STALE and likewise renders disabled with recalculate. A voided control can
 // never be confirmed.
 //
-// Editing is integer-exact on the mantissa (same currency/exponent, no float) and
+// Editing is integer-exact on the bigint mantissa (same currency/exponent, no
+// float, no JS-number intermediate — the wire mantissa is an int64 string) and
 // NEVER executes — the authoritative next price is minted server-side on
 // recalculate, so no fabricated money reaches an approval.
 
-function editStep(mantissa: number): number {
-  return Math.max(1, Math.floor(Math.abs(mantissa) / 100));
+function editStep(mantissa: bigint): bigint {
+  const abs = mantissa < 0n ? -mantissa : mantissa;
+  const step = abs / 100n;
+  return step > 1n ? step : 1n;
 }
 
 export function ApprovalCard({
@@ -41,16 +44,17 @@ export function ApprovalCard({
 }) {
   const t = useT();
   const { locale } = useLocale();
-  const [proposedMantissa, setProposedMantissa] = useState<number>(card.price.mantissa);
+  const basePrice = BigInt(card.price.mantissa);
+  const [proposedMantissa, setProposedMantissa] = useState<bigint>(basePrice);
 
-  const edited = proposedMantissa !== card.price.mantissa;
+  const edited = proposedMantissa !== basePrice;
   const staleVersion = card.version !== baselineVersion;
   const voided = edited || staleVersion;
   const live = card.state === "awaiting_confirmation" && card.hasControl;
   const canConfirm = live && !voided && !confirmPending;
 
-  const proposed: MoneyAmount = { ...card.price, mantissa: proposedMantissa };
-  const step = editStep(card.price.mantissa);
+  const proposed: MoneyAmount = { ...card.price, mantissa: mantissaToWire(proposedMantissa) };
+  const step = editStep(basePrice);
 
   return (
     <section
@@ -143,7 +147,7 @@ export function ApprovalCard({
             className="btn btn--sm"
             data-testid="recalculate"
             onClick={() => {
-              setProposedMantissa(card.price.mantissa);
+              setProposedMantissa(basePrice);
               onRecalculate();
             }}
           >

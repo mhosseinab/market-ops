@@ -224,7 +224,7 @@ func toGatewayImportRow(r db.CostImportRow) gateway.CostImportRow {
 	}
 	if r.AmountMantissa.Valid {
 		row.Amount = &gateway.MoneyAmount{
-			Mantissa: r.AmountMantissa.Int64,
+			Mantissa: wireMantissa(r.AmountMantissa.Int64),
 			Currency: r.AmountCurrency,
 			Exponent: int(r.AmountExponent),
 		}
@@ -240,7 +240,7 @@ func toGatewayCostProfile(p db.CostProfile) gateway.CostProfileVersion {
 		Component:            gateway.CostComponent(p.Component),
 		Version:              int(p.Version),
 		Amount: gateway.MoneyAmount{
-			Mantissa: p.AmountMantissa,
+			Mantissa: wireMantissa(p.AmountMantissa),
 			Currency: p.AmountCurrency,
 			Exponent: int(p.AmountExponent),
 		},

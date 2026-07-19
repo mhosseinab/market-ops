@@ -2998,9 +2998,16 @@ components:
         - exponent
       properties:
         mantissa:
-          type: integer
-          format: int64
-          description: Exact integer mantissa.
+          type: string
+          pattern: '^-?[0-9]+$'
+          description: >-
+            Exact int64 mantissa as a signed base-10 decimal STRING (PRD §9.1,
+            never-cut MONEY CORRECTNESS). String-encoded — never a JSON number —
+            so full int64 precision survives every generated client boundary
+            (a JavaScript number silently rounds int64 values above 2^53).
+            Consumers MUST convert the string directly to a big integer and
+            reject any value outside the signed int64 range or not matching
+            `^-?[0-9]+$`; there is NO float on any money path.
         currency:
           type: string
           description: ISO-4217 currency code.

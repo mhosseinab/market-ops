@@ -130,11 +130,11 @@ func TestMachinePrincipalCannotWriteGuardrailsEditPriceOrBulkMint(t *testing.T) 
 	}{
 		{
 			"guardrail write", http.MethodPost, "/guardrails",
-			`{"marketplaceAccountId":"` + uuid.New().String() + `","settings":{"contributionFloor":{"mantissa":100,"currency":"USD","exponent":-2},"movementCapBasisPoints":500,"cooldownSeconds":3600,"strategy":"match","strategyEnabled":true}}`,
+			`{"marketplaceAccountId":"` + uuid.New().String() + `","settings":{"contributionFloor":{"mantissa":"100","currency":"USD","exponent":-2},"movementCapBasisPoints":500,"cooldownSeconds":3600,"strategy":"match","strategyEnabled":true}}`,
 		},
 		{
 			"edit-price", http.MethodPost, "/approvals/card/edit-price",
-			`{"cardId":"` + uuid.New().String() + `","newPrice":{"mantissa":100,"currency":"USD","exponent":-2}}`,
+			`{"cardId":"` + uuid.New().String() + `","newPrice":{"mantissa":"100","currency":"USD","exponent":-2}}`,
 		},
 		{
 			"bulk-preview/mint", http.MethodPost, "/selection-sets/preview",

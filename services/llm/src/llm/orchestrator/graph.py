@@ -27,7 +27,7 @@ terminal write is at most a Draft.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
 from langgraph.errors import GraphRecursionError
@@ -94,6 +94,22 @@ def _as_failure(raw: dict[str, Any] | None) -> TurnFailure | None:
     if raw is None:
         return None
     return TurnFailure.model_validate(raw)
+
+
+def envelope_from_structured(structured: Any) -> dict[str, Any]:
+    """Serialize the agent's typed answer into the JSON-safe envelope dict that
+    is placed on the SSE ``final`` frame.
+
+    JSON mode (NOT Python mode) is mandatory here: it applies ``Money``'s
+    ``field_serializer(when_used="json")`` so ``mantissa`` is already the
+    signed-decimal STRING wire form (``^-?[0-9]+$``, #73 / §15.1) by the time the
+    dict is handed to :meth:`ChatStreamEvent.to_sse`. A Python-mode dump would
+    leave ``mantissa`` a plain ``int``; ``to_sse`` then calls ``model_dump_json``
+    on the raw dict — where the field_serializer is NOT in the call graph — and
+    the int re-serializes as a lossy JS-number (the exact #73 defect and the new
+    web ``toMoney`` throw). Exponent stays a small integer (no precision hazard).
+    """
+    return cast("dict[str, Any]", structured.model_dump(mode="json"))
 
 
 def build_turn_graph(
@@ -194,7 +210,7 @@ def _run_agent(agent: AgentHandle, settings: Settings, state: TurnState) -> Turn
             continue
 
         structured = inner.get("structured_response")
-        answer = structured.model_dump() if structured is not None else None
+        answer = envelope_from_structured(structured) if structured is not None else None
         return {"answer": answer, "failure": None}
 
     # Both attempts hit a transient failure (§12.4: concise message + deep link).
