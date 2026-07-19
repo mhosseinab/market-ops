@@ -72,7 +72,7 @@ func (f *fakeRecorder) ExpireStaleAll(_ context.Context, _ time.Time) (int64, er
 // ResolveOpen mirrors the real service's monotonic idempotency: it resolves an open
 // key exactly once (returns true, then clears it) and is a no-op (false) for a key
 // that is not open — never resurrecting a terminal event.
-func (f *fakeRecorder) ResolveOpen(_ context.Context, dedupKey string) (bool, error) {
+func (f *fakeRecorder) ResolveOpen(_ context.Context, _ uuid.UUID, dedupKey string) (bool, error) {
 	if f.resolveErr != nil {
 		return false, f.resolveErr
 	}

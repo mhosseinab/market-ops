@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
@@ -20,7 +19,9 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 )
 
-// fakeEvent is an EventService stub for transport tests.
+// fakeEvent is an EventService stub for transport tests. It records the org and
+// account/event it was called with so tests can assert the handler derives scope
+// from the authenticated principal, never from request input (issue #67).
 type fakeEvent struct {
 	open   []db.MarketEvent
 	today  []event.Ranked
@@ -28,20 +29,26 @@ type fakeEvent struct {
 	rec    db.EventRelevanceFeedback
 	err    error
 
+	lastOrg            uuid.UUID
+	lastAccount        uuid.UUID
 	lastRelevanceUser  uuid.UUID
 	lastRelevanceEvent uuid.UUID
 }
 
-func (f *fakeEvent) ListOpen(context.Context, uuid.UUID) ([]db.MarketEvent, error) {
+func (f *fakeEvent) ListOpenForOrg(_ context.Context, org, account uuid.UUID) ([]db.MarketEvent, error) {
+	f.lastOrg, f.lastAccount = org, account
 	return f.open, f.err
 }
-func (f *fakeEvent) Today(context.Context, uuid.UUID) ([]event.Ranked, error) {
+func (f *fakeEvent) TodayForOrg(_ context.Context, org, account uuid.UUID) ([]event.Ranked, error) {
+	f.lastOrg, f.lastAccount = org, account
 	return f.today, f.err
 }
-func (f *fakeEvent) Get(context.Context, uuid.UUID) (db.MarketEvent, error) {
+func (f *fakeEvent) GetForOrg(_ context.Context, org, id uuid.UUID) (db.MarketEvent, error) {
+	f.lastOrg = org
 	return f.detail, f.err
 }
-func (f *fakeEvent) RecordRelevance(_ context.Context, eventID, user uuid.UUID, _, _ string) (db.EventRelevanceFeedback, error) {
+func (f *fakeEvent) RecordRelevanceForOrg(_ context.Context, org, eventID, user uuid.UUID, _, _ string) (db.EventRelevanceFeedback, error) {
+	f.lastOrg = org
 	f.lastRelevanceEvent = eventID
 	f.lastRelevanceUser = user
 	return f.rec, f.err
@@ -109,20 +116,36 @@ func unknownEventRow() db.MarketEvent {
 	}
 }
 
+// eventServer builds a server with a fake auth (middleware armed) and a fake event
+// service, so transport tests exercise the real authenticated route path.
+func eventServer(fa *fakeAuth, fe *fakeEvent) *http.Server {
+	return NewServer(":0", BuildInfo{}, testLogger(), WithAuth(fa), WithCookieSecure(false), WithEvent(fe))
+}
+
 // TestListEventsMapping asserts toGatewayEvent maps the known-exposure and
 // unknown-exposure rows onto the contract faithfully — including the EVT-005 case
-// where an unknown exposure exposes NO amount at all.
+// where an unknown exposure exposes NO amount at all. It also asserts the handler
+// scopes the read to the AUTHENTICATED organization (issue #67).
 func TestListEventsMapping(t *testing.T) {
 	known := knownEventRow()
 	unknown := unknownEventRow()
 	fake := &fakeEvent{open: []db.MarketEvent{known, unknown}}
-	srv := NewServer(":0", BuildInfo{}, testLogger(), WithEvent(fake))
+	fa := newFakeAuth()
+	orgID := ownerSession(fa).OrganizationID
+	srv := eventServer(fa, fake)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/events?marketplaceAccountId="+known.MarketplaceAccountID.String(), nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.lastOrg != orgID {
+		t.Fatalf("service org = %v, want authenticated org %v (never request input)", fake.lastOrg, orgID)
+	}
+	if fake.lastAccount != known.MarketplaceAccountID {
+		t.Fatalf("service account = %v, want %v", fake.lastAccount, known.MarketplaceAccountID)
 	}
 	var list gateway.MarketEventList
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
@@ -162,10 +185,13 @@ func TestListEventsMapping(t *testing.T) {
 func TestTodayFeedMapping(t *testing.T) {
 	known := knownEventRow()
 	fake := &fakeEvent{today: event.Rank([]db.MarketEvent{known})}
-	srv := NewServer(":0", BuildInfo{}, testLogger(), WithEvent(fake))
+	fa := newFakeAuth()
+	ownerSession(fa)
+	srv := eventServer(fa, fake)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/today?marketplaceAccountId="+known.MarketplaceAccountID.String(), nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
@@ -185,16 +211,117 @@ func TestTodayFeedMapping(t *testing.T) {
 	}
 }
 
-// TestGetEventNotFound asserts an unknown event id maps to 404 (distinguished
-// from a 500 by the handler).
+// TestGetEventNotFound asserts an unknown (or foreign) event id maps to 404 with the
+// FIXED no-oracle body (distinguished from a 500 by the handler).
 func TestGetEventNotFound(t *testing.T) {
-	fake := &fakeEvent{err: pgx.ErrNoRows}
-	srv := NewServer(":0", BuildInfo{}, testLogger(), WithEvent(fake))
+	fake := &fakeEvent{err: event.ErrEventNotFound}
+	fa := newFakeAuth()
+	ownerSession(fa)
+	srv := eventServer(fa, fake)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/event?eventId="+uuid.New().String(), nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404, body=%s", rec.Code, rec.Body.String())
+	}
+	var env struct{ Code, Message string }
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Code != "NOT_FOUND" || env.Message != "not found" {
+		t.Fatalf("want fixed no-oracle body {NOT_FOUND, not found}, got %+v", env)
+	}
+}
+
+// TestEventHandlersRequireSession proves every event route fails closed with 401
+// when no human session is presented — the event service is never reached without an
+// authenticated organization (issue #67).
+func TestEventHandlersRequireSession(t *testing.T) {
+	fake := &fakeEvent{}
+	fa := newFakeAuth()
+	ownerSession(fa) // a valid token exists, but requests omit it
+	srv := eventServer(fa, fake)
+
+	acct := uuid.NewString()
+	cases := []struct {
+		method, path, body string
+	}{
+		{http.MethodGet, "/events?marketplaceAccountId=" + acct, ""},
+		{http.MethodGet, "/event?eventId=" + uuid.NewString(), ""},
+		{http.MethodGet, "/today?marketplaceAccountId=" + acct, ""},
+		{http.MethodPost, "/events/relevance", `{"eventId":"` + uuid.NewString() + `","relevance":"muted"}`},
+	}
+	for _, tc := range cases {
+		fake.lastOrg = uuid.Nil
+		rec := httptest.NewRecorder()
+		var req *http.Request
+		if tc.body == "" {
+			req = httptest.NewRequest(tc.method, tc.path, nil)
+		} else {
+			req = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("Content-Type", "application/json")
+		}
+		srv.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without session = %d, want 401", tc.method, tc.path, rec.Code)
+		}
+		if fake.lastOrg != uuid.Nil {
+			t.Fatalf("%s %s reached the event service without a session", tc.method, tc.path)
+		}
+	}
+}
+
+// TestEventHandlersRejectForeignScope is the two-organization authz matrix (issue
+// #67): a list/Today request for a foreign account and a detail/relevance request
+// for a foreign event id are all REJECTED with an identical 404 no-oracle body — a
+// foreign id is indistinguishable from an unknown one, so nothing leaks. The service
+// (org-scoped) returns the sentinel; the handler maps it to the fixed 404.
+func TestEventHandlersRejectForeignScope(t *testing.T) {
+	fa := newFakeAuth()
+	orgID := ownerSession(fa).OrganizationID
+	foreignAccount := uuid.New()
+	foreignEvent := uuid.New()
+
+	cases := []struct {
+		name, method, path, body string
+		svcErr                   error
+	}{
+		{"list-foreign-account", http.MethodGet, "/events?marketplaceAccountId=" + foreignAccount.String(), "", event.ErrAccountNotFound},
+		{"today-foreign-account", http.MethodGet, "/today?marketplaceAccountId=" + foreignAccount.String(), "", event.ErrAccountNotFound},
+		{"detail-foreign-event", http.MethodGet, "/event?eventId=" + foreignEvent.String(), "", event.ErrEventNotFound},
+		{"relevance-foreign-event", http.MethodPost, "/events/relevance", `{"eventId":"` + foreignEvent.String() + `","relevance":"muted"}`, event.ErrEventNotFound},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeEvent{err: tc.svcErr}
+			srv := eventServer(fa, fake)
+			rec := httptest.NewRecorder()
+			var req *http.Request
+			if tc.body == "" {
+				req = httptest.NewRequest(tc.method, tc.path, nil)
+			} else {
+				req = httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+				req.Header.Set("Content-Type", "application/json")
+			}
+			req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+			srv.Handler.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s: status = %d, want 404, body=%s", tc.name, rec.Code, rec.Body.String())
+			}
+			var env struct{ Code, Message string }
+			if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if env.Code != "NOT_FOUND" || env.Message != "not found" {
+				t.Fatalf("%s: want fixed no-oracle body, got %+v", tc.name, env)
+			}
+			// The org the service saw is always the authenticated caller's — never input.
+			if fake.lastOrg != orgID {
+				t.Fatalf("%s: service org = %v, want authenticated org %v", tc.name, fake.lastOrg, orgID)
+			}
+		})
 	}
 }
 

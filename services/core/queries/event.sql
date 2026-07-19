@@ -58,7 +58,11 @@ INSERT INTO market_events (
     $15, $16, $17, $18,
     $19, $19, $20
 )
-ON CONFLICT (dedup_key) WHERE state IN ('open', 'updated') DO NOTHING
+-- Dedup is TENANT-SCOPED (issue #67): at most one open|updated row per
+-- (marketplace_account_id, dedup_key). A duplicate WITHIN the same account
+-- collides and returns no row (→ UpdateOpenEvent); an identical logical key in a
+-- DIFFERENT account is a distinct row and opens cleanly — tenants never collide.
+ON CONFLICT (marketplace_account_id, dedup_key) WHERE state IN ('open', 'updated') DO NOTHING
 RETURNING *;
 
 -- name: UpdateOpenEvent :one
@@ -67,34 +71,49 @@ RETURNING *;
 -- 'updated', and bumps evidence_update_count. It produces ZERO new events rows,
 -- so the Today feed still shows exactly one item. The dedup_key and the opening
 -- identity are preserved. Exposure still obeys EVT-005 via the table CHECK.
+--
+-- The predicate is TENANT-SCOPED (issue #67): the update targets the open row of
+-- the OWNING account only, so a same-key detection in a DIFFERENT account can
+-- never mutate this account's open event.
 UPDATE market_events SET
     state                   = 'updated',
-    severity                = $2,
-    threshold_id            = $3,
-    threshold_version       = $4,
-    exposure_known          = $5,
-    exposure_mantissa       = $6,
-    exposure_currency       = $7,
-    exposure_exponent       = $8,
-    confidence_bp           = $9,
-    urgency_bp              = $10,
-    evidence_observation_id = $11,
-    evidence_quality        = $12,
-    evidence_ref            = $13,
-    evidence_detail         = $14,
-    last_evidence_at        = $15,
-    expires_at              = $16,
+    severity                = $3,
+    threshold_id            = $4,
+    threshold_version       = $5,
+    exposure_known          = $6,
+    exposure_mantissa       = $7,
+    exposure_currency       = $8,
+    exposure_exponent       = $9,
+    confidence_bp           = $10,
+    urgency_bp              = $11,
+    evidence_observation_id = $12,
+    evidence_quality        = $13,
+    evidence_ref            = $14,
+    evidence_detail         = $15,
+    last_evidence_at        = $16,
+    expires_at              = $17,
     evidence_update_count   = evidence_update_count + 1,
     updated_at              = now()
-WHERE dedup_key = $1 AND state IN ('open', 'updated')
+WHERE marketplace_account_id = $1 AND dedup_key = $2 AND state IN ('open', 'updated')
 RETURNING *;
 
 -- name: GetOpenEventByDedupKey :one
+-- TENANT-SCOPED (issue #67): the open row is looked up within the owning account,
+-- so a dedup key never resolves another account's open event.
 SELECT * FROM market_events
-WHERE dedup_key = $1 AND state IN ('open', 'updated');
+WHERE marketplace_account_id = $1 AND dedup_key = $2 AND state IN ('open', 'updated');
 
 -- name: GetEvent :one
 SELECT * FROM market_events WHERE id = $1;
+
+-- name: GetEventForOrg :one
+-- ORG-SCOPED detail read (issue #67, S8-AUTHZ-001): an event resolves ONLY when its
+-- marketplace account belongs to the authenticated organization. A foreign event id
+-- (owned by a DIFFERENT org) matches no row — identical to an unknown id — so the
+-- caller cannot use possession of an event UUID as a cross-tenant existence oracle.
+SELECT me.* FROM market_events me
+JOIN marketplace_accounts a ON me.marketplace_account_id = a.id
+WHERE me.id = $1 AND a.organization_id = $2;
 
 -- name: ListOpenEvents :many
 -- Today feed source (EVT-004): every open|updated event for the account. Ordering
@@ -148,17 +167,34 @@ WHERE state IN ('open', 'updated')
 -- makes it MONOTONIC and idempotent — a replay of the same clearance (the event
 -- already resolved/expired, or none ever opened) affects zero rows and can never
 -- resurrect a terminal event. Resolving frees the dedup_key just like ResolveEvent.
+-- TENANT-SCOPED (issue #67): the condition-clear resolves the open event of the
+-- OWNING account only, so a clearance in one account can never resolve another
+-- account's open event that happens to share a logical dedup key.
 UPDATE market_events SET
     state       = 'resolved',
-    resolved_at = $2,
+    resolved_at = $3,
     updated_at  = now()
-WHERE dedup_key = $1 AND state IN ('open', 'updated');
+WHERE marketplace_account_id = $1 AND dedup_key = $2 AND state IN ('open', 'updated');
 
 -- name: InsertRelevanceFeedback :one
 -- APPEND-ONLY relevance history (EVT-005). Each vote is a new row; a mute is a
 -- feedback record, never a delete of the event.
 INSERT INTO event_relevance_feedback (event_id, user_id, relevance, note)
 VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: InsertRelevanceFeedbackForOrg :one
+-- ORG-SCOPED append-only relevance write (issue #67, S8-AUTHZ-001). The row is
+-- inserted ONLY when the target event's marketplace account belongs to the
+-- authenticated organization: the INSERT ... SELECT yields ZERO rows for a foreign
+-- (or unknown) event id, so a cross-tenant relevance vote is silently written to
+-- nothing and the service surfaces a not-found — no existence oracle, still
+-- append-only (EVT-005).
+INSERT INTO event_relevance_feedback (event_id, user_id, relevance, note)
+SELECT me.id, sqlc.narg(user_id), sqlc.arg(relevance), sqlc.arg(note)
+FROM market_events me
+JOIN marketplace_accounts a ON me.marketplace_account_id = a.id
+WHERE me.id = sqlc.arg(event_id) AND a.organization_id = sqlc.arg(organization_id)
 RETURNING *;
 
 -- name: ListRelevanceFeedback :many

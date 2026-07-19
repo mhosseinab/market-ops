@@ -15,11 +15,18 @@ import (
 // EventService is the event-engine orchestration the gateway depends on (PRD
 // §7.4). *event.Service satisfies it. It is an interface so the transport can be
 // tested with a fake and httpapi stays free of DB wiring.
+//
+// Every method takes the authenticated organization id as a MANDATORY first
+// argument (issue #67, S8-AUTHZ-001). The handlers derive it from the session
+// principal — never from request input — so possession of a marketplace-account or
+// event UUID cannot grant cross-organization access. list/Today verify the account
+// belongs to the org; detail/relevance are org-scoped in SQL so a foreign event id
+// resolves to nothing.
 type EventService interface {
-	ListOpen(ctx context.Context, account uuid.UUID) ([]db.MarketEvent, error)
-	Today(ctx context.Context, account uuid.UUID) ([]event.Ranked, error)
-	Get(ctx context.Context, id uuid.UUID) (db.MarketEvent, error)
-	RecordRelevance(ctx context.Context, eventID, user uuid.UUID, relevance, note string) (db.EventRelevanceFeedback, error)
+	ListOpenForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]db.MarketEvent, error)
+	TodayForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]event.Ranked, error)
+	GetForOrg(ctx context.Context, organizationID, id uuid.UUID) (db.MarketEvent, error)
+	RecordRelevanceForOrg(ctx context.Context, organizationID, eventID, user uuid.UUID, relevance, note string) (db.EventRelevanceFeedback, error)
 }
 
 // ListEvents returns the account's open market events (unranked list).
@@ -29,9 +36,15 @@ func (s *gatewayServer) ListEvents(
 	if s.event == nil {
 		return gateway.ListEventsdefaultJSONResponse{StatusCode: 503, Body: eventUnavailableErr()}, nil
 	}
-	rows, err := s.event.ListOpen(ctx, req.Params.MarketplaceAccountId)
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.ListEventsdefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
+	}
+	// Organization scope comes ONLY from the authenticated principal; the account id
+	// from the query is verified to belong to that org before any row is served.
+	rows, err := s.event.ListOpenForOrg(ctx, p.OrganizationID, req.Params.MarketplaceAccountId)
 	if err != nil {
-		return gateway.ListEventsdefaultJSONResponse{StatusCode: 500, Body: eventErr(err)}, nil
+		return gateway.ListEventsdefaultJSONResponse{StatusCode: eventErrStatus(err), Body: eventErr(err)}, nil
 	}
 	out := make([]gateway.MarketEvent, 0, len(rows))
 	for _, e := range rows {
@@ -47,12 +60,17 @@ func (s *gatewayServer) GetEvent(
 	if s.event == nil {
 		return gateway.GetEventdefaultJSONResponse{StatusCode: 503, Body: eventUnavailableErr()}, nil
 	}
-	row, err := s.event.Get(ctx, req.Params.EventId)
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.GetEventdefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
+	}
+	// Org-scoped detail read: a foreign event id resolves to no row and returns a
+	// 404 with a FIXED not-found body — indistinguishable from an unknown id (no
+	// cross-tenant existence oracle). Any other failure is a 500.
+	row, err := s.event.GetForOrg(ctx, p.OrganizationID, req.Params.EventId)
 	if err != nil {
-		// A missing event is a 404; any other failure is a 500 — never conflate a
-		// not-found with an infrastructure error.
-		if errors.Is(err, pgx.ErrNoRows) {
-			return gateway.GetEventdefaultJSONResponse{StatusCode: 404, Body: eventErr(err)}, nil
+		if errors.Is(err, event.ErrEventNotFound) || errors.Is(err, pgx.ErrNoRows) {
+			return gateway.GetEventdefaultJSONResponse{StatusCode: 404, Body: eventNotFoundErr()}, nil
 		}
 		return gateway.GetEventdefaultJSONResponse{StatusCode: 500, Body: eventErr(err)}, nil
 	}
@@ -66,9 +84,13 @@ func (s *gatewayServer) GetTodayFeed(
 	if s.event == nil {
 		return gateway.GetTodayFeeddefaultJSONResponse{StatusCode: 503, Body: eventUnavailableErr()}, nil
 	}
-	ranked, err := s.event.Today(ctx, req.Params.MarketplaceAccountId)
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.GetTodayFeeddefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
+	}
+	ranked, err := s.event.TodayForOrg(ctx, p.OrganizationID, req.Params.MarketplaceAccountId)
 	if err != nil {
-		return gateway.GetTodayFeeddefaultJSONResponse{StatusCode: 500, Body: eventErr(err)}, nil
+		return gateway.GetTodayFeeddefaultJSONResponse{StatusCode: eventErrStatus(err), Body: eventErr(err)}, nil
 	}
 	out := make([]gateway.RankedEvent, 0, len(ranked))
 	for _, r := range ranked {
@@ -93,16 +115,24 @@ func (s *gatewayServer) RecordEventRelevance(
 	if req.Body == nil {
 		return gateway.RecordEventRelevancedefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	var user uuid.UUID
-	if p, ok := principalFrom(ctx); ok {
-		user = p.UserID
+	// Both the acting user AND the organization scope come from the authenticated
+	// principal — never the request body (identity/free-text containment). No session
+	// means no relevance write.
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return gateway.RecordEventRelevancedefaultJSONResponse{StatusCode: 401, Body: noSessionErr()}, nil
 	}
 	var note string
 	if req.Body.Note != nil {
 		note = *req.Body.Note
 	}
-	rec, err := s.event.RecordRelevance(ctx, req.Body.EventId, user, string(req.Body.Relevance), note)
+	// The write is org-scoped in SQL: a foreign/unknown event id inserts zero rows
+	// and returns a 404 not-found — no cross-tenant append, no existence oracle.
+	rec, err := s.event.RecordRelevanceForOrg(ctx, p.OrganizationID, req.Body.EventId, p.UserID, string(req.Body.Relevance), note)
 	if err != nil {
+		if errors.Is(err, event.ErrEventNotFound) || errors.Is(err, pgx.ErrNoRows) {
+			return gateway.RecordEventRelevancedefaultJSONResponse{StatusCode: 404, Body: eventNotFoundErr()}, nil
+		}
 		return gateway.RecordEventRelevancedefaultJSONResponse{StatusCode: 500, Body: eventErr(err)}, nil
 	}
 	return gateway.RecordEventRelevance202JSONResponse(gateway.EventRelevanceRecorded{
@@ -166,8 +196,32 @@ func toGatewayEvent(e db.MarketEvent) gateway.MarketEvent {
 	return out
 }
 
+// eventErrStatus maps a service error to an HTTP status for the list/Today paths. A
+// foreign/unknown account is reported as 404 (identical to a genuinely-absent one),
+// so the response never reveals whether a cross-organization account exists
+// (S8-AUTHZ-001). Every other failure is a 500.
+func eventErrStatus(err error) int {
+	switch {
+	case errors.Is(err, event.ErrAccountNotFound), errors.Is(err, event.ErrEventNotFound):
+		return 404
+	default:
+		return 500
+	}
+}
+
 func eventErr(err error) gateway.ErrorEnvelope {
+	// A not-found account/event carries a FIXED code + message so a foreign and an
+	// unknown id are indistinguishable to the caller (no existence oracle).
+	if errors.Is(err, event.ErrAccountNotFound) || errors.Is(err, event.ErrEventNotFound) {
+		return eventNotFoundErr()
+	}
 	return gateway.ErrorEnvelope{Code: "EVENT_ERROR", Message: err.Error()}
+}
+
+// eventNotFoundErr is the single fixed not-found envelope for a foreign or unknown
+// account/event id — the no-oracle response shape (issue #67, S8-AUTHZ-001).
+func eventNotFoundErr() gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "NOT_FOUND", Message: "not found"}
 }
 
 func eventUnavailableErr() gateway.ErrorEnvelope {

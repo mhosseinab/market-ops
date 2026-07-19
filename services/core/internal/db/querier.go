@@ -300,6 +300,11 @@ type Querier interface {
 	// the organization has no users (the digest is then unsendable — fail closed).
 	GetDigestRecipientEmail(ctx context.Context, id uuid.UUID) (string, error)
 	GetEvent(ctx context.Context, id uuid.UUID) (MarketEvent, error)
+	// ORG-SCOPED detail read (issue #67, S8-AUTHZ-001): an event resolves ONLY when its
+	// marketplace account belongs to the authenticated organization. A foreign event id
+	// (owned by a DIFFERENT org) matches no row — identical to an unknown id — so the
+	// caller cannot use possession of an event UUID as a cross-tenant existence oracle.
+	GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) (MarketEvent, error)
 	// L3 commercial guardrail persistence (PD-3 item 6, S37). One row per account;
 	// a write is an upsert (Owner-only, audited atomically by the caller in the SAME
 	// transaction — see internal/guardrail).
@@ -322,7 +327,9 @@ type Querier interface {
 	GetNotificationByDedup(ctx context.Context, arg GetNotificationByDedupParams) (Notification, error)
 	GetObservationTarget(ctx context.Context, id uuid.UUID) (ObservationTarget, error)
 	GetObservedOffer(ctx context.Context, arg GetObservedOfferParams) (ObservedOffer, error)
-	GetOpenEventByDedupKey(ctx context.Context, dedupKey string) (MarketEvent, error)
+	// TENANT-SCOPED (issue #67): the open row is looked up within the owning account,
+	// so a dedup key never resolves another account's open event.
+	GetOpenEventByDedupKey(ctx context.Context, arg GetOpenEventByDedupKeyParams) (MarketEvent, error)
 	// Ownership guard: resolve an account id ONLY when it belongs to the given
 	// organization. A foreign or unknown account id yields no row (pgx.ErrNoRows),
 	// so possession of a UUID never grants cross-organization access (S8-AUTHZ-001).
@@ -438,6 +445,13 @@ type Querier interface {
 	// APPEND-ONLY relevance history (EVT-005). Each vote is a new row; a mute is a
 	// feedback record, never a delete of the event.
 	InsertRelevanceFeedback(ctx context.Context, arg InsertRelevanceFeedbackParams) (EventRelevanceFeedback, error)
+	// ORG-SCOPED append-only relevance write (issue #67, S8-AUTHZ-001). The row is
+	// inserted ONLY when the target event's marketplace account belongs to the
+	// authenticated organization: the INSERT ... SELECT yields ZERO rows for a foreign
+	// (or unknown) event id, so a cross-tenant relevance vote is silently written to
+	// nothing and the service surfaces a not-found — no existence oracle, still
+	// append-only (EVT-005).
+	InsertRelevanceFeedbackForOrg(ctx context.Context, arg InsertRelevanceFeedbackForOrgParams) (EventRelevanceFeedback, error)
 	// Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
 	// within a lineage: a set change is a new version. A bulk approval binds ONE
 	// version, so any set/evidence change (a new version) invalidates it. No
@@ -613,6 +627,10 @@ type Querier interface {
 	// NEVER creates a second events row (EVT-003, §16). Exposure obeys EVT-005: an
 	// unknown exposure passes exposure_known=false with NULL mantissa (the CHECK
 	// rejects a fabricated number).
+	// Dedup is TENANT-SCOPED (issue #67): at most one open|updated row per
+	// (marketplace_account_id, dedup_key). A duplicate WITHIN the same account
+	// collides and returns no row (→ UpdateOpenEvent); an identical logical key in a
+	// DIFFERENT account is a distinct row and opens cleanly — tenants never collide.
 	OpenEvent(ctx context.Context, arg OpenEventParams) (MarketEvent, error)
 	// Outcome window queries (PRD §7.5 OUT-001, §15.3). Both tables are APPEND-ONLY:
 	//   * outcome_windows — one seven-day window per reconciled action (INSERT/SELECT).
@@ -673,6 +691,9 @@ type Querier interface {
 	// makes it MONOTONIC and idempotent — a replay of the same clearance (the event
 	// already resolved/expired, or none ever opened) affects zero rows and can never
 	// resurrect a terminal event. Resolving frees the dedup_key just like ResolveEvent.
+	// TENANT-SCOPED (issue #67): the condition-clear resolves the open event of the
+	// OWNING account only, so a clearance in one account can never resolve another
+	// account's open event that happens to share a logical dedup key.
 	ResolveOpenEventByDedupKey(ctx context.Context, arg ResolveOpenEventByDedupKeyParams) (int64, error)
 	// Resolve a CSV SKU token to variants within an account. Zero rows ⇒ unknown SKU;
 	// more than one ⇒ ambiguous (both are preview rejects with a stated reason).
@@ -704,6 +725,10 @@ type Querier interface {
 	// 'updated', and bumps evidence_update_count. It produces ZERO new events rows,
 	// so the Today feed still shows exactly one item. The dedup_key and the opening
 	// identity are preserved. Exposure still obeys EVT-005 via the table CHECK.
+	//
+	// The predicate is TENANT-SCOPED (issue #67): the update targets the open row of
+	// the OWNING account only, so a same-key detection in a DIFFERENT account can
+	// never mutate this account's open event.
 	UpdateOpenEvent(ctx context.Context, arg UpdateOpenEventParams) (MarketEvent, error)
 	UpsertAccountCostPolicy(ctx context.Context, arg UpsertAccountCostPolicyParams) (AccountCostPolicy, error)
 	// Establish or update the connection with sealed tokens (connect / refresh).

@@ -15,6 +15,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
 	"github.com/mhosseinab/market-ops/services/core/internal/execution"
+	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
@@ -53,7 +54,7 @@ func TestEdgeCase_NoEvents_ExplicitNoActionState(t *testing.T) {
 	pool, q := newSystemPool(t)
 	account, _ := seedEventVariant(t, q)
 
-	srv, tok := systemOwnerServer(t, WithEvent(event.NewService(pool)))
+	srv, tok := systemOwnerServerForAccount(t, q, account, WithEvent(event.NewService(pool)))
 
 	var list gateway.MarketEventList
 	rec := getJSON(t, srv, tok, "/events?marketplaceAccountId="+account.String(), &list)
@@ -117,7 +118,7 @@ func TestEdgeCase_DuplicateEvent_SurfaceShowsOneItem(t *testing.T) {
 		t.Fatal("the second detection must dedup, not open a new event")
 	}
 
-	srv, tok := systemOwnerServer(t, WithEvent(evtSvc))
+	srv, tok := systemOwnerServerForAccount(t, q, account, WithEvent(evtSvc))
 	var feed gateway.TodayFeed
 	rec := getJSON(t, srv, tok, "/today?marketplaceAccountId="+account.String(), &feed)
 	if rec.Code != http.StatusOK {
@@ -179,6 +180,27 @@ type unknownWriter struct{}
 
 func (unknownWriter) WritePrice(_ context.Context, _ execution.WriteRequest) execution.WriteResult {
 	return execution.WriteResult{Outcome: execution.OutcomeUnknown, Detail: "simulated timeout"}
+}
+
+// systemOwnerServerForAccount builds a real gateway server whose Owner session is
+// bound to the SEEDED ACCOUNT'S organization, so the event handlers' ownership guard
+// (issue #67) admits reads for that account. Without this binding the fixed
+// random-org owner session would be foreign to the freshly-seeded account and every
+// read would correctly 404.
+func systemOwnerServerForAccount(t *testing.T, q *db.Queries, account uuid.UUID, opts ...Option) (*http.Server, string) {
+	t.Helper()
+	acct, err := q.GetMarketplaceAccount(context.Background(), account)
+	if err != nil {
+		t.Fatalf("get account org: %v", err)
+	}
+	fa := newFakeAuth()
+	owner := principal(perm.RoleOwner)
+	owner.OrganizationID = acct.OrganizationID
+	const tok = "s32-owner-session"
+	fa.principals[tok] = owner
+	base := []Option{WithAuth(fa), WithCookieSecure(false)}
+	srv := NewServer(":0", BuildInfo{}, testLogger(), append(base, opts...)...)
+	return srv, tok
 }
 
 // seedEventVariant creates org/account/product/variant for the event-engine

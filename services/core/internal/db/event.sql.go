@@ -99,6 +99,55 @@ func (q *Queries) GetEvent(ctx context.Context, id uuid.UUID) (MarketEvent, erro
 	return i, err
 }
 
+const getEventForOrg = `-- name: GetEventForOrg :one
+SELECT me.id, me.marketplace_account_id, me.variant_id, me.target_id, me.event_type, me.severity, me.state, me.dedup_key, me.threshold_id, me.threshold_version, me.exposure_known, me.exposure_mantissa, me.exposure_currency, me.exposure_exponent, me.confidence_bp, me.urgency_bp, me.evidence_observation_id, me.evidence_quality, me.evidence_ref, me.evidence_detail, me.first_detected_at, me.last_evidence_at, me.expires_at, me.resolved_at, me.updated_at, me.evidence_update_count FROM market_events me
+JOIN marketplace_accounts a ON me.marketplace_account_id = a.id
+WHERE me.id = $1 AND a.organization_id = $2
+`
+
+type GetEventForOrgParams struct {
+	ID             uuid.UUID
+	OrganizationID uuid.UUID
+}
+
+// ORG-SCOPED detail read (issue #67, S8-AUTHZ-001): an event resolves ONLY when its
+// marketplace account belongs to the authenticated organization. A foreign event id
+// (owned by a DIFFERENT org) matches no row — identical to an unknown id — so the
+// caller cannot use possession of an event UUID as a cross-tenant existence oracle.
+func (q *Queries) GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) (MarketEvent, error) {
+	row := q.db.QueryRow(ctx, getEventForOrg, arg.ID, arg.OrganizationID)
+	var i MarketEvent
+	err := row.Scan(
+		&i.ID,
+		&i.MarketplaceAccountID,
+		&i.VariantID,
+		&i.TargetID,
+		&i.EventType,
+		&i.Severity,
+		&i.State,
+		&i.DedupKey,
+		&i.ThresholdID,
+		&i.ThresholdVersion,
+		&i.ExposureKnown,
+		&i.ExposureMantissa,
+		&i.ExposureCurrency,
+		&i.ExposureExponent,
+		&i.ConfidenceBp,
+		&i.UrgencyBp,
+		&i.EvidenceObservationID,
+		&i.EvidenceQuality,
+		&i.EvidenceRef,
+		&i.EvidenceDetail,
+		&i.FirstDetectedAt,
+		&i.LastEvidenceAt,
+		&i.ExpiresAt,
+		&i.ResolvedAt,
+		&i.UpdatedAt,
+		&i.EvidenceUpdateCount,
+	)
+	return i, err
+}
+
 const getMaterialityThreshold = `-- name: GetMaterialityThreshold :one
 SELECT id, marketplace_account_id, category, event_type, version, move_bp, seller_count_delta, challenge_margin_bp, effective_from, created_by, created_at FROM materiality_thresholds WHERE id = $1
 `
@@ -168,11 +217,18 @@ func (q *Queries) GetMaterialityThresholdAsOf(ctx context.Context, arg GetMateri
 
 const getOpenEventByDedupKey = `-- name: GetOpenEventByDedupKey :one
 SELECT id, marketplace_account_id, variant_id, target_id, event_type, severity, state, dedup_key, threshold_id, threshold_version, exposure_known, exposure_mantissa, exposure_currency, exposure_exponent, confidence_bp, urgency_bp, evidence_observation_id, evidence_quality, evidence_ref, evidence_detail, first_detected_at, last_evidence_at, expires_at, resolved_at, updated_at, evidence_update_count FROM market_events
-WHERE dedup_key = $1 AND state IN ('open', 'updated')
+WHERE marketplace_account_id = $1 AND dedup_key = $2 AND state IN ('open', 'updated')
 `
 
-func (q *Queries) GetOpenEventByDedupKey(ctx context.Context, dedupKey string) (MarketEvent, error) {
-	row := q.db.QueryRow(ctx, getOpenEventByDedupKey, dedupKey)
+type GetOpenEventByDedupKeyParams struct {
+	MarketplaceAccountID uuid.UUID
+	DedupKey             string
+}
+
+// TENANT-SCOPED (issue #67): the open row is looked up within the owning account,
+// so a dedup key never resolves another account's open event.
+func (q *Queries) GetOpenEventByDedupKey(ctx context.Context, arg GetOpenEventByDedupKeyParams) (MarketEvent, error) {
+	row := q.db.QueryRow(ctx, getOpenEventByDedupKey, arg.MarketplaceAccountID, arg.DedupKey)
 	var i MarketEvent
 	err := row.Scan(
 		&i.ID,
@@ -286,6 +342,49 @@ func (q *Queries) InsertRelevanceFeedback(ctx context.Context, arg InsertRelevan
 		arg.UserID,
 		arg.Relevance,
 		arg.Note,
+	)
+	var i EventRelevanceFeedback
+	err := row.Scan(
+		&i.ID,
+		&i.EventID,
+		&i.UserID,
+		&i.Relevance,
+		&i.Note,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const insertRelevanceFeedbackForOrg = `-- name: InsertRelevanceFeedbackForOrg :one
+INSERT INTO event_relevance_feedback (event_id, user_id, relevance, note)
+SELECT me.id, $1, $2, $3
+FROM market_events me
+JOIN marketplace_accounts a ON me.marketplace_account_id = a.id
+WHERE me.id = $4 AND a.organization_id = $5
+RETURNING id, event_id, user_id, relevance, note, created_at
+`
+
+type InsertRelevanceFeedbackForOrgParams struct {
+	UserID         pgtype.UUID
+	Relevance      string
+	Note           string
+	EventID        uuid.UUID
+	OrganizationID uuid.UUID
+}
+
+// ORG-SCOPED append-only relevance write (issue #67, S8-AUTHZ-001). The row is
+// inserted ONLY when the target event's marketplace account belongs to the
+// authenticated organization: the INSERT ... SELECT yields ZERO rows for a foreign
+// (or unknown) event id, so a cross-tenant relevance vote is silently written to
+// nothing and the service surfaces a not-found — no existence oracle, still
+// append-only (EVT-005).
+func (q *Queries) InsertRelevanceFeedbackForOrg(ctx context.Context, arg InsertRelevanceFeedbackForOrgParams) (EventRelevanceFeedback, error) {
+	row := q.db.QueryRow(ctx, insertRelevanceFeedbackForOrg,
+		arg.UserID,
+		arg.Relevance,
+		arg.Note,
+		arg.EventID,
+		arg.OrganizationID,
 	)
 	var i EventRelevanceFeedback
 	err := row.Scan(
@@ -443,7 +542,7 @@ INSERT INTO market_events (
     $15, $16, $17, $18,
     $19, $19, $20
 )
-ON CONFLICT (dedup_key) WHERE state IN ('open', 'updated') DO NOTHING
+ON CONFLICT (marketplace_account_id, dedup_key) WHERE state IN ('open', 'updated') DO NOTHING
 RETURNING id, marketplace_account_id, variant_id, target_id, event_type, severity, state, dedup_key, threshold_id, threshold_version, exposure_known, exposure_mantissa, exposure_currency, exposure_exponent, confidence_bp, urgency_bp, evidence_observation_id, evidence_quality, evidence_ref, evidence_detail, first_detected_at, last_evidence_at, expires_at, resolved_at, updated_at, evidence_update_count
 `
 
@@ -477,6 +576,10 @@ type OpenEventParams struct {
 // NEVER creates a second events row (EVT-003, §16). Exposure obeys EVT-005: an
 // unknown exposure passes exposure_known=false with NULL mantissa (the CHECK
 // rejects a fabricated number).
+// Dedup is TENANT-SCOPED (issue #67): at most one open|updated row per
+// (marketplace_account_id, dedup_key). A duplicate WITHIN the same account
+// collides and returns no row (→ UpdateOpenEvent); an identical logical key in a
+// DIFFERENT account is a distinct row and opens cleanly — tenants never collide.
 func (q *Queries) OpenEvent(ctx context.Context, arg OpenEventParams) (MarketEvent, error) {
 	row := q.db.QueryRow(ctx, openEvent,
 		arg.MarketplaceAccountID,
@@ -586,14 +689,15 @@ func (q *Queries) ResolveEvent(ctx context.Context, arg ResolveEventParams) (Mar
 const resolveOpenEventByDedupKey = `-- name: ResolveOpenEventByDedupKey :execrows
 UPDATE market_events SET
     state       = 'resolved',
-    resolved_at = $2,
+    resolved_at = $3,
     updated_at  = now()
-WHERE dedup_key = $1 AND state IN ('open', 'updated')
+WHERE marketplace_account_id = $1 AND dedup_key = $2 AND state IN ('open', 'updated')
 `
 
 type ResolveOpenEventByDedupKeyParams struct {
-	DedupKey   string
-	ResolvedAt pgtype.Timestamptz
+	MarketplaceAccountID uuid.UUID
+	DedupKey             string
+	ResolvedAt           pgtype.Timestamptz
 }
 
 // Type-aware CONDITION-CLEAR (§15.1, issue #66): when a detector reports its
@@ -602,8 +706,11 @@ type ResolveOpenEventByDedupKeyParams struct {
 // makes it MONOTONIC and idempotent — a replay of the same clearance (the event
 // already resolved/expired, or none ever opened) affects zero rows and can never
 // resurrect a terminal event. Resolving frees the dedup_key just like ResolveEvent.
+// TENANT-SCOPED (issue #67): the condition-clear resolves the open event of the
+// OWNING account only, so a clearance in one account can never resolve another
+// account's open event that happens to share a logical dedup key.
 func (q *Queries) ResolveOpenEventByDedupKey(ctx context.Context, arg ResolveOpenEventByDedupKeyParams) (int64, error) {
-	result, err := q.db.Exec(ctx, resolveOpenEventByDedupKey, arg.DedupKey, arg.ResolvedAt)
+	result, err := q.db.Exec(ctx, resolveOpenEventByDedupKey, arg.MarketplaceAccountID, arg.DedupKey, arg.ResolvedAt)
 	if err != nil {
 		return 0, err
 	}
@@ -613,28 +720,29 @@ func (q *Queries) ResolveOpenEventByDedupKey(ctx context.Context, arg ResolveOpe
 const updateOpenEvent = `-- name: UpdateOpenEvent :one
 UPDATE market_events SET
     state                   = 'updated',
-    severity                = $2,
-    threshold_id            = $3,
-    threshold_version       = $4,
-    exposure_known          = $5,
-    exposure_mantissa       = $6,
-    exposure_currency       = $7,
-    exposure_exponent       = $8,
-    confidence_bp           = $9,
-    urgency_bp              = $10,
-    evidence_observation_id = $11,
-    evidence_quality        = $12,
-    evidence_ref            = $13,
-    evidence_detail         = $14,
-    last_evidence_at        = $15,
-    expires_at              = $16,
+    severity                = $3,
+    threshold_id            = $4,
+    threshold_version       = $5,
+    exposure_known          = $6,
+    exposure_mantissa       = $7,
+    exposure_currency       = $8,
+    exposure_exponent       = $9,
+    confidence_bp           = $10,
+    urgency_bp              = $11,
+    evidence_observation_id = $12,
+    evidence_quality        = $13,
+    evidence_ref            = $14,
+    evidence_detail         = $15,
+    last_evidence_at        = $16,
+    expires_at              = $17,
     evidence_update_count   = evidence_update_count + 1,
     updated_at              = now()
-WHERE dedup_key = $1 AND state IN ('open', 'updated')
+WHERE marketplace_account_id = $1 AND dedup_key = $2 AND state IN ('open', 'updated')
 RETURNING id, marketplace_account_id, variant_id, target_id, event_type, severity, state, dedup_key, threshold_id, threshold_version, exposure_known, exposure_mantissa, exposure_currency, exposure_exponent, confidence_bp, urgency_bp, evidence_observation_id, evidence_quality, evidence_ref, evidence_detail, first_detected_at, last_evidence_at, expires_at, resolved_at, updated_at, evidence_update_count
 `
 
 type UpdateOpenEventParams struct {
+	MarketplaceAccountID  uuid.UUID
 	DedupKey              string
 	Severity              string
 	ThresholdID           pgtype.UUID
@@ -658,8 +766,13 @@ type UpdateOpenEventParams struct {
 // 'updated', and bumps evidence_update_count. It produces ZERO new events rows,
 // so the Today feed still shows exactly one item. The dedup_key and the opening
 // identity are preserved. Exposure still obeys EVT-005 via the table CHECK.
+//
+// The predicate is TENANT-SCOPED (issue #67): the update targets the open row of
+// the OWNING account only, so a same-key detection in a DIFFERENT account can
+// never mutate this account's open event.
 func (q *Queries) UpdateOpenEvent(ctx context.Context, arg UpdateOpenEventParams) (MarketEvent, error) {
 	row := q.db.QueryRow(ctx, updateOpenEvent,
+		arg.MarketplaceAccountID,
 		arg.DedupKey,
 		arg.Severity,
 		arg.ThresholdID,

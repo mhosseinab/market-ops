@@ -30,11 +30,13 @@ type Recorder interface {
 	// Returns the number expired. Idempotent and monotonic: nothing due returns 0
 	// and a terminal event is never resurrected, so restarts/repeats are safe.
 	ExpireStaleAll(ctx context.Context, now time.Time) (int64, error)
-	// ResolveOpen resolves the single open|updated event for a dedup identity when
-	// its triggering condition no longer holds (§15.1 condition-clear, issue #66).
-	// Reports whether a row transitioned; a no-op (nothing open) returns false and
-	// never resurrects a terminal event, so a replayed clearance is idempotent.
-	ResolveOpen(ctx context.Context, dedupKey string) (bool, error)
+	// ResolveOpen resolves the single open|updated event for a dedup identity within
+	// the OWNING account when its triggering condition no longer holds (§15.1
+	// condition-clear, issue #66; account-scoped per issue #67). Reports whether a row
+	// transitioned; a no-op (nothing open) returns false and never resurrects a
+	// terminal event, so a replayed clearance is idempotent. Scoping to the account
+	// means a clearance in one tenant never resolves another tenant's same-key event.
+	ResolveOpen(ctx context.Context, account uuid.UUID, dedupKey string) (bool, error)
 }
 
 // Transition is one detected input transition awaiting event production. Exactly
@@ -167,7 +169,7 @@ func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
 				p.tel.dormant.Add(ctx, 1)
 				continue
 			}
-			resolved, rerr := p.rec.ResolveOpen(ctx, key)
+			resolved, rerr := p.rec.ResolveOpen(ctx, tr.Account, key)
 			if rerr != nil {
 				m.Errors++
 				p.tel.errors.Add(ctx, 1)
