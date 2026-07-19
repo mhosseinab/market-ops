@@ -21,6 +21,13 @@ type ExecutionService interface {
 	Execute(ctx context.Context, cardID uuid.UUID, actor audit.Actor) (execution.ExecuteResult, error)
 	Retry(ctx context.Context, actionID uuid.UUID, actor audit.Actor) (execution.RetryResult, error)
 	GetExecution(ctx context.Context, actionID uuid.UUID) (db.ActionExecution, error)
+	// GetUnifiedAction resolves an action in EITHER execution mode (issue #106):
+	// a write execution OR a recommend-only action, so a recommend-only action is
+	// no longer invisible (404) through the common action read.
+	GetUnifiedAction(ctx context.Context, actionID uuid.UUID) (execution.UnifiedAction, error)
+	// ListUnifiedByAccount projects both modes for an account so the actions list
+	// can overlay mode + canonical state (issue #106).
+	ListUnifiedByAccount(ctx context.Context, account uuid.UUID, limit int32) ([]execution.UnifiedAction, error)
 	// ListPendingReconciliation backs GET /ops/queues (PD-3 item 8, S37).
 	ListPendingReconciliation(ctx context.Context, account uuid.UUID, limit int32) ([]db.ActionExecution, error)
 }
@@ -110,34 +117,51 @@ func (s *gatewayServer) RetryAction(
 	return gateway.RetryAction200JSONResponse(out), nil
 }
 
-// GetActionExecution returns an action's single execution record (CHAT-073 read).
+// GetActionExecution returns an action's execution record in EITHER mode (CHAT-073
+// read, unified per issue #106): a write execution OR a recommend-only action. A
+// recommend-only action resolves here (no longer 404) with mode=recommend_only and
+// NO write externalState — an externally-executed recommend-only action is not a
+// marketplace write (never-cut separation).
 func (s *gatewayServer) GetActionExecution(
 	ctx context.Context, req gateway.GetActionExecutionRequestObject,
 ) (gateway.GetActionExecutionResponseObject, error) {
 	if s.execution == nil {
 		return gateway.GetActionExecutiondefaultJSONResponse{StatusCode: 503, Body: executionUnavailableErr()}, nil
 	}
-	rec, err := s.execution.GetExecution(ctx, req.Params.ActionId)
+	ua, err := s.execution.GetUnifiedAction(ctx, req.Params.ActionId)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return gateway.GetActionExecutiondefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
 		}
 		return gateway.GetActionExecutiondefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
 	}
+	return gateway.GetActionExecution200JSONResponse(toActionExecutionView(ua)), nil
+}
+
+// toActionExecutionView maps a unified action onto the wire view. Exactly one of
+// externalState (write) / recommendOnlyState (recommend-only) is populated, so a
+// recommend-only action never carries a write claim.
+func toActionExecutionView(ua execution.UnifiedAction) gateway.ActionExecutionView {
+	canonical := gateway.ActionCanonicalState(ua.Canonical)
 	view := gateway.ActionExecutionView{
-		ActionId:      rec.ActionID,
-		CardId:        rec.CardID,
-		Mode:          gateway.ExecutionMode(rec.Mode),
-		ExternalState: gateway.ExecutionExternalState(rec.ExternalState),
+		ActionId:       ua.ActionID,
+		CardId:         ua.CardID,
+		Mode:           gateway.ExecutionMode(ua.Mode),
+		CanonicalState: &canonical,
 	}
-	if rec.ExternalRef != "" {
-		view.ExternalRef = &rec.ExternalRef
+	switch ua.Mode {
+	case execution.ModeWrite:
+		es := gateway.ExecutionExternalState(ua.ExternalState)
+		view.ExternalState = &es
+		if ua.ExternalRef != "" {
+			view.ExternalRef = &ua.ExternalRef
+		}
+		view.ReconciledAt = ua.ReconciledAt
+	case execution.ModeRecommendOnly:
+		ro := gateway.RecommendOnlyState(ua.RecommendOnlyState)
+		view.RecommendOnlyState = &ro
 	}
-	if rec.ReconciledAt.Valid {
-		t := rec.ReconciledAt.Time
-		view.ReconciledAt = &t
-	}
-	return gateway.GetActionExecution200JSONResponse(view), nil
+	return view
 }
 
 // GetOutcome returns an action's seven-day outcome window and (when closed) its

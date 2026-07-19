@@ -455,6 +455,11 @@ type Querier interface {
 	// The rows a commit turns into cost_profile versions: accepted rows with a
 	// resolved variant. Duplicate/reject rows are excluded by construction.
 	ListAcceptedCostImportRows(ctx context.Context, batchID uuid.UUID) ([]CostImportRow, error)
+	// Every write-mode action_executions row for an account (issue #106 unified action
+	// projection), newest first. Scoped via the bound approval_cards row
+	// (action_executions carries no account column of its own). A pure SELECT — the
+	// common action API overlays these onto the account's approval cards.
+	ListActionExecutionsByAccount(ctx context.Context, arg ListActionExecutionsByAccountParams) ([]ActionExecution, error)
 	// Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
 	// cadence tier, across all accounts, in a stable order. A target deactivated by
 	// identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
@@ -566,6 +571,10 @@ type Querier interface {
 	// its per-run idempotency guard: a run still being retried after a restart is never
 	// double-counted on the live path. Pure SELECT: never mutates a run row.
 	ListRecentCatalogSyncOutcomes(ctx context.Context) ([]ListRecentCatalogSyncOutcomesRow, error)
+	// Every recommend-only action for an account (issue #106 unified action
+	// projection), newest first. recommend_only_actions carries its own account
+	// column, so no join is needed. A pure SELECT.
+	ListRecommendOnlyActionsByAccount(ctx context.Context, arg ListRecommendOnlyActionsByAccountParams) ([]RecommendOnlyAction, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)

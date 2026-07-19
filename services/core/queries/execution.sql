@@ -91,6 +91,27 @@ WHERE state = 'awaiting_external_execution'
 ORDER BY approved_at
 LIMIT $1;
 
+-- name: ListActionExecutionsByAccount :many
+-- Every write-mode action_executions row for an account (issue #106 unified action
+-- projection), newest first. Scoped via the bound approval_cards row
+-- (action_executions carries no account column of its own). A pure SELECT — the
+-- common action API overlays these onto the account's approval cards.
+SELECT ae.*
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ac.marketplace_account_id = $1
+ORDER BY ae.created_at DESC
+LIMIT $2;
+
+-- name: ListRecommendOnlyActionsByAccount :many
+-- Every recommend-only action for an account (issue #106 unified action
+-- projection), newest first. recommend_only_actions carries its own account
+-- column, so no join is needed. A pure SELECT.
+SELECT * FROM recommend_only_actions
+WHERE marketplace_account_id = $1
+ORDER BY approved_at DESC
+LIMIT $2;
+
 -- name: GetCurrentExecutionContext :one
 -- Server-side re-resolution for the Revalidating gate (EXE-001): the account,
 -- variant, and native variant id for a card's recommendation, PLUS the CURRENT

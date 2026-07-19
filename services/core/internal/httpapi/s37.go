@@ -17,6 +17,7 @@ import (
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/execution"
 	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
 	"github.com/mhosseinab/market-ops/services/core/internal/margin"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
@@ -149,11 +150,50 @@ func (s *gatewayServer) ListActions(
 	if err != nil {
 		return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 	}
+	// Overlay the execution mode + canonical state per action (issue #106) so the
+	// list groups write AND recommend-only modes by canonical state without deep-
+	// link-only discovery. The overlay is best-effort context: when execution is
+	// unconfigured the list still returns the approval cards (fail open on the read
+	// enrichment, never on the authoritative card state).
+	overlay := map[uuid.UUID]execution.UnifiedAction{}
+	if s.execution != nil {
+		unified, err := s.execution.ListUnifiedByAccount(ctx, req.Params.MarketplaceAccountId, limit)
+		if err != nil {
+			return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
+		}
+		for _, u := range unified {
+			overlay[u.ActionID] = u
+		}
+	}
 	items := make([]gateway.ActionSummary, 0, len(rows))
 	for _, r := range rows {
-		items = append(items, toActionSummary(r))
+		summary := toActionSummary(r)
+		if u, ok := overlay[r.ActionID]; ok {
+			applyExecutionOverlay(&summary, u)
+		}
+		items = append(items, summary)
 	}
 	return gateway.ListActions200JSONResponse(gateway.ActionList{Items: items}), nil
+}
+
+// applyExecutionOverlay enriches an action summary with its execution overlay
+// (issue #106): mode + canonical state, and exactly one mode-specific raw state
+// (write externalState / recommend-only recommendOnlyState). A recommend-only
+// action never gets a write externalState — the never-cut separation holds on the
+// list surface exactly as it does on the single read.
+func applyExecutionOverlay(summary *gateway.ActionSummary, u execution.UnifiedAction) {
+	mode := gateway.ExecutionMode(u.Mode)
+	canonical := gateway.ActionCanonicalState(u.Canonical)
+	summary.ExecutionMode = &mode
+	summary.CanonicalState = &canonical
+	switch u.Mode {
+	case execution.ModeWrite:
+		es := gateway.ExecutionExternalState(u.ExternalState)
+		summary.ExternalState = &es
+	case execution.ModeRecommendOnly:
+		ro := gateway.RecommendOnlyState(u.RecommendOnlyState)
+		summary.RecommendOnlyState = &ro
+	}
 }
 
 // ListOutcomes returns the account's outcome windows and, when closed, their

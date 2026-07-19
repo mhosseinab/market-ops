@@ -483,6 +483,59 @@ func (s *Service) GetExecution(ctx context.Context, actionID uuid.UUID) (db.Acti
 	return db.New(s.pool).GetActionExecutionByAction(ctx, actionID)
 }
 
+// GetUnifiedAction resolves an action across BOTH execution modes (issue #106): a
+// write-mode action_executions record OR a recommend-only action, projected onto
+// the common UnifiedAction view. It fails closed with pgx.ErrNoRows when neither
+// exists — so a recommend-only action is no longer invisible (404) through the
+// common action API. A write record takes precedence: the two are mutually
+// exclusive per action, and a stray recommend-only row must never mask a real
+// external write.
+func (s *Service) GetUnifiedAction(ctx context.Context, actionID uuid.UUID) (UnifiedAction, error) {
+	q := db.New(s.pool)
+	if exec, err := q.GetActionExecutionByAction(ctx, actionID); err == nil {
+		return unifiedFromExecution(exec), nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return UnifiedAction{}, err
+	}
+	if ro, err := q.GetRecommendOnlyAction(ctx, actionID); err == nil {
+		return unifiedFromRecommendOnly(ro), nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return UnifiedAction{}, err
+	}
+	return UnifiedAction{}, pgx.ErrNoRows
+}
+
+// ListUnifiedByAccount projects every executed / recommend-only action for an
+// account onto the common UnifiedAction view (issue #106), keyed by action id.
+// Both modes appear so the account action list can group by canonical state
+// without deep-link-only discovery. It is a read; it advances no state.
+func (s *Service) ListUnifiedByAccount(ctx context.Context, account uuid.UUID, limit int32) ([]UnifiedAction, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	q := db.New(s.pool)
+	execs, err := q.ListActionExecutionsByAccount(ctx, db.ListActionExecutionsByAccountParams{
+		MarketplaceAccountID: account, Limit: limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ros, err := q.ListRecommendOnlyActionsByAccount(ctx, db.ListRecommendOnlyActionsByAccountParams{
+		MarketplaceAccountID: account, Limit: limit,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UnifiedAction, 0, len(execs)+len(ros))
+	for _, e := range execs {
+		out = append(out, unifiedFromExecution(e))
+	}
+	for _, r := range ros {
+		out = append(out, unifiedFromRecommendOnly(r))
+	}
+	return out, nil
+}
+
 // ListPendingReconciliation returns the account's action_executions still
 // awaiting reconciliation (PD-3 item 8, S37 Operations queue) — an unknown
 // external result that must resolve before any retry (EXE-003, never inferred).
