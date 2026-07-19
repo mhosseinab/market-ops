@@ -93,8 +93,10 @@ func seedApprovedCard(t *testing.T, pool *pgxpool.Pool, q *db.Queries) (db.Appro
 		INSERT INTO recommendations (
 			marketplace_account_id, variant_id, lineage_id, version, objective,
 			current_price_mantissa, current_price_currency, current_price_exponent,
-			readiness, evidence_quality)
-		VALUES ($1,$2,$3,1,'maximize_contribution',100000,'IRR',0,'complete','verified')
+			readiness, evidence_quality,
+			cost_profile_version, policy_version, context_version, parameter_version)
+		VALUES ($1,$2,$3,1,'maximize_contribution',100000,'IRR',0,'complete','verified',
+			1,1,1,1)
 		RETURNING id`, acct.ID, variant.ID, lineage).Scan(&recID); err != nil {
 		t.Fatalf("insert recommendation: %v", err)
 	}
