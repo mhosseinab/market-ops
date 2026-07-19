@@ -121,9 +121,10 @@ func (s *gatewayServer) CreateLevel2Proposal(
 
 // GetBriefing serves the stored daily briefing for an account/business-day
 // (CHAT-010). Its events carry the SAME ids/order as the Today feed (generated
-// from the one ranking). It is a read; it never generates a briefing. A human
-// session reads it; the machine principal reads it via the GatewayCan(read.events)
-// fallback.
+// from the one ranking). It is a read; it never generates a briefing. It is a
+// human-session read: the machine gateway credential does NOT reach it, because
+// read.events is not a perm_action any typed model-visible tool declares (issue
+// #26 — the machine envelope may not exceed the typed tool registry manifest).
 func (s *gatewayServer) GetBriefing(
 	ctx context.Context, req gateway.GetBriefingRequestObject,
 ) (gateway.GetBriefingResponseObject, error) {

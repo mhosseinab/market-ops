@@ -64,35 +64,66 @@ func ReadActions() []Action {
 	return out
 }
 
-// gatewaySurfaceOnlyReads are L1 actions that gate a human-facing SURFACE rather
-// than a typed data read the LLM plane performs with its machine credential.
-// chat.converse authorizes a person opening/continuing a chat turn (CHAT-009); it
-// is not a data-read tool the LLM_GATEWAY_TOKEN principal ever needs, and the
-// machine principal must not be able to open a chat turn on its own behalf. Such
-// actions are excluded from the gateway envelope by construction while remaining
-// L1 in the Matrix for the human roles that legitimately hold them.
-var gatewaySurfaceOnlyReads = map[Action]bool{
-	ActionChatConverse: true,
+// gatewayReadToolActions is the EXPLICIT allowlist of L1 read actions the typed
+// model-visible tool registry (services/llm/src/llm/tools/registry.py) declares
+// as its read tools' perm_action values. The machine credential's READ envelope
+// is EXACTLY this set — never "every L1 read minus a denylist" (issue #26,
+// §12.3). Deriving the envelope from a denylist meant every human-facing L1 read
+// later added to the Matrix (session.read, session.logout, read.users, the Today
+// feed, notification ack, …) silently widened the LLM plane's authority beyond
+// the reviewed typed-tool manifest. An allowlist inverts that default: a new
+// Matrix read is DENIED to the machine principal until a reviewed typed tool
+// declares it here AND the cross-language manifest (contracts/
+// llm_gateway_envelope.json) is regenerated — the drift test fails closed
+// otherwise. Each entry is the perm_action a specific typed read tool maps onto:
+//
+//	connector.inspect       -> read_identity
+//	read.connection_status  -> read_observation / read_event / read_action
+//	read.cost_readiness     -> read_margin
+//	read.current_strategy   -> read_catalog / read_policy / read_settings
+//
+// Human-facing surface/session actions (chat.converse, session.read,
+// session.logout) are absent by construction; they remain L1 in the Matrix for
+// the human roles that legitimately hold them.
+var gatewayReadToolActions = []Action{
+	ActionConnectorInspect,
+	ActionReadConnection,
+	ActionReadCostReadiness,
+	ActionReadStrategy,
 }
 
-// isGatewayReadTool reports whether an L1 read action is a data-read tool the
-// gateway principal legitimately maps onto (i.e. not a surface-only action).
-func isGatewayReadTool(a Action) bool { return !gatewaySurfaceOnlyReads[a] }
+// gatewayReadToolSet is the O(1) membership view of gatewayReadToolActions. It
+// panics at init if any allowlisted action is not an L1 read in the Matrix — an
+// allowlist entry can never reference an L2+ (write/guardrail/execute) action, so
+// the "read + Draft-only" envelope cannot be widened through a typo.
+var gatewayReadToolSet = func() map[Action]bool {
+	m := make(map[Action]bool, len(gatewayReadToolActions))
+	for _, a := range gatewayReadToolActions {
+		lvl, ok := LevelOf(a)
+		if !ok || lvl != L1Read {
+			panic("perm: gateway read-tool allowlist contains non-L1-read action: " + string(a))
+		}
+		m[a] = true
+	}
+	return m
+}()
+
+// isGatewayReadTool reports whether an L1 read action is one the typed tool
+// registry declares (i.e. present in the explicit allowlist).
+func isGatewayReadTool(a Action) bool { return gatewayReadToolSet[a] }
 
 // gatewayGrants is the exact capability envelope of the LLM_GATEWAY_TOKEN
-// machine principal: every L1 read action EXCEPT surface-only actions (like
-// chat.converse), plus the Draft-only writes, and NOTHING else. It is computed
-// from the Matrix + DraftActions so it cannot drift from them. Any L2
-// reversible-config, L3 commercial-guardrail, L4 marketplace mutation,
-// permission, or execute/approve action is absent by construction —
-// gateway_test.go asserts that invariant explicitly and fails closed if a future
-// change tries to widen this set.
+// machine principal: EXACTLY the typed registry's read-tool actions
+// (gatewayReadToolActions) plus the Draft-only writes, and NOTHING else. Any
+// other L1 read, any L2 reversible-config, L3 commercial-guardrail, L4
+// marketplace mutation, permission, or execute/approve action is absent by
+// construction — gateway_test.go asserts that invariant explicitly and
+// gateway_manifest_test.go fails closed if this set and the Python registry
+// disagree.
 var gatewayGrants = func() map[Action]bool {
-	m := make(map[Action]bool)
-	for _, a := range ReadActions() {
-		if isGatewayReadTool(a) {
-			m[a] = true
-		}
+	m := make(map[Action]bool, len(gatewayReadToolActions)+len(DraftActions))
+	for _, a := range gatewayReadToolActions {
+		m[a] = true
 	}
 	for _, a := range DraftActions {
 		m[a] = true
@@ -101,16 +132,12 @@ var gatewayGrants = func() map[Action]bool {
 }()
 
 // GatewayGrantedActions returns the LLM machine principal's granted actions in a
-// stable order (read actions first, then Draft actions), for tests and wiring.
-// Surface-only reads (e.g. chat.converse) are excluded — the machine principal
-// gets a data-read + Draft-only envelope, never the chat surface itself.
+// stable order (typed read actions first, then Draft actions), for tests and
+// wiring. Only the typed registry's declared read actions are included — never a
+// surface/session read the machine principal has no tool for.
 func GatewayGrantedActions() []Action {
-	out := make([]Action, 0)
-	for _, a := range ReadActions() {
-		if isGatewayReadTool(a) {
-			out = append(out, a)
-		}
-	}
+	out := make([]Action, 0, len(gatewayReadToolActions)+len(DraftActions))
+	out = append(out, gatewayReadToolActions...)
 	return append(out, DraftActions...)
 }
 

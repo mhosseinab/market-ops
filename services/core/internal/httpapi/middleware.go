@@ -204,8 +204,11 @@ var routePolicies = []routePolicy{
 	{http.MethodPost, "/chat/cards/recommendation-draft", kindGatewayDraft, perm.ActionDraftRecommendation},
 	{http.MethodPost, "/chat/cards/selection-set-draft", kindGatewayDraft, perm.ActionDraftSelectionSet},
 	{http.MethodPost, "/chat/cards/level2-proposal", kindGatewayDraft, perm.ActionDraftLevel2Proposal},
-	// Daily briefing read (CHAT-010) — L1 read.events. A human session reads it;
-	// the machine principal also reads it via the GatewayCan(read.events) fallback.
+	// Daily briefing read (CHAT-010) — L1 read.events, a human-session read. The
+	// machine gateway credential does NOT reach it: read.events is not a
+	// perm_action any typed model-visible tool declares, so it is outside the
+	// machine envelope (issue #26 — the machine grant may not exceed the typed
+	// tool registry manifest).
 	{http.MethodGet, "/briefing", kindProtected, perm.ActionReadEvents},
 	// In-app notification feed read + acknowledgement (NOT-001) — L1, every role.
 	// Ack advances only a bounded read-state projection; neither carries a control.
