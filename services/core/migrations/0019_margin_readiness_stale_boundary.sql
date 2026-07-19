@@ -19,6 +19,12 @@ ALTER TABLE margin_readiness
     ADD COLUMN stale_boundary timestamptz;
 -- +goose StatementEnd
 
+-- Plain additive: no DELETE/TRUNCATE. A row present at migration time keeps
+-- stale_boundary NULL, which under the new code means EXACTLY "never computed under
+-- the freshness-aware path". GetReadiness treats a stored NULL horizon as
+-- undeterminable and recomputes it (fail closed, never served as fresh-forever), so
+-- pre-fix rows age correctly WITHOUT a destructive projection wipe (issue #39).
+
 -- +goose Down
 -- +goose StatementBegin
 ALTER TABLE margin_readiness
