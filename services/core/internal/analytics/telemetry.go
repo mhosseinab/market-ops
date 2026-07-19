@@ -40,21 +40,74 @@ func newTelemetry() *telemetry {
 	}
 }
 
-// envelopeAttrs is the shared dimension set an analytics signal rolls up by. It
-// carries locale/region/currency-contract as DATA labels (never a branch) so a
-// dashboard can slice by them; no locale COPY is ever emitted here.
+// REVIEWED LABEL CARDINALITY BUDGET (issue #151, never-cut observability).
+//
+// Metric labels are a BOUNDED, tenant-free dimension set. The durable attribution
+// (organization/account/entity, currency-contract version) is persisted on
+// analytics_events (the authorized query plane, analytics.go) — it is NEVER a
+// Prometheus label, because a tenant UUID or an unconstrained version value is
+// unbounded and tenant-sensitive and would explode series cardinality.
+//
+// The label KEY allowlist is closed and asserted by telemetry_test.go:
+//   - analytics.events           → {family, name, locale, region, source_surface}
+//   - analytics.cost_minor_units → {cost_kind, locale, region, source_surface}
+//
+// family and cost_kind are already closed enums (validated before emit). name is a
+// CLOSED developer-defined constant — a stable name within its family (analytics.go
+// Event.Name), never tenant-derived and never caller free text — so it is bounded by
+// construction and emitted VERBATIM: the §18 dashboards slice `analytics_events by
+// (name)` per family (recommendation, conversation, and the free-text-containment
+// panel that reads name=~".*contain.*|.*guidance.*|.*blocked.*"), so collapsing name
+// to a sentinel would silently zero a never-cut observability boundary.
+//
+// The genuinely open/config/caller-derived dimensions (locale, region,
+// source_surface) ARE bounded to a reviewed allowlist below; any value outside it
+// buckets to labelSentinel so a free-text or tenant-derived value can NEVER mint a
+// new series. Extending a bounded dimension is a deliberate, reviewed edit to these
+// sets — an unregistered value stays observable under the sentinel rather than
+// growing cardinality. Tenant UUIDs (organization/account/entity) and the unbounded
+// currency-contract version are NEVER labels (issue #151) — they live on the
+// persisted analytics_events plane.
+const labelSentinel = "other"
+
+// allowedLocales is the reviewed locale label domain. Locale is DATA, never a
+// branch, and the locale COPY (Persian strings) is never emitted as a label.
+var allowedLocales = map[string]struct{}{"fa-IR": {}, "fa": {}, "en-US": {}, "en": {}}
+
+// allowedRegions is the reviewed region label domain (P0 beta serves IR).
+var allowedRegions = map[string]struct{}{"IR": {}}
+
+// allowedSourceSurfaces is the reviewed surface label domain: where a signal
+// originated. Bounded so an arbitrary surface string cannot widen cardinality.
+var allowedSourceSurfaces = map[string]struct{}{
+	"screen": {}, "chat": {}, "email_digest": {}, "extension": {}, "system": {},
+}
+
+// boundLabel returns v when it is in the reviewed allowlist, else the sentinel.
+func boundLabel(v string, allow map[string]struct{}) string {
+	if _, ok := allow[v]; ok {
+		return v
+	}
+	return labelSentinel
+}
+
+// envelopeAttrs is the shared BOUNDED dimension set an analytics signal rolls up
+// by: locale/region/source_surface as DATA labels (never a branch), each bounded
+// to its reviewed allowlist. Tenant identifiers and the currency-contract version
+// are deliberately absent — they live on the persisted analytics_events plane.
 func envelopeAttrs(env Envelope) []attribute.KeyValue {
 	return []attribute.KeyValue{
-		attribute.String("organization_id", env.Organization.String()),
-		attribute.String("marketplace_account_id", env.Account.String()),
-		attribute.String("locale", env.Locale),
-		attribute.String("region", env.Region),
-		attribute.String("currency_contract_version", env.CurrencyContractVersion),
-		attribute.String("source_surface", env.SourceSurface),
+		attribute.String("locale", boundLabel(env.Locale, allowedLocales)),
+		attribute.String("region", boundLabel(env.Region, allowedRegions)),
+		attribute.String("source_surface", boundLabel(env.SourceSurface, allowedSourceSurfaces)),
 	}
 }
 
-// event increments the per-family events counter with the envelope dimensions.
+// event increments the per-family events counter with the bounded envelope
+// dimensions plus the closed family and the closed-constant event name. name is a
+// developer-defined constant (not caller free text), emitted verbatim so the §18
+// dashboards can slice `analytics_events by (name)` per family — see the label
+// budget note above.
 func (t *telemetry) event(ctx context.Context, env Envelope, family Family, name string) {
 	attrs := append(envelopeAttrs(env),
 		attribute.String("family", string(family)),

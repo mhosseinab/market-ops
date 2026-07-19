@@ -69,8 +69,8 @@
     {
       "id": 50,
       "type": "timeseries",
-      "title": "Cost per account (24h)",
-      "description": "Daily variable cost per account — the daily model-spend budget input.",
+      "title": "Variable cost by source surface (24h)",
+      "description": "Daily variable cost by source surface (bounded label). Per-ACCOUNT cost drill-down is intentionally NOT a Prometheus label (tenant UUID = unbounded/tenant-sensitive cardinality, issue #151); daily model-spend budget attribution per account lives in the authorized/persisted analytics query plane, not metrics.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -106,8 +106,8 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "sum by (marketplace_account_id) (increase(analytics_cost_minor_units[24h]))",
-          "legendFormat": "{{marketplace_account_id}}",
+          "expr": "sum by (source_surface) (increase(analytics_cost_minor_units[24h]))",
+          "legendFormat": "{{source_surface}}",
           "refId": "X",
           "range": true
         }
