@@ -31,7 +31,7 @@ from llm.contextres.models import (
     missing_card_version_reason,
     scope_mismatch_reason,
 )
-from llm.intents.normalize import normalize_digits
+from llm.intents.normalize import canonicalize_key, normalize_digits
 
 
 def resolve(req: ResolveRequest) -> Resolution:
@@ -121,13 +121,19 @@ def _resolve_with_references(
         )
 
     ref = req.references[0]
-    candidates = req.candidates.get(ref.raw, [])
+    # Match on the BOUNDARY-canonical form (#29, CHAT-081/CHAT-080): the raw
+    # reference token and every candidate-map key are folded through the same
+    # normalizer, so a Persian/Arabic-Indic-digit or Arabic-Kaf/Yeh spelling
+    # resolves identically to its canonical twin. Raw tokens are never mutated.
+    candidates, colliding_keys = _match_candidates(req.candidates, ref.raw)
 
     # Tenant isolation before anything else (PRD §12, §4.6): validate EVERY
     # candidate's authoritative organization/account provenance against the
     # authenticated request scope. If any candidate is out of scope (or lacks
     # provenance), fail closed — a mixed set spanning two tenants must never
     # resolve directly, and a cross-tenant entry must never leak into a picker.
+    # This runs over the FULL merged set (all canonically-colliding keys) so a
+    # folded-key collision that spans tenants still fails closed.
     for candidate in candidates:
         scope_reason = scope_mismatch_reason(
             candidate.organization_id,
@@ -140,6 +146,18 @@ def _resolve_with_references(
                 time_range=time_range,
                 reason=scope_reason,
             )
+
+    # Canonicalization collision (#29): two or more DISTINCT raw candidate-map
+    # keys fold to the reference's key. Which the user meant is genuinely
+    # ambiguous, so picker over the UNION — never select arbitrarily, never
+    # NOT_FOUND. Scope was already validated over the full merged set above.
+    if colliding_keys > 1:
+        return Resolution(
+            kind=ResolutionKind.PICKER,
+            options=_options_from_refs(candidates),
+            time_range=time_range,
+            reason="canonical_key_collision",
+        )
 
     if len(candidates) == 1:
         candidate = candidates[0]
@@ -182,6 +200,32 @@ def _resolve_with_references(
         time_range=time_range,
         reason="ambiguous_reference_card" if card_leading else "ambiguous_reference",
     )
+
+
+def _match_candidates(
+    candidates: dict[str, list[EntityCandidate]], raw: str
+) -> tuple[list[EntityCandidate], int]:
+    """Match ``raw`` against candidate-map keys on their canonical form (#29).
+
+    Both the reference token and every candidate key are folded through
+    :func:`~llm.intents.normalize.canonicalize_key`, so accepted digit families
+    and Arabic/Persian glyph variants of one identifier match. Returns the union
+    of candidates from every non-empty key that canonicalizes equal, plus the
+    count of DISTINCT such keys — ``> 1`` signals a canonicalization collision
+    the caller must picker rather than resolve. Empty candidate lists never count
+    as a match (a lone empty key stays ``reference_matched_nothing``). Insertion
+    order is preserved, so the result is deterministic.
+    """
+    target = canonicalize_key(raw)
+    merged: list[EntityCandidate] = []
+    colliding_keys = 0
+    for key, key_candidates in candidates.items():
+        if not key_candidates:
+            continue
+        if canonicalize_key(key) == target:
+            colliding_keys += 1
+            merged.extend(key_candidates)
+    return merged, colliding_keys
 
 
 def _chip_from_entity(entity: EntityCandidate) -> ContextChip:
