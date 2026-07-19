@@ -1,6 +1,6 @@
-import type { MessageKey } from "@market-ops/locale";
 import { useMemo } from "react";
 import { useLocale, useT } from "../app/i18n";
+import { RUNBOOKS, type RunbookQueueKey, runbookTo } from "../app/runbooks";
 import { AppLink } from "../components/AppLink";
 import { QueueCard } from "../components/QueueCard";
 import { ViewState } from "../components/ViewState";
@@ -14,24 +14,19 @@ import { useConnectorStatus, useNeedsReview, useObservedOffers, useSession } fro
 // from surfaced observation/identity/connector state; queues whose backing list
 // endpoint the P0 contract does not expose (parser/schema drift, pending-
 // reconciliation actions) render an explicit unavailable count, never a
-// fabricated zero (carry-forward for api_data_contracts). Each queue links to its
-// runbook.
+// fabricated zero (carry-forward for api_data_contracts).
 
-const RUNBOOK: Record<string, string> = {
-  failedSync: "/docs/runbooks/connector-sync",
-  staleTargets: "/docs/runbooks/observation-freshness",
-  identityMapping: "/docs/runbooks/identity-mapping",
-  conflicted: "/docs/runbooks/observation-conflict",
-  parserDrift: "/docs/runbooks/parser-drift",
-  pendingRecon: "/docs/runbooks/reconciliation",
-};
-
-function RunbookLink({ href, labelKey }: { href: string; labelKey: MessageKey }) {
+// Each queue links to its runbook via the canonical registry (app/runbooks.ts) —
+// the SAME source the in-SPA viewer and the Grafana validator read, so a Runbook
+// link can never point at a dead/unregistered destination. Links route through
+// AppLink to the in-SPA viewer (honours router basepath, so a base-path
+// deployment resolves correctly) instead of a raw `<a href>` anchor.
+function RunbookLink({ queue }: { queue: RunbookQueueKey }) {
   const t = useT();
   return (
-    <a className="link" href={href} data-testid="runbook-link">
-      {t(labelKey)}
-    </a>
+    <AppLink to={runbookTo(RUNBOOKS[queue].slug)} className="link" testId="runbook-link">
+      {t("operations.runbook")}
+    </AppLink>
   );
 }
 
@@ -98,9 +93,7 @@ export function Operations() {
                 {t("operations.openQueue")}
               </AppLink>
             }
-            runbook={
-              <RunbookLink href={RUNBOOK.failedSync as string} labelKey="operations.runbook" />
-            }
+            runbook={<RunbookLink queue="failedSync" />}
           />
           <QueueCard
             titleKey="operations.queue.staleTargets"
@@ -112,9 +105,7 @@ export function Operations() {
                 {t("operations.openQueue")}
               </AppLink>
             }
-            runbook={
-              <RunbookLink href={RUNBOOK.staleTargets as string} labelKey="operations.runbook" />
-            }
+            runbook={<RunbookLink queue="staleTargets" />}
           />
           <QueueCard
             titleKey="operations.queue.identityMapping"
@@ -126,9 +117,7 @@ export function Operations() {
                 {t("operations.openQueue")}
               </AppLink>
             }
-            runbook={
-              <RunbookLink href={RUNBOOK.identityMapping as string} labelKey="operations.runbook" />
-            }
+            runbook={<RunbookLink queue="identityMapping" />}
           />
           <QueueCard
             titleKey="operations.queue.conflicted"
@@ -140,27 +129,21 @@ export function Operations() {
                 {t("operations.openQueue")}
               </AppLink>
             }
-            runbook={
-              <RunbookLink href={RUNBOOK.conflicted as string} labelKey="operations.runbook" />
-            }
+            runbook={<RunbookLink queue="conflicted" />}
           />
           <QueueCard
             titleKey="operations.queue.parserDrift"
             descKey="operations.queue.parserDrift.desc"
             accent="warn"
             count={unavailableCount}
-            runbook={
-              <RunbookLink href={RUNBOOK.parserDrift as string} labelKey="operations.runbook" />
-            }
+            runbook={<RunbookLink queue="parserDrift" />}
           />
           <QueueCard
             titleKey="operations.queue.pendingRecon"
             descKey="operations.queue.pendingRecon.desc"
             accent="warn"
             count={unavailableCount}
-            runbook={
-              <RunbookLink href={RUNBOOK.pendingRecon as string} labelKey="operations.runbook" />
-            }
+            runbook={<RunbookLink queue="pendingRecon" />}
           />
         </div>
       </ViewState>

@@ -18,6 +18,7 @@ import { Operations } from "../screens/Operations";
 import { ProductDetail } from "../screens/ProductDetail";
 import { Products } from "../screens/Products";
 import { Recommendation } from "../screens/Recommendation";
+import { RunbookViewer } from "../screens/RunbookViewer";
 import { Settings } from "../screens/Settings";
 import { Today } from "../screens/Today";
 import { ROUTES, type RouteKey } from "./navConfig";
@@ -54,6 +55,7 @@ const SCREENS: Partial<Record<RouteKey, () => ReactElement>> = {
   bulk: BulkApproval,
   settings: Settings,
   operations: Operations,
+  runbook: RunbookViewer,
 };
 
 /** Uniform, permissive search validation so typed deep-link keys stay typed. */

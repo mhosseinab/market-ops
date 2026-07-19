@@ -2,7 +2,7 @@
 
 **Failure domain:** Route C parser / normalization (`internal/routec`, §10.4).
 **Owning Operations queue (OPS-002):** `operations.queue.parserDrift`
-(Operations screen → "Parser / schema drift"; web deep link `/docs/runbooks/parser-drift`).
+(Operations screen → "Parser / schema drift"; web deep link `/operations/runbooks/parser-drift`).
 **Alert:** `RouteCircuitOpen` (`deploy/prometheus/rules/dk-p0-alerts.yml`).
 **Dashboards:** `DK · Observation quality, freshness & route cost`,
 `DK · SLO / RED overview (§17.2)`.

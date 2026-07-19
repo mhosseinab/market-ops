@@ -3,8 +3,11 @@
 **Failure domain:** Observation pipeline (§7.3, §10; capture, quality, freshness,
 route budget).
 **Owning Operations queue (OPS-002):** `operations.queue.staleTargets`
-(Operations screen → "Stale targets"; web deep link `/docs/runbooks/observation-freshness`),
-with `operations.queue.conflicted` for conflicted evidence.
+(Operations screen → "Stale targets"; web deep link `/operations/runbooks/observation-freshness`),
+with `operations.queue.conflicted` (deep link `/operations/runbooks/observation-conflict`)
+for conflicted evidence and `operations.queue.identityMapping` (deep link
+`/operations/runbooks/identity-mapping`) for identity-quarantine mapping review —
+this is the shared observation-domain runbook for all three queues (issue #159).
 **Alert:** `RouteCircuitOpen` (route budget / breaker trip →
 `deploy/prometheus/rules/dk-p0-alerts.yml`).
 **Dashboards:** `DK · Observation quality, freshness & route cost`.

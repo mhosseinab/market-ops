@@ -53,6 +53,8 @@ export const MESSAGE_KEYS = [
   "route.bulk.sub",
   "route.diagnostics.title",
   "route.diagnostics.sub",
+  "route.runbook.title",
+  "route.runbook.sub",
 
   // TopBar controls
   "topbar.theme.toggle",
@@ -651,6 +653,10 @@ export const MESSAGE_KEYS = [
 
   // Operations (internal queues, OPS-002)
   "operations.runbook",
+  "runbook.viewer.heading",
+  "runbook.viewer.slugLabel",
+  "runbook.viewer.notFound.title",
+  "runbook.viewer.notFound.body",
   "operations.openQueue",
   "operations.internalOnly.title",
   "operations.internalOnly.body",

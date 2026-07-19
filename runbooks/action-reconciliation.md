@@ -2,7 +2,7 @@
 
 **Failure domain:** Execution reconciliation (EXE-002/003, AUD-001).
 **Owning Operations queue (OPS-002):** `operations.queue.pendingRecon`
-(Operations screen → "Pending reconciliation"; web deep link `/docs/runbooks/reconciliation`).
+(Operations screen → "Pending reconciliation"; web deep link `/operations/runbooks/reconciliation`).
 **Alert:** `ReconciliationBacklog` (`deploy/prometheus/rules/dk-p0-alerts.yml`).
 **Dashboards:** `DK · Approval & execution integrity`, `DK · Outcomes & confidence`.
 

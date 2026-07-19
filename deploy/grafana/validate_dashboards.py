@@ -35,7 +35,15 @@ HERE = pathlib.Path(__file__).parent
 DASH_DIR = HERE / "dashboards"
 ALERTS = HERE.parent / "prometheus" / "rules" / "dk-p0-alerts.yml"
 RUNBOOKS = HERE.parent.parent / "runbooks"
-OPS_SCREEN = HERE.parent.parent / "apps" / "web" / "src" / "screens" / "Operations.tsx"
+WEB_SRC = HERE.parent.parent / "apps" / "web" / "src"
+OPS_SCREEN = WEB_SRC / "screens" / "Operations.tsx"
+# Canonical Operations runbook registry (OPS-002): the SINGLE source the SPA
+# viewer, the Operations links, and this validator all read. See app/runbooks.ts.
+RUNBOOK_REGISTRY = WEB_SRC / "app" / "runbooks.ts"
+NAV_CONFIG = WEB_SRC / "app" / "navConfig.ts"
+# The no-blocking-queue runbook (llm-outage): reachable via alerts but owns no
+# Operations queue by design, so it has no registry deep link (README documents it).
+NO_QUEUE_RUNBOOK = "runbooks/llm-outage.md"
 
 # Base metric names the instrumentation actually emits (OTLP `.`→`_`).
 #   S18 execution telemetry  (internal/execution/telemetry.go)
@@ -141,6 +149,100 @@ def alert_exprs() -> list[tuple[str, str]]:
     return [(f"{ALERTS.name}:{n}", b) for n, b in zip(names, blocks)]
 
 
+def parse_registry() -> list[dict[str, object]]:
+    """Parse the canonical runbook registry (apps/web/src/app/runbooks.ts) into a
+    list of {queue, slug, file, alerts}. Text-parsed (stdlib-only, no Node): the
+    registry is a flat object of literal entries, so a per-entry regex is exact."""
+    if not RUNBOOK_REGISTRY.exists():
+        return []
+    text = RUNBOOK_REGISTRY.read_text()
+    # Scope to the RUNBOOKS object body so helper functions below it are ignored.
+    body = re.search(r"export const RUNBOOKS\s*=\s*\{(.*?)\n\}\s*as const", text, re.S)
+    scope = body.group(1) if body else text
+    out: list[dict[str, object]] = []
+    for entry in re.finditer(r"\{[^{}]*?queue:[^{}]*?\}", scope, re.S):
+        block = entry.group(0)
+        queue = re.search(r"queue:\s*\"([^\"]+)\"", block)
+        slug = re.search(r"slug:\s*\"([^\"]+)\"", block)
+        file = re.search(r"file:\s*\"([^\"]+)\"", block)
+        alerts_m = re.search(r"alerts:\s*\[([^\]]*)\]", block)
+        if not (queue and slug and file):
+            continue
+        alerts = re.findall(r"\"([^\"]+)\"", alerts_m.group(1)) if alerts_m else []
+        out.append({"queue": queue.group(1), "slug": slug.group(1), "file": file.group(1), "alerts": alerts})
+    return out
+
+
+def check_registry() -> list[str]:
+    """The Operations runbook DEEP LINKS resolve, from one source of truth
+    (OPS-002 / issue #159). Every registry entry maps a rendered Operations queue
+    to a registered SPA route + a real runbook file, and the registry's alerts
+    mirror the alert-file `ops_queue` annotations exactly. Any drift between the
+    web links, the registry, and the alert annotations fails here."""
+    errs: list[str] = []
+    registry = parse_registry()
+    if not registry:
+        return ["REGISTRY apps/web/src/app/runbooks.ts: no entries parsed (registry missing or shape changed)"]
+
+    ops_keys = set(re.findall(r'"operations\.queue\.([a-zA-Z]+)"', OPS_SCREEN.read_text())) if OPS_SCREEN.exists() else set()
+    reg_queues = {str(e["queue"]) for e in registry}
+
+    # web links <-> registry: the queues Operations.tsx renders are exactly the
+    # registry queues (no rendered queue without a runbook link, none orphaned).
+    for q in ops_keys - reg_queues:
+        errs.append(f"REGISTRY: Operations.tsx renders queue '{q}' with no runbook registry entry")
+    for q in reg_queues - ops_keys:
+        errs.append(f"REGISTRY: registry queue '{q}' is not rendered by Operations.tsx")
+
+    # Operations.tsx must not reintroduce the dead hardcoded /docs/runbooks links.
+    if OPS_SCREEN.exists() and "/docs/runbooks" in OPS_SCREEN.read_text():
+        errs.append("REGISTRY: Operations.tsx still contains a hardcoded '/docs/runbooks' link (must derive from the registry)")
+
+    # slugs unique and served by a REGISTERED SPA route (navConfig $slug param).
+    slugs = [str(e["slug"]) for e in registry]
+    for slug in {s for s in slugs if slugs.count(s) > 1}:
+        errs.append(f"REGISTRY: slug '{slug}' is defined more than once")
+    nav = NAV_CONFIG.read_text() if NAV_CONFIG.exists() else ""
+    if "/operations/runbooks/$slug" not in nav:
+        errs.append("REGISTRY: navConfig.ts has no '/operations/runbooks/$slug' route — viewer slugs are not served by a registered SPA route")
+
+    # registry <-> real runbook file on disk.
+    for e in registry:
+        if not (HERE.parent.parent / str(e["file"])).exists():
+            errs.append(f"REGISTRY: queue '{e['queue']}' file '{e['file']}' does not exist")
+
+    # registry alerts <-> alert-file `ops_queue` annotations (exact mirror).
+    ann_by_queue: dict[str, set[str]] = {}
+    alerts_text = ALERTS.read_text()
+    for m in re.finditer(r"^\s*-\s*alert:\s*(\S+)(.*?)(?=^\s*-\s*alert:|\Z)", alerts_text, re.S | re.M):
+        name, chunk = m.group(1), m.group(2)
+        oq = re.search(r"ops_queue:\s*\"?([^\"\n]+)\"?", chunk)
+        if oq:
+            # Annotations carry the full catalog key (operations.queue.<q>); the
+            # registry keys on the <q> suffix. Normalize to the suffix.
+            queue = oq.group(1).strip().removeprefix("operations.queue.")
+            ann_by_queue.setdefault(queue, set()).add(name)
+    reg_by_queue = {str(e["queue"]): set(e["alerts"]) for e in registry}  # type: ignore[arg-type]
+    for queue, alerts in reg_by_queue.items():
+        expected = ann_by_queue.get(queue, set())
+        if alerts != expected:
+            errs.append(
+                f"REGISTRY: queue '{queue}' alerts {sorted(alerts)} disagree with alert-file ops_queue annotations {sorted(expected)}"
+            )
+    # every ops_queue annotation resolves to a registry queue.
+    for queue in ann_by_queue:
+        if queue not in reg_queues:
+            errs.append(f"REGISTRY: alert annotation ops_queue '{queue}' has no registry entry")
+
+    # every alert `runbook` annotation file is a registry file OR the documented
+    # no-queue exception (llm-outage.md).
+    reg_files = {str(e["file"]) for e in registry} | {NO_QUEUE_RUNBOOK}
+    for key, val in ANNOTATION_RE.findall(alerts_text):
+        if key == "runbook" and val not in reg_files:
+            errs.append(f"REGISTRY: alert runbook annotation '{val}' is not a registry runbook (nor the {NO_QUEUE_RUNBOOK} exception)")
+    return errs
+
+
 def check_runbooks() -> list[str]:
     """Every runbook names an existing Operations queue key AND an alert that
     exists in the rules file. Every alert names a runbook file that exists."""
@@ -189,6 +291,7 @@ def main() -> int:
         errors.append("no namespaced metric series referenced — extraction likely broken")
 
     errors.extend(check_runbooks())
+    errors.extend(check_registry())
 
     if errors:
         print("DASHBOARD/ALERT/RUNBOOK VALIDATION FAILED:")
@@ -201,6 +304,8 @@ def main() -> int:
           f"{len(referenced)} distinct series, all real.")
     print("    series: " + ", ".join(sorted(referenced)))
     print(f"OK: {len(list(RUNBOOKS.glob('*.md'))) - 1} runbooks each name an Operations queue + alert.")
+    reg = parse_registry()
+    print(f"OK: {len(reg)} Operations runbook deep links resolve (registry ↔ SPA route ↔ file ↔ alert annotations).")
     return 0
 
 

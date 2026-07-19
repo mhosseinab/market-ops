@@ -49,6 +49,8 @@ export const en: Catalog = {
   "route.bulk.sub": "Group approval and execution",
   "route.diagnostics.title": "Diagnostics",
   "route.diagnostics.sub": "Listing and image quality",
+  "route.runbook.title": "Runbook",
+  "route.runbook.sub": "Operations recovery procedure",
 
   "topbar.theme.toggle": "Light or dark",
   "topbar.density.toggle": "Display density",
@@ -610,6 +612,10 @@ export const en: Catalog = {
   "settings.level.l3": "Level 3 — Owner only",
 
   "operations.runbook": "Runbook",
+  "runbook.viewer.heading": "Recovery runbook",
+  "runbook.viewer.slugLabel": "Runbook id",
+  "runbook.viewer.notFound.title": "Runbook not found",
+  "runbook.viewer.notFound.body": "No runbook is registered for this link.",
   "operations.openQueue": "Open queue →",
   "operations.internalOnly.title": "Internal users only",
   "operations.internalOnly.body": "This view requires the Internal role.",

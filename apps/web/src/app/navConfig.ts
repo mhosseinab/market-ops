@@ -18,7 +18,8 @@ export type RouteKey =
   | "product"
   | "cost"
   | "bulk"
-  | "diagnostics";
+  | "diagnostics"
+  | "runbook";
 
 export interface RouteDef {
   readonly key: RouteKey;
@@ -115,6 +116,15 @@ export const ROUTES: readonly RouteDef[] = [
     path: "/diagnostics",
     titleKey: "route.diagnostics.title",
     subKey: "route.diagnostics.sub",
+  },
+  // Deep-link-only: the in-SPA Operations runbook viewer (OPS-002). `$slug` is a
+  // TanStack path param resolved by the canonical registry (app/runbooks.ts); no
+  // navGroup so it never appears in the SideNav.
+  {
+    key: "runbook",
+    path: "/operations/runbooks/$slug",
+    titleKey: "route.runbook.title",
+    subKey: "route.runbook.sub",
   },
 ];
 
