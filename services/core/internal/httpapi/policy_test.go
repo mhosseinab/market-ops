@@ -175,3 +175,66 @@ func TestSimulatePolicy_MissingCommissionBlocks(t *testing.T) {
 		t.Fatalf("code = %q, want COST_INCOMPLETE", env.Code)
 	}
 }
+
+// matchNoReferenceBody is simBodyHappy with strategy "match" and NO reference —
+// the exact malformed configuration from issue #64. The HTTP path must reject it
+// (POLICY_CONFIG_INVALID) BEFORE evaluation, identically to the direct
+// policy.NewConfig path, rather than letting a zero-value reference reach
+// evaluation and surface a generic money error.
+const matchNoReferenceBody = `{
+  "currentPrice": {"mantissa": "1000", "currency": "IRR", "exponent": 0},
+  "components": [
+    {"component": "cogs", "kind": "absolute", "amount": {"mantissa": "800", "currency": "IRR", "exponent": 0}, "version": 1},
+    {"component": "commission", "kind": "rate", "rateBasisPoints": 0, "version": 1}
+  ],
+  "readiness": "complete",
+  "config": {
+    "boundary": {"known": true, "min": {"mantissa": "900", "currency": "IRR", "exponent": 0}, "max": {"mantissa": "1100", "currency": "IRR", "exponent": 0}},
+    "contributionFloor": {"mantissa": "100", "currency": "IRR", "exponent": 0},
+    "strategy": "match",
+    "strategyEnabled": true,
+    "objective": "track_strategy"
+  },
+  "nowRfc3339": "2026-01-01T00:00:00Z"
+}`
+
+// TestSimulatePolicy_MatchMissingReferenceRejected (issue #64) — Match without a
+// reference is rejected at the transport boundary with the typed config error,
+// proving HTTP and direct NewConfig paths fail identically.
+func TestSimulatePolicy_MatchMissingReferenceRejected(t *testing.T) {
+	rec := postSimulate(t, matchNoReferenceBody)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	var env gateway.ErrorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Code != "POLICY_CONFIG_INVALID" {
+		t.Fatalf("code = %q, want POLICY_CONFIG_INVALID", env.Code)
+	}
+}
+
+// TestSimulatePolicy_UndercutNegativeDepthRejected (issue #64) — a negative
+// undercut depth (which would reverse Undercut semantics) is rejected as an
+// invalid policy config, mirroring the domain bound.
+func TestSimulatePolicy_UndercutNegativeDepthRejected(t *testing.T) {
+	body := strings.Replace(matchNoReferenceBody,
+		`"strategy": "match",
+    "strategyEnabled": true,`,
+		`"strategy": "undercut",
+    "strategyEnabled": true,
+    "reference": {"mantissa": "1000", "currency": "IRR", "exponent": 0},
+    "undercutBasisPoints": -1,`, 1)
+	rec := postSimulate(t, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", rec.Code, rec.Body.String())
+	}
+	var env gateway.ErrorEnvelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if env.Code != "POLICY_CONFIG_INVALID" {
+		t.Fatalf("code = %q, want POLICY_CONFIG_INVALID", env.Code)
+	}
+}
