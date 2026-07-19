@@ -285,6 +285,13 @@ type Querier interface {
 	GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	// The greatest-version card for a lineage (the live card version).
 	GetCurrentApprovalCard(ctx context.Context, lineageID uuid.UUID) (ApprovalCard, error)
+	// The greatest-version (live) card for a recommendation. A recommendation is
+	// stable across its card lineage (a price edit keeps the same recommendation_id and
+	// lineage_id, only bumping the version), so the greatest version by recommendation
+	// is the current authoritative card. Bulk confirmation (issue #90) resolves each
+	// executable selection-set member's live card through this read, then authorizes it
+	// through the SAME §8.4 individual-confirm path — never a bulk-only shortcut.
+	GetCurrentApprovalCardByRecommendation(ctx context.Context, recommendationID uuid.UUID) (ApprovalCard, error)
 	// Server-side re-resolution for the Revalidating gate (EXE-001): the account,
 	// variant, and native variant id for a card's recommendation, PLUS the CURRENT
 	// (greatest-version) cost/policy/context/parameter versions in the recommendation

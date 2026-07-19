@@ -158,6 +158,45 @@ func (q *Queries) GetCurrentApprovalCard(ctx context.Context, lineageID uuid.UUI
 	return i, err
 }
 
+const getCurrentApprovalCardByRecommendation = `-- name: GetCurrentApprovalCardByRecommendation :one
+SELECT id, recommendation_id, marketplace_account_id, lineage_id, version, action_id, parameter_version, context_version, policy_version, cost_profile_version, evidence_versions, idempotency_key, state, price_mantissa, price_currency, price_exponent, expires_at, created_at FROM approval_cards
+WHERE recommendation_id = $1
+ORDER BY version DESC
+LIMIT 1
+`
+
+// The greatest-version (live) card for a recommendation. A recommendation is
+// stable across its card lineage (a price edit keeps the same recommendation_id and
+// lineage_id, only bumping the version), so the greatest version by recommendation
+// is the current authoritative card. Bulk confirmation (issue #90) resolves each
+// executable selection-set member's live card through this read, then authorizes it
+// through the SAME §8.4 individual-confirm path — never a bulk-only shortcut.
+func (q *Queries) GetCurrentApprovalCardByRecommendation(ctx context.Context, recommendationID uuid.UUID) (ApprovalCard, error) {
+	row := q.db.QueryRow(ctx, getCurrentApprovalCardByRecommendation, recommendationID)
+	var i ApprovalCard
+	err := row.Scan(
+		&i.ID,
+		&i.RecommendationID,
+		&i.MarketplaceAccountID,
+		&i.LineageID,
+		&i.Version,
+		&i.ActionID,
+		&i.ParameterVersion,
+		&i.ContextVersion,
+		&i.PolicyVersion,
+		&i.CostProfileVersion,
+		&i.EvidenceVersions,
+		&i.IdempotencyKey,
+		&i.State,
+		&i.PriceMantissa,
+		&i.PriceCurrency,
+		&i.PriceExponent,
+		&i.ExpiresAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const insertApprovalCard = `-- name: InsertApprovalCard :one
 
 INSERT INTO approval_cards (

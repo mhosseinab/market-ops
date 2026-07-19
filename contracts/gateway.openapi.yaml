@@ -4173,15 +4173,20 @@ components:
     BulkApprovalConfirmResult:
       type: object
       description: >-
-        The outcome of a bulk confirmation. `valid` is false when the bound
-        selection-set version is stale (invalidated by a set/evidence change).
-        `executionPending` is true for a valid bulk confirmation — per-item
-        execution lands in S18.
+        The AUTHORITATIVE outcome of a bulk confirmation (issue #90). `valid` is
+        false when the bound selection-set version is stale (invalidated by a
+        set/evidence change), in which case NOTHING is authorized and `items` is
+        empty. When `valid`, each executable member is durably authorized through
+        the same §8.4 individual-confirm path and reported in `items` with an
+        explicit per-item state; blocked/warning members are `excluded` and never
+        execute. `executionPending` is true only when at least one member now
+        carries a durable, pending execution authorization.
       required:
         - selectionSetLineage
         - boundVersion
         - valid
         - executionPending
+        - items
       properties:
         selectionSetLineage:
           type: string
@@ -4197,6 +4202,56 @@ components:
           type: boolean
         executionPending:
           type: boolean
+        items:
+          type: array
+          description: >-
+            One durable result per member of the bound version. Empty when the
+            confirmation is invalid (nothing authorized).
+          items:
+            $ref: '#/components/schemas/BulkApprovalItemResult'
+      additionalProperties: false
+
+    BulkApprovalItemState:
+      type: string
+      description: >-
+        A per-member bulk-confirmation outcome (issue #90). Only `authorized` and
+        `already_authorized` mean the member carries a durable authorization +
+        execution intent; every other state means the member did NOT execute this
+        call. `failed` is a TRANSIENT failure a resume (re-confirm) retries; the
+        other terminal states are not retried into execution.
+      enum:
+        - authorized
+        - already_authorized
+        - excluded
+        - invalidated
+        - failed
+
+    BulkApprovalItemResult:
+      type: object
+      description: >-
+        One selection-set member's authoritative bulk outcome. `disposition` is the
+        SERVER-sealed disposition of the bound (immutable) version — never a client
+        assertion.
+      required:
+        - variantId
+        - recommendationId
+        - disposition
+        - state
+        - reason
+      properties:
+        variantId:
+          type: string
+          format: uuid
+        recommendationId:
+          type: string
+          format: uuid
+        disposition:
+          $ref: '#/components/schemas/SelectionSetDisposition'
+        state:
+          $ref: '#/components/schemas/BulkApprovalItemState'
+        reason:
+          type: string
+          description: A stable, non-localized diagnostic reason for the item's state.
       additionalProperties: false
 
     ExecutionMode:

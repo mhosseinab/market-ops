@@ -388,21 +388,38 @@ export const outcomeClosed: OutcomeView = {
   result: { result: "positive", confidence: "high", computedAt: "2026-07-24T11:05:00Z" },
 };
 
-/** A valid bulk confirmation bound to the previewed selection-set version. */
+/**
+ * A valid bulk confirmation bound to the previewed selection-set version: each
+ * executable member is durably authorized and returned as an explicit per-item
+ * result (issue #90).
+ */
 export const bulkValid: BulkApprovalConfirmResult = {
   selectionSetLineage: "30000000-0000-0000-0000-000000000003",
   boundVersion: 1,
   valid: true,
   executionPending: true,
+  items: [
+    {
+      variantId: "40000000-0000-0000-0000-000000000001",
+      recommendationId: "50000000-0000-0000-0000-000000000001",
+      disposition: "executable",
+      state: "authorized",
+      reason: "authorized",
+    },
+  ],
 };
 
-/** A stale bulk confirmation: the bound version is no longer current. */
+/**
+ * A stale bulk confirmation: the bound version is no longer current, so nothing
+ * is authorized (empty items).
+ */
 export const bulkStale: BulkApprovalConfirmResult = {
   selectionSetLineage: "30000000-0000-0000-0000-000000000003",
   boundVersion: 1,
   currentVersion: 2,
   valid: false,
   executionPending: false,
+  items: [],
 };
 
 // ── S29: chat daily briefing (CHAT-010) ─────────────────────────────────────

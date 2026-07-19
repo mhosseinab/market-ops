@@ -23,8 +23,10 @@ type ApprovalService interface {
 	GetCard(ctx context.Context, id uuid.UUID) (db.ApprovalCard, error)
 	History(ctx context.Context, cardID uuid.UUID) ([]db.ApprovalCardState, error)
 	ConfirmIndividual(ctx context.Context, cardID uuid.UUID, presented approval.Binding, now time.Time) (recommendation.ConfirmOutcome, error)
-	BulkPreviewValid(ctx context.Context, lineage uuid.UUID, boundVersion int32) (bool, error)
-	CurrentSelectionSetVersion(ctx context.Context, lineage uuid.UUID) (int32, error)
+	// ConfirmBulkSelection authoritatively confirms a bulk approval bound to one
+	// exact selection-set version, durably authorizing each executable member and
+	// returning explicit per-item results (issue #90, CHAT-052).
+	ConfirmBulkSelection(ctx context.Context, lineage uuid.UUID, boundVersion int32, now time.Time) (recommendation.BulkConfirmOutcome, error)
 	// EditPrice mints a new card version with the edited price (CHAT-044, PD-3
 	// item 2, S37).
 	EditPrice(ctx context.Context, cardID uuid.UUID, newPrice money.Money, now time.Time) (db.ApprovalCard, error)
@@ -99,9 +101,12 @@ func (s *gatewayServer) ConfirmApproval(
 	}), nil
 }
 
-// ConfirmBulkApproval confirms a bulk approval bound to one exact selection-set
-// version (CHAT-052). A stale bound version (any set/evidence change minted a new
-// version) is rejected as invalid. Execution is S18 (ExecutionPending when valid).
+// ConfirmBulkApproval authoritatively confirms a bulk approval bound to one exact
+// selection-set version (CHAT-052, issue #90). A stale bound version (any set/
+// evidence change minted a new version) is rejected as invalid and authorizes
+// NOTHING. When valid, each executable member is durably authorized through the same
+// §8.4 individual-confirm path and returned as an explicit per-item result; blocked/
+// warning members are excluded and never execute.
 func (s *gatewayServer) ConfirmBulkApproval(
 	ctx context.Context, req gateway.ConfirmBulkApprovalRequestObject,
 ) (gateway.ConfirmBulkApprovalResponseObject, error) {
@@ -111,24 +116,33 @@ func (s *gatewayServer) ConfirmBulkApproval(
 	if req.Body == nil {
 		return gateway.ConfirmBulkApprovaldefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	valid, err := s.approval.BulkPreviewValid(ctx, req.Body.SelectionSetLineage, int32(req.Body.BoundVersion))
+	outcome, err := s.approval.ConfirmBulkSelection(ctx, req.Body.SelectionSetLineage, int32(req.Body.BoundVersion), time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return gateway.ConfirmBulkApprovaldefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
 		}
 		return gateway.ConfirmBulkApprovaldefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 	}
+	items := make([]gateway.BulkApprovalItemResult, 0, len(outcome.Items))
+	for _, it := range outcome.Items {
+		items = append(items, gateway.BulkApprovalItemResult{
+			VariantId:        it.VariantID,
+			RecommendationId: it.RecommendationID,
+			Disposition:      gateway.SelectionSetDisposition(it.Disposition),
+			State:            gateway.BulkApprovalItemState(it.State),
+			Reason:           it.Reason,
+		})
+	}
 	result := gateway.BulkApprovalConfirmResult{
 		SelectionSetLineage: req.Body.SelectionSetLineage,
 		BoundVersion:        req.Body.BoundVersion,
-		Valid:               valid,
-		ExecutionPending:    valid,
+		Valid:               outcome.Valid,
+		ExecutionPending:    outcome.ExecutionPending,
+		Items:               items,
 	}
-	if !valid {
-		if current, err := s.approval.CurrentSelectionSetVersion(ctx, req.Body.SelectionSetLineage); err == nil {
-			v := int64(current)
-			result.CurrentVersion = &v
-		}
+	if !outcome.Valid {
+		v := int64(outcome.CurrentVersion)
+		result.CurrentVersion = &v
 	}
 	return gateway.ConfirmBulkApproval200JSONResponse(result), nil
 }

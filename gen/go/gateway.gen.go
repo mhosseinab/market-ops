@@ -163,6 +163,33 @@ func (e AvailabilityStatus) Valid() bool {
 	}
 }
 
+// Defines values for BulkApprovalItemState.
+const (
+	BulkApprovalItemStateAlreadyAuthorized BulkApprovalItemState = "already_authorized"
+	BulkApprovalItemStateAuthorized        BulkApprovalItemState = "authorized"
+	BulkApprovalItemStateExcluded          BulkApprovalItemState = "excluded"
+	BulkApprovalItemStateFailed            BulkApprovalItemState = "failed"
+	BulkApprovalItemStateInvalidated       BulkApprovalItemState = "invalidated"
+)
+
+// Valid indicates whether the value is a known member of the BulkApprovalItemState enum.
+func (e BulkApprovalItemState) Valid() bool {
+	switch e {
+	case BulkApprovalItemStateAlreadyAuthorized:
+		return true
+	case BulkApprovalItemStateAuthorized:
+		return true
+	case BulkApprovalItemStateExcluded:
+		return true
+	case BulkApprovalItemStateFailed:
+		return true
+	case BulkApprovalItemStateInvalidated:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for CaptureUploadAvailabilityStatus.
 const (
 	CaptureUploadAvailabilityStatusInStock     CaptureUploadAvailabilityStatus = "in_stock"
@@ -1272,16 +1299,36 @@ type BulkApprovalConfirmRequest struct {
 	SelectionSetLineage openapi_types.UUID `json:"selectionSetLineage"`
 }
 
-// BulkApprovalConfirmResult The outcome of a bulk confirmation. `valid` is false when the bound selection-set version is stale (invalidated by a set/evidence change). `executionPending` is true for a valid bulk confirmation — per-item execution lands in S18.
+// BulkApprovalConfirmResult The AUTHORITATIVE outcome of a bulk confirmation (issue #90). `valid` is false when the bound selection-set version is stale (invalidated by a set/evidence change), in which case NOTHING is authorized and `items` is empty. When `valid`, each executable member is durably authorized through the same §8.4 individual-confirm path and reported in `items` with an explicit per-item state; blocked/warning members are `excluded` and never execute. `executionPending` is true only when at least one member now carries a durable, pending execution authorization.
 type BulkApprovalConfirmResult struct {
 	BoundVersion int64 `json:"boundVersion"`
 
 	// CurrentVersion The current selection-set version (differs from bound when stale).
-	CurrentVersion      *int64             `json:"currentVersion,omitempty"`
-	ExecutionPending    bool               `json:"executionPending"`
-	SelectionSetLineage openapi_types.UUID `json:"selectionSetLineage"`
-	Valid               bool               `json:"valid"`
+	CurrentVersion   *int64 `json:"currentVersion,omitempty"`
+	ExecutionPending bool   `json:"executionPending"`
+
+	// Items One durable result per member of the bound version. Empty when the confirmation is invalid (nothing authorized).
+	Items               []BulkApprovalItemResult `json:"items"`
+	SelectionSetLineage openapi_types.UUID       `json:"selectionSetLineage"`
+	Valid               bool                     `json:"valid"`
 }
+
+// BulkApprovalItemResult One selection-set member's authoritative bulk outcome. `disposition` is the SERVER-sealed disposition of the bound (immutable) version — never a client assertion.
+type BulkApprovalItemResult struct {
+	// Disposition A selection-set member's bulk disposition (CHAT-050).
+	Disposition SelectionSetDisposition `json:"disposition"`
+
+	// Reason A stable, non-localized diagnostic reason for the item's state.
+	Reason           string             `json:"reason"`
+	RecommendationId openapi_types.UUID `json:"recommendationId"`
+
+	// State A per-member bulk-confirmation outcome (issue #90). Only `authorized` and `already_authorized` mean the member carries a durable authorization + execution intent; every other state means the member did NOT execute this call. `failed` is a TRANSIENT failure a resume (re-confirm) retries; the other terminal states are not retried into execution.
+	State     BulkApprovalItemState `json:"state"`
+	VariantId openapi_types.UUID    `json:"variantId"`
+}
+
+// BulkApprovalItemState A per-member bulk-confirmation outcome (issue #90). Only `authorized` and `already_authorized` mean the member carries a durable authorization + execution intent; every other state means the member did NOT execute this call. `failed` is a TRANSIENT failure a resume (re-confirm) retries; the other terminal states are not retried into execution.
+type BulkApprovalItemState string
 
 // CapabilityStatus One capability's current status and last-verified time (ACC-001).
 type CapabilityStatus struct {

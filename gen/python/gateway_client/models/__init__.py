@@ -16,6 +16,8 @@ from .briefing_event import BriefingEvent
 from .build_info import BuildInfo
 from .bulk_approval_confirm_request import BulkApprovalConfirmRequest
 from .bulk_approval_confirm_result import BulkApprovalConfirmResult
+from .bulk_approval_item_result import BulkApprovalItemResult
+from .bulk_approval_item_state import BulkApprovalItemState
 from .capability_status import CapabilityStatus
 from .capture_accepted import CaptureAccepted
 from .capture_upload import CaptureUpload
@@ -178,6 +180,8 @@ __all__ = (
     "BuildInfo",
     "BulkApprovalConfirmRequest",
     "BulkApprovalConfirmResult",
+    "BulkApprovalItemResult",
+    "BulkApprovalItemState",
     "CapabilityStatus",
     "CaptureAccepted",
     "CaptureUpload",
