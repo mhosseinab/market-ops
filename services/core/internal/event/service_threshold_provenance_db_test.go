@@ -162,20 +162,24 @@ func TestThresholdProvenanceBindingAcceptsGoverningCitations(t *testing.T) {
 func TestRecordForFailsClosedOnInconsistentProvenance(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	now := time.Now().UTC().Truncate(time.Second)
 
 	cp := seedThreshold(t, pool, account, "*", event.TypeCompetitorPrice, 7, now.Add(-2*time.Hour))
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "r", now, now.Add(6*time.Hour))
 
-	// A competitor-price candidate that cites threshold v7 but records version 99.
+	// A competitor-price candidate that cites threshold v7 but records version 99. Its
+	// evidence is derived from a real backing observation (issue #70), so the write
+	// reaches — and is rejected by — the threshold-provenance guard, not the evidence one.
 	cand := event.Candidate{
 		Type:             event.TypeCompetitorPrice,
 		Variant:          variant,
+		Target:           target,
 		DedupKey:         "prov-svc:" + uuid.NewString(),
 		Severity:         event.SeverityWarning,
 		Exposure:         event.UnknownExposure(),
-		Evidence:         event.Evidence{Quality: event.QualitySupported, Ref: "r"},
+		Evidence:         event.Evidence{ObservationID: obs, Quality: event.QualitySupported, Ref: "r"},
 		DetectedAt:       now,
 		ExpiresAt:        now.Add(time.Hour),
 		ThresholdID:      cp,

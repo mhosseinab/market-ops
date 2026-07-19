@@ -360,6 +360,16 @@ type Querier interface {
 	// Reads the existing notification for a dedup key (used to return the SAME row on
 	// an idempotent re-delivery so both surfaces reference the SAME event id).
 	GetNotificationByDedup(ctx context.Context, arg GetNotificationByDedupParams) (Notification, error)
+	// ACCOUNT-SCOPED single-observation load for the S15 event-evidence derivation
+	// (#70, evidence-quality never-cut §4.6). The event boundary must DERIVE its quality
+	// and provenance from a real, account-bound observation rather than trust a caller-
+	// supplied token, so RecordFor loads the cited observation inside the SAME account-
+	// scoped transaction as the event write and copies the quality/ref AS-IS. The predicate
+	// is (id, marketplace_account_id): a random or foreign-account id resolves to NO row
+	// (fail closed, no cross-tenant existence oracle). observations is PARTITIONED with PK
+	// (id, captured_at) so id is not independently unique across partitions; LIMIT 1
+	// returns the single logical row (id is a gen_random_uuid, unique in practice).
+	GetObservationForAccount(ctx context.Context, arg GetObservationForAccountParams) (GetObservationForAccountRow, error)
 	GetObservationTarget(ctx context.Context, id uuid.UUID) (ObservationTarget, error)
 	GetObservedOffer(ctx context.Context, arg GetObservedOfferParams) (ObservedOffer, error)
 	// TENANT-SCOPED (issue #67): the open row is looked up within the owning account,

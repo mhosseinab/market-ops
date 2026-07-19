@@ -13,13 +13,16 @@ import (
 )
 
 // winCand builds a winning-state candidate for a fixed variant with an explicit
-// detection instant and evidence ref, so a test can drive replay ordering by hand.
-func winCand(t *testing.T, variant uuid.UUID, at time.Time, quality event.Quality, ref string) event.Candidate {
+// detection instant, CITING the backing observation obs. The event's persisted quality
+// and evidence ref are DERIVED from obs (issue #70) — never from the caller — so a test
+// controls them by seeding obs (see seedEvidenceObs). The Evidence.Quality here is only
+// the structural placeholder the RecordFor enum check requires; derivation overrides it.
+func winCand(t *testing.T, variant, obs uuid.UUID, at time.Time) event.Candidate {
 	t.Helper()
 	c, ok := event.DetectWinningState(event.WinningStateInput{
 		Variant: variant, WasWinning: true, IsWinning: false,
 		Exposure: event.UnknownExposure(),
-		Evidence: event.Evidence{Quality: quality, Ref: ref},
+		Evidence: event.Evidence{ObservationID: obs, Quality: event.QualitySupported, Ref: "placeholder"},
 		Now:      at, TTL: time.Hour,
 	})
 	if !ok {
@@ -46,14 +49,19 @@ func openRowCount(t *testing.T, ctx context.Context, pool *pgxpool.Pool, variant
 func TestReplayOlderEvidenceDoesNotRegress(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 
 	t1 := time.Now().UTC().Truncate(time.Second)
 	t2 := t1.Add(10 * time.Minute)
 
+	// Two backing observations: the newer is 'verified' (ref r2), the older 'supported'
+	// (ref r1). The event's stored quality/ref are derived from whichever is cited (#70).
+	obsNew := seedEvidenceObs(t, q, account, target, nv, "verified", "r2", t2, t2.Add(6*time.Hour))
+	obsOld := seedEvidenceObs(t, q, account, target, nv, "supported", "r1", t1, t1.Add(6*time.Hour))
+
 	// Record the NEWER evidence first (T2).
-	rNew, err := svc.RecordFor(ctx, account, winCand(t, variant, t2, event.QualityVerified, "r2"))
+	rNew, err := svc.RecordFor(ctx, account, winCand(t, variant, obsNew, t2))
 	if err != nil {
 		t.Fatalf("record newer: %v", err)
 	}
@@ -62,7 +70,7 @@ func TestReplayOlderEvidenceDoesNotRegress(t *testing.T) {
 	}
 
 	// Replay the SAME dedup key with strictly-OLDER evidence (T1).
-	rOld, err := svc.RecordFor(ctx, account, winCand(t, variant, t1, event.QualitySupported, "r1"))
+	rOld, err := svc.RecordFor(ctx, account, winCand(t, variant, obsOld, t1))
 	if err != nil {
 		t.Fatalf("older replay must be SUCCESS (idempotent), got error: %v", err)
 	}
@@ -100,17 +108,20 @@ func TestReplayOlderEvidenceDoesNotRegress(t *testing.T) {
 func TestReplayNewerEvidenceAdvances(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 
 	t1 := time.Now().UTC().Truncate(time.Second)
 	t2 := t1.Add(10 * time.Minute)
 
-	rOld, err := svc.RecordFor(ctx, account, winCand(t, variant, t1, event.QualitySupported, "r1"))
+	obsOld := seedEvidenceObs(t, q, account, target, nv, "supported", "r1", t1, t1.Add(6*time.Hour))
+	obsNew := seedEvidenceObs(t, q, account, target, nv, "verified", "r2", t2, t2.Add(6*time.Hour))
+
+	rOld, err := svc.RecordFor(ctx, account, winCand(t, variant, obsOld, t1))
 	if err != nil {
 		t.Fatalf("record older: %v", err)
 	}
-	rNew, err := svc.RecordFor(ctx, account, winCand(t, variant, t2, event.QualityVerified, "r2"))
+	rNew, err := svc.RecordFor(ctx, account, winCand(t, variant, obsNew, t2))
 	if err != nil {
 		t.Fatalf("record newer: %v", err)
 	}
@@ -142,11 +153,12 @@ func TestReplayNewerEvidenceAdvances(t *testing.T) {
 func TestResolveThenRecordOpensFreshDeterministic(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
-	r1, err := svc.RecordFor(ctx, account, winCand(t, variant, now, event.QualitySupported, "r1"))
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "r", now, now.Add(6*time.Hour))
+	r1, err := svc.RecordFor(ctx, account, winCand(t, variant, obs, now))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -154,7 +166,7 @@ func TestResolveThenRecordOpensFreshDeterministic(t *testing.T) {
 		t.Fatalf("resolve: %v", err)
 	}
 	// Key is freed; a recurrence must open a NEW event, not be lost.
-	r2, err := svc.RecordFor(ctx, account, winCand(t, variant, now.Add(time.Minute), event.QualitySupported, "r2"))
+	r2, err := svc.RecordFor(ctx, account, winCand(t, variant, obs, now.Add(time.Minute)))
 	if err != nil {
 		t.Fatalf("reopen must not error (occurrence must not be lost): %v", err)
 	}
@@ -178,9 +190,15 @@ func TestResolveThenRecordOpensFreshDeterministic(t *testing.T) {
 func TestConcurrentSameKeyRecordsExactlyOneOpen(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	base := time.Now().UTC().Truncate(time.Second)
+
+	// One backing observation, cited by every concurrent record. It is captured well
+	// before the earliest detection instant with a 6h window, so every attempt sees it
+	// fresh; the derived quality is 'supported' for all of them.
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "r",
+		base.Add(-time.Hour), base.Add(6*time.Hour))
 
 	const n = 24
 	var wg sync.WaitGroup
@@ -191,7 +209,7 @@ func TestConcurrentSameKeyRecordsExactlyOneOpen(t *testing.T) {
 			defer wg.Done()
 			// Interleave older and newer instants around base.
 			at := base.Add(time.Duration(i-n/2) * time.Minute)
-			if _, err := svc.RecordFor(ctx, account, winCand(t, variant, at, event.QualitySupported, "r")); err != nil {
+			if _, err := svc.RecordFor(ctx, account, winCand(t, variant, obs, at)); err != nil {
 				errCh <- err
 			}
 		}(i)
@@ -222,12 +240,13 @@ func TestConcurrentSameKeyRecordsExactlyOneOpen(t *testing.T) {
 func TestConcurrentRecordWithResolveNoLostError(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant := seedVariant(t, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 	now := time.Now().UTC()
 
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "seed", now, now.Add(6*time.Hour))
 	// Seed an initial open event so a resolve has a target to race against.
-	seed, err := svc.RecordFor(ctx, account, winCand(t, variant, now, event.QualitySupported, "seed"))
+	seed, err := svc.RecordFor(ctx, account, winCand(t, variant, obs, now))
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -245,7 +264,7 @@ func TestConcurrentRecordWithResolveNoLostError(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		// Record the same key concurrently — must not be lost.
-		if _, err := svc.RecordFor(ctx, account, winCand(t, variant, now.Add(time.Minute), event.QualityVerified, "race")); err != nil {
+		if _, err := svc.RecordFor(ctx, account, winCand(t, variant, obs, now.Add(time.Minute))); err != nil {
 			errCh <- err
 		}
 	}()

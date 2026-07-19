@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/event"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
@@ -26,10 +27,15 @@ func lifecycleDedupKey(ty event.Type, variant uuid.UUID, scope string) string {
 
 // openLifecycleEvent records one open event of a given type/scope directly (no
 // source), so a lifecycle test can then drive the producer's expiry sweep or
-// condition-clear against a known open row.
-func openLifecycleEvent(t *testing.T, svc *event.Service, account, variant, target uuid.UUID, ty event.Type, scope string, expiresAt time.Time) string {
+// condition-clear against a known open row. It seeds a fresh 'supported' backing
+// observation and cites it (issue #70) so the corroborated evidence is derived from
+// real, account-bound evidence rather than self-asserted.
+func openLifecycleEvent(t *testing.T, svc *event.Service, q *db.Queries, account, variant, target uuid.UUID, nv int64, ty event.Type, scope string, expiresAt time.Time) string {
 	t.Helper()
 	key := lifecycleDedupKey(ty, variant, scope)
+	detectedAt := expiresAt.Add(-time.Hour)
+	obs := seedEvidenceObs(t, q, account, target, nv, "supported", "fixture://evt-lifecycle",
+		detectedAt, detectedAt.Add(6*time.Hour))
 	cand := event.Candidate{
 		Type:       ty,
 		Variant:    variant,
@@ -39,8 +45,8 @@ func openLifecycleEvent(t *testing.T, svc *event.Service, account, variant, targ
 		Exposure:   event.UnknownExposure(),
 		Confidence: money.NewBasisPoints(8000),
 		Urgency:    money.NewBasisPoints(6000),
-		Evidence:   event.Evidence{Quality: event.QualitySupported, Ref: "fixture://evt-lifecycle"},
-		DetectedAt: expiresAt.Add(-time.Hour),
+		Evidence:   event.Evidence{ObservationID: obs, Quality: event.QualitySupported, Ref: "fixture://evt-lifecycle"},
+		DetectedAt: detectedAt,
 		ExpiresAt:  expiresAt,
 	}
 	if _, err := svc.RecordFor(context.Background(), account, cand); err != nil {
@@ -77,11 +83,11 @@ func countByKey(t *testing.T, pool *pgxpool.Pool, key string) int {
 func TestProducerExpirySweepExcludesFromTodayAndIsMonotonic(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant, target, _ := seedTarget(t, pool, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 
 	base := time.Now().UTC()
-	key := openLifecycleEvent(t, svc, account, variant, target, event.TypeCompetitorPrice, "rival-expire", base.Add(time.Minute))
+	key := openLifecycleEvent(t, svc, q, account, variant, target, nv, event.TypeCompetitorPrice, "rival-expire", base.Add(time.Minute))
 
 	// Before expiry the event is actionable on Today.
 	if feed, err := svc.Today(ctx, account); err != nil || len(feed) != 1 {
@@ -128,7 +134,7 @@ func TestProducerExpirySweepExcludesFromTodayAndIsMonotonic(t *testing.T) {
 func TestProducerConditionClearResolvesAndIsIdempotent(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant, target, _ := seedTarget(t, pool, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 
 	if _, err := svc.SetThreshold(ctx, event.ThresholdParams{
@@ -140,7 +146,7 @@ func TestProducerConditionClearResolvesAndIsIdempotent(t *testing.T) {
 
 	base := time.Now().UTC()
 	offer := "rival-clear"
-	key := openLifecycleEvent(t, svc, account, variant, target, event.TypeCompetitorPrice, offer, base.Add(24*time.Hour))
+	key := openLifecycleEvent(t, svc, q, account, variant, target, nv, event.TypeCompetitorPrice, offer, base.Add(24*time.Hour))
 	if feed, _ := svc.Today(ctx, account); len(feed) != 1 {
 		t.Fatalf("pre-clear Today must show the open event, got %d", len(feed))
 	}
@@ -193,7 +199,7 @@ func TestProducerConditionClearResolvesAndIsIdempotent(t *testing.T) {
 func TestProducerResolvedRowAllowsNewOccurrence(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant, target, _ := seedTarget(t, pool, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 
 	if _, err := svc.SetThreshold(ctx, event.ThresholdParams{
@@ -205,7 +211,7 @@ func TestProducerResolvedRowAllowsNewOccurrence(t *testing.T) {
 
 	base := time.Now().UTC()
 	offer := "rival-reopen"
-	key := openLifecycleEvent(t, svc, account, variant, target, event.TypeCompetitorPrice, offer, base.Add(24*time.Hour))
+	key := openLifecycleEvent(t, svc, q, account, variant, target, nv, event.TypeCompetitorPrice, offer, base.Add(24*time.Hour))
 
 	origID := eventIDByKeyState(t, pool, key, "open")
 
@@ -227,15 +233,18 @@ func TestProducerResolvedRowAllowsNewOccurrence(t *testing.T) {
 		t.Fatalf("precondition: row must be resolved, got %q", s)
 	}
 
-	// A genuinely NEW occurrence: a material 30% movement for the same identity.
+	// A genuinely NEW occurrence: a material 30% movement for the same identity, citing
+	// a fresh backing observation (issue #70) so the corroborated evidence is real.
+	fireNow := base.Add(time.Hour)
+	fireObs := seedEvidenceObs(t, q, account, target, nv, "supported", "r", fireNow, fireNow.Add(6*time.Hour))
 	fireTr := event.Transition{
 		Account: account, Category: "*", Type: event.TypeCompetitorPrice,
 		CompetitorPrice: &event.CompetitorPriceInput{
 			Variant: variant, Target: target, OfferIdentity: offer, Unit: "IRR",
 			PrevValue: "1000000", CurrValue: "1300000",
 			Exposure: event.UnknownExposure(),
-			Evidence: event.Evidence{Quality: event.QualitySupported, Ref: "r"},
-			Now:      base.Add(time.Hour), TTL: 24 * time.Hour,
+			Evidence: event.Evidence{ObservationID: fireObs, Quality: event.QualitySupported, Ref: "r"},
+			Now:      fireNow, TTL: 24 * time.Hour,
 		},
 	}
 	m, err := event.NewProducer(svc, staticSource{transitions: []event.Transition{fireTr}}, nil).RunOnce(ctx)
@@ -266,7 +275,7 @@ func TestProducerResolvedRowAllowsNewOccurrence(t *testing.T) {
 func TestProducerConditionClearPerDetectorType(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
-	account, variant, target, _ := seedTarget(t, pool, q)
+	account, variant, target, nv := seedTarget(t, pool, q)
 	svc := event.NewService(pool)
 
 	base := time.Now().UTC()
@@ -275,11 +284,11 @@ func TestProducerConditionClearPerDetectorType(t *testing.T) {
 
 	// Open one event per type (competitor_price carries an offer scope).
 	keys := map[event.Type]string{
-		event.TypeWinningState:        openLifecycleEvent(t, svc, account, variant, target, event.TypeWinningState, "", longExpiry),
-		event.TypeCompetitorPrice:     openLifecycleEvent(t, svc, account, variant, target, event.TypeCompetitorPrice, "offer-x", longExpiry),
-		event.TypeSellerCount:         openLifecycleEvent(t, svc, account, variant, target, event.TypeSellerCount, "", longExpiry),
-		event.TypeSuppressionBoundary: openLifecycleEvent(t, svc, account, variant, target, event.TypeSuppressionBoundary, "", longExpiry),
-		event.TypeContributionFloor:   openLifecycleEvent(t, svc, account, variant, target, event.TypeContributionFloor, "", longExpiry),
+		event.TypeWinningState:        openLifecycleEvent(t, svc, q, account, variant, target, nv, event.TypeWinningState, "", longExpiry),
+		event.TypeCompetitorPrice:     openLifecycleEvent(t, svc, q, account, variant, target, nv, event.TypeCompetitorPrice, "offer-x", longExpiry),
+		event.TypeSellerCount:         openLifecycleEvent(t, svc, q, account, variant, target, nv, event.TypeSellerCount, "", longExpiry),
+		event.TypeSuppressionBoundary: openLifecycleEvent(t, svc, q, account, variant, target, nv, event.TypeSuppressionBoundary, "", longExpiry),
+		event.TypeContributionFloor:   openLifecycleEvent(t, svc, q, account, variant, target, nv, event.TypeContributionFloor, "", longExpiry),
 	}
 
 	// A DORMANT (condition-cleared) transition for each type: steady/immaterial state

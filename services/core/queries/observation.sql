@@ -195,6 +195,22 @@ ON CONFLICT (target_id, native_seller_id, offer_identity) DO UPDATE SET
 WHERE (EXCLUDED.last_captured_at, EXCLUDED.last_observation_id)
     > (observation_consumer_cursors.last_captured_at, observation_consumer_cursors.last_observation_id);
 
+-- name: GetObservationForAccount :one
+-- ACCOUNT-SCOPED single-observation load for the S15 event-evidence derivation
+-- (#70, evidence-quality never-cut §4.6). The event boundary must DERIVE its quality
+-- and provenance from a real, account-bound observation rather than trust a caller-
+-- supplied token, so RecordFor loads the cited observation inside the SAME account-
+-- scoped transaction as the event write and copies the quality/ref AS-IS. The predicate
+-- is (id, marketplace_account_id): a random or foreign-account id resolves to NO row
+-- (fail closed, no cross-tenant existence oracle). observations is PARTITIONED with PK
+-- (id, captured_at) so id is not independently unique across partitions; LIMIT 1
+-- returns the single logical row (id is a gen_random_uuid, unique in practice).
+SELECT id, marketplace_account_id, target_id, quality, freshness_deadline,
+       captured_at, evidence_ref
+FROM observations
+WHERE id = $1 AND marketplace_account_id = $2
+LIMIT 1;
+
 -- name: ListInWindowRouteValues :many
 -- OBS-003/§16 cross-route analysis from APPEND-ONLY evidence. For one offer,
 -- returns the LATEST observation per route that is STILL IN WINDOW at :now
