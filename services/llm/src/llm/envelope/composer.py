@@ -28,10 +28,12 @@ from llm.envelope.contract import (
     ResponseEnvelope,
 )
 from llm.envelope.grounding import GroundingError, Violation, validate_grounding
+from llm.flows.deep_links import SCREENS_FALLBACK
 
 # The structured screen the plane deep-links to when it cannot answer in chat.
-# Aligned with the graph's §12.4 fallback deep link.
-FALLBACK_DEEP_LINK = "/app/screens"
+# The canonical screens-only fallback (§12.4) and an approved recovery route
+# (issue #56) — aligned with the graph's §12.4 failure deep link.
+FALLBACK_DEEP_LINK = SCREENS_FALLBACK
 
 # Canonical catalog key for the degraded/cannot-answer copy (packages/locale).
 CANNOT_ANSWER_REASON_KEY = "state.degraded.body"

@@ -22,6 +22,8 @@ from pydantic import (
     field_validator,
 )
 
+from llm.flows.deep_links import validate_recovery_route
+
 # ISO-4217 alpha-3 currency code (LTR technical identifier).
 CurrencyCode = Annotated[str, StringConstraints(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")]
 
@@ -148,7 +150,9 @@ class TurnFailure(BaseModel):
     Emitted after the single automatic retry is exhausted, or when a hard bound
     (graph recursion, tool-call limit, per-tool timeout, token ceiling) trips.
     Free text only; carries no authority. Always names a deep link to the
-    structured screen that completes the task deterministically.
+    structured screen that completes the task deterministically — and that link
+    is constrained to the closed set of internal recovery routes so a failure
+    fallback can never become an open redirect or an unsafe surface (issue #56).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -156,6 +160,15 @@ class TurnFailure(BaseModel):
     code: str
     message: str
     deep_link: str | None = None
+
+    @field_validator("deep_link")
+    @classmethod
+    def _validate_recovery_route(cls, v: str | None) -> str | None:
+        # A failure deep link is a deterministic recovery route or nothing at
+        # all; a model-authored/free-form path fails closed (§12.4, issue #56).
+        if v is None:
+            return v
+        return validate_recovery_route(v)
 
 
 class StreamEventKind(StrEnum):

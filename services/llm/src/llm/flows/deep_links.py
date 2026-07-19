@@ -30,6 +30,41 @@ ROUTE_DIAGNOSTICS = f"{_APP}/diagnostics"
 # the "what requires attention now" surface.
 SCREENS_FALLBACK = ROUTE_TODAY
 
+# The closed set of internal recovery routes a fail-closed response may deep-link
+# to (§12.4 structured failure / cannot-answer refusal). A failure or refusal
+# routes the user to a DETERMINISTIC internal screen — never a model-authored
+# path, an external URL, or any surface outside this set. Membership is EXACT:
+# an external scheme (``https:``, ``javascript:``), a host or protocol-relative
+# form (``//host``), path traversal (``../``), an encoded bypass, or an unknown
+# internal path is not in the set and therefore fails closed (issue #56).
+RECOVERY_ROUTES: frozenset[str] = frozenset(
+    {
+        ROUTE_TODAY,
+        ROUTE_PRODUCTS,
+        ROUTE_MARKET,
+        ROUTE_ACTIONS,
+        ROUTE_SETTINGS,
+        ROUTE_OPERATIONS,
+    }
+)
+
+
+def validate_recovery_route(value: str) -> str:
+    """Return ``value`` if it is an approved internal recovery route, else raise.
+
+    The single gate for every fail-closed ``deep_link`` (§12.4). Because the
+    check is exact membership in :data:`RECOVERY_ROUTES`, it structurally rejects
+    external schemes, hosts, protocol-relative URLs, path traversal, encoded
+    bypasses, and any unknown internal path — there is no parsing seam to bypass.
+    The rejected value is NOT echoed into the error (free-text containment, §8).
+    """
+    if value not in RECOVERY_ROUTES:
+        raise ValueError(
+            "deep_link must be an approved internal recovery route "
+            "from the closed RECOVERY_ROUTES set (issue #56)"
+        )
+    return value
+
 
 def approval_control(action_id: str) -> str:
     """Deep link to the EXTERNAL structured approval control for an action.
