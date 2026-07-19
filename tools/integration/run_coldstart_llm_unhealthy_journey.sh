@@ -28,7 +28,6 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-COMPOSE="docker compose -f deploy/compose.test.yml"
 export SEEDE2E_PASSWORD="${SEEDE2E_PASSWORD:-s32-integration-owner-password}"
 export SEEDE2E_EMAIL="${SEEDE2E_EMAIL:-owner@dev.local}"
 
@@ -37,15 +36,31 @@ COOKIE_JAR="$(mktemp)"
 
 # Same second credential-propagation path as run_killswitch_journey.sh /
 # run_all.sh: deploy/compose.test.yml's `migrate` one-shot REQUIRES
-# SEEDE2E_EMAIL/SEEDE2E_PASSWORD (`${VAR:?...}`), and writing deploy/.env makes
-# Compose auto-load the identical values this script logs in with below.
-printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > deploy/.env
+# SEEDE2E_EMAIL/SEEDE2E_PASSWORD (`${VAR:?...}`) at interpolation time. We MUST
+# NOT write the FIXED project file deploy/.env for this — it can hold a
+# developer's real config/secrets and must survive byte-for-byte (issue #166).
+# Instead we hand `docker compose` a PRIVATE, per-run env file via `--env-file`;
+# when run_all.sh orchestrates this script it pre-creates that file and exports
+# MARKET_OPS_COMPOSE_ENV_FILE (shared, orchestrator-owned lifecycle), otherwise
+# we create our own (0600) and remove it in cleanup. `mktemp` keeps parallel
+# runs from sharing or corrupting an env file.
+if [ -n "${MARKET_OPS_COMPOSE_ENV_FILE:-}" ]; then
+  COMPOSE_ENV_FILE="$MARKET_OPS_COMPOSE_ENV_FILE"
+  OWNS_COMPOSE_ENV_FILE=0
+else
+  COMPOSE_ENV_FILE="$(mktemp "${TMPDIR:-/tmp}/market-ops-compose-env.XXXXXX")"
+  OWNS_COMPOSE_ENV_FILE=1
+  chmod 600 "$COMPOSE_ENV_FILE"
+  printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > "$COMPOSE_ENV_FILE"
+fi
+COMPOSE="docker compose --env-file $COMPOSE_ENV_FILE -f deploy/compose.test.yml"
 echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
 
 # Unconditional teardown on the way out (success OR failure); see
-# run_killswitch_journey.sh for the full lifecycle rationale. deploy/.env is only
-# removed when run standalone — under run_all.sh orchestration
-# (MARKET_OPS_RUN_ALL_ORCHESTRATED=1) the orchestrator owns its lifecycle.
+# run_killswitch_journey.sh for the full lifecycle rationale. The private compose
+# env file is only removed when we created it (standalone) — under run_all.sh
+# orchestration (MARKET_OPS_COMPOSE_ENV_FILE set) the orchestrator owns its
+# lifecycle. The fixed project file deploy/.env is never written or removed here.
 cleanup() {
   local exit_code=$?
   if [ "$exit_code" -ne 0 ]; then
@@ -55,8 +70,8 @@ cleanup() {
   fi
   rm -f "$COOKIE_JAR" || true
   $COMPOSE down -v >/dev/null 2>&1 || true
-  if [ -z "${MARKET_OPS_RUN_ALL_ORCHESTRATED:-}" ]; then
-    rm -f deploy/.env
+  if [ "$OWNS_COMPOSE_ENV_FILE" -eq 1 ]; then
+    rm -f "$COMPOSE_ENV_FILE"
   fi
 }
 trap cleanup EXIT

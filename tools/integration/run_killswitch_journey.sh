@@ -18,18 +18,30 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-COMPOSE="docker compose -f deploy/compose.test.yml"
 export SEEDE2E_PASSWORD="${SEEDE2E_PASSWORD:-s32-integration-owner-password}"
 export SEEDE2E_EMAIL="${SEEDE2E_EMAIL:-owner@dev.local}"
 
-# Belt-and-suspenders second propagation path for the SAME owner credential
-# (see run_all.sh's matching comment): deploy/compose.test.yml's `migrate`
-# service REQUIRES SEEDE2E_EMAIL/SEEDE2E_PASSWORD — writing deploy/.env makes
-# Compose's own project-directory .env auto-load a second, independent path
-# to the exact same value this script's Playwright invocation below sends as
-# E2E_EMAIL/E2E_PASSWORD. Idempotent/safe to overwrite if run_all.sh already
-# wrote the same values.
-printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > deploy/.env
+# Second, file-based propagation path for the SAME owner credential (see
+# run_all.sh's matching comment): deploy/compose.test.yml's `migrate` service
+# REQUIRES SEEDE2E_EMAIL/SEEDE2E_PASSWORD (`${VAR:?...}`) at interpolation time.
+# We MUST NOT write the FIXED project file deploy/.env for this — it can hold a
+# developer's real deployment config/secrets and must survive success, failure,
+# and interruption byte-for-byte (issue #166). Instead we hand `docker compose`
+# a PRIVATE, per-run env file via `--env-file`. When run_all.sh orchestrates
+# this script it pre-creates that file and exports MARKET_OPS_COMPOSE_ENV_FILE,
+# so every scenario shares ONE file whose lifecycle the orchestrator owns;
+# standalone we create our own (0600) and remove it in cleanup. `mktemp` gives
+# each run a unique path, so parallel runs never share or corrupt an env file.
+if [ -n "${MARKET_OPS_COMPOSE_ENV_FILE:-}" ]; then
+  COMPOSE_ENV_FILE="$MARKET_OPS_COMPOSE_ENV_FILE"
+  OWNS_COMPOSE_ENV_FILE=0
+else
+  COMPOSE_ENV_FILE="$(mktemp "${TMPDIR:-/tmp}/market-ops-compose-env.XXXXXX")"
+  OWNS_COMPOSE_ENV_FILE=1
+  chmod 600 "$COMPOSE_ENV_FILE"
+  printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > "$COMPOSE_ENV_FILE"
+fi
+COMPOSE="docker compose --env-file $COMPOSE_ENV_FILE -f deploy/compose.test.yml"
 echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
 
 # Always tear the stack down on the way out (success OR failure) — a stack
@@ -45,10 +57,10 @@ echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} 
 # guards: `-e` already guarantees the EXIT trap fires with the failing
 # command's exit code preserved in `$?` at trap time, so extra manual
 # exit-code bookkeeping only adds control-flow surface without changing
-# behavior. deploy/.env is only removed here when run standalone —
-# run_all.sh, when it orchestrates this script (MARKET_OPS_RUN_ALL_ORCHESTRATED=1),
-# owns deploy/.env's lifecycle via its own trap and still needs the file to
-# exist for its later `compose up`.
+# behavior. The private compose env file is only removed here when we created it
+# (standalone); when run_all.sh owns it (MARKET_OPS_COMPOSE_ENV_FILE set) it
+# needs the file for its later `compose up` and removes it in its own trap. The
+# fixed project file deploy/.env is never written or removed by this script.
 cleanup() {
   local exit_code=$?
   if [ "$exit_code" -ne 0 ]; then
@@ -57,8 +69,8 @@ cleanup() {
     echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
   fi
   $COMPOSE down -v >/dev/null 2>&1 || true
-  if [ -z "${MARKET_OPS_RUN_ALL_ORCHESTRATED:-}" ]; then
-    rm -f deploy/.env
+  if [ "$OWNS_COMPOSE_ENV_FILE" -eq 1 ]; then
+    rm -f "$COMPOSE_ENV_FILE"
   fi
 }
 trap cleanup EXIT
