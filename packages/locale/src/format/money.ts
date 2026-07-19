@@ -27,12 +27,24 @@ export interface RenderedMoney {
   readonly mode: "source" | "display";
 }
 
+// Canonical MONEY CORRECTNESS (PRD §4.6 / §9.1): Value = mantissa × 10^exponent,
+// matching services/core/internal/money. bigint/string arithmetic only — no
+// float, no Number(), no division that loses precision.
 function scale(mantissa: bigint, exponent: number): { neg: boolean; int: bigint; frac: string } {
   const neg = mantissa < 0n;
   const abs = neg ? -mantissa : mantissa;
-  if (exponent <= 0) return { neg, int: abs, frac: "" };
-  const s = abs.toString().padStart(exponent + 1, "0");
-  const cut = s.length - exponent;
+  if (exponent > 0) {
+    // Scale UP: multiply by 10^exponent, no fractional part.
+    return { neg, int: abs * 10n ** BigInt(exponent), frac: "" };
+  }
+  if (exponent === 0) {
+    return { neg, int: abs, frac: "" };
+  }
+  // Negative exponent: place the decimal point `-exponent` digits from the right,
+  // left-padding the fractional region with zeros when the mantissa is shorter.
+  const places = -exponent;
+  const s = abs.toString().padStart(places + 1, "0");
+  const cut = s.length - places;
   return { neg, int: BigInt(s.slice(0, cut)), frac: s.slice(cut) };
 }
 
