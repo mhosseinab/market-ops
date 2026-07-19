@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from llm.contextres.models import (
     CARD_CAPABLE_CONTEXTS,
@@ -40,7 +41,13 @@ def resolve(req: ResolveRequest) -> Resolution:
     A card-leading intent that cannot pin exactly one specific target always
     returns a PICKER (CHAT-007); it never fabricates a subject or a card.
     """
-    time_range = resolve_time_range(req.time_phrase, req.now) if req.time_phrase else None
+    time_range = (
+        resolve_time_range(
+            req.time_phrase, req.now, req.business_timezone, req.week_starts_on
+        )
+        if req.time_phrase
+        else None
+    )
     card_leading = req.intent in CARD_LEADING_INTENTS
 
     if req.references:
@@ -261,23 +268,41 @@ def _options_from_refs(refs: Sequence[EntityRef | EntityCandidate]) -> list[Pick
 
 # --- time-range resolution ---------------------------------------------------
 
-# Phrase → (days_back, label catalog key). ``days_back`` is the inclusive window
-# length; ``0`` means the current day. Persian and English share one table; the
+# The named calendar periods (#28). Each is resolved to its ACTUAL calendar
+# boundaries under the configured business timezone — NOT a rolling "midnight N
+# days ago through now" window. A COMPLETED period (yesterday/last week/last
+# month) ends at the start of the next period and never includes the current day;
+# a CURRENT period (today/this week/this month) runs from its calendar start up to
+# ``as_of``. ``as_of`` stays a separate field in every case (§8.1).
+_PERIOD_TODAY = "today"
+_PERIOD_YESTERDAY = "yesterday"
+_PERIOD_THIS_WEEK = "this_week"
+_PERIOD_LAST_WEEK = "last_week"
+_PERIOD_THIS_MONTH = "this_month"
+_PERIOD_LAST_MONTH = "last_month"
+
+# Phrase → (period kind, label catalog key). Persian and English share one table
+# and the same resolution code path, so aliases resolve to IDENTICAL instants —
+# the phrase language is never a branch (localization boundary, PRD §11). The
 # phrase is digit- and whitespace-normalized before lookup.
-_FIXED_PHRASES: dict[str, tuple[int, str]] = {
-    "today": (0, "time.range.today"),
-    "امروز": (0, "time.range.today"),
-    "yesterday": (1, "time.range.yesterday"),
-    "دیروز": (1, "time.range.yesterday"),
-    "this week": (6, "time.range.this_week"),
-    "این هفته": (6, "time.range.this_week"),
-    "last week": (7, "time.range.last_week"),
-    "هفته گذشته": (7, "time.range.last_week"),
-    "این ماه": (29, "time.range.this_month"),
-    "this month": (29, "time.range.this_month"),
-    "last month": (30, "time.range.last_month"),
-    "ماه گذشته": (30, "time.range.last_month"),
+_FIXED_PHRASES: dict[str, tuple[str, str]] = {
+    "today": (_PERIOD_TODAY, "time.range.today"),
+    "امروز": (_PERIOD_TODAY, "time.range.today"),
+    "yesterday": (_PERIOD_YESTERDAY, "time.range.yesterday"),
+    "دیروز": (_PERIOD_YESTERDAY, "time.range.yesterday"),
+    "this week": (_PERIOD_THIS_WEEK, "time.range.this_week"),
+    "این هفته": (_PERIOD_THIS_WEEK, "time.range.this_week"),
+    "last week": (_PERIOD_LAST_WEEK, "time.range.last_week"),
+    "هفته گذشته": (_PERIOD_LAST_WEEK, "time.range.last_week"),
+    "این ماه": (_PERIOD_THIS_MONTH, "time.range.this_month"),
+    "this month": (_PERIOD_THIS_MONTH, "time.range.this_month"),
+    "last month": (_PERIOD_LAST_MONTH, "time.range.last_month"),
+    "ماه گذشته": (_PERIOD_LAST_MONTH, "time.range.last_month"),
 }
+
+# Calendar-resolution DATA defaults (never a locale/phrase branch — PRD §11).
+DEFAULT_BUSINESS_TIMEZONE = "UTC"
+DEFAULT_WEEK_START = 0  # Monday (ISO 8601 weekday numbering, Mon=0 … Sun=6).
 
 # Catalog keys for the "last N days" family (localization boundary — key strings
 # only; the fa-IR/en copy lives in the locale pack, never authored here).
@@ -312,12 +337,26 @@ _LAST_N_DAYS = re.compile(
 )
 
 
-def resolve_time_range(phrase: str, now: str) -> TimeRange:
+def resolve_time_range(
+    phrase: str,
+    now: str,
+    business_timezone: str = DEFAULT_BUSINESS_TIMEZONE,
+    week_starts_on: int = DEFAULT_WEEK_START,
+) -> TimeRange:
     """Resolve a time phrase to an explicit range + as-of (§8.1). Pure and TOTAL.
 
-    ``now`` is the injected as-of clock (RFC 3339 UTC). Persian/Latin digits fold
-    first (CHAT-081). An unrecognized phrase yields a single-day range anchored at
-    ``now`` labelled ``time.range.unspecified`` — explicit, never an open range.
+    ``now`` is the injected as-of clock (RFC 3339 UTC). ``business_timezone`` and
+    ``week_starts_on`` are DATA (an IANA tz and an ISO weekday, Mon=0): a named
+    calendar period's boundaries are computed on the business-tz calendar day/week/
+    month, then stored/compared in UTC, while ``as_of`` stays the real ``now``. The
+    phrase language is NEVER a branch — Persian and English aliases share this code
+    path and resolve to IDENTICAL instants (localization boundary, PRD §11).
+
+    Named calendar periods (``yesterday``, ``this/last week/month``) resolve to
+    their ACTUAL calendar boundaries, DISTINCT from a rolling "last N days" window.
+    Persian/Latin digits fold first (CHAT-081). An unrecognized phrase yields a
+    single-day range anchored at ``now`` labelled ``time.range.unspecified`` —
+    explicit, never an open range.
 
     A "last N days" phrase whose N is zero, above :data:`MAX_RELATIVE_DAYS`, or a
     pathologically long digit run fails closed as an explicit single-day range
@@ -327,22 +366,23 @@ def resolve_time_range(phrase: str, now: str) -> TimeRange:
     error and 500 the turn.
     """
     as_of = _parse_rfc3339(now)
+    tz = ZoneInfo(business_timezone)
     folded = normalize_digits(phrase).strip().lower()
 
     if folded in _FIXED_PHRASES:
-        days_back, label_key = _FIXED_PHRASES[folded]
-        return _range_ending_now(days_back, as_of, label_key)
+        period, label_key = _FIXED_PHRASES[folded]
+        return _named_calendar_range(period, as_of, tz, week_starts_on, label_key)
 
     match = _LAST_N_DAYS.search(folded)
     if match is not None:
         digits = next(g for g in match.groups() if g is not None)
-        return _resolve_relative_days(digits, as_of)
+        return _resolve_relative_days(digits, as_of, tz)
 
     # Unrecognized ⇒ explicit single-day range at as-of; never an open range.
-    return _range_ending_now(0, as_of, LABEL_RANGE_UNSPECIFIED)
+    return _rolling_day_range(0, as_of, tz, LABEL_RANGE_UNSPECIFIED)
 
 
-def _resolve_relative_days(digits: str, as_of: datetime) -> TimeRange:
+def _resolve_relative_days(digits: str, as_of: datetime, tz: ZoneInfo) -> TimeRange:
     """Bound a captured "last N days" digit run, then build its range. Pure.
 
     Fails closed to :data:`LABEL_RANGE_UNSUPPORTED` for anything outside
@@ -350,20 +390,97 @@ def _resolve_relative_days(digits: str, as_of: datetime) -> TimeRange:
     reaches ``int()`` (Python 3.12 caps int↔str at 4300 digits); the numeric gate
     then keeps ``timedelta`` inside its limits. Only an in-range N builds a real
     window, so ``int()``/``timedelta`` are never reached with an unsafe value.
+
+    This is the ROLLING family and stays DISTINCT from the named calendar periods:
+    it always ends at ``as_of`` and floors N-1 business-tz days back from today.
     """
     if len(digits) > _MAX_RELATIVE_DAYS_DIGITS:
-        return _range_ending_now(0, as_of, LABEL_RANGE_UNSUPPORTED)
+        return _rolling_day_range(0, as_of, tz, LABEL_RANGE_UNSUPPORTED)
     n = int(digits)
     if n < 1 or n > MAX_RELATIVE_DAYS:
-        return _range_ending_now(0, as_of, LABEL_RANGE_UNSUPPORTED)
+        return _rolling_day_range(0, as_of, tz, LABEL_RANGE_UNSUPPORTED)
     # N days inclusive of today ⇒ window length N-1 days back (n>=1 ⇒ >=0).
-    return _range_ending_now(n - 1, as_of, LABEL_RANGE_LAST_N_DAYS)
+    return _rolling_day_range(n - 1, as_of, tz, LABEL_RANGE_LAST_N_DAYS)
 
 
-def _range_ending_now(days_back: int, as_of: datetime, label_key: str) -> TimeRange:
-    start = (as_of - timedelta(days=days_back)).replace(
-        hour=0, minute=0, second=0, microsecond=0
+def _midnight_utc(day: date, tz: ZoneInfo) -> datetime:
+    """UTC instant of local midnight of ``day`` in ``tz``.
+
+    Constructing the aware datetime from the date components makes month/week
+    arithmetic operate on calendar dates (DST-safe: each boundary is materialized
+    at its OWN local wall-clock offset), then converts the result to UTC once."""
+    return datetime(day.year, day.month, day.day, tzinfo=tz).astimezone(UTC)
+
+
+def _first_of_month(day: date) -> date:
+    return day.replace(day=1)
+
+
+def _first_of_previous_month(day: date) -> date:
+    if day.month == 1:
+        return date(day.year - 1, 12, 1)
+    return date(day.year, day.month - 1, 1)
+
+
+def _week_start(day: date, week_starts_on: int) -> date:
+    """First day of the calendar week containing ``day`` (week_starts_on: Mon=0)."""
+    offset = (day.weekday() - week_starts_on) % 7
+    return day - timedelta(days=offset)
+
+
+def _named_calendar_range(
+    period: str,
+    as_of: datetime,
+    tz: ZoneInfo,
+    week_starts_on: int,
+    label_key: str,
+) -> TimeRange:
+    """Resolve a named calendar period to explicit UTC boundaries (#28). Pure.
+
+    Boundaries are the business-tz calendar day/week/month of ``as_of``. A CURRENT
+    period ends at ``as_of``; a COMPLETED period ends at the start of the next
+    period (so it never includes the current day). ``as_of`` is always carried
+    separately. Variable month lengths, leap February, and year transitions fall
+    out of :mod:`datetime` date arithmetic; DST is honored because each boundary is
+    materialized at its own local offset in :func:`_midnight_utc`.
+    """
+    today = as_of.astimezone(tz).date()
+
+    if period == _PERIOD_TODAY:
+        start, end = _midnight_utc(today, tz), as_of
+    elif period == _PERIOD_YESTERDAY:
+        start = _midnight_utc(today - timedelta(days=1), tz)
+        end = _midnight_utc(today, tz)  # start of today — today is excluded
+    elif period == _PERIOD_THIS_WEEK:
+        start, end = _midnight_utc(_week_start(today, week_starts_on), tz), as_of
+    elif period == _PERIOD_LAST_WEEK:
+        this_week = _week_start(today, week_starts_on)
+        start = _midnight_utc(this_week - timedelta(days=7), tz)
+        end = _midnight_utc(this_week, tz)  # start of this week — excluded
+    elif period == _PERIOD_THIS_MONTH:
+        start, end = _midnight_utc(_first_of_month(today), tz), as_of
+    else:  # _PERIOD_LAST_MONTH
+        this_month = _first_of_month(today)
+        start = _midnight_utc(_first_of_previous_month(today), tz)
+        end = _midnight_utc(this_month, tz)  # start of this month — excluded
+
+    return TimeRange(
+        start=_to_rfc3339(start),
+        end=_to_rfc3339(end),
+        as_of=_to_rfc3339(as_of),
+        label_key=label_key,
     )
+
+
+def _rolling_day_range(
+    days_back: int, as_of: datetime, tz: ZoneInfo, label_key: str
+) -> TimeRange:
+    """A rolling window: ``days_back`` business-tz days back from today → as_of.
+
+    Distinct from the named calendar periods — always ends at ``as_of`` and floors
+    to the start of the business-tz day ``days_back`` days ago."""
+    today = as_of.astimezone(tz).date()
+    start = _midnight_utc(today - timedelta(days=days_back), tz)
     return TimeRange(
         start=_to_rfc3339(start),
         end=_to_rfc3339(as_of),
