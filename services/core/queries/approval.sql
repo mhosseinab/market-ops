@@ -30,6 +30,15 @@ WHERE lineage_id = $1
 ORDER BY version DESC
 LIMIT 1;
 
+-- name: LockApprovalLineage :exec
+-- Serialize every writer that mints or advances a card in one lineage (APR-001
+-- authoritative-current resolution): a transaction-scoped advisory lock keyed on
+-- the lineage id. Both a price edit (new card version) and an individual confirm
+-- take it, so a stale confirm cannot race a mint and approve a superseded control
+-- — whichever transaction acquires the lock first fully serializes the other.
+-- Released automatically at transaction end (commit or rollback).
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg(lineage_id)::uuid::text, 0));
+
 -- name: AdvanceApprovalCardState :one
 -- FROM-guarded §8.4 transition on the current-state projection. The WHERE clause
 -- is the optimistic guard: only a card still in from_state advances; a card that
