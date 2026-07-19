@@ -13,6 +13,24 @@ package normalize
 
 import "strings"
 
+// Email canonicalizes an email address for identity purposes (issue #12 login
+// identity model): it trims surrounding whitespace and case-folds the whole
+// address. This is the single Go source of email normalization; it is applied
+// identically at write time and at authentication time so the same address —
+// however it is cased or padded on entry — resolves to exactly one principal.
+//
+// It is locale-NEUTRAL (LOC-001): strings.ToLower uses the Unicode default case
+// mapping and branches on no locale, calendar, or direction. It only case-folds
+// and trims; it never parses, splits, or otherwise rewrites the address, so it
+// can never fabricate a different account. It is idempotent.
+//
+// The database is the enforcement authority: the users table carries a global
+// UNIQUE index on lower(email) and the login query matches on lower(email), so
+// this helper and the schema normalize to the same canonical form.
+func Email(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
 // digitFold maps each supported non-ASCII decimal digit rune to its ASCII
 // counterpart. ASCII digits are left untouched (absent from the map).
 var digitFold = func() map[rune]rune {

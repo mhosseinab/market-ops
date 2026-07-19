@@ -13,7 +13,7 @@ import (
 
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (organization_id, email, role)
-VALUES ($1, $2, $3)
+VALUES ($1, lower(btrim($2)), $3)
 RETURNING id, organization_id, email, role, created_at, updated_at
 `
 
@@ -23,6 +23,10 @@ type CreateUserParams struct {
 	Role           string
 }
 
+// Email is stored in its canonical (normalized) form: trimmed and case-folded,
+// matching internal/normalize.Email and the global UNIQUE index on lower(email).
+// Normalizing in SQL guarantees write-time canonicalization for every caller,
+// not just those that remembered to normalize first.
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
 	row := q.db.QueryRow(ctx, createUser, arg.OrganizationID, arg.Email, arg.Role)
 	var i User
@@ -58,14 +62,15 @@ func (q *Queries) GetUser(ctx context.Context, id uuid.UUID) (User, error) {
 
 const getUserByEmail = `-- name: GetUserByEmail :one
 SELECT id, organization_id, email, role, created_at, updated_at FROM users
-WHERE email = $1
-ORDER BY created_at, id
-LIMIT 1
+WHERE lower(email) = $1
 `
 
-// Login identifier lookup. Emails are unique per organization; in P0 the beta
-// runs one organization, so this resolves the login user. A duplicate email
-// across organizations would return the earliest-created row deterministically.
+// Login identifier lookup (issue #12). Normalized email is GLOBALLY unique (see
+// the UNIQUE index on lower(email)), so this resolves at most one principal —
+// and therefore exactly one organization. The caller passes an already-normalized
+// email (internal/normalize.Email); matching on lower(email) uses that unique
+// functional index and is deterministic, with no LIMIT 1 tie-break masking an
+// ambiguous match.
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
 	row := q.db.QueryRow(ctx, getUserByEmail, email)
 	var i User

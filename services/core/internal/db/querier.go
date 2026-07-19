@@ -123,6 +123,10 @@ type Querier interface {
 	// Open a server-side session. token_hash is the SHA-256 of the opaque cookie
 	// token; the raw token never reaches the database.
 	CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error)
+	// Email is stored in its canonical (normalized) form: trimmed and case-folded,
+	// matching internal/normalize.Email and the global UNIQUE index on lower(email).
+	// Normalizing in SQL guarantees write-time canonicalization for every caller,
+	// not just those that remembered to normalize first.
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	// OBS-001 carry-forward from S13: when a Confirmed identity is REOPENED
 	// (NeedsReview/Rejected/Obsolete) its observation target must stop producing
@@ -248,9 +252,12 @@ type Querier interface {
 	GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error)
 	GetSkuCostRequirements(ctx context.Context, variantID uuid.UUID) (SkuCostRequirement, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
-	// Login identifier lookup. Emails are unique per organization; in P0 the beta
-	// runs one organization, so this resolves the login user. A duplicate email
-	// across organizations would return the earliest-created row deterministically.
+	// Login identifier lookup (issue #12). Normalized email is GLOBALLY unique (see
+	// the UNIQUE index on lower(email)), so this resolves at most one principal —
+	// and therefore exactly one organization. The caller passes an already-normalized
+	// email (internal/normalize.Email); matching on lower(email) uses that unique
+	// functional index and is deterministic, with no LIMIT 1 tie-break masking an
+	// ambiguous match.
 	GetUserByEmail(ctx context.Context, email string) (User, error)
 	GetUserCredential(ctx context.Context, userID uuid.UUID) (UserCredential, error)
 	// The account a variant belongs to — used to recompute readiness for a variant

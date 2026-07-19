@@ -69,3 +69,37 @@ func TestDigits_Idempotent(t *testing.T) {
 		t.Errorf("not idempotent: %q -> %q -> %q", in, once, twice)
 	}
 }
+
+// TestEmail_FoldsCaseAndTrims is the identity-normalization contract used by the
+// login identity model (issue #12): an email is canonicalized by trimming
+// surrounding whitespace and case-folding, so the same address written with
+// different case or padding resolves to one principal. It is locale-neutral
+// (LOC-001) — no locale-specific casing branch — and touches the address only by
+// case, so it never fabricates a different account.
+func TestEmail_FoldsCaseAndTrims(t *testing.T) {
+	cases := map[string]string{
+		"":                      "",
+		"owner@x.io":            "owner@x.io",
+		"Owner@X.IO":            "owner@x.io",
+		"  owner@x.io  ":        "owner@x.io",
+		"\tOWNER@X.IO\n":        "owner@x.io",
+		" Mixed.Case@Dev.Local": "mixed.case@dev.local",
+	}
+	for in, want := range cases {
+		if got := normalize.Email(in); got != want {
+			t.Errorf("Email(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestEmail_Idempotent proves normalizing an already-normalized email is a
+// no-op — the property that makes write-time and auth-time normalization
+// provably identical regardless of how many boundaries re-apply it.
+func TestEmail_Idempotent(t *testing.T) {
+	for _, in := range []string{"", "owner@x.io", "  Owner@X.IO ", "a.b+tag@sub.example.com"} {
+		once := normalize.Email(in)
+		if twice := normalize.Email(once); twice != once {
+			t.Errorf("Email not idempotent: %q -> %q -> %q", in, once, twice)
+		}
+	}
+}
