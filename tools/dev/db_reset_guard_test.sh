@@ -256,6 +256,55 @@ run_case "reject-override-still-blocks-encoded-keyword" 1 no "query|encod|allow"
   "DATABASE_URL=postgres://market_ops:supersecret@db.staging-host.internal:5432/market_ops?sslmode=disable&%68ost=db.prod.internal" \
   "DB_RESET_ALLOW_NONLOCAL=1"
 
+# --- Multi-host libpq authority (issue #173). ---------------------------------
+# libpq accepts a comma-separated list of host[:port] entries in the authority
+# and FAILS OVER between them. `task db:reset` keeps the FULL authority in its
+# maintenance URL, so psql may connect to ANY entry. The guard therefore must
+# validate EVERY host, order-independently, and fail closed on empty entries.
+
+# REJECT: local-first, remote-second, no override — the remote entry a failover
+# could reach must be caught; psql must never be reached.
+run_case "reject-multihost-local-then-remote-no-override" 1 no "not in the .*allowlist|DB_RESET_ALLOW_NONLOCAL" \
+  "DATABASE_URL=postgres://market_ops:supersecret@localhost:5432,db.prod.internal:5432/market_ops?sslmode=disable"
+
+# REJECT: remote-first, local-second (reversed order) — proves order-independence.
+run_case "reject-multihost-remote-then-local-no-override" 1 no "not in the .*allowlist|DB_RESET_ALLOW_NONLOCAL" \
+  "DATABASE_URL=postgres://market_ops:supersecret@db.prod.internal:5432,localhost:5432/market_ops?sslmode=disable"
+
+# REJECT: bracketed IPv6 local entry + remote entry, no override.
+run_case "reject-multihost-ipv6-local-then-remote-no-override" 1 no "not in the .*allowlist|DB_RESET_ALLOW_NONLOCAL" \
+  "DATABASE_URL=postgres://market_ops:supersecret@[::1]:5432,db.prod.internal:5432/market_ops?sslmode=disable"
+
+# ACCEPT: all-local multi-host list (localhost + 127.0.0.1), dev db, no override.
+run_case "accept-multihost-all-local" 0 yes "" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432,127.0.0.1:5432/market_ops?sslmode=disable"
+
+# REJECT (fail-closed): an EMPTY entry (double comma) is ambiguous → reject
+# before psql, same policy as an empty host.
+run_case "reject-multihost-empty-entry" 1 no "host|allowlist" \
+  "DATABASE_URL=postgres://market_ops:market_ops@localhost:5432,,127.0.0.1:5432/market_ops?sslmode=disable"
+
+# ACCEPT: mixed local+remote list WITH the deliberate override, dev db, non-prod.
+run_case "accept-multihost-mixed-with-override" 0 yes "" \
+  "DATABASE_URL=postgres://market_ops:supersecret@localhost:5432,db.prod.internal:5432/market_ops?sslmode=disable" \
+  "DB_RESET_ALLOW_NONLOCAL=1"
+
+# REJECT: mixed list + override but a PROTECTED db name — override widens host
+# only, never relaxes protected-name rejection.
+run_case "reject-multihost-override-still-blocks-protected" 1 no "protected" \
+  "DATABASE_URL=postgres://market_ops:supersecret@localhost:5432,db.prod.internal:5432/postgres?sslmode=disable" \
+  "DB_RESET_ALLOW_NONLOCAL=1"
+
+# REJECT: mixed list + override but a prod-like ENVIRONMENT — override never
+# relaxes prod-env rejection.
+run_case "reject-multihost-override-still-blocks-prod-env" 1 no "APP_ENV|ENVIRONMENT|prod" \
+  "DATABASE_URL=postgres://market_ops:supersecret@localhost:5432,db.prod.internal:5432/market_ops?sslmode=disable" \
+  "DB_RESET_ALLOW_NONLOCAL=1" "ENVIRONMENT=staging"
+
+# ACCEPT: all-local bracketed IPv6 + host:port mix, dev-suffixed db, no override.
+run_case "accept-multihost-ipv6-and-localhost" 0 yes "" \
+  "DATABASE_URL=postgres://market_ops:market_ops@[::1]:5432,localhost:5432/market_ops_dev?sslmode=disable"
+
 if [[ "$failures" -ne 0 ]]; then
   echo "db_reset_guard_test: $failures case(s) failed" >&2
   exit 1
