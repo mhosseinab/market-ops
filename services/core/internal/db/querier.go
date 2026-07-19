@@ -632,7 +632,9 @@ type Querier interface {
 	UpsertGuardrailSettings(ctx context.Context, arg UpsertGuardrailSettingsParams) (GuardrailSetting, error)
 	UpsertListing(ctx context.Context, arg UpsertListingParams) (UpsertListingRow, error)
 	// Recompute the derived readiness projection (CST-003). Upsert: readiness is a
-	// current-state projection, recomputed on any input change.
+	// current-state projection, recomputed on any input change. stale_boundary is the
+	// earliest review-by instant at which this projection must next age into Stale even
+	// with no new input (issue #39); NULL ⇒ nothing can age by time alone.
 	UpsertMarginReadiness(ctx context.Context, arg UpsertMarginReadinessParams) (MarginReadiness, error)
 	// Derived current view (OBS-008). One row per (target, offer identity); the latest
 	// accepted observation's fields, quality, freshness deadline, and the corroborating

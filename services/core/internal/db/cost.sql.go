@@ -216,7 +216,7 @@ func (q *Queries) GetCostImportBatch(ctx context.Context, id uuid.UUID) (CostImp
 }
 
 const getMarginReadiness = `-- name: GetMarginReadiness :one
-SELECT variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at FROM margin_readiness WHERE variant_id = $1
+SELECT variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at, stale_boundary FROM margin_readiness WHERE variant_id = $1
 `
 
 func (q *Queries) GetMarginReadiness(ctx context.Context, variantID uuid.UUID) (MarginReadiness, error) {
@@ -229,6 +229,7 @@ func (q *Queries) GetMarginReadiness(ctx context.Context, variantID uuid.UUID) (
 		&i.MissingComponents,
 		&i.StaleComponents,
 		&i.ComputedAt,
+		&i.StaleBoundary,
 	)
 	return i, err
 }
@@ -532,7 +533,7 @@ func (q *Queries) ListCostProfileVersions(ctx context.Context, arg ListCostProfi
 }
 
 const listMarginReadinessByAccount = `-- name: ListMarginReadinessByAccount :many
-SELECT variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at FROM margin_readiness WHERE marketplace_account_id = $1 ORDER BY state, variant_id
+SELECT variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at, stale_boundary FROM margin_readiness WHERE marketplace_account_id = $1 ORDER BY state, variant_id
 `
 
 func (q *Queries) ListMarginReadinessByAccount(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarginReadiness, error) {
@@ -551,6 +552,7 @@ func (q *Queries) ListMarginReadinessByAccount(ctx context.Context, marketplaceA
 			&i.MissingComponents,
 			&i.StaleComponents,
 			&i.ComputedAt,
+			&i.StaleBoundary,
 		); err != nil {
 			return nil, err
 		}
@@ -671,14 +673,15 @@ func (q *Queries) UpsertAccountCostPolicy(ctx context.Context, arg UpsertAccount
 
 const upsertMarginReadiness = `-- name: UpsertMarginReadiness :one
 INSERT INTO margin_readiness (
-    variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at
-) VALUES ($1, $2, $3, $4, $5, $6)
+    variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at, stale_boundary
+) VALUES ($1, $2, $3, $4, $5, $6, $7)
 ON CONFLICT (variant_id) DO UPDATE
 SET state = EXCLUDED.state,
     missing_components = EXCLUDED.missing_components,
     stale_components = EXCLUDED.stale_components,
-    computed_at = EXCLUDED.computed_at
-RETURNING variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at
+    computed_at = EXCLUDED.computed_at,
+    stale_boundary = EXCLUDED.stale_boundary
+RETURNING variant_id, marketplace_account_id, state, missing_components, stale_components, computed_at, stale_boundary
 `
 
 type UpsertMarginReadinessParams struct {
@@ -688,10 +691,13 @@ type UpsertMarginReadinessParams struct {
 	MissingComponents    []byte
 	StaleComponents      []byte
 	ComputedAt           time.Time
+	StaleBoundary        pgtype.Timestamptz
 }
 
 // Recompute the derived readiness projection (CST-003). Upsert: readiness is a
-// current-state projection, recomputed on any input change.
+// current-state projection, recomputed on any input change. stale_boundary is the
+// earliest review-by instant at which this projection must next age into Stale even
+// with no new input (issue #39); NULL ⇒ nothing can age by time alone.
 func (q *Queries) UpsertMarginReadiness(ctx context.Context, arg UpsertMarginReadinessParams) (MarginReadiness, error) {
 	row := q.db.QueryRow(ctx, upsertMarginReadiness,
 		arg.VariantID,
@@ -700,6 +706,7 @@ func (q *Queries) UpsertMarginReadiness(ctx context.Context, arg UpsertMarginRea
 		arg.MissingComponents,
 		arg.StaleComponents,
 		arg.ComputedAt,
+		arg.StaleBoundary,
 	)
 	var i MarginReadiness
 	err := row.Scan(
@@ -709,6 +716,7 @@ func (q *Queries) UpsertMarginReadiness(ctx context.Context, arg UpsertMarginRea
 		&i.MissingComponents,
 		&i.StaleComponents,
 		&i.ComputedAt,
+		&i.StaleBoundary,
 	)
 	return i, err
 }
