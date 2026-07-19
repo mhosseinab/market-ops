@@ -68,6 +68,50 @@ class EntityRef(BaseModel):
     label: str = ""
 
 
+class EntityCandidate(BaseModel):
+    """An authoritative candidate for an explicit reference (PRD §8.1).
+
+    Unlike :class:`EntityRef` (which is only what the message named), a candidate
+    is supplied by a deterministic read tool and therefore carries the provenance
+    a card binds at creation: the owning ``account_id`` plus the ``context_version``
+    (and, for a Recommendation, the ``recommendation_version``) required for
+    stale-card invalidation. These survive resolution byte-for-byte; a card-leading
+    intent resolving a candidate that lacks a required version fails closed rather
+    than emit a chip that cannot be bound or invalidated.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    context_type: ContextType
+    entity_id: str
+    raw: str
+    label: str = ""
+    account_id: str | None = None
+    context_version: str | None = None
+    recommendation_version: str | None = None
+
+
+def missing_card_version_reason(
+    context_type: ContextType,
+    context_version: str | None,
+    recommendation_version: str | None,
+) -> str | None:
+    """Return a stable reason token if a card-binding version is absent, else None.
+
+    A card-capable context needs ``context_version`` for stale-card invalidation
+    (PRD §8.1); a Recommendation additionally needs ``recommendation_version``.
+    Non-card-capable contexts bind no card and require neither. The empty string
+    counts as absent — a version must be a real, bindable identifier.
+    """
+    if context_type not in CARD_CAPABLE_CONTEXTS:
+        return None
+    if not context_version:
+        return "missing_context_version"
+    if context_type is ContextType.RECOMMENDATION and not recommendation_version:
+        return "missing_recommendation_version"
+    return None
+
+
 class ContextChip(BaseModel):
     """The single active context chip, with the identifiers a card binds at
     creation (PRD §8.1: resolved entity, account, context version, recommendation
@@ -153,6 +197,6 @@ class ResolveRequest(BaseModel):
     account_id: str | None = None
     active_context: ContextChip | None = None
     references: list[EntityRef] = Field(default_factory=list)
-    candidates: dict[str, list[EntityRef]] = Field(default_factory=dict)
+    candidates: dict[str, list[EntityCandidate]] = Field(default_factory=dict)
     time_phrase: str | None = None
     now: str = "1970-01-01T00:00:00Z"

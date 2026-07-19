@@ -18,12 +18,14 @@ from llm.contextres.models import (
     CARD_LEADING_INTENTS,
     ContextChip,
     ContextType,
+    EntityCandidate,
     EntityRef,
     PickerOption,
     Resolution,
     ResolutionKind,
     ResolveRequest,
     TimeRange,
+    missing_card_version_reason,
 )
 from llm.contextres.resolver import resolve, resolve_time_range
 
@@ -32,12 +34,14 @@ __all__ = [
     "CARD_LEADING_INTENTS",
     "ContextChip",
     "ContextType",
+    "EntityCandidate",
     "EntityRef",
     "PickerOption",
     "Resolution",
     "ResolutionKind",
     "ResolveRequest",
     "TimeRange",
+    "missing_card_version_reason",
     "resolve",
     "resolve_time_range",
 ]

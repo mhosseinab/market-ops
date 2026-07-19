@@ -14,18 +14,21 @@ The rules, in order:
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
 from llm.contextres.models import (
     CARD_CAPABLE_CONTEXTS,
     CARD_LEADING_INTENTS,
     ContextChip,
+    EntityCandidate,
     EntityRef,
     PickerOption,
     Resolution,
     ResolutionKind,
     ResolveRequest,
     TimeRange,
+    missing_card_version_reason,
 )
 from llm.intents.normalize import normalize_digits
 
@@ -62,6 +65,22 @@ def resolve(req: ResolveRequest) -> Resolution:
             reason="account_level_context_needs_target",
         )
 
+    if card_leading:
+        # The active chip will lead a card: it must carry the versions the card
+        # binds and invalidates on (§8.1). A stale chip that dropped a required
+        # version on re-fetch fails closed rather than binding an unversioned card.
+        missing = missing_card_version_reason(
+            req.active_context.context_type,
+            req.active_context.context_version,
+            req.active_context.recommendation_version,
+        )
+        if missing is not None:
+            return Resolution(
+                kind=ResolutionKind.NOT_FOUND,
+                time_range=time_range,
+                reason=missing,
+            )
+
     # Resolve against the existing active chip (carry its bound identifiers).
     return Resolution(
         kind=ResolutionKind.RESOLVED,
@@ -88,10 +107,26 @@ def _resolve_with_references(
     candidates = req.candidates.get(ref.raw, [])
 
     if len(candidates) == 1:
+        candidate = candidates[0]
+        if card_leading:
+            # The resolved candidate will lead a card: it must carry the versions
+            # the card binds and invalidates on (§8.1). Fail closed otherwise —
+            # never emit a chip that a card can neither bind nor invalidate.
+            missing = missing_card_version_reason(
+                candidate.context_type,
+                candidate.context_version,
+                candidate.recommendation_version,
+            )
+            if missing is not None:
+                return Resolution(
+                    kind=ResolutionKind.NOT_FOUND,
+                    time_range=time_range,
+                    reason=missing,
+                )
         # Unambiguous explicit reference overrides any compatible active context.
         return Resolution(
             kind=ResolutionKind.RESOLVED,
-            chip=_chip_from_entity(candidates[0], req.account_id),
+            chip=_chip_from_entity(candidate, req.account_id),
             time_range=time_range,
             reason="explicit_reference_override",
         )
@@ -114,16 +149,23 @@ def _resolve_with_references(
     )
 
 
-def _chip_from_entity(entity: EntityRef, account_id: str | None) -> ContextChip:
-    """Build the active chip a resolved entity activates."""
+def _chip_from_entity(entity: EntityCandidate, account_id: str | None) -> ContextChip:
+    """Build the active chip a resolved candidate activates.
+
+    Account provenance and both versions are carried from the authoritative
+    candidate byte-for-byte (§8.1); the candidate's own ``account_id`` wins over
+    the request account when present.
+    """
     return ContextChip(
         context_type=entity.context_type,
-        account_id=account_id,
+        account_id=entity.account_id or account_id,
         entity_id=entity.entity_id,
+        context_version=entity.context_version,
+        recommendation_version=entity.recommendation_version,
     )
 
 
-def _options_from_refs(refs: list[EntityRef]) -> list[PickerOption]:
+def _options_from_refs(refs: Sequence[EntityRef | EntityCandidate]) -> list[PickerOption]:
     """Project candidate entities into structured, non-executable picker options."""
     return [
         PickerOption(

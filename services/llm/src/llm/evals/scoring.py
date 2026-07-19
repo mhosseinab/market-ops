@@ -12,7 +12,7 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import Any
 
-from llm.contextres import ContextChip, EntityRef, ResolveRequest, resolve
+from llm.contextres import ContextChip, EntityCandidate, EntityRef, ResolveRequest, resolve
 from llm.contextres.models import ResolutionKind
 from llm.envelope.contract import Provenance, SourcedValue, SourceRef
 from llm.envelope.grounding import find_violations
@@ -78,7 +78,7 @@ def _resolve_request(row: dict[str, Any]) -> ResolveRequest:
     active = row.get("active_context")
     references = [EntityRef.model_validate(r) for r in row.get("references", [])]
     candidates = {
-        raw: [EntityRef.model_validate(e) for e in ents]
+        raw: [EntityCandidate.model_validate(e) for e in ents]
         for raw, ents in row.get("candidates", {}).items()
     }
     return ResolveRequest(
