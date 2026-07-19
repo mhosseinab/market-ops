@@ -128,6 +128,28 @@ WHERE ac.marketplace_account_id = $1 AND ae.external_state = 'pending_reconcilia
 ORDER BY ae.created_at
 LIMIT $2;
 
+-- name: AggregatePendingReconciliation :many
+-- Per-account aggregate of the DURABLE pending_reconciliation set (EXE-003, §20.1):
+-- the current count of parked-unknown write results and the OLDEST park instant.
+-- This is the authoritative backlog measurement — the same durable rows
+-- ListPendingReconciliationByAccount renders in the Operations queue — read LIVE by
+-- the execution.pending_reconciliation_current / _oldest_age_seconds observable
+-- gauges. Because it reads current state, a resolved item simply leaves the set
+-- (count drops, never negative), an unrelated terminal result cannot cancel a still-
+-- pending item, and a process restart re-reads the same rows (no in-memory counter
+-- to zero). Grouped by the bound approval_cards account (action_executions carries
+-- no account column of its own), a bounded label. Pure SELECT — no UPDATE/DELETE, no
+-- Money arithmetic; the age is derived in Go as plain time subtraction on
+-- oldest_created_at.
+SELECT
+    ac.marketplace_account_id AS account_id,
+    count(*)                  AS pending_count,
+    min(ae.created_at)::timestamptz AS oldest_created_at
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ae.external_state = 'pending_reconciliation'
+GROUP BY ac.marketplace_account_id;
+
 -- name: GetWriteVerification :one
 SELECT * FROM account_write_verification WHERE marketplace_account_id = $1;
 

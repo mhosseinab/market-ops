@@ -60,6 +60,13 @@ REAL_BASE = {
     # Counter: terminal catalog-sync attempts by disposition (success/http_4xx/
     # http_5xx/transport/typed); the by-disposition evidence for the streak.
     "connector_sync_results",
+    # Bounded async gauge: current DURABLE count of action_executions parked in
+    # pending_reconciliation, per account; read live from the store each scrape.
+    # Backs ReconciliationBacklog (§20.1, EXE-003, issue #147).
+    "execution_pending_reconciliation_current",
+    # Bounded async gauge: age (seconds) of the oldest still-pending reconciliation
+    # item per account; proves the SAME durable work remains unresolved (issue #147).
+    "execution_pending_reconciliation_oldest_age_seconds",
 }
 # Histogram expansion suffixes Prometheus adds for a float histogram.
 HIST_SUFFIXES = ("_bucket", "_sum", "_count")

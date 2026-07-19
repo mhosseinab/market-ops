@@ -317,6 +317,20 @@ func run() error {
 		serverOpts = append(serverOpts, httpapi.WithOutcome(outcome.NewService(pool)))
 		logger.Info("execution service wired (dark; writes OFF until S35)")
 
+		// Arm the §20.1 / EXE-003 reconciliation-backlog producer (issue #147). It
+		// binds to the global OTel meter obs.Init installed above and registers two
+		// async observable gauges whose callback reads the DURABLE
+		// pending_reconciliation set LIVE on every scrape — the same
+		// action_executions rows the Operations queue renders. Because the value is a
+		// DB read, not an in-memory counter, it survives restart, can never go
+		// negative, and an unrelated terminal result cannot cancel a still-pending
+		// item; the oldest-age gauge proves the SAME work remains unresolved. It is
+		// read-only, nil-safe, and pool-bound: a registration hiccup degrades to no
+		// telemetry and never touches the request path.
+		reconBacklog := execution.NewReconciliationBacklog(logger, pool)
+		reconBacklog.StartObserving()
+		logger.Info("reconciliation-backlog telemetry armed; gauges execution_pending_reconciliation_current/_oldest_age_seconds (§20.1)")
+
 		// Start the River worker pipeline that drives the periodic execution-plane
 		// passes (EXE-005 recommend-only matching, OUT-001 outcome close). Both run
 		// their REAL production logic on a schedule; while writes are dark, the
