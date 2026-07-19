@@ -236,6 +236,8 @@ Useful local endpoints:
 | Spotlight | `http://localhost:8969` |
 | Mock DK Seller API | `http://localhost:8090` |
 
+These dev services bind to `127.0.0.1` only (loopback), so they are not reachable from the LAN. To deliberately expose them (e.g. from a remote dev box), set `DK_DEV_BIND_IP=0.0.0.0` before bringing the stack up. Grafana no longer allows anonymous admin — log in as `admin` with the password `task dev` / `task up` generates in `tmp/dev-grafana-admin-password` (or set your own `GF_SECURITY_ADMIN_PASSWORD`).
+
 ### Run everything (web SPA + core + LLM plane)
 
 ```sh

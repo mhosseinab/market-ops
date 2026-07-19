@@ -21,7 +21,8 @@ for expected in \
   "UV_CACHE_DIR=tmp/uv-cache" \
   "CONNECTOR_ENCRYPTION_KEY=generated" \
   "LLM_GATEWAY_TOKEN=generated" \
-  "DEV_OWNER_PASSWORD=generated"; do
+  "DEV_OWNER_PASSWORD=generated" \
+  "GRAFANA_ADMIN_PASSWORD=generated"; do
   if ! grep -Fqx "$expected" <<<"$output"; then
     echo "up_test: missing resolved default: $expected" >&2
     echo "$output" >&2
