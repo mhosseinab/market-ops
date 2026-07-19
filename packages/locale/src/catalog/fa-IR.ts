@@ -228,6 +228,12 @@ export const faIR: Catalog = {
   "products.col.marketPrice": "قیمت بازار",
   "products.col.open": "باز کردن",
   "products.open": "باز کردن ←",
+  "products.pagination.page": "صفحه {page} از {total}",
+  "products.pagination.prev": "قبلی",
+  "products.pagination.next": "بعدی",
+  "products.readiness.error.title": "آمادگی حاشیهٔ برخی کالاها بارگذاری نشد",
+  "products.readiness.error.body":
+    "بارگذاری آمادگی حاشیه برای {count} کالا در این صفحه ناموفق بود. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
   "tier.priority": "اولویت‌دار",
   "tier.standard": "استاندارد",
   "tier.background": "پس‌زمینه",

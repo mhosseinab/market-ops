@@ -229,6 +229,12 @@ export const en: Catalog = {
   "products.col.marketPrice": "Market price",
   "products.col.open": "Open",
   "products.open": "Open →",
+  "products.pagination.page": "Page {page} of {total}",
+  "products.pagination.prev": "Previous",
+  "products.pagination.next": "Next",
+  "products.readiness.error.title": "Some margin readiness could not be loaded",
+  "products.readiness.error.body":
+    "Readiness for {count} products on this page failed to load. Other rows are shown; retry to load the rest.",
   "tier.priority": "Priority",
   "tier.standard": "Standard",
   "tier.background": "Background",
