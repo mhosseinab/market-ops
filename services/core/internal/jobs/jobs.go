@@ -75,6 +75,14 @@ type ExecutionRunners struct {
 	// worker retries rather than silently dropping the durable intent); production
 	// always wires it, so a committed reopen is never permanently lost.
 	MappingReopened MappingReopenedFunc
+	// NotificationDeliver is the durable notification-delivery consumer (issue #110,
+	// NOT-001): it drives the idempotent notify.Store.Deliver for an intent enqueued
+	// transactionally with a market-event / execution-failure / safety-failure
+	// transition. It is event-driven (one job per producing transition), NOT
+	// periodic. A nil runner fails CLOSED (the worker retries rather than silently
+	// dropping the durable intent); production always wires it, so a committed
+	// transition's notification is never permanently lost.
+	NotificationDeliver NotificationDeliverFunc
 }
 
 // NewWorkers builds the worker registry for the core binary. Every worker the
@@ -108,6 +116,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewMappingReopenedWorker(runners.MappingReopened, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register mapping-reopened worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewNotificationDeliverWorker(runners.NotificationDeliver, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register notification-deliver worker: %w", err)
 	}
 	return workers, nil
 }
