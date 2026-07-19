@@ -563,6 +563,112 @@ func TestCompletePriceRetainsValueBearingQuality(t *testing.T) {
 	}
 }
 
+// TestDedupMaterialConflictNotDiscarded is the issue #44 negative proof and the
+// event-deduplication never-cut guard (§4.6): two captures that share the dedup
+// key SUBSET (same target/offer/route/sub_route/price value+unit/list-price
+// value/availability/captured_at) but differ in a MATERIAL field OUTSIDE that
+// subset (here the ListPrice unit + text) must NOT collapse into a Deduped:true
+// success. The second capture is a MATERIAL CONFLICT: it fails closed with an
+// explicit conflict outcome, records an append-only conflict row preserving BOTH
+// evidence hashes, and never silently overwrites the authoritative current offer.
+func TestDedupMaterialConflictNotDiscarded(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant, nv, np := seedVariant(t, q)
+	insertConfirmedIdentity(t, pool, account, variant, nv, np)
+
+	clk := &clock{t: time.Now().UTC()}
+	svc := obs.NewService(pool).WithClock(clk.now)
+	created, err := svc.SyncTargetsFromConfirmed(ctx, account)
+	if err != nil || len(created) != 1 {
+		t.Fatalf("sync targets: %v (n=%d)", err, len(created))
+	}
+	target := created[0].ID
+
+	// First capture: in-window, complete, with a list price token.
+	first := captureFor(target, account, nv, obs.RouteC, clk.now())
+	first.ListPrice = money.NewRawAmount("1٬500٬000 ریال", "1500000", "IRR-rial")
+	firstRes, err := svc.Ingest(ctx, first)
+	if err != nil {
+		t.Fatalf("ingest first: %v", err)
+	}
+	if firstRes.Deduped {
+		t.Fatal("first capture must not dedup")
+	}
+
+	// Second capture: IDENTICAL dedup key (same target/offer/route/sub_route/price
+	// value+unit/list-price VALUE/availability/captured_at) but a DIFFERENT material
+	// field OUTSIDE the key subset — the list-price UNIT and TEXT change. This is a
+	// materially different evidence envelope that must not be discarded as a replay.
+	conflicting := first
+	conflicting.ListPrice = money.NewRawAmount("۱۵۰٬۰۰۰ تومان", "1500000", "IRR-toman")
+	if obs.DedupKey(conflicting) != obs.DedupKey(first) {
+		t.Fatalf("test setup: the two captures must share a dedup key; got %s vs %s",
+			obs.DedupKey(conflicting), obs.DedupKey(first))
+	}
+
+	confRes, ingestErr := svc.Ingest(ctx, conflicting)
+
+	// (a) The second ingest must NOT be reported as a Deduped:true success.
+	if ingestErr == nil && confRes.Deduped {
+		t.Fatal("a material out-of-key evidence change must NOT collapse into a Deduped:true replay (issue #44)")
+	}
+	// It must produce an EXPLICIT conflict outcome, distinguishable from success.
+	if !errors.Is(ingestErr, obs.ErrDedupEvidenceConflict) && !confRes.Conflict {
+		t.Fatalf("material dedup conflict must fail closed with an explicit conflict outcome, got err=%v res=%+v", ingestErr, confRes)
+	}
+
+	// (b) The conflict is recorded in the APPEND-ONLY conflict table.
+	var conflictCount int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM observation_dedup_conflicts WHERE target_id = $1`, target,
+	).Scan(&conflictCount); err != nil {
+		t.Fatalf("query conflict table: %v", err)
+	}
+	if conflictCount != 1 {
+		t.Fatalf("expected exactly 1 append-only conflict record, got %d", conflictCount)
+	}
+
+	// The conflict row preserves BOTH the stored and the conflicting evidence hash,
+	// and they differ (the material change is captured).
+	var storedHash, conflictingHash string
+	if err := pool.QueryRow(ctx,
+		`SELECT stored_evidence_hash, conflicting_evidence_hash
+		   FROM observation_dedup_conflicts WHERE target_id = $1`, target,
+	).Scan(&storedHash, &conflictingHash); err != nil {
+		t.Fatalf("read conflict hashes: %v", err)
+	}
+	if storedHash == "" || conflictingHash == "" {
+		t.Fatalf("conflict row must preserve both evidence hashes, got %q / %q", storedHash, conflictingHash)
+	}
+	if storedHash == conflictingHash {
+		t.Fatal("a material conflict must record DIFFERENT stored vs conflicting evidence hashes")
+	}
+
+	// (c) The original evidence remains and the authoritative current offer is not
+	// overwritten by the conflicting capture: exactly ONE observed offer, and the
+	// original list-price unit is intact on the current offer.
+	offers, err := svc.ListObservedOffers(ctx, account)
+	if err != nil {
+		t.Fatalf("list offers: %v", err)
+	}
+	if len(offers) != 1 {
+		t.Fatalf("a material conflict must not create a duplicate current offer, got %d", len(offers))
+	}
+	if offers[0].ListPriceRawUnit != "IRR-rial" {
+		t.Fatalf("the conflicting capture must not overwrite the authoritative current offer, list_price_raw_unit=%q", offers[0].ListPriceRawUnit)
+	}
+
+	// The original evidence must be preserved append-only for review.
+	rows, err := svc.ListObservations(ctx, target, 100)
+	if err != nil {
+		t.Fatalf("list observations: %v", err)
+	}
+	if len(rows) < 1 {
+		t.Fatalf("the original evidence must be preserved, got %d rows", len(rows))
+	}
+}
+
 func containsRoute(routes []byte, want string) bool {
 	// routes is jsonb; a substring check is sufficient for the fixed route tokens.
 	return len(routes) > 0 && contains(string(routes), want)

@@ -72,15 +72,49 @@ SELECT * FROM observation_targets
 WHERE tier = $1 AND active = true
 ORDER BY marketplace_account_id, native_variant_id;
 
--- name: ClaimDedupKey :many
--- OBS-008 atomic dedup. A returned row = first sighting (accept the observation);
--- an empty result = replay (dedup — create no duplicate current offer). The key
--- carries the route, so a different route observing the same value is a distinct
--- claim and is retained: route provenance is never collapsed away.
-INSERT INTO observation_dedup (dedup_key, target_id, route, offer_identity)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (dedup_key) DO NOTHING
+-- name: ClaimDedupKey :one
+-- OBS-008 atomic dedup with evidence-hash comparison (issue #44). Returns EXACTLY
+-- one row describing the outcome of the claim:
+--   * inserted = true  → first sighting: the row was freshly inserted with the
+--                        incoming evidence_hash (accept the observation).
+--   * inserted = false → the key already existed: the row carries the STORED
+--                        (original) evidence_hash, so the caller can compare it to
+--                        the incoming hash. Equal ⇒ a true replay (idempotent
+--                        no-op); UNEQUAL ⇒ a material conflict (fail closed, record
+--                        it, never overwrite the authoritative current offer).
+-- The key carries the route, so a different route observing the same value is a
+-- distinct claim and is retained: route provenance is never collapsed away.
+WITH ins AS (
+    INSERT INTO observation_dedup (dedup_key, target_id, route, offer_identity, evidence_hash)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (dedup_key) DO NOTHING
+    RETURNING dedup_key, evidence_hash
+)
+SELECT dedup_key, evidence_hash, true AS inserted FROM ins
+UNION ALL
+SELECT d.dedup_key, d.evidence_hash, false AS inserted
+    FROM observation_dedup d
+    WHERE d.dedup_key = $1 AND NOT EXISTS (SELECT 1 FROM ins);
+
+-- name: InsertDedupConflict :one
+-- APPEND-ONLY dedup conflict record (issue #44). Written when a capture collides on
+-- the dedup key but carries a materially different evidence envelope (its canonical
+-- evidence hash differs from the stored one). Preserves BOTH hashes and the full
+-- conflicting envelope (raw tokens, money quarantine) so the dropped evidence is
+-- auditable — the second capture is never silently lost. INSERT-only.
+INSERT INTO observation_dedup_conflicts (
+    dedup_key, target_id, marketplace_account_id, route, offer_identity,
+    stored_evidence_hash, conflicting_evidence_hash, conflicting_observation_id,
+    conflicting_envelope
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 RETURNING *;
+
+-- name: ListDedupConflictsByTarget :many
+-- Append-only dedup conflicts for a target, newest first (review/introspection).
+SELECT * FROM observation_dedup_conflicts
+WHERE target_id = $1
+ORDER BY detected_at DESC
+LIMIT $2;
 
 -- name: InsertObservation :one
 -- APPEND-ONLY evidence write (OBS-002). Every field of the evidence envelope is

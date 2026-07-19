@@ -475,6 +475,21 @@ type ObservationDedup struct {
 	Route         string
 	OfferIdentity string
 	FirstSeenAt   time.Time
+	EvidenceHash  string
+}
+
+type ObservationDedupConflict struct {
+	ID                       uuid.UUID
+	DedupKey                 string
+	TargetID                 uuid.UUID
+	MarketplaceAccountID     uuid.UUID
+	Route                    string
+	OfferIdentity            string
+	StoredEvidenceHash       string
+	ConflictingEvidenceHash  string
+	ConflictingObservationID pgtype.UUID
+	ConflictingEnvelope      []byte
+	DetectedAt               time.Time
 }
 
 type ObservationTarget struct {

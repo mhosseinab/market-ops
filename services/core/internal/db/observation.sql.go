@@ -13,11 +13,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const claimDedupKey = `-- name: ClaimDedupKey :many
-INSERT INTO observation_dedup (dedup_key, target_id, route, offer_identity)
-VALUES ($1, $2, $3, $4)
-ON CONFLICT (dedup_key) DO NOTHING
-RETURNING dedup_key, target_id, route, offer_identity, first_seen_at
+const claimDedupKey = `-- name: ClaimDedupKey :one
+WITH ins AS (
+    INSERT INTO observation_dedup (dedup_key, target_id, route, offer_identity, evidence_hash)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT (dedup_key) DO NOTHING
+    RETURNING dedup_key, evidence_hash
+)
+SELECT dedup_key, evidence_hash, true AS inserted FROM ins
+UNION ALL
+SELECT d.dedup_key, d.evidence_hash, false AS inserted
+    FROM observation_dedup d
+    WHERE d.dedup_key = $1 AND NOT EXISTS (SELECT 1 FROM ins)
 `
 
 type ClaimDedupKeyParams struct {
@@ -25,41 +32,38 @@ type ClaimDedupKeyParams struct {
 	TargetID      uuid.UUID
 	Route         string
 	OfferIdentity string
+	EvidenceHash  string
 }
 
-// OBS-008 atomic dedup. A returned row = first sighting (accept the observation);
-// an empty result = replay (dedup — create no duplicate current offer). The key
-// carries the route, so a different route observing the same value is a distinct
-// claim and is retained: route provenance is never collapsed away.
-func (q *Queries) ClaimDedupKey(ctx context.Context, arg ClaimDedupKeyParams) ([]ObservationDedup, error) {
-	rows, err := q.db.Query(ctx, claimDedupKey,
+type ClaimDedupKeyRow struct {
+	DedupKey     string
+	EvidenceHash string
+	Inserted     bool
+}
+
+// OBS-008 atomic dedup with evidence-hash comparison (issue #44). Returns EXACTLY
+// one row describing the outcome of the claim:
+//   - inserted = true  → first sighting: the row was freshly inserted with the
+//     incoming evidence_hash (accept the observation).
+//   - inserted = false → the key already existed: the row carries the STORED
+//     (original) evidence_hash, so the caller can compare it to
+//     the incoming hash. Equal ⇒ a true replay (idempotent
+//     no-op); UNEQUAL ⇒ a material conflict (fail closed, record
+//     it, never overwrite the authoritative current offer).
+//
+// The key carries the route, so a different route observing the same value is a
+// distinct claim and is retained: route provenance is never collapsed away.
+func (q *Queries) ClaimDedupKey(ctx context.Context, arg ClaimDedupKeyParams) (ClaimDedupKeyRow, error) {
+	row := q.db.QueryRow(ctx, claimDedupKey,
 		arg.DedupKey,
 		arg.TargetID,
 		arg.Route,
 		arg.OfferIdentity,
+		arg.EvidenceHash,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ObservationDedup{}
-	for rows.Next() {
-		var i ObservationDedup
-		if err := rows.Scan(
-			&i.DedupKey,
-			&i.TargetID,
-			&i.Route,
-			&i.OfferIdentity,
-			&i.FirstSeenAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	var i ClaimDedupKeyRow
+	err := row.Scan(&i.DedupKey, &i.EvidenceHash, &i.Inserted)
+	return i, err
 }
 
 const closeObservedOffer = `-- name: CloseObservedOffer :one
@@ -338,6 +342,61 @@ func (q *Queries) GetObservedOffer(ctx context.Context, arg GetObservedOfferPara
 	return i, err
 }
 
+const insertDedupConflict = `-- name: InsertDedupConflict :one
+INSERT INTO observation_dedup_conflicts (
+    dedup_key, target_id, marketplace_account_id, route, offer_identity,
+    stored_evidence_hash, conflicting_evidence_hash, conflicting_observation_id,
+    conflicting_envelope
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, dedup_key, target_id, marketplace_account_id, route, offer_identity, stored_evidence_hash, conflicting_evidence_hash, conflicting_observation_id, conflicting_envelope, detected_at
+`
+
+type InsertDedupConflictParams struct {
+	DedupKey                 string
+	TargetID                 uuid.UUID
+	MarketplaceAccountID     uuid.UUID
+	Route                    string
+	OfferIdentity            string
+	StoredEvidenceHash       string
+	ConflictingEvidenceHash  string
+	ConflictingObservationID pgtype.UUID
+	ConflictingEnvelope      []byte
+}
+
+// APPEND-ONLY dedup conflict record (issue #44). Written when a capture collides on
+// the dedup key but carries a materially different evidence envelope (its canonical
+// evidence hash differs from the stored one). Preserves BOTH hashes and the full
+// conflicting envelope (raw tokens, money quarantine) so the dropped evidence is
+// auditable — the second capture is never silently lost. INSERT-only.
+func (q *Queries) InsertDedupConflict(ctx context.Context, arg InsertDedupConflictParams) (ObservationDedupConflict, error) {
+	row := q.db.QueryRow(ctx, insertDedupConflict,
+		arg.DedupKey,
+		arg.TargetID,
+		arg.MarketplaceAccountID,
+		arg.Route,
+		arg.OfferIdentity,
+		arg.StoredEvidenceHash,
+		arg.ConflictingEvidenceHash,
+		arg.ConflictingObservationID,
+		arg.ConflictingEnvelope,
+	)
+	var i ObservationDedupConflict
+	err := row.Scan(
+		&i.ID,
+		&i.DedupKey,
+		&i.TargetID,
+		&i.MarketplaceAccountID,
+		&i.Route,
+		&i.OfferIdentity,
+		&i.StoredEvidenceHash,
+		&i.ConflictingEvidenceHash,
+		&i.ConflictingObservationID,
+		&i.ConflictingEnvelope,
+		&i.DetectedAt,
+	)
+	return i, err
+}
+
 const insertObservation = `-- name: InsertObservation :one
 INSERT INTO observations (
     captured_at, target_id, marketplace_account_id, native_variant_id,
@@ -574,6 +633,51 @@ func (q *Queries) ListConflictedObservedOffers(ctx context.Context, marketplaceA
 			&i.EndedAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDedupConflictsByTarget = `-- name: ListDedupConflictsByTarget :many
+SELECT id, dedup_key, target_id, marketplace_account_id, route, offer_identity, stored_evidence_hash, conflicting_evidence_hash, conflicting_observation_id, conflicting_envelope, detected_at FROM observation_dedup_conflicts
+WHERE target_id = $1
+ORDER BY detected_at DESC
+LIMIT $2
+`
+
+type ListDedupConflictsByTargetParams struct {
+	TargetID uuid.UUID
+	Limit    int32
+}
+
+// Append-only dedup conflicts for a target, newest first (review/introspection).
+func (q *Queries) ListDedupConflictsByTarget(ctx context.Context, arg ListDedupConflictsByTargetParams) ([]ObservationDedupConflict, error) {
+	rows, err := q.db.Query(ctx, listDedupConflictsByTarget, arg.TargetID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ObservationDedupConflict{}
+	for rows.Next() {
+		var i ObservationDedupConflict
+		if err := rows.Scan(
+			&i.ID,
+			&i.DedupKey,
+			&i.TargetID,
+			&i.MarketplaceAccountID,
+			&i.Route,
+			&i.OfferIdentity,
+			&i.StoredEvidenceHash,
+			&i.ConflictingEvidenceHash,
+			&i.ConflictingObservationID,
+			&i.ConflictingEnvelope,
+			&i.DetectedAt,
 		); err != nil {
 			return nil, err
 		}
