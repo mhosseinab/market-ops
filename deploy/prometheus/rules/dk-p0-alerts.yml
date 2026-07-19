@@ -59,22 +59,37 @@ groups:
           ops_queue: "operations.queue.parserDrift"
           description: "A Route B/C or extension breaker tripped. Owning queue: Operations → Parser/schema drift. Follow runbooks/parser.md."
 
-      # ── Action reconciliation backlog (EXE-003 parked-pending grows unresolved) ──
-      # Backing series: execution_pending_reconciliation (parks) vs
-      # execution_terminal_results (reconciled), both S18 real counters. A positive
-      # gap sustained for 30m means unknown write results are not being resolved.
+      # ── Action reconciliation backlog (EXE-003 unknown results remain pending) ──
+      # Backing series: execution_pending_reconciliation_current and
+      # execution_pending_reconciliation_oldest_age_seconds — two bounded async gauges
+      # the execution seam (internal/execution/reconciliation_backlog.go, issue #147)
+      # emits by reading the DURABLE pending_reconciliation set LIVE on every scrape.
+      # They measure the SAME action_executions rows the Operations queue renders
+      # (ListPendingReconciliationByAccount), so a firing alert points at the same
+      # durable rows an operator resolves.
+      #
+      # This replaces the old increase(parks)-increase(terminals) subtraction, which
+      # was NOT backlog: work older than the 30m range fell out of both terms and
+      # vanished, and unrelated terminal results cancelled new parks. A live durable
+      # read cannot do that — a resolved item simply leaves the set (count drops,
+      # never negative), an unrelated terminal cannot cancel a still-pending item, and
+      # a process restart re-reads the same rows. The OLDEST-AGE gate (>= 1800s) is
+      # what PROVES the SAME work has stayed unresolved for 30 minutes; the short
+      # `for:` is only a scrape-stability delay and is NOT the persistence proof.
       - alert: ReconciliationBacklog
         expr: |
-          sum(increase(execution_pending_reconciliation[30m])) - sum(increase(execution_terminal_results[30m])) > 0
-        for: 30m
+          (max by (account_id) (execution_pending_reconciliation_current) >= 1)
+          and
+          (max by (account_id) (execution_pending_reconciliation_oldest_age_seconds) >= 1800)
+        for: 2m
         labels:
           severity: page
           failure_domain: reconciliation
         annotations:
-          summary: "Action reconciliation backlog growing (parked > reconciled over 30m)"
+          summary: "Unknown write result pending reconciliation >30m (durable backlog)"
           runbook: "runbooks/action-reconciliation.md"
           ops_queue: "operations.queue.pendingRecon"
-          description: "Writes parked pending reconciliation are outpacing terminal results. Owning queue: Operations → Pending reconciliation. Follow runbooks/action-reconciliation.md."
+          description: "An account has an action_execution parked in pending_reconciliation whose oldest item has been unresolved for >=30m. Same durable rows as Operations → Pending reconciliation. Follow runbooks/action-reconciliation.md."
 
       # ── Briefing reliability (§20.2: 95% during soak; briefing generation fails) ──
       # Backing series: analytics_events{family="briefing"} success ('generated')

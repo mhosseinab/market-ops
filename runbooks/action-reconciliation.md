@@ -8,8 +8,12 @@
 
 ## Symptom
 
-- Alert `ReconciliationBacklog` firing: over 30m, `execution_pending_reconciliation`
-  parks exceed `execution_terminal_results` reconciliations.
+- Alert `ReconciliationBacklog` firing: an account has an action_execution parked in
+  `pending_reconciliation` (`execution_pending_reconciliation_current` >= 1) whose
+  oldest item has been unresolved for >= 30m
+  (`execution_pending_reconciliation_oldest_age_seconds` >= 1800). These gauges are a
+  LIVE read of the same durable rows the queue below renders — the age proves the
+  SAME work stayed unresolved (issue #147), not a difference between rolling counters.
 - Operations → "Pending reconciliation" queue surfaced (contract list endpoint not
   yet exposed ⇒ explicit unavailable count, never a fabricated zero).
 - Action acknowledgement missing the §17.2 target (state visible within 30s).
@@ -22,9 +26,11 @@ integrity telemetry — it does not redefine the write/reconcile logic.
 
 ## Diagnosis
 
-1. On `DK · Approval & execution integrity`, compare "External write attempts (by
-   state)" against "Pending reconciliation (30m)". A growing `pending_reconciliation`
-   with flat `terminal_results` means unknown write results are not resolving.
+1. On `DK · Approval & execution integrity`, read `execution_pending_reconciliation_current`
+   and `execution_pending_reconciliation_oldest_age_seconds` by `account_id`. A
+   non-zero current count with an oldest age climbing past 1800s means unknown write
+   results for that account are not resolving. Open Operations → "Pending
+   reconciliation" for the SAME durable rows the alert measured.
 2. **Audit integrity first (never-cut):** confirm the "Audit-write failures (must be
    0)" stat is 0. A non-zero value means an audit append forced a rollback — that is
    a page-worthy incident that supersedes the backlog; do not proceed until it is 0.
