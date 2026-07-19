@@ -32,9 +32,10 @@ const DefaultPageSize = 50
 // advance in one tx) so an interruption between pages leaves a consistent,
 // resumable state and never a partially-applied page.
 type Syncer struct {
-	pool     *pgxpool.Pool
-	source   Source
-	pageSize int
+	pool      *pgxpool.Pool
+	source    Source
+	pageSize  int
+	telemetry *SyncTelemetry
 }
 
 // NewSyncer builds a Syncer. A pageSize <= 0 uses DefaultPageSize.
@@ -43,6 +44,23 @@ func NewSyncer(pool *pgxpool.Pool, source Source, pageSize int) *Syncer {
 		pageSize = DefaultPageSize
 	}
 	return &Syncer{pool: pool, source: source, pageSize: pageSize}
+}
+
+// WithTelemetry attaches the process-wide sync-streak tracker so this Syncer
+// records its terminal outcome at the authoritative sync lifecycle boundary
+// (feeding the §20.1 ConnectorSyncFailureStreak trip wire). A nil tracker leaves
+// recording off — the sync path never depends on telemetry being wired.
+func (s *Syncer) WithTelemetry(t *SyncTelemetry) *Syncer {
+	s.telemetry = t
+	return s
+}
+
+// recordResult forwards one terminal sync disposition to the shared tracker when
+// telemetry is attached. Nil-safe: the sync path is unaffected when it is not.
+func (s *Syncer) recordResult(ctx context.Context, account uuid.UUID, d SyncDisposition) {
+	if s.telemetry != nil {
+		s.telemetry.recordSyncResult(ctx, account, d)
+	}
 }
 
 // Start creates a sync run and returns its id. The run begins in 'running' with
@@ -105,6 +123,10 @@ func (s *Syncer) resume(ctx context.Context, account, runID uuid.UUID, maxPages 
 			}); serr != nil {
 				return errors.Join(err, fmt.Errorf("catalog: record run error: %w", serr))
 			}
+			// Authoritative sync-failure boundary: advance the §20.1 consecutive-
+			// failure streak by this attempt's disposition (issue #146). Recorded
+			// after the durable error is persisted so telemetry mirrors durable state.
+			s.recordResult(ctx, account, classifySyncFailure(err))
 			return err
 		}
 		processed++
@@ -265,6 +287,9 @@ func (s *Syncer) finish(ctx context.Context, q *db.Queries, account, runID uuid.
 	}); err != nil {
 		return fmt.Errorf("catalog: complete run: %w", err)
 	}
+	// Authoritative sync-success boundary: a completed run RESETS the §20.1
+	// consecutive-failure streak to zero (issue #146).
+	s.recordResult(ctx, account, SyncSuccess)
 	return nil
 }
 

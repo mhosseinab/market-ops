@@ -47,10 +47,15 @@ type WorkerDeps struct {
 	Pool      *pgxpool.Pool
 	PageSize  int
 	Logger    *slog.Logger
+	// Telemetry is the process-wide sync-streak tracker feeding the §20.1
+	// ConnectorSyncFailureStreak trip wire (issue #146). Shared across every
+	// per-account Syncer so the consecutive-failure streak accumulates across runs.
+	// Optional: a nil tracker leaves streak recording off.
+	Telemetry *SyncTelemetry
 }
 
 func (d WorkerDeps) syncerFor(org, account uuid.UUID) *Syncer {
-	return NewSyncer(d.Pool, NewConnectorSource(d.Connector, org, account), d.PageSize)
+	return NewSyncer(d.Pool, NewConnectorSource(d.Connector, org, account), d.PageSize).WithTelemetry(d.Telemetry)
 }
 
 // InitialImportWorker runs CatalogInitialImportArgs to completion, resuming from

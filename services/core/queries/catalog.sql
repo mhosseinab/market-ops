@@ -83,6 +83,15 @@ WHERE marketplace_account_id = $1
 ORDER BY started_at DESC
 LIMIT 1;
 
+-- name: ListRecentCatalogSyncOutcomes :many
+-- READ-ONLY durable ordered sync-run state for restart re-derivation of the §20.1
+-- connector-sync failure streak (issue #146). Newest-first per account; the
+-- telemetry seam (catalog.deriveStreaks) counts the leading consecutive non-success
+-- runs since the last completed run. Pure SELECT: never mutates a run row.
+SELECT marketplace_account_id, status, error
+FROM catalog_sync_runs
+ORDER BY marketplace_account_id, started_at DESC;
+
 -- name: AdvanceCatalogSyncRun :one
 -- Persist page progress after a page is fully applied. next_page is the resume
 -- cursor an interrupted import continues from; counters accumulate.

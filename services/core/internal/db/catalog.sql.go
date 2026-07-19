@@ -346,6 +346,42 @@ func (q *Queries) InsertCatalogPayloadSnapshot(ctx context.Context, arg InsertCa
 	return err
 }
 
+const listRecentCatalogSyncOutcomes = `-- name: ListRecentCatalogSyncOutcomes :many
+SELECT marketplace_account_id, status, error
+FROM catalog_sync_runs
+ORDER BY marketplace_account_id, started_at DESC
+`
+
+type ListRecentCatalogSyncOutcomesRow struct {
+	MarketplaceAccountID uuid.UUID
+	Status               string
+	Error                string
+}
+
+// READ-ONLY durable ordered sync-run state for restart re-derivation of the §20.1
+// connector-sync failure streak (issue #146). Newest-first per account; the
+// telemetry seam (catalog.deriveStreaks) counts the leading consecutive non-success
+// runs since the last completed run. Pure SELECT: never mutates a run row.
+func (q *Queries) ListRecentCatalogSyncOutcomes(ctx context.Context) ([]ListRecentCatalogSyncOutcomesRow, error) {
+	rows, err := q.db.Query(ctx, listRecentCatalogSyncOutcomes)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecentCatalogSyncOutcomesRow{}
+	for rows.Next() {
+		var i ListRecentCatalogSyncOutcomesRow
+		if err := rows.Scan(&i.MarketplaceAccountID, &i.Status, &i.Error); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const setCatalogSyncRunError = `-- name: SetCatalogSyncRunError :one
 UPDATE catalog_sync_runs SET
     error      = $2,
