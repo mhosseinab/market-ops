@@ -154,3 +154,23 @@ def test_only_reversible_level2_config_draft_exists() -> None:
         "draft.level2_proposal",
         "draft.selection_set",
     }
+
+
+# --- #112 fix: the eval-only read_runner_overrides seam fails closed ----------
+# The override seam (build_registry(read_runner_overrides=…)) may substitute ONLY
+# the DATA a READ tool returns — never a Draft tool, never an undeclared name —
+# so the §12.5 data-channel injection harness cannot re-kind or widen the
+# registry into Draft/forbidden territory. These negative tests lock in that
+# fail-closed guard (_assert_overrides_are_reads, §12.3/CHAT-003).
+
+
+def test_build_registry_rejects_draft_tool_override() -> None:
+    """Overriding a DRAFT tool's runner is rejected — only READ DATA may be faked."""
+    with pytest.raises(ValueError):
+        build_registry(read_runner_overrides={"draft_recommendation": lambda **k: {}})
+
+
+def test_build_registry_rejects_unknown_override_name() -> None:
+    """An override naming a tool absent from the registry is rejected."""
+    with pytest.raises(ValueError):
+        build_registry(read_runner_overrides={"read_nonexistent": lambda **k: {}})
