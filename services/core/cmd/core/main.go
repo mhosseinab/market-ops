@@ -189,6 +189,15 @@ func run() error {
 		serverOpts = append(serverOpts, httpapi.WithEvent(eventSvc))
 		logger.Info("event service wired")
 
+		// The runtime market-event producer (EVT-001..005): it consumes committed
+		// observation transitions, resolves the versioned materiality threshold,
+		// runs the correct detector, and records candidates idempotently — so a
+		// running core actually produces events and the Today feed is non-empty in
+		// real operation. Scheduled below as a periodic River pass; every pass is
+		// idempotent (RecordFor dedup), so it is safe to re-run and restart-safe.
+		eventProducer := event.NewProducer(eventSvc, event.NewObservationSource(pool), logger)
+		logger.Info("market event producer wired")
+
 		// Wire the recommendation/approval plane (PRC-001/002, APR-001, §8.4): the
 		// version-bound approval control and the append-only state machine. The
 		// same service backs the /chat/cards/* Draft-only routes (CHAT-041/050/061),
@@ -322,6 +331,10 @@ func run() error {
 			OutcomeClose:     closer.RunOnce,
 			BriefingGenerate: briefingSvc.GenerateAll,
 			DigestGenerate:   digestRunner(digestSvc),
+			MarketEventProduce: func(c context.Context) (int, error) {
+				m, err := eventProducer.RunOnce(c)
+				return m.Produced + m.Deduped, err
+			},
 		}, catalogDeps)
 		if jobsErr != nil {
 			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)

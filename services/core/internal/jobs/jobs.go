@@ -48,6 +48,12 @@ type ExecutionRunners struct {
 	// day per account, batching the day's non-bypass notifications). A nil runner
 	// registers a no-op worker (fail closed).
 	DigestGenerate RunOnceFunc
+	// MarketEventProduce is the EVT-001..005 runtime producer pass: it turns
+	// committed observation/catalog/margin transitions into detector inputs and
+	// records their candidates idempotently, so a running core actually produces
+	// market events (and the Today feed is non-empty in real operation). A nil
+	// runner registers a no-op worker (fail closed — no producer, no events).
+	MarketEventProduce RunOnceFunc
 }
 
 // NewWorkers builds the worker registry for the core binary. Every worker the
@@ -69,6 +75,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewDigestWorker(runners.DigestGenerate, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register digest worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewMarketEventProduceWorker(runners.MarketEventProduce, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register market-event producer worker: %w", err)
 	}
 	return workers, nil
 }
@@ -105,6 +114,16 @@ func periodicJobs() []*river.PeriodicJob {
 		river.NewPeriodicJob(
 			river.PeriodicInterval(time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return DigestGenerateArgs{}, nil },
+			&river.PeriodicJobOpts{RunOnStart: true},
+		),
+		// Market-event production (EVT-001..005). Runs often (a 5-minute cadence,
+		// well inside observation freshness windows) with RunOnStart so a booted
+		// core immediately turns committed transitions into events. Every pass is
+		// idempotent (RecordFor dedup), so frequent re-runs never duplicate a Today
+		// item; an errored pass is retried by River.
+		river.NewPeriodicJob(
+			river.PeriodicInterval(5*time.Minute),
+			func() (river.JobArgs, *river.InsertOpts) { return MarketEventProduceArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
 	}
