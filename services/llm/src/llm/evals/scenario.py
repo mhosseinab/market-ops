@@ -26,6 +26,8 @@ from llm.envelope.contract import (
     CatalogArg,
     Claim,
     Comparison,
+    ComparisonKind,
+    ComparisonRelation,
     ExposureTotal,
     Provenance,
     Recommendation,
@@ -89,6 +91,10 @@ def _calculation(spec: dict[str, Any]) -> Calculation:
 
 
 def _comparison(spec: dict[str, Any]) -> Comparison:
+    # ``kind`` / ``relation`` are structural (issue #55): a fixture that carries a
+    # comparison must declare both so the walker can bind the entity kind and
+    # re-derive the direction. Absent a comparison block a fixture never reaches
+    # here; the defaults keep the builder total for the empty-comparison case.
     return Comparison(
         label=spec.get("label", ""),
         left=_sourced_value(spec["left"]),  # type: ignore[arg-type]
@@ -96,6 +102,10 @@ def _comparison(spec: dict[str, Any]) -> Comparison:
         delta=_sourced_value(spec["delta"]),  # type: ignore[arg-type]
         left_captured_at=spec.get("left_captured_at", ""),
         right_captured_at=spec.get("right_captured_at", ""),
+        kind=ComparisonKind(spec.get("kind", "temporal")),
+        relation=ComparisonRelation(spec.get("relation", "unchanged")),
+        left_entity=spec.get("left_entity", ""),
+        right_entity=spec.get("right_entity", ""),
     )
 
 

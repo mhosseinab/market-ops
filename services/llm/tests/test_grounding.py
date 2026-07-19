@@ -14,6 +14,8 @@ from llm.envelope.contract import (
     Calculation,
     Claim,
     Comparison,
+    ComparisonKind,
+    ComparisonRelation,
     ExposureTotal,
     InlineTable,
     Provenance,
@@ -50,6 +52,39 @@ def _count_value() -> SourcedValue:
     return SourcedValue(source=DK_SRC, provenance=Provenance.DK_SIGNAL, count=4)
 
 
+def _money_of(mantissa: int) -> SourcedValue:
+    """A margin-engine IRR money operand at exponent 0 with the given mantissa."""
+    return SourcedValue(
+        source=MARGIN_SRC,
+        provenance=Provenance.MARGIN_ENGINE,
+        money=Money(mantissa=mantissa, currency="IRR", exponent=0),
+    )
+
+
+def _coherent_comparison(**overrides: object) -> Comparison:
+    """A genuinely coherent temporal comparison: 990000 → 880000, Δ 110000, decrease.
+
+    left − right = 990000 − 880000 = 110000 (exact integer), same currency/exponent,
+    same entity across both readings, relation DECREASE (right < left). Every issue
+    #55 coherence check passes; individual tests override a single field to isolate
+    one failure.
+    """
+    defaults: dict[str, object] = {
+        "label": "price vs last read",
+        "left": _money_of(990000),
+        "right": _money_of(880000),
+        "delta": _money_of(110000),
+        "left_captured_at": "2026-07-16T10:00:00Z",
+        "right_captured_at": "2026-07-17T10:00:00Z",
+        "kind": ComparisonKind.TEMPORAL,
+        "relation": ComparisonRelation.DECREASE,
+        "left_entity": "sku-1",
+        "right_entity": "sku-1",
+    }
+    defaults.update(overrides)
+    return Comparison(**defaults)  # type: ignore[arg-type]
+
+
 def _codes(env: ResponseEnvelope) -> set[str]:
     return {v.code for v in find_violations(env)}
 
@@ -78,10 +113,7 @@ def test_grounded_envelope_with_all_seven_kinds_validates() -> None:
         recommendation=Recommendation(
             statement="review a price adjustment", deep_link="/app/recommendation/1",
             state_key="state.simulation"),
-        comparisons=[Comparison(
-            label="price vs last read", left=_money_value(), right=_money_value(),
-            delta=_money_value(), left_captured_at="2026-07-16T10:00:00Z",
-            right_captured_at="2026-07-17T10:00:00Z")],
+        comparisons=[_coherent_comparison()],
         tables=[InlineTable(columns=["sku", "price"], rows=[["A", "x"]], total_row_count=1)],
         exposure=ExposureTotal(known=True, total=_money_value()),
     )
@@ -191,12 +223,151 @@ def test_canonical_state_term_is_allowed() -> None:
 
 
 def test_comparison_missing_timestamp_is_rejected() -> None:
+    # Operands are otherwise coherent, so COMPARISON_INCOMPLETE fires in isolation.
     env = ResponseEnvelope(
-        comparisons=[Comparison(label="price move", left=_money_value(), right=_money_value(),
-                                delta=_money_value(), left_captured_at="2026-07-16T10:00:00Z",
-                                right_captured_at="")]
+        comparisons=[_coherent_comparison(right_captured_at="")]
     )
     assert "COMPARISON_INCOMPLETE" in _codes(env)
+
+
+# --- Issue #55: comparison numeric coherence --------------------------------
+# A comparison is a STRUCTURAL relation, not three independently-sourced numbers.
+# Every one of these fixtures reuses individually-present numbers but recombines
+# them into a claim the evidence does not support; each MUST be rejected.
+
+
+def test_incorrect_delta_is_rejected() -> None:
+    # Verification bullet 1: delta != left − right (990000 − 880000 = 110000, not
+    # 990000). Every literal number is individually sourced, yet the relationship
+    # is false.
+    env = ResponseEnvelope(
+        comparisons=[_coherent_comparison(delta=_money_of(990000))]
+    )
+    codes = _codes(env)
+    assert "COMPARISON_DELTA_INCOHERENT" in codes
+    with pytest.raises(GroundingError):
+        validate_grounding(env)
+
+
+def test_swapped_operands_flip_delta_sign_and_are_rejected() -> None:
+    # Verification bullet 2: swapping left/right flips the true sign of left−right
+    # (now 880000 − 990000 = −110000) so the stated +110000 delta no longer holds,
+    # and the DECREASE relation no longer agrees either.
+    env = ResponseEnvelope(
+        comparisons=[
+            _coherent_comparison(left=_money_of(880000), right=_money_of(990000))
+        ]
+    )
+    codes = _codes(env)
+    assert "COMPARISON_DELTA_INCOHERENT" in codes
+    assert "COMPARISON_RELATION_MISMATCH" in codes
+
+
+def test_mixed_currency_operands_are_rejected() -> None:
+    # Verification bullet 3a: left IRR, right USD — mantissas are individually
+    # sourced but not comparable; the arithmetic is meaningless.
+    usd = SourcedValue(
+        source=MARGIN_SRC,
+        provenance=Provenance.MARGIN_ENGINE,
+        money=Money(mantissa=880000, currency="USD", exponent=0),
+    )
+    env = ResponseEnvelope(comparisons=[_coherent_comparison(right=usd)])
+    assert "COMPARISON_UNIT_MISMATCH" in _codes(env)
+
+
+def test_mixed_exponent_operands_are_rejected() -> None:
+    # Verification bullet 3b: same currency, different exponent — the mantissas are
+    # not at a shared scale, so a raw mantissa subtraction would be wrong.
+    scaled = SourcedValue(
+        source=MARGIN_SRC,
+        provenance=Provenance.MARGIN_ENGINE,
+        money=Money(mantissa=88000, currency="IRR", exponent=1),
+    )
+    env = ResponseEnvelope(comparisons=[_coherent_comparison(right=scaled)])
+    assert "COMPARISON_UNIT_MISMATCH" in _codes(env)
+
+
+def test_money_vs_count_operands_are_rejected() -> None:
+    # Verification bullet 3c: a money operand compared against a bare count.
+    env = ResponseEnvelope(comparisons=[_coherent_comparison(right=_count_value())])
+    assert "COMPARISON_UNIT_MISMATCH" in _codes(env)
+
+
+def test_raw_operand_is_rejected_as_non_numeric() -> None:
+    # A comparison operand must be an authoritative number, never a raw evidence
+    # string (kept rejected as before, issue #55 unit/type coherence).
+    raw = SourcedValue(
+        source=MARGIN_SRC,
+        provenance=Provenance.MARGIN_ENGINE,
+        raw=RawEvidenceValue(raw="۸۸۰٬۰۰۰ تومان", unit="toman"),
+    )
+    env = ResponseEnvelope(comparisons=[_coherent_comparison(right=raw)])
+    assert "COMPARISON_UNIT_MISMATCH" in _codes(env)
+
+
+def test_temporal_comparison_with_mismatched_entities_is_rejected() -> None:
+    # Verification bullet 4: a before/after (temporal) comparison whose two
+    # readings name DIFFERENT entities is incoherent — a delta across two products
+    # is not a trend for either.
+    env = ResponseEnvelope(
+        comparisons=[_coherent_comparison(left_entity="sku-1", right_entity="sku-2")]
+    )
+    assert "COMPARISON_ENTITY_MISMATCH" in _codes(env)
+
+
+def test_cross_entity_comparison_with_same_entity_is_rejected() -> None:
+    # Verification bullet 4 (mirror): an A/B cross-entity comparison whose two
+    # operands are the SAME entity is not an A/B comparison at all.
+    env = ResponseEnvelope(
+        comparisons=[
+            _coherent_comparison(
+                kind=ComparisonKind.CROSS_ENTITY,
+                left_entity="sku-1",
+                right_entity="sku-1",
+            )
+        ]
+    )
+    assert "COMPARISON_ENTITY_MISMATCH" in _codes(env)
+
+
+def test_unbound_empty_entity_is_rejected() -> None:
+    # Verification bullet 5: an operand with no bound entity identifier.
+    env = ResponseEnvelope(
+        comparisons=[_coherent_comparison(right_entity="   ")]
+    )
+    assert "COMPARISON_UNBOUND_ENTITY" in _codes(env)
+
+
+def test_relation_disagreeing_with_signed_delta_is_rejected() -> None:
+    # Verification bullet 4/relation: numbers say the price fell (right < left) but
+    # the claim asserts INCREASE.
+    env = ResponseEnvelope(
+        comparisons=[_coherent_comparison(relation=ComparisonRelation.INCREASE)]
+    )
+    assert "COMPARISON_RELATION_MISMATCH" in _codes(env)
+
+
+def test_coherent_count_comparison_is_accepted() -> None:
+    # A non-money (count) comparison is also coherently checkable: 6 → 4, Δ 2.
+    def _count(mantissa: int) -> SourcedValue:
+        return SourcedValue(source=DK_SRC, provenance=Provenance.DK_SIGNAL, count=mantissa)
+
+    env = ResponseEnvelope(
+        comparisons=[
+            _coherent_comparison(
+                left=_count(6), right=_count(4), delta=_count(2),
+                relation=ComparisonRelation.DECREASE,
+            )
+        ]
+    )
+    assert _codes(env) == set()
+
+
+def test_coherent_comparison_is_accepted() -> None:
+    # Verification bullet 6: the genuinely coherent comparison passes cleanly.
+    env = ResponseEnvelope(comparisons=[_coherent_comparison()])
+    assert _codes(env) == set()
+    validate_grounding(env)  # does not raise
 
 
 # --- CHAT-012: exposure total not from the margin engine --------------------
@@ -287,10 +458,7 @@ def test_digit_in_calculation_label_is_rejected() -> None:
 
 def test_digit_in_comparison_label_is_rejected() -> None:
     env = ResponseEnvelope(
-        comparisons=[Comparison(label="price move over 2 days", left=_money_value(),
-                                right=_money_value(), delta=_money_value(),
-                                left_captured_at="2026-07-16T10:00:00Z",
-                                right_captured_at="2026-07-17T10:00:00Z")]
+        comparisons=[_coherent_comparison(label="price move over 2 days")]
     )
     assert "NUMBER_IN_TEXT" in _codes(env)
 

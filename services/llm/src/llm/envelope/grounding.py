@@ -16,8 +16,16 @@ violation of the §12.2 response contract, then :func:`validate_grounding` raise
 * **CHAT-012** — a known exposure total must come from the margin engine; any
   other provenance is rejected. (An unknown total is structurally allowed and
   renders as unknown.)
-* **CHAT-021** — a comparison carries both values, the delta, and both
-  timestamps; a missing side/delta/timestamp is rejected.
+* **CHAT-021 / Issue #55** — a comparison carries both values, the delta, and
+  both timestamps; a missing side/delta/timestamp is rejected. Beyond presence,
+  the comparison is a STRUCTURAL relation whose provenance tuple is bound and
+  re-derived: operands must share one numeric kind + currency + exponent
+  (``COMPARISON_UNIT_MISMATCH``), the delta must be the EXACT integer left − right
+  at that shared scale (``COMPARISON_DELTA_INCOHERENT``), each operand must name a
+  kind-consistent entity (``COMPARISON_UNBOUND_ENTITY`` /
+  ``COMPARISON_ENTITY_MISMATCH``), and the claimed direction must agree with the
+  signed delta (``COMPARISON_RELATION_MISMATCH``) — so individually-present
+  numbers can never be recombined into a numerically false comparison.
 * **CHAT-022** — every named state uses a canonical catalog key; an invented
   synonym is rejected (the key set is verified against the packages/locale
   catalog by a drift test).
@@ -47,6 +55,8 @@ from llm.envelope.contract import (
     Calculation,
     Claim,
     Comparison,
+    ComparisonKind,
+    ComparisonRelation,
     ExposureTotal,
     InlineTable,
     Provenance,
@@ -410,6 +420,115 @@ def _check_calculation(calc: Calculation, where: str, out: list[Violation]) -> N
         )
 
 
+def _operand_scalar(value: SourcedValue) -> tuple[str, int] | None:
+    """The (kind, integer) scalar of a comparison operand, or ``None`` if not one.
+
+    Returns ``("money:<currency>:<exponent>", mantissa)`` for a money value and
+    ``("count", count)`` for a count. A raw (non-numeric) operand returns
+    ``None`` — a comparison operand must be an authoritative number (issue #55).
+    The kind string bakes in currency AND exponent so two money operands compare
+    equal ONLY when they share both, giving an exact integer-mantissa comparison
+    at a shared scale with NO float anywhere on the money path.
+    """
+    if value.money is not None:
+        m = value.money
+        return (f"money:{m.currency}:{m.exponent}", m.mantissa)
+    if value.count is not None:
+        return ("count", value.count)
+    return None
+
+
+def _check_comparison_coherence(cmp: Comparison, where: str, out: list[Violation]) -> None:
+    """Issue #55: bind and re-derive the comparison's whole provenance tuple.
+
+    Token presence is not enough — three individually-sourced numbers can be
+    recombined into a claim the evidence does not support. This REJECTS (never
+    repairs) any incoherent combination: mixed numeric kind/currency/exponent
+    (COMPARISON_UNIT_MISMATCH), a delta that is not the exact integer left − right
+    (COMPARISON_DELTA_INCOHERENT), an unbound or kind-inconsistent entity binding
+    (COMPARISON_UNBOUND_ENTITY / COMPARISON_ENTITY_MISMATCH), and a claimed
+    direction that disagrees with the signed delta (COMPARISON_RELATION_MISMATCH).
+    Details name only codes, positions, and categories — never a rejected number
+    or entity string.
+    """
+    # ENTITY binding: each operand must name a non-empty entity, and the binding
+    # must cohere with the comparison KIND — a temporal before/after is the SAME
+    # entity at two times; a cross-entity A/B is two DISTINCT entities.
+    left_e = cmp.left_entity.strip()
+    right_e = cmp.right_entity.strip()
+    if not left_e or not right_e:
+        out.append(
+            Violation(
+                "COMPARISON_UNBOUND_ENTITY",
+                f"{where}: a comparison operand has no bound entity identifier "
+                f"(§12.2 comparison provenance, #55)",
+            )
+        )
+    elif cmp.kind is ComparisonKind.TEMPORAL and left_e != right_e:
+        out.append(
+            Violation(
+                "COMPARISON_ENTITY_MISMATCH",
+                f"{where}: temporal before/after comparison binds two different "
+                f"entities (§12.2 comparison provenance, #55)",
+            )
+        )
+    elif cmp.kind is ComparisonKind.CROSS_ENTITY and left_e == right_e:
+        out.append(
+            Violation(
+                "COMPARISON_ENTITY_MISMATCH",
+                f"{where}: cross-entity comparison binds the same entity on both "
+                f"sides (§12.2 comparison provenance, #55)",
+            )
+        )
+
+    # UNIT/TYPE coherence: left, right, delta must all be authoritative numbers of
+    # the SAME kind (money ⇒ identical currency AND exponent; or all counts).
+    left_s = _operand_scalar(cmp.left)
+    right_s = _operand_scalar(cmp.right)
+    delta_s = _operand_scalar(cmp.delta)
+    if left_s is None or right_s is None or delta_s is None or not (
+        left_s[0] == right_s[0] == delta_s[0]
+    ):
+        out.append(
+            Violation(
+                "COMPARISON_UNIT_MISMATCH",
+                f"{where}: comparison operands are not all the same authoritative "
+                f"numeric kind/currency/exponent (§12.2 comparison coherence, #55)",
+            )
+        )
+        # Without a shared scale the delta/relation arithmetic is meaningless; the
+        # unit mismatch is the failure — do not attempt a cross-scale subtraction.
+        return
+
+    left_v, right_v, delta_v = left_s[1], right_s[1], delta_s[1]
+
+    # DELTA arithmetic coherence: exact integer subtraction at the shared scale.
+    signed = left_v - right_v
+    if delta_v != signed:
+        out.append(
+            Violation(
+                "COMPARISON_DELTA_INCOHERENT",
+                f"{where}: stated delta is not the exact integer difference of the "
+                f"operands (§12.2 comparison coherence, #55)",
+            )
+        )
+
+    # RELATION coherence: the claimed direction must agree with the signed delta.
+    relation_ok = (
+        (cmp.relation is ComparisonRelation.DECREASE and signed > 0)
+        or (cmp.relation is ComparisonRelation.INCREASE and signed < 0)
+        or (cmp.relation is ComparisonRelation.UNCHANGED and signed == 0)
+    )
+    if not relation_ok:
+        out.append(
+            Violation(
+                "COMPARISON_RELATION_MISMATCH",
+                f"{where}: claimed relation {cmp.relation.value!r} disagrees with the "
+                f"signed operand difference (§12.2 comparison coherence, #55)",
+            )
+        )
+
+
 def _check_comparison(cmp: Comparison, where: str, out: list[Violation]) -> None:
     # CHAT-021: both values, the delta, and both timestamps.
     _check_no_digits(cmp.label, f"{where}.label", out, code="NUMBER_IN_TEXT")
@@ -423,6 +542,8 @@ def _check_comparison(cmp: Comparison, where: str, out: list[Violation]) -> None
                 f"{where}: comparison missing one or both capture timestamps (CHAT-021)",
             )
         )
+    # Issue #55: bind operands/units/entities/relation and reject incoherent math.
+    _check_comparison_coherence(cmp, where, out)
 
 
 def _check_exposure(exp: ExposureTotal, out: list[Violation]) -> None:
