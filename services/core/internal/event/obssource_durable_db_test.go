@@ -2,6 +2,7 @@ package event_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -52,6 +53,148 @@ func competitorThreshold(t *testing.T, svc *event.Service, account uuid.UUID, mo
 		MoveBp: money.NewBasisPoints(moveBp), EffectiveFrom: time.Now().UTC().Add(-time.Hour),
 	}); err != nil {
 		t.Fatalf("set threshold: %v", err)
+	}
+}
+
+// failFirstMaterialRecorder wraps the real event.Recorder and returns ONE transient
+// error from RecordFor for the consumed candidate whose newest observation value is
+// failValue, then delegates every subsequent call to the wrapped recorder. It models
+// a transient DB fault (deadlock/timeout/conn reset) on a SINGLE material transition
+// in a burst, so a test can prove the producer does not advance a stream past an
+// errored predecessor (issue #212).
+type failFirstMaterialRecorder struct {
+	event.Recorder
+	failValue string
+	tripped   bool
+}
+
+func (r *failFirstMaterialRecorder) RecordFor(ctx context.Context, account uuid.UUID, c event.Candidate) (event.RecordResult, error) {
+	if !r.tripped && c.Consumption != nil && c.Consumption.CurrValue == r.failValue {
+		r.tripped = true
+		return event.RecordResult{}, errors.New("simulated transient fault: deadlock")
+	}
+	return r.Recorder.RecordFor(ctx, account, c)
+}
+
+// TestDurableConsumerBurstPartialFailureDefersTail is the issue #212 event-dedup
+// never-cut regression (§4.6): when a stream drains TWO material transitions in one
+// pass (o1→o2, o2→o3) and the FIRST one's record errors transiently, the producer
+// must NOT let the second transition advance the durable cursor past the errored
+// predecessor. Otherwise the next pass reads strictly after o3 and the first material
+// movement (o1→o2) is permanently dropped — no market event, no Today item, and a
+// River retry cannot recover it because the cursor already moved. The pass must defer
+// the whole tail IN CAPTURED ORDER so the errored transition is re-derived next pass,
+// and emit the distinct held-back signal (stream_blocked) so telemetry can tell a
+// deliberate defer from an ordinary transient error.
+func TestDurableConsumerBurstPartialFailureDefersTail(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant, target, nv := seedTarget(t, pool, q)
+	svc := event.NewService(pool)
+	competitorThreshold(t, svc, account, 1000) // 10% — both steps below are material
+
+	base := time.Now().UTC().Add(-30 * time.Minute)
+	// A burst of three observations for ONE stream: o1→o2 (+30%) and o2→o3 (+~31%),
+	// both material, drained contiguously in a single pass.
+	appendObservation(t, q, account, target, nv, "seller-1", "1000000", base)                    // o1
+	appendObservation(t, q, account, target, nv, "seller-1", "1300000", base.Add(2*time.Minute)) // o2
+	appendObservation(t, q, account, target, nv, "seller-1", "1700000", base.Add(4*time.Minute)) // o3
+
+	// Fail the FIRST material transition (o1→o2, whose newest value is o2=1300000) once.
+	rec := &failFirstMaterialRecorder{Recorder: svc, failValue: "1300000"}
+	prod := event.NewProducer(rec, event.NewObservationSource(pool), nil)
+
+	// Pass 1: T1 (o1→o2) errors → the stream is blocked. T2 (o2→o3) must be DEFERRED,
+	// not recorded, so the cursor never advances past the errored predecessor.
+	m1, err := prod.RunOnce(ctx)
+	if err == nil {
+		t.Fatal("the errored first transition must be surfaced for retry, got nil error")
+	}
+	if m1.Errors < 1 {
+		t.Fatalf("the transient record fault must be counted, got errors=%d", m1.Errors)
+	}
+	// (c) The deliberate defer emits its OWN signal, distinct from the transient error.
+	if m1.StreamBlocked < 1 {
+		t.Fatalf("the deferred tail must fire the stream_blocked signal, got stream_blocked=%d", m1.StreamBlocked)
+	}
+	// (a) The durable cursor must NOT have advanced past o1 — in particular it must not
+	// be sitting at o3 (which would drop o1→o2 forever). The buggy path advanced it to
+	// 1700000 via T2's own transaction.
+	var advancedPastPredecessor int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM observation_consumer_cursors
+		 WHERE target_id=$1 AND native_seller_id='seller-1'
+		   AND last_price_raw_value IN ('1300000','1700000')`, target).Scan(&advancedPastPredecessor); err != nil {
+		t.Fatalf("read cursor: %v", err)
+	}
+	if advancedPastPredecessor != 0 {
+		t.Fatalf("the cursor must not advance past the errored predecessor; a later transition leaked it forward")
+	}
+	// The first material transition must not have produced an event yet (it errored).
+	var firstEvent int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM market_events WHERE variant_id=$1 AND evidence_detail->>'curr_value'='1300000'`, variant).Scan(&firstEvent); err != nil {
+		t.Fatalf("count first event: %v", err)
+	}
+	if firstEvent != 0 {
+		t.Fatalf("the errored first transition must not have produced an event in pass 1, found %d", firstEvent)
+	}
+
+	// Pass 2: the fault clears; the SAME producer re-derives the deferred tail from the
+	// unadvanced cursor, oldest-first — o1→o2 (the errored predecessor) FIRST, then
+	// o2→o3. Both are competitor moves on the same offer stream, so they collapse onto
+	// ONE open event (dedup, EVT-003) that the oldest re-derived transition OPENS.
+	m2, err := prod.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("pass 2: %v", err)
+	}
+	// (b) The deferred first transition's market event IS produced: the re-derived
+	// oldest transition opens exactly one event this pass — it was never dropped.
+	if m2.Produced != 1 {
+		t.Fatalf("the re-derived predecessor must open exactly one market event next pass, got produced=%d", m2.Produced)
+	}
+	// (b, durable proof) The append-only ingestion ledger now carries the o1→o2 claim
+	// (its curr observation is the 1300000 row). The buggy path advanced the cursor past
+	// o1→o2 and this claim NEVER appears — the movement is silently lost.
+	var firstTransitionLedger int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM event_input_transitions eit
+		 JOIN observations o ON o.id = eit.curr_observation_id
+		 WHERE eit.target_id=$1 AND o.price_raw_value='1300000'`, target).Scan(&firstTransitionLedger); err != nil {
+		t.Fatalf("count first-transition ledger claim: %v", err)
+	}
+	if firstTransitionLedger != 1 {
+		t.Fatalf("the errored first transition o1→o2 must be re-derived and ingested exactly once (its ledger claim), got %d", firstTransitionLedger)
+	}
+	// The whole burst is consumed in captured order with NO gap and NO duplicate: both
+	// adjacent material transitions carry exactly one append-only ledger row each.
+	var ledger int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM event_input_transitions WHERE target_id=$1`, target).Scan(&ledger); err != nil {
+		t.Fatalf("count ledger: %v", err)
+	}
+	if ledger != 2 {
+		t.Fatalf("both burst transitions must be ingested exactly once (2 ledger rows), got %d", ledger)
+	}
+	// Exactly one open event survives (the two same-stream moves dedup onto it).
+	var open int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM market_events WHERE variant_id=$1 AND state IN ('open','updated')`, variant).Scan(&open); err != nil {
+		t.Fatalf("count open events: %v", err)
+	}
+	if open != 1 {
+		t.Fatalf("exactly one open event expected after the burst drains, got %d", open)
+	}
+	// The cursor now reaches the newest observation — the deferred tail advanced only
+	// AFTER its predecessor was consumed, in captured order.
+	var lastVal string
+	if err := pool.QueryRow(ctx,
+		`SELECT last_price_raw_value FROM observation_consumer_cursors WHERE target_id=$1 AND native_seller_id='seller-1'`, target).
+		Scan(&lastVal); err != nil {
+		t.Fatalf("read final cursor: %v", err)
+	}
+	if lastVal != "1700000" {
+		t.Fatalf("after the burst fully drains the cursor must reach the newest observation 1700000, got %s", lastVal)
 	}
 }
 

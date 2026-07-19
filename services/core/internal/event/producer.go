@@ -85,7 +85,13 @@ type ProducerMetrics struct {
 	Resolved int // condition-clear transitions that resolved an open event (§15.1)
 	Expired  int // events swept to 'expired' past their deadline (§15.1 durable sweep)
 	Skipped  int // consumed transitions already ingested (issue #212 ingestion dedup)
-	Errors   int // per-transition failures surfaced for retry
+	// StreamBlocked counts consumed transitions deliberately deferred to the next
+	// pass because an EARLIER material transition in the same stream errored this
+	// pass (issue #212 burst partial-failure). Distinct from Errors: the tail is held
+	// back IN CAPTURED ORDER so nothing advances past the errored predecessor — it is
+	// not itself a failure, so telemetry must not conflate the two.
+	StreamBlocked int
+	Errors        int // per-transition failures surfaced for retry
 }
 
 // Producer is the runtime market-event producer (EVT-001..005): it consumes input
@@ -217,6 +223,20 @@ func (p *Producer) RunOnce(ctx context.Context) (ProducerMetrics, error) {
 			}
 			continue
 		}
+		if cand.Consumption != nil && blockedStream[consumptionStreamKey(*cand.Consumption)] {
+			// An EARLIER material transition in this stream errored this pass (issue #212
+			// burst partial-failure). Recording this later transition would advance the
+			// durable cursor PAST the errored predecessor in its own transaction, so the
+			// next pass would read strictly after it and the predecessor's material
+			// movement would be permanently dropped (no event, no Today item; a River
+			// retry cannot recover it). Defer the whole tail to the next pass IN CAPTURED
+			// ORDER — the unadvanced cursor re-derives the errored predecessor first. This
+			// is a deliberate hold-back, not a failure, so emit its OWN signal (distinct
+			// from the transient error) and do NOT count it toward Errors.
+			m.StreamBlocked++
+			p.tel.streamBlocked.Add(ctx, 1)
+			continue
+		}
 		res, rerr := p.rec.RecordFor(ctx, tr.Account, cand)
 		if rerr != nil {
 			m.Errors++
@@ -289,7 +309,7 @@ func (p *Producer) logSummary(ctx context.Context, m ProducerMetrics) {
 	p.logger.InfoContext(ctx, "market event production pass",
 		"scanned", m.Scanned, "produced", m.Produced, "deduped", m.Deduped,
 		"dormant", m.Dormant, "resolved", m.Resolved, "expired", m.Expired,
-		"skipped", m.Skipped, "errors", m.Errors)
+		"skipped", m.Skipped, "stream_blocked", m.StreamBlocked, "errors", m.Errors)
 }
 
 // transitionDedupKey computes the dedup identity a transition concerns, whether or
@@ -423,13 +443,14 @@ func (p *Producer) resolveThreshold(ctx context.Context, tr Transition, asOf tim
 // CLAUDE.md observability). Counter construction failures degrade to no-op so a
 // telemetry hiccup never breaks production.
 type producerTelemetry struct {
-	produced metric.Int64Counter
-	deduped  metric.Int64Counter
-	dormant  metric.Int64Counter
-	resolved metric.Int64Counter
-	expired  metric.Int64Counter
-	skipped  metric.Int64Counter
-	errors   metric.Int64Counter
+	produced      metric.Int64Counter
+	deduped       metric.Int64Counter
+	dormant       metric.Int64Counter
+	resolved      metric.Int64Counter
+	expired       metric.Int64Counter
+	skipped       metric.Int64Counter
+	streamBlocked metric.Int64Counter
+	errors        metric.Int64Counter
 }
 
 const producerInstrumentation = "github.com/mhosseinab/market-ops/services/core/internal/event"
@@ -450,6 +471,8 @@ func newProducerTelemetry() *producerTelemetry {
 		resolved: ctr("event.producer.resolved", "open events resolved because their triggering condition cleared (§15.1)"),
 		expired:  ctr("event.producer.expired", "open events swept to expired past their deadline (§15.1 durable sweep)"),
 		skipped:  ctr("event.producer.skipped", "consumed input transitions already ingested; no duplicate event (issue #212)"),
-		errors:   ctr("event.producer.errors", "producer per-transition failures surfaced for retry"),
+		streamBlocked: ctr("event.producer.stream_blocked",
+			"consumed transitions deferred to the next pass because an earlier material transition in the same stream errored (issue #212 burst partial-failure)"),
+		errors: ctr("event.producer.errors", "producer per-transition failures surfaced for retry"),
 	}
 }
