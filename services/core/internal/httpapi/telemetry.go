@@ -89,6 +89,21 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
+// Flush keeps the wrapped writer flush-transparent so the generated SSE handler's
+// `w.(http.Flusher)` check succeeds and it flushes each event to the client
+// immediately (real streaming) instead of buffering the whole turn. Without this
+// the per-turn write deadline (issue #24) could not be enforced per chunk. A no-op
+// when the underlying writer cannot flush.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap exposes the base writer so http.NewResponseController can reach the
+// connection (write-deadline control) through this wrapper.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
 // wrap is the outermost transport middleware: it extracts any inbound W3C trace
 // context (web → gateway), opens a server span carrying the normalized route, and
 // records the RED duration histogram on completion. It is safe with a no-op
