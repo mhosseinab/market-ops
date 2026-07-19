@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import type { MissingKeyEvent } from "@market-ops/locale";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createMissingKeyReporter,
   type MissingKeyReport,

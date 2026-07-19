@@ -1,4 +1,3 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type Catalog,
   createI18n,
@@ -7,8 +6,9 @@ import {
   type MissingKeyEvent,
   translate,
 } from "@market-ops/locale";
-import type { MissingKeyReport, MissingKeySink } from "./missingKeyTelemetry";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { reportMissingKey, resetMissingKeySink, setMissingKeySink } from "./i18n";
+import type { MissingKeyReport, MissingKeySink } from "./missingKeyTelemetry";
 
 // Issue #14: the PRODUCTION missing-key fallback path must emit an observable
 // telemetry signal (not only in DEV). These tests drive the real app sink
