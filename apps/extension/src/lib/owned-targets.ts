@@ -24,14 +24,39 @@ export interface OwnedTarget {
   variantId: string;
 }
 
+// OwnedTargetOwner identifies WHICH credential/sync installed the current
+// projection (issue #253). It carries the monotonic sync/lifecycle generation
+// that produced the projection and the marketplace account that owns it, so a
+// stale owned-target sync (completing after a revoke or a re-pair with a
+// different credential) can never be mistaken for the live projection. It holds
+// NO credential secret — only the account identity and generation number.
+export interface OwnedTargetOwner {
+  generation: number;
+  marketplaceAccountId: string | null;
+}
+
+const DETACHED_OWNER: OwnedTargetOwner = { generation: 0, marketplaceAccountId: null };
+
 export class OwnedTargetIndex {
   private byVariant = new Map<number, OwnedTarget>();
+  // The identity/generation the CURRENT projection belongs to. Every atomic
+  // replaceAll re-stamps it, so the installed set is always self-describing about
+  // which credential/sync owns it (identity quarantine, EXT-004).
+  private currentOwner: OwnedTargetOwner = DETACHED_OWNER;
 
   // replaceAll swaps the whole index atomically (the server is authoritative;
   // the extension never merges partial owned sets that could resurrect a stale
-  // or de-confirmed mapping).
-  replaceAll(targets: OwnedTarget[]): void {
+  // or de-confirmed mapping) and stamps the projection with the owner
+  // (credential-account identity + sync generation) that installed it.
+  replaceAll(targets: OwnedTarget[], owner: OwnedTargetOwner = DETACHED_OWNER): void {
     this.byVariant = new Map(targets.map((t) => [t.nativeVariantId, t]));
+    this.currentOwner = owner;
+  }
+
+  // owner exposes the identity/generation of the installed projection so callers
+  // can assert the live set belongs to the expected credential (never a stale one).
+  get owner(): OwnedTargetOwner {
+    return this.currentOwner;
   }
 
   // resolve returns the Confirmed owned target for a product's current offer, or

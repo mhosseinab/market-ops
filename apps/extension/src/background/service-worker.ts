@@ -55,6 +55,16 @@ const historyReadGateway = createHistoryReadGateway();
 // (GET /ext/owned-targets, #145) on worker start, after pairing, and periodically.
 const ownedTargets = new OwnedTargetIndex();
 
+// Sync/lifecycle generation (issue #253). A monotonic counter bumped on EVERY
+// newer sync AND on every revoke/credential replacement. An owned-target sync
+// result — success OR failure — is applied ONLY if its generation is still the
+// newest when it completes; an older in-flight request (started under credential
+// A, completing after A was revoked or replaced by B) is stale and ignored. This
+// is the ordering half of the guard; credentialFingerprint is the identity half.
+// Declared before the module-init syncOwnedTargets() call below so it is not in
+// the temporal dead zone when the cold-start sync runs.
+let syncGeneration = 0;
+
 void initDevErrorReporting("service-worker");
 
 // On service-worker start (cold start / re-spawn), rebuild the Confirmed-owned-
@@ -132,30 +142,77 @@ async function handle(msg: ExtMessage, sender: chrome.runtime.MessageSender): Pr
   }
 }
 
+// credentialFingerprint is a stable, NON-LOGGED identity of the credential that
+// launched a sync. It is built from the credential-scoped IDENTITY fields
+// (credentialId + marketplaceAccountId) — never the raw capture secret — and is
+// compared only in memory (identity quarantine: a sync result is applied only if
+// the stored credential STILL matches the identity that started the request). It
+// is never emitted to logs or metrics.
+function credentialFingerprint(cred: PairingCredential): string {
+  return `${cred.credentialId} ${cred.marketplaceAccountId}`;
+}
+
+// isCurrentSync re-reads the stored credential AFTER the network await and returns
+// true only if `gen` is still the newest generation AND the stored credential's
+// fingerprint still matches the snapshot taken before the request. The generation
+// comparison runs AFTER the async read so a revoke/pair that landed during the
+// read is observed. Cancellation (AbortController) races completion, so this
+// generation+identity check is kept regardless of any abort.
+async function isCurrentSync(gen: number, fp: string | null): Promise<boolean> {
+  const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
+  const currentFp = cred ? credentialFingerprint(cred) : null;
+  return gen === syncGeneration && currentFp === fp;
+}
+
 // syncOwnedTargets refreshes the local Confirmed-owned-target projection from the
 // SERVER-AUTHORITATIVE credential-scoped read (#145, EXT-004). The marketplace
 // account is derived server-side from the stored capture credential — never
-// chosen here. It FAILS CLOSED at every step:
+// chosen here. It binds every result to BOTH a monotonic generation and the
+// credential identity that initiated it (issue #253), then applies it only if
+// that generation is still current AND the stored credential still matches —
+// otherwise the completion is STALE and ignored (never applied over a newer
+// projection, never used to clear a valid one). It FAILS CLOSED at every step:
 //   - no stored credential ⇒ clear the index (nothing is owned until paired);
 //   - a null result (401 revoked/expired, 5xx, network) ⇒ clear the index —
 //     never keep a stale/guessed set, so capture stays disabled rather than
 //     resurrecting a de-confirmed mapping;
 //   - a real result ⇒ ATOMICALLY replace the whole index (the server is the sole
-//     authority; the extension never merges partial owned sets).
+//     authority; the extension never merges partial owned sets), stamped with the
+//     owning credential-account identity + generation.
 async function syncOwnedTargets(): Promise<void> {
+  const gen = ++syncGeneration;
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
+
   if (!cred) {
-    ownedTargets.replaceAll([]);
+    // Fail closed: nothing is owned until paired. Clear only if this sync is still
+    // current — a concurrent pair may have raced a credential in during the read.
+    if (await isCurrentSync(gen, null)) {
+      ownedTargets.replaceAll([], { generation: gen, marketplaceAccountId: null });
+    }
     return;
   }
+
+  const fp = credentialFingerprint(cred);
   const result = await gateway.fetchOwnedTargets(cred.credential);
+
+  // Stale-completion guard: apply the result (success OR failure) ONLY if this
+  // generation is still the newest AND the stored credential still matches the
+  // identity that launched the request. Otherwise the credential was revoked or
+  // replaced while the request was in flight — ignore it and record `stale` so
+  // the drop is observable, WITHOUT logging any credential secret.
+  if (!(await isCurrentSync(gen, fp))) {
+    incr("owned_targets_sync", { outcome: "stale" });
+    return;
+  }
+
+  const owner = { generation: gen, marketplaceAccountId: cred.marketplaceAccountId };
   if (result === null) {
     // Fail closed: clear rather than retain stale/guessed ownership.
-    ownedTargets.replaceAll([]);
+    ownedTargets.replaceAll([], owner);
     incr("owned_targets_sync", { outcome: "unavailable" });
     return;
   }
-  ownedTargets.replaceAll(result);
+  ownedTargets.replaceAll(result, owner);
   gauge("owned_targets_count", result.length);
   incr("owned_targets_sync", { outcome: "ok" });
 }
@@ -305,10 +362,18 @@ async function handlePair(code: string): Promise<ExtResponse> {
     const cred: PairingCredential = await gateway.claimPairing(code);
     // Persist ONLY the allow-listed capture-credential fields (EXT-001).
     await store.set(KEY_CREDENTIAL, sanitizeCredential(cred));
+    // Credential replacement (issue #253): invalidate every in-flight sync
+    // BEFORE the new one runs, so a delayed prior-credential response can never
+    // overwrite (or clear) the projection this pairing is about to install. The
+    // fingerprint check already rejects a foreign-credential result; this bump
+    // additionally rejects a same-account replacement whose generation is stale.
+    syncGeneration++;
     await setCapability("ready");
     // Immediately populate the Confirmed-owned-target projection from the server
     // so passive/on-demand capture is live right after pairing — never inert
-    // until the next alarm (#145).
+    // until the next alarm (#145). fail-closed: pairing reports `ready`, but the
+    // EXT-004 gate resolves a target only from THIS credential's installed
+    // projection; a stale prior sync can never make it resolve otherwise.
     await syncOwnedTargets();
     log("info", "paired");
     return { ok: true, state: await popupState() };
@@ -330,14 +395,19 @@ async function handleSetEnabled(enabled: boolean): Promise<ExtResponse> {
 }
 
 async function handleRevoke(): Promise<ExtResponse> {
-  await store.remove(KEY_CREDENTIAL);
-  await setCapability("revoked");
+  // Invalidate every outstanding sync FIRST (issue #253): bump the generation and
+  // clear the index synchronously, BEFORE the async storage writes below, so an
+  // in-flight request that completes during those awaits can neither repopulate
+  // the cleared index (its generation is now stale) nor be treated as current.
+  syncGeneration++;
   // A revoked credential must not leave a stale Confirmed-owned-target index
   // behind: capability alone already fail-closes handleAddToWatchlist/
   // handleGetOverlayView, but clearing the index too means there is no
   // window where a re-pair (before syncOwnedTargets re-runs) could ever
   // resolve a target from PRE-revocation state.
-  ownedTargets.replaceAll([]);
+  ownedTargets.replaceAll([], { generation: syncGeneration, marketplaceAccountId: null });
+  await store.remove(KEY_CREDENTIAL);
+  await setCapability("revoked");
   log("info", "credential_cleared");
   return { ok: true, state: await popupState() };
 }
