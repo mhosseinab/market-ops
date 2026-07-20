@@ -79,11 +79,17 @@ function ownedTargetRow(product: ParsedProduct) {
   };
 }
 
+// WATCHLIST_ENTRY_ID is the S37 POST /watchlist success payload id the mock
+// returns, so a test can assert the wired add surfaces the REAL entry id (never
+// a fabricated one).
+const WATCHLIST_ENTRY_ID = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
+
 // gatewayFetchMock routes the service worker's outbound gateway calls: the
 // pairing claim yields the capture credential, the credential-scoped owned-target
-// read (#145) yields `targetsStatus`/`rows`, and a capture upload is accepted.
-// This lets a test drive the Confirmed-owned-target projection through the REAL
-// credential-scoped sync (after pair) — never the removed setOwnedTargets message.
+// read (#145) yields `targetsStatus`/`rows`, the S37 watchlist add returns a
+// WatchlistEntry, and a capture upload is accepted. This lets a test drive the
+// Confirmed-owned-target projection through the REAL credential-scoped sync
+// (after pair) — never the removed setOwnedTargets message.
 function gatewayFetchMock(rows: unknown[], targetsStatus = 200) {
   return vi.fn(async (input: string, _init?: RequestInit) => {
     const url = String(input);
@@ -94,6 +100,17 @@ function gatewayFetchMock(rows: unknown[], targetsStatus = 200) {
       return new Response(targetsStatus === 200 ? JSON.stringify({ items: rows }) : "{}", {
         status: targetsStatus,
       });
+    }
+    if (url.includes("/watchlist")) {
+      return new Response(
+        JSON.stringify({
+          id: WATCHLIST_ENTRY_ID,
+          marketplaceAccountId: CRED.marketplaceAccountId,
+          variantId: "88888888-8888-8888-8888-888888888888",
+          createdAt: "2026-07-18T10:00:00Z",
+        }),
+        { status: 200 },
+      );
     }
     return new Response(null, { status: 202 }); // /observation/capture
   });
@@ -240,15 +257,16 @@ describe("service worker — EXT-009 kill switch: capability gates nav-shim/watc
     }
   });
 
-  it("addToWatchlist reaches the (fail-closed-stub) gateway ONLY when ready — proves the gate opens, not just stays shut", async () => {
+  it("addToWatchlist reaches the REAL S37 gateway ONLY when ready — proves the gate opens AND the wired POST succeeds", async () => {
     storage.set(KEY_CAPABILITY, "ready");
     const watchlistResp = await send({ kind: "addToWatchlist", product });
-    // Reaches watchlist.ts's fail-closed stub (endpoint_unavailable), a
-    // DIFFERENT reason than the capability/ownership "denied" short-circuit
-    // above — proves the capability gate actually opened the path through.
+    // Reaches the REAL S37 POST /watchlist through the credential-scoped
+    // gateway and surfaces the server's entry id — a DIFFERENT outcome than the
+    // capability/ownership "denied" short-circuit above, proving the capability
+    // gate actually opened the path through to the wired client.
     expect(watchlistResp).toEqual({
       ok: true,
-      watchlist: { ok: false, reason: "endpoint_unavailable" },
+      watchlist: { ok: true, entryId: WATCHLIST_ENTRY_ID },
     });
   });
 

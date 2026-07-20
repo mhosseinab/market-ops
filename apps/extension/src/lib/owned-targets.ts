@@ -18,6 +18,10 @@ export interface OwnedTarget {
   targetId: string;
   marketplaceAccountId: string;
   nativeVariantId: number;
+  // The Confirmed variant identity (CAT-002) the target observes — a UUID, not
+  // the DK-native id. Carried so the EXT-007 watchlist add can send the
+  // server's WatchlistAddRequest.variantId rather than a guessed id.
+  variantId: string;
 }
 
 export class OwnedTargetIndex {

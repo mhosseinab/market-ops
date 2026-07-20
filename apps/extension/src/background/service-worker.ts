@@ -47,7 +47,7 @@ const queue = new UploadQueue(store);
 const telemetry = new TelemetryOutbox(store);
 const telemetryTransport: TelemetryTransport = unavailableTelemetryTransport;
 const gateway = new GatewayClient(GATEWAY_BASE_URL);
-const watchlistGateway = createWatchlistGateway();
+const watchlistGateway = createWatchlistGateway(GATEWAY_BASE_URL);
 const overlayReadGateway = createOverlayReadGateway();
 const historyReadGateway = createHistoryReadGateway();
 // Confirmed owned targets: server-authoritative, starts EMPTY (fail closed —
@@ -239,8 +239,9 @@ async function handleAddToWatchlist(product: ParsedProduct): Promise<ExtResponse
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
   if (!cred || !target) return { ok: true, watchlist: { ok: false, reason: "denied" } };
   const outcome = await watchlistGateway.addToWatchlist({
+    credential: cred.credential,
     marketplaceAccountId: cred.marketplaceAccountId,
-    targetId: target.targetId,
+    variantId: target.variantId,
   });
   incr("watchlist_add", { outcome: outcome.ok ? "accepted" : outcome.reason });
   return { ok: true, watchlist: outcome };

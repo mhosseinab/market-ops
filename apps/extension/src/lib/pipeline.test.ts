@@ -22,7 +22,14 @@ const target = "22222222-2222-2222-2222-222222222222";
 
 function confirmedIndex(nativeVariantId: number): OwnedTargetIndex {
   const idx = new OwnedTargetIndex();
-  idx.replaceAll([{ targetId: target, marketplaceAccountId: account, nativeVariantId }]);
+  idx.replaceAll([
+    {
+      targetId: target,
+      marketplaceAccountId: account,
+      nativeVariantId,
+      variantId: "44444444-4444-4444-4444-444444444444",
+    },
+  ]);
   return idx;
 }
 

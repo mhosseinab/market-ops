@@ -88,6 +88,7 @@ export class GatewayClient {
       targetId: t.id,
       marketplaceAccountId: t.marketplaceAccountId,
       nativeVariantId: t.nativeVariantId,
+      variantId: t.variantId,
     }));
   }
 }
