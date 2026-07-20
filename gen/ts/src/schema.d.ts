@@ -1331,6 +1331,25 @@ export interface components {
             marketplaceAccountId?: string;
             /** @description The user's free-text message. Bounded; carries no authority. */
             message: string;
+            context?: components["schemas"]["ConversationContextBinding"];
+        };
+        /**
+         * @description The kind of entity a conversation's single deterministic context is bound to (PRD §8.1 CHAT-007). One canonical §15.1 record kind per value; a conversation has EXACTLY ONE active context at a time, never inferred from free text. `global` is the no-entity context (the operator's whole account). The gateway is authoritative for the bound kind — this field is the client's DECLARED binding, validated and versioned server-side.
+         * @enum {string}
+         */
+        ConversationContextKind: "global" | "product" | "event" | "recommendation" | "bulk" | "action" | "settings" | "operations";
+        /** @description The deterministic context a turn binds to the conversation (PRD §8.1 CHAT-007). Route entry and structured picker selection BIND the selected entity here so the gateway persists the exact kind/entity the operator sees — the chip can never claim a context the gateway did not receive. Binding is SERVER-VERSIONED and APPEND-ONLY: the first turn establishes version 1; changing the bound entity requires an EXPLICIT transition (`transition: true`) that appends a new version, never a silent relabel; a `contextVersion` that no longer matches the conversation's current bound version is REJECTED (stale) and produces no Draft. Account, context entity, and conversation provenance must belong to the same tenant. */
+        ConversationContextBinding: {
+            kind: components["schemas"]["ConversationContextKind"];
+            /** @description The bound entity's identifier (a variant/event/recommendation/action id) — an LTR technical identifier, never localized. Absent for the `global` context. Stored verbatim under the caller's org-scoped conversation; the gateway never resolves it against another tenant (no existence oracle). */
+            entityId?: string;
+            /**
+             * Format: int32
+             * @description The conversation's context version this turn is issued against. Absent on the first turn (the gateway issues version 1). On a continuation it must equal the conversation's CURRENT bound version; a stale/mismatched version is rejected without producing a Draft or approval card.
+             */
+            contextVersion?: number;
+            /** @description Set true to EXPLICITLY transition the conversation's bound context to a different entity (appends a new version). Without it, a turn whose binding differs from the conversation's current context is rejected rather than silently relabeling the conversation. */
+            transition?: boolean;
         };
         /**
          * @description Why chat is unavailable. All three degrade chat ONLY — every structured screen stays fully functional (CHAT-009). Never inferred; set by the gateway from the kill-switch config or LLM-plane reachability.
@@ -1357,6 +1376,14 @@ export interface components {
              * @description Emitted once on the `conversation` frame for a new conversation.
              */
             conversationId?: string;
+            contextKind?: components["schemas"]["ConversationContextKind"];
+            /** @description Echoed on the `conversation` frame: the entity id of the conversation's AUTHORITATIVE bound context (an LTR technical identifier), so the client renders the chip the gateway actually persisted, never a claimed one. Absent for the `global` context. */
+            contextEntityId?: string;
+            /**
+             * Format: int32
+             * @description Echoed on the `conversation` frame: the conversation's current server-issued context version. The client sends it back on the next turn so a stale binding is rejected rather than silently relabeled.
+             */
+            contextVersion?: number;
             /** @description Incremental assistant text on a `token` frame. */
             token?: string;
             /** @description The final typed response envelope on a `final` frame. Its internal shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2). UNCHANGED in S37: narrowing this field to the new ChatEnvelope schema (below) is a breaking change for the S29 web consumer's current view-model (`{sections, evidence}`) and needs FE coordination outside this step's delegation boundary — see the S37 PD-3 addendum note on ChatEnvelope. The gateway relays this verbatim. */

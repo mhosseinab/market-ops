@@ -138,6 +138,11 @@ type Querier interface {
 	// enqueues nothing. The row is inserted with status='running'; 'queued' is a RESERVED
 	// forward state covered by the index predicate but not yet emitted here.
 	CreateCatalogSyncRun(ctx context.Context, arg CreateCatalogSyncRunParams) (CatalogSyncRun, error)
+	// Appends one context-binding version to a conversation (CHAT-007). APPEND-ONLY:
+	// a transition inserts a NEW version; a prior binding is never updated or deleted.
+	// The (conversation_id, version) UNIQUE constraint rejects a double-apply of the
+	// same version, so a retried transition cannot silently fork the history.
+	CreateContextBinding(ctx context.Context, arg CreateContextBindingParams) (ConversationContextBinding, error)
 	// Conversation durability queries (PRD §15.1 CHAT-008). These tables are
 	// GATEWAY-owned: the LLM plane holds NO DB credential (§19.3), so every write to
 	// conversation history flows through the gateway, never the model plane.
@@ -323,6 +328,12 @@ type Querier interface {
 	// executable selection-set member's live card through this read, then authorizes it
 	// through the SAME §8.4 individual-confirm path — never a bulk-only shortcut.
 	GetCurrentApprovalCardByRecommendation(ctx context.Context, recommendationID uuid.UUID) (ApprovalCard, error)
+	// Resolves a conversation's CURRENT deterministic context binding (the highest
+	// version row) for the caller's turn (CHAT-007). The caller has already validated
+	// the conversation belongs to its organization (GetConversationForOrg), so this
+	// read is org-safe by construction. Returns no row when the conversation has no
+	// binding yet (a legacy or first-turn conversation). APPEND-ONLY read.
+	GetCurrentContextBinding(ctx context.Context, conversationID uuid.UUID) (ConversationContextBinding, error)
 	// Server-side re-resolution for the Revalidating gate (EXE-001): the account,
 	// variant, and native variant id for a card's recommendation, PLUS the CURRENT
 	// (greatest-version) cost/policy/context/parameter versions in the recommendation

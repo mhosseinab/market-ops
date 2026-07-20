@@ -62,6 +62,11 @@ type Conversation struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	RetentionExpiresAt   time.Time
+	// Context is the conversation's AUTHORITATIVE deterministic context binding
+	// after this turn (CHAT-007), or nil when the conversation has no bound context
+	// yet. The gateway echoes it (kind/entity/version) so the client renders the
+	// chip the server persisted, never one it merely claimed.
+	Context *ContextBinding
 }
 
 // Message is one persisted turn. Envelope holds the assistant's typed response
@@ -83,6 +88,11 @@ type OpenParams struct {
 	UserID               uuid.UUID
 	MarketplaceAccountID *uuid.UUID
 	ConversationID       *uuid.UUID
+	// Context is the turn's DECLARED deterministic context binding (CHAT-007), or
+	// nil when the turn declares none. It is validated and versioned against the
+	// conversation's current binding before the user turn is appended; a stale or
+	// silently-relabeling binding is rejected and NOTHING is written.
+	Context *RequestedContext
 }
 
 // Store is the append-only conversation durability store over a pgx pool.
@@ -141,6 +151,15 @@ func (s *Store) BeginTurn(ctx context.Context, p OpenParams, userBody string) (C
 		}
 	}
 
+	// Resolve the deterministic context binding BEFORE appending the user turn, so a
+	// stale or silently-relabeling binding is rejected and NOTHING is written — no
+	// user turn, no proxy, no Draft (CHAT-007, §4.6). A new conversation has no
+	// current binding; a continuation loads its highest-version binding.
+	boundContext, err := s.resolveTurnContext(ctx, q, row.ID, p.Context)
+	if err != nil {
+		return Conversation{}, err
+	}
+
 	if _, err = q.AppendConversationMessage(ctx, db.AppendConversationMessageParams{
 		ConversationID: row.ID,
 		Author:         AuthorUser,
@@ -164,7 +183,57 @@ func (s *Store) BeginTurn(ctx context.Context, p OpenParams, userBody string) (C
 	if err = tx.Commit(ctx); err != nil {
 		return Conversation{}, err
 	}
-	return toConversation(touched), nil
+	out := toConversation(touched)
+	out.Context = boundContext
+	return out, nil
+}
+
+// resolveTurnContext resolves and (when a transition or first binding occurs)
+// APPENDS the conversation's deterministic context binding for a turn (CHAT-007).
+// It loads the conversation's current binding (none for a fresh conversation),
+// applies the pure resolveContext decision, and on an append inserts a NEW version
+// row — never updating a prior binding (append-only, §4.6). A stale or
+// silently-relabeling binding returns ErrContextVersionStale /
+// ErrContextTransitionRequired and writes nothing. Returns the binding in effect
+// after the turn, or nil when the conversation has (and declares) no context.
+func (s *Store) resolveTurnContext(
+	ctx context.Context, q *db.Queries, conversationID uuid.UUID, req *RequestedContext,
+) (*ContextBinding, error) {
+	var current *ContextBinding
+	row, err := q.GetCurrentContextBinding(ctx, conversationID)
+	switch {
+	case err == nil:
+		current = &ContextBinding{Kind: row.Kind, EntityID: fromPgText(row.EntityID), Version: row.Version}
+	case errors.Is(err, pgx.ErrNoRows):
+		current = nil
+	default:
+		return nil, err
+	}
+
+	res, err := resolveContext(current, req)
+	if err != nil {
+		return nil, err
+	}
+
+	if res.append {
+		inserted, insErr := q.CreateContextBinding(ctx, db.CreateContextBindingParams{
+			ConversationID: conversationID,
+			Version:        res.binding.Version,
+			Kind:           res.binding.Kind,
+			EntityID:       toPgText(res.binding.EntityID),
+		})
+		if insErr != nil {
+			return nil, insErr
+		}
+		return &ContextBinding{Kind: inserted.Kind, EntityID: fromPgText(inserted.EntityID), Version: inserted.Version}, nil
+	}
+
+	if current == nil && req == nil {
+		// No binding and none declared: the conversation has no context.
+		return nil, nil
+	}
+	bound := res.binding
+	return &bound, nil
 }
 
 // AccountContext resolves the authoritative marketplace account bound to an
@@ -252,4 +321,22 @@ func toPgUUID(id *uuid.UUID) pgtype.UUID {
 		return pgtype.UUID{}
 	}
 	return pgtype.UUID{Bytes: *id, Valid: true}
+}
+
+// toPgText maps an optional entity id to a nullable text column; nil is the
+// no-entity ('global') context.
+func toPgText(s *string) pgtype.Text {
+	if s == nil {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: *s, Valid: true}
+}
+
+// fromPgText maps a nullable text column back to an optional entity id.
+func fromPgText(t pgtype.Text) *string {
+	if !t.Valid {
+		return nil
+	}
+	v := t.String
+	return &v
 }

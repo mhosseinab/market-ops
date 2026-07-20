@@ -7,10 +7,18 @@ import {
 import { normalizeDigits } from "@market-ops/locale";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useAccount } from "../data/account";
+import type { ChatContext, ChatContextKind } from "./context";
 import { toThreadMessageLike } from "./convertMessage";
+import type { ChatDockActions } from "./dockActions";
 import { parseEnvelope } from "./envelope";
 import { postChatTurn } from "./sse";
-import type { ChatUnavailable, DockAssistantMessage, DockMessage } from "./types";
+import type {
+  ChatTurnRequest,
+  ChatUnavailable,
+  DockAssistantMessage,
+  DockMessage,
+  PickerOption,
+} from "./types";
 
 // The chat-dock runtime. It drives an assistant-ui external-store runtime over the
 // gateway `/chat` SSE transport — NO `@assistant-ui/react-langgraph`, no direct
@@ -18,6 +26,14 @@ import type { ChatUnavailable, DockAssistantMessage, DockMessage } from "./types
 // a read/Draft-only turn and streams frames in. The composer NEVER approves — the
 // only mutation path is the structured ApprovalCard control (rendered as a card
 // part), so free text changes nothing.
+//
+// Deterministic single context (CHAT-007): every turn carries the route-derived
+// context binding so the gateway persists exactly the context the operator sees.
+// A route-context change opens a NEW bound conversation rather than silently
+// relabeling the current one; a picker selection binds that exact option through
+// an explicit, versioned context transition BEFORE any card-producing continuation.
+// The gateway is authoritative for the version — the client tracks it and defers
+// to a server rejection (a stale binding fails the turn, never mislabels it).
 
 function extractText(message: AppendMessage): string {
   return message.content
@@ -32,20 +48,52 @@ function nextId(prefix: string): string {
   return `${prefix}-${idCounter}`;
 }
 
+// BoundContext is the conversation's current context as the client believes the
+// gateway has it. version is the server-issued context version echoed on the
+// conversation frame (or tracked optimistically until the gateway corrects it).
+interface BoundContext {
+  readonly kind: ChatContextKind;
+  readonly entityId?: string;
+  readonly version: number;
+}
+
+// The declared binding a turn should carry, plus whether it must start a new
+// conversation (a route-context change is never a silent relabel).
+interface TurnPlan {
+  readonly binding: ChatTurnRequest["context"];
+  readonly startNewConversation: boolean;
+  readonly nextBound: BoundContext;
+}
+
+function sameEntity(
+  a: BoundContext | undefined,
+  kind: ChatContextKind,
+  entityId?: string,
+): boolean {
+  return a !== undefined && a.kind === kind && a.entityId === entityId;
+}
+
 export interface ChatDockRuntime {
   readonly runtime: AssistantRuntime;
   readonly messages: readonly DockMessage[];
   readonly isRunning: boolean;
   /** Set once a turn is refused (kill switch / provider outage). Read-only after. */
   readonly unavailable: ChatUnavailable | null;
+  /** Actions exposed to nested structured cards (picker binding). */
+  readonly actions: ChatDockActions;
 }
 
-export function useChatDock(): ChatDockRuntime {
+export function useChatDock(context: ChatContext): ChatDockRuntime {
   const { marketplaceAccountId } = useAccount();
   const [messages, setMessages] = useState<readonly DockMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [unavailable, setUnavailable] = useState<ChatUnavailable | null>(null);
   const conversationIdRef = useRef<string | undefined>(undefined);
+  const boundContextRef = useRef<BoundContext | undefined>(undefined);
+  // The latest route-derived context, read at send time so a turn always binds
+  // the context the operator currently sees.
+  const contextRef = useRef<ChatContext>(context);
+  contextRef.current = context;
 
   const patchAssistant = useCallback((id: string, patch: Partial<DockAssistantMessage>) => {
     setMessages((prev) =>
@@ -53,13 +101,54 @@ export function useChatDock(): ChatDockRuntime {
     );
   }, []);
 
-  const onNew = useCallback(
-    async (message: AppendMessage) => {
-      // Digit-family normalization at the INPUT boundary (LOC-007, CHAT-081):
-      // Persian and Latin digits produce an identical outgoing turn.
-      const text = normalizeDigits(extractText(message));
-      if (text.length === 0) return;
+  // planRouteTurn decides the binding for an ordinary composer turn from the
+  // current route context. A route-context change on an existing conversation
+  // starts a NEW conversation (no silent relabel).
+  const planRouteTurn = useCallback((): TurnPlan => {
+    const routeCtx = contextRef.current;
+    const bound = boundContextRef.current;
+    const hasConversation = conversationIdRef.current !== undefined;
+    const startNew = hasConversation && !sameEntity(bound, routeCtx.kind, routeCtx.entityId);
+    const isFirstTurn = !hasConversation || startNew;
+    const binding: ChatTurnRequest["context"] = {
+      kind: routeCtx.kind,
+      ...(routeCtx.entityId !== undefined ? { entityId: routeCtx.entityId } : {}),
+      ...(isFirstTurn || bound === undefined ? {} : { contextVersion: bound.version }),
+    };
+    return {
+      binding,
+      startNewConversation: startNew,
+      nextBound: {
+        kind: routeCtx.kind,
+        entityId: routeCtx.entityId,
+        version: isFirstTurn ? 1 : (bound?.version ?? 1),
+      },
+    };
+  }, []);
 
+  // planPickerTurn binds a picker option to the CURRENT conversation via an
+  // explicit, versioned context transition (CHAT-007). It is a product-entity
+  // transition; a stale version is rejected by the gateway rather than relabeling.
+  const planPickerTurn = useCallback((option: PickerOption): TurnPlan => {
+    const bound = boundContextRef.current;
+    const binding: ChatTurnRequest["context"] = {
+      kind: "product",
+      entityId: option.id,
+      ...(bound !== undefined ? { contextVersion: bound.version, transition: true } : {}),
+    };
+    return {
+      binding,
+      startNewConversation: false,
+      nextBound: {
+        kind: "product",
+        entityId: option.id,
+        version: bound !== undefined ? bound.version + 1 : 1,
+      },
+    };
+  }, []);
+
+  const runTurn = useCallback(
+    async (text: string, plan: TurnPlan) => {
       const userId = nextId("user");
       const assistantId = nextId("assistant");
       setMessages((prev) => [
@@ -69,11 +158,19 @@ export function useChatDock(): ChatDockRuntime {
       ]);
       setIsRunning(true);
 
+      if (plan.startNewConversation) {
+        // A route-context change opens a fresh bound conversation; the previous
+        // conversation keeps its own context (never relabeled).
+        conversationIdRef.current = undefined;
+        boundContextRef.current = undefined;
+      }
+
       try {
         const outcome = await postChatTurn({
           message: text,
           ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
           marketplaceAccountId,
+          ...(plan.binding ? { context: plan.binding } : {}),
         });
 
         if (outcome.kind === "unavailable") {
@@ -87,6 +184,13 @@ export function useChatDock(): ChatDockRuntime {
           switch (event.kind) {
             case "conversation":
               if (event.conversationId) conversationIdRef.current = event.conversationId;
+              // Commit the bound context; adopt the server-issued version when the
+              // gateway echoes it, else keep the optimistic value.
+              boundContextRef.current = {
+                kind: plan.nextBound.kind,
+                entityId: plan.nextBound.entityId,
+                version: event.contextVersion ?? plan.nextBound.version,
+              };
               break;
             case "token":
               streamedText += event.token ?? "";
@@ -114,15 +218,37 @@ export function useChatDock(): ChatDockRuntime {
         // or terminal-less stream throws a typed ChatStreamError instead — never
         // silently completing the turn (issue #116).
       } catch {
-        // Transport seam failure: keep any partial streamed text but mark the turn
-        // failed and flag it as a transport failure so the dock renders the
-        // incomplete notice — no completed envelope/cards are ever attached.
+        // Transport seam failure (including a gateway context rejection): keep any
+        // partial streamed text but mark the turn failed and flag it as a transport
+        // failure so the dock renders the incomplete notice — no completed
+        // envelope/cards are ever attached.
         patchAssistant(assistantId, { status: "failed", transportFailed: true });
       } finally {
         setIsRunning(false);
       }
     },
     [marketplaceAccountId, patchAssistant],
+  );
+
+  const onNew = useCallback(
+    async (message: AppendMessage) => {
+      // Digit-family normalization at the INPUT boundary (LOC-007, CHAT-081):
+      // Persian and Latin digits produce an identical outgoing turn.
+      const text = normalizeDigits(extractText(message));
+      if (text.length === 0) return;
+      await runTurn(text, planRouteTurn());
+    },
+    [runTurn, planRouteTurn],
+  );
+
+  const bindPickerOption = useCallback(
+    (option: PickerOption) => {
+      // The bound turn's message is the option's grounded display label; the
+      // structured context binding does the actual, versioned binding.
+      const text = normalizeDigits(option.label).trim();
+      void runTurn(text.length > 0 ? text : option.id, planPickerTurn(option));
+    },
+    [runTurn, planPickerTurn],
   );
 
   const adapter = useMemo<ExternalStoreAdapter<DockMessage>>(
@@ -139,6 +265,7 @@ export function useChatDock(): ChatDockRuntime {
   );
 
   const runtime = useExternalStoreRuntime(adapter);
+  const actions = useMemo<ChatDockActions>(() => ({ bindPickerOption }), [bindPickerOption]);
 
-  return { runtime, messages, isRunning, unavailable };
+  return { runtime, messages, isRunning, unavailable, actions };
 }

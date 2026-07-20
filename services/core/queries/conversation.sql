@@ -54,3 +54,23 @@ RETURNING *;
 SELECT * FROM conversation_messages
 WHERE conversation_id = $1
 ORDER BY created_at, id;
+
+-- name: GetCurrentContextBinding :one
+-- Resolves a conversation's CURRENT deterministic context binding (the highest
+-- version row) for the caller's turn (CHAT-007). The caller has already validated
+-- the conversation belongs to its organization (GetConversationForOrg), so this
+-- read is org-safe by construction. Returns no row when the conversation has no
+-- binding yet (a legacy or first-turn conversation). APPEND-ONLY read.
+SELECT * FROM conversation_context_bindings
+WHERE conversation_id = $1
+ORDER BY version DESC
+LIMIT 1;
+
+-- name: CreateContextBinding :one
+-- Appends one context-binding version to a conversation (CHAT-007). APPEND-ONLY:
+-- a transition inserts a NEW version; a prior binding is never updated or deleted.
+-- The (conversation_id, version) UNIQUE constraint rejects a double-apply of the
+-- same version, so a retried transition cannot silently fork the history.
+INSERT INTO conversation_context_bindings (conversation_id, version, kind, entity_id)
+VALUES ($1, $2, $3, $4)
+RETURNING *;

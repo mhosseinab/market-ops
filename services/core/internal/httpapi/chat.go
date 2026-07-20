@@ -82,6 +82,12 @@ type ChatTurn struct {
 	ConversationID       *uuid.UUID
 	MarketplaceAccountID *uuid.UUID
 	Message              string
+	// Context is the conversation's AUTHORITATIVE deterministic context binding
+	// (CHAT-007), resolved and versioned by the gateway store. It is handed to the
+	// LLM plane as pass-through business data so the deterministic-context resolver
+	// never infers the bound entity from free text when a binding is present; it
+	// carries no approval authority.
+	Context *conversation.ContextBinding
 }
 
 // staticKillSwitch is the default ChatKillSwitch backed by immutable config
@@ -265,10 +271,22 @@ func (s *gatewayServer) Chat(
 			UserID:               p.UserID,
 			MarketplaceAccountID: req.Body.MarketplaceAccountId,
 			ConversationID:       req.Body.ConversationId,
+			Context:              toRequestedContext(req.Body.Context),
 		}, req.Body.Message)
 		if errors.Is(err, conversation.ErrConversationDenied) {
 			s.logChatPersist(ctx, "begin-turn-denied", uuid.Nil, err)
 			return chatConversationDenied(), nil
+		}
+		// A stale or silently-relabeling context binding is rejected here, BEFORE the
+		// turn is proxied (CHAT-007): no stream opens, so no Draft or approval card
+		// can be produced. The conversation's deterministic single context holds.
+		if errors.Is(err, conversation.ErrContextVersionStale) {
+			s.logChatPersist(ctx, "context-version-stale", uuid.Nil, err)
+			return chatContextStale(), nil
+		}
+		if errors.Is(err, conversation.ErrContextTransitionRequired) {
+			s.logChatPersist(ctx, "context-transition-required", uuid.Nil, err)
+			return chatContextTransitionRequired(), nil
 		}
 		if err != nil {
 			s.logChatPersist(ctx, "begin-turn-failed", uuid.Nil, err)
@@ -276,6 +294,7 @@ func (s *gatewayServer) Chat(
 		}
 		conversationID = conv.ID
 		turn.ConversationID = &conv.ID
+		turn.Context = conv.Context
 	}
 
 	stream, err := s.llmChat.StartTurn(ctx, turn)
@@ -482,6 +501,19 @@ func (h *httpLLMChat) StartTurn(ctx context.Context, turn ChatTurn) (io.ReadClos
 	if turn.MarketplaceAccountID != nil {
 		payload["marketplace_account_id"] = turn.MarketplaceAccountID.String()
 	}
+	// Pass the AUTHORITATIVE bound context through to the LLM plane as read-only
+	// business data (CHAT-007). The resolver uses it instead of inferring the entity
+	// from free text; it carries no approval authority and never advances an action.
+	if turn.Context != nil {
+		bound := map[string]any{
+			"kind":    turn.Context.Kind,
+			"version": turn.Context.Version,
+		}
+		if turn.Context.EntityID != nil {
+			bound["entity_id"] = *turn.Context.EntityID
+		}
+		payload["context"] = bound
+	}
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("chat: marshal turn: %w", err)
@@ -534,6 +566,51 @@ func chatAccountMismatch() gateway.ChatdefaultJSONResponse {
 		Body: gateway.ErrorEnvelope{
 			Code:    "CONVERSATION_ACCOUNT_MISMATCH",
 			Message: "the supplied account does not match this conversation's account context",
+		},
+	}
+}
+
+// toRequestedContext maps the optional contract context binding onto the store's
+// declared-context input. A nil binding means the turn declares no context (the
+// binding stays whatever the conversation already has).
+func toRequestedContext(b *gateway.ConversationContextBinding) *conversation.RequestedContext {
+	if b == nil {
+		return nil
+	}
+	req := &conversation.RequestedContext{
+		Kind:     string(b.Kind),
+		EntityID: b.EntityId,
+		Version:  b.ContextVersion,
+	}
+	if b.Transition != nil {
+		req.Transition = *b.Transition
+	}
+	return req
+}
+
+// chatContextStale builds the 409 for a turn whose declared context version no
+// longer matches the conversation's current bound version (CHAT-007). Fail closed:
+// the turn is never proxied, so no Draft or approval card is produced.
+func chatContextStale() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 409,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CONVERSATION_CONTEXT_STALE",
+			Message: "the conversation context has changed; reopen it from the current screen",
+		},
+	}
+}
+
+// chatContextTransitionRequired builds the 409 for a continuation whose declared
+// context differs from the conversation's current context without an explicit
+// transition (CHAT-007). Fail closed: the conversation is never silently relabeled
+// and the turn is never proxied.
+func chatContextTransitionRequired() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 409,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CONVERSATION_CONTEXT_TRANSITION_REQUIRED",
+			Message: "changing the conversation context requires an explicit transition",
 		},
 	}
 }

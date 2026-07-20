@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 from uuid import UUID
 
 from attrs import define as _attrs_define
 
 from ..types import UNSET, Unset
+
+if TYPE_CHECKING:
+    from ..models.conversation_context_binding import ConversationContextBinding
+
 
 T = TypeVar("T", bound="ChatTurnRequest")
 
@@ -24,11 +28,19 @@ class ChatTurnRequest:
                 new conversation and returns its id in the stream.
             marketplace_account_id (UUID | Unset): Optional account context for the turn. Exactly one context is active per
                 conversation; ambiguity is resolved by a structured picker, never inferred (CHAT-007).
+            context (ConversationContextBinding | Unset): The deterministic context a turn binds to the conversation (PRD
+                §8.1 CHAT-007). Route entry and structured picker selection BIND the selected entity here so the gateway
+                persists the exact kind/entity the operator sees — the chip can never claim a context the gateway did not
+                receive. Binding is SERVER-VERSIONED and APPEND-ONLY: the first turn establishes version 1; changing the bound
+                entity requires an EXPLICIT transition (`transition: true`) that appends a new version, never a silent relabel;
+                a `contextVersion` that no longer matches the conversation's current bound version is REJECTED (stale) and
+                produces no Draft. Account, context entity, and conversation provenance must belong to the same tenant.
     """
 
     message: str
     conversation_id: UUID | Unset = UNSET
     marketplace_account_id: UUID | Unset = UNSET
+    context: ConversationContextBinding | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         message = self.message
@@ -41,6 +53,10 @@ class ChatTurnRequest:
         if not isinstance(self.marketplace_account_id, Unset):
             marketplace_account_id = str(self.marketplace_account_id)
 
+        context: dict[str, Any] | Unset = UNSET
+        if not isinstance(self.context, Unset):
+            context = self.context.to_dict()
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -52,11 +68,15 @@ class ChatTurnRequest:
             field_dict["conversationId"] = conversation_id
         if marketplace_account_id is not UNSET:
             field_dict["marketplaceAccountId"] = marketplace_account_id
+        if context is not UNSET:
+            field_dict["context"] = context
 
         return field_dict
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.conversation_context_binding import ConversationContextBinding
+
         d = dict(src_dict)
         message = d.pop("message")
 
@@ -74,10 +94,18 @@ class ChatTurnRequest:
         else:
             marketplace_account_id = UUID(_marketplace_account_id)
 
+        _context = d.pop("context", UNSET)
+        context: ConversationContextBinding | Unset
+        if isinstance(_context, Unset):
+            context = UNSET
+        else:
+            context = ConversationContextBinding.from_dict(_context)
+
         chat_turn_request = cls(
             message=message,
             conversation_id=conversation_id,
             marketplace_account_id=marketplace_account_id,
+            context=context,
         )
 
         return chat_turn_request
