@@ -66,6 +66,47 @@ func TestPrepareRecommendationDraft_PersistsTerminalDraft(t *testing.T) {
 	}
 }
 
+// TestPrepareRecommendationDraft_CarriesEvidenceVersions_Issue133 is the #133
+// cross-boundary proof: the S23 chat Draft path binds the REAL per-observation
+// evidence-version map persisted on the recommendation (APR-001 evidence-
+// invalidation, never-cut §4.6). Before the fix the minted card's evidence map was
+// empty, leaving the evidence dimension with nothing to compare against.
+func TestPrepareRecommendationDraft_CarriesEvidenceVersions_Issue133(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant := seedVariant(t, q)
+	svc := recommendation.NewService(pool)
+
+	obs := uuid.New()
+	in := baseValidInput(t)
+	in.AccountID = account
+	in.VariantID = variant
+	in.EventID = uuid.Nil
+	in.Evidence.ObservationID = obs
+	in.EvidenceVersions = map[uuid.UUID]int64{obs: 6}
+	rec := recommendation.Assemble(in)
+	persisted, err := svc.Persist(ctx, uuid.New(), rec)
+	if err != nil {
+		t.Fatalf("persist recommendation: %v", err)
+	}
+
+	ticket, err := svc.PrepareRecommendationDraft(ctx, account, variant, persisted.ID)
+	if err != nil {
+		t.Fatalf("prepare draft: %v", err)
+	}
+	card, err := svc.GetCard(ctx, ticket.DraftID)
+	if err != nil {
+		t.Fatalf("get card: %v", err)
+	}
+	got, err := recommendation.DecodeEvidenceVersions(card.EvidenceVersions)
+	if err != nil {
+		t.Fatalf("decode card evidence versions: %v", err)
+	}
+	if len(got) != 1 || got[obs] != 6 {
+		t.Fatalf("Draft card bound evidence versions = %v, want {%s:6}", got, obs)
+	}
+}
+
 // TestPrepareRecommendationDraft_FailsClosed proves no Draft is minted for an
 // unknown, foreign, or non-executable recommendation (§12.4 never a fabricated
 // Draft).

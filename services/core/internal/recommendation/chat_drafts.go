@@ -85,18 +85,24 @@ func (s *Service) PrepareRecommendationDraft(ctx context.Context, account, entit
 	if err != nil {
 		return DraftTicket{}, err
 	}
-	// Bind the APR-001 reproducibility versions persisted on the recommendation.
-	// EvidenceVersions is intentionally empty: S17 persists the cited observation
-	// id + refs but not a per-observation version map, so binding a fabricated
-	// version would be a lie (§9.1 quarantine-over-inference posture). The Draft is
-	// terminal here; confirmation re-verifies against the live card through the
-	// screens' structured control.
+	// Bind the APR-001 reproducibility versions persisted on the recommendation,
+	// including the REAL per-observation evidence-version map the recommendation was
+	// assembled from (issue #133). S17 persists this map on the recommendation row
+	// (persist.go), so the Draft binds the SAME evidence versions the producer's card
+	// was bound to — an evidence add/remove/version-bump on a backing observation
+	// invalidates the control (§16 evidence change). No version is fabricated: an
+	// absent map decodes to nil (no backing evidence recorded).
+	evidenceVersions, err := unmarshalEvidenceVersions(row.EvidenceVersions)
+	if err != nil {
+		return DraftTicket{}, err
+	}
 	binding := approval.Binding{
 		ActionID:           uuid.New(),
 		ParameterVersion:   row.ParameterVersion,
 		ContextVersion:     row.ContextVersion,
 		PolicyVersion:      row.PolicyVersion,
 		CostProfileVersion: row.CostProfileVersion,
+		EvidenceVersions:   evidenceVersions,
 		Expiry:             row.ExpiresAt.Time,
 	}
 	card, err := s.mintDraftCard(ctx, recID, row.LineageID, account, binding, price)

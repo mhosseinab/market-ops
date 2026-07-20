@@ -3,10 +3,26 @@ package recommendation
 import (
 	"context"
 
+	"github.com/google/uuid"
+
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
+
+// BuildInsertRecommendationParamsForTest exposes the pure append-only INSERT
+// param builder so the #133 evidence-version persistence seam can be exercised
+// Red→Green without a database. It proves the recommendation row carries the real
+// per-observation evidence-version map (APR-001 evidence-invalidation, §4.6).
+func BuildInsertRecommendationParamsForTest(lineage uuid.UUID, rec Recommendation) (db.InsertRecommendationParams, error) {
+	return buildInsertRecommendationParams(lineage, rec)
+}
+
+// DecodeEvidenceVersionsForTest exposes the stored evidence-version JSON decoder
+// so a test can assert the persisted map round-trips to the exact bound versions.
+func DecodeEvidenceVersionsForTest(b []byte) (map[uuid.UUID]int64, error) {
+	return DecodeEvidenceVersions(b)
+}
 
 // MemberContribution mirrors the internal per-member contribution-evidence input
 // to the aggregate-completeness rule, exported so the pure fold (#141) is unit

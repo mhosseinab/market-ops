@@ -13,7 +13,7 @@ import (
 )
 
 const getCurrentRecommendation = `-- name: GetCurrentRecommendation :one
-SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at FROM recommendations
+SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at, evidence_versions FROM recommendations
 WHERE lineage_id = $1
 ORDER BY version DESC
 LIMIT 1
@@ -71,12 +71,13 @@ func (q *Queries) GetCurrentRecommendation(ctx context.Context, lineageID uuid.U
 		&i.Simulation,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.EvidenceVersions,
 	)
 	return i, err
 }
 
 const getRecommendation = `-- name: GetRecommendation :one
-SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at FROM recommendations WHERE id = $1
+SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at, evidence_versions FROM recommendations WHERE id = $1
 `
 
 func (q *Queries) GetRecommendation(ctx context.Context, id uuid.UUID) (Recommendation, error) {
@@ -130,12 +131,13 @@ func (q *Queries) GetRecommendation(ctx context.Context, id uuid.UUID) (Recommen
 		&i.Simulation,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.EvidenceVersions,
 	)
 	return i, err
 }
 
 const getRecommendationForAccount = `-- name: GetRecommendationForAccount :one
-SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at FROM recommendations WHERE id = $1 AND marketplace_account_id = $2
+SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at, evidence_versions FROM recommendations WHERE id = $1 AND marketplace_account_id = $2
 `
 
 type GetRecommendationForAccountParams struct {
@@ -198,6 +200,7 @@ func (q *Queries) GetRecommendationForAccount(ctx context.Context, arg GetRecomm
 		&i.Simulation,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.EvidenceVersions,
 	)
 	return i, err
 }
@@ -213,7 +216,8 @@ INSERT INTO recommendations (
     allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason,
     readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of,
     cost_profile_version, policy_version, context_version, parameter_version,
-    inputs, assumptions, blockers, approvable, simulation, expires_at
+    inputs, assumptions, blockers, approvable, simulation, expires_at,
+    evidence_versions
 ) VALUES (
     $1, $2, $3,
     (SELECT COALESCE(MAX(version), 0) + 1 FROM recommendations WHERE lineage_id = $3),
@@ -225,9 +229,10 @@ INSERT INTO recommendations (
     $24, $25, $26, $27, $28, $29,
     $30, $31, $32, $33, $34,
     $35, $36, $37, $38,
-    $39, $40, $41, $42, $43, $44
+    $39, $40, $41, $42, $43, $44,
+    $45
 )
-RETURNING id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at
+RETURNING id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at, evidence_versions
 `
 
 type InsertRecommendationParams struct {
@@ -275,6 +280,7 @@ type InsertRecommendationParams struct {
 	Approvable                    bool
 	Simulation                    bool
 	ExpiresAt                     pgtype.Timestamptz
+	EvidenceVersions              []byte
 }
 
 // Recommendation queries (PRD §7.5 PRC-001/002). recommendations is APPEND-ONLY
@@ -327,6 +333,7 @@ func (q *Queries) InsertRecommendation(ctx context.Context, arg InsertRecommenda
 		arg.Approvable,
 		arg.Simulation,
 		arg.ExpiresAt,
+		arg.EvidenceVersions,
 	)
 	var i Recommendation
 	err := row.Scan(
@@ -377,12 +384,13 @@ func (q *Queries) InsertRecommendation(ctx context.Context, arg InsertRecommenda
 		&i.Simulation,
 		&i.ExpiresAt,
 		&i.CreatedAt,
+		&i.EvidenceVersions,
 	)
 	return i, err
 }
 
 const listRecommendationsForVariant = `-- name: ListRecommendationsForVariant :many
-SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at FROM recommendations
+SELECT id, marketplace_account_id, variant_id, lineage_id, version, event_id, objective, current_price_mantissa, current_price_currency, current_price_exponent, proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent, proposed_price_reason, current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent, current_contribution_reason, proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent, proposed_contribution_reason, allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason, readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of, cost_profile_version, policy_version, context_version, parameter_version, inputs, assumptions, blockers, approvable, simulation, expires_at, created_at, evidence_versions FROM recommendations
 WHERE marketplace_account_id = $1 AND variant_id = $2
 ORDER BY created_at DESC
 `
@@ -449,6 +457,7 @@ func (q *Queries) ListRecommendationsForVariant(ctx context.Context, arg ListRec
 			&i.Simulation,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+			&i.EvidenceVersions,
 		); err != nil {
 			return nil, err
 		}
