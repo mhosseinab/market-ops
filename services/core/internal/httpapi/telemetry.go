@@ -7,6 +7,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
@@ -129,10 +130,29 @@ func newStatusRecorder(w http.ResponseWriter) (http.ResponseWriter, *statusRecor
 	return rec, rec
 }
 
-// wrap is the outermost transport middleware: it extracts any inbound W3C trace
-// context (web → gateway), opens a server span carrying the normalized route, and
-// records the RED duration histogram on completion. It is safe with a no-op
-// provider (dev without OTEL_ENABLED) and never alters the response.
+// panicStatus classifies the RED status for a request whose handler PANICKED.
+// A panic is a server failure, so it escalates to 500 — the whole point of issue
+// #158 is that a panic must RAISE the RED error rate, never vanish or count as a
+// 2xx/4xx success. The one exception: a status >= 500 already written to the wire
+// (the client received it) is preserved verbatim, since it is itself a server
+// error and the exact code is the more precise signal. `written` is 0 when the
+// handler panicked before writing any header.
+func panicStatus(written int) int {
+	if written >= 500 {
+		return written
+	}
+	return http.StatusInternalServerError
+}
+
+// wrap is a transport middleware: it extracts any inbound W3C trace context
+// (web → gateway), opens a server span carrying the normalized route, and records
+// the RED duration histogram + status on completion. Finalization runs in a defer
+// so it fires on EVERY completed request path — normal return AND panic — and is
+// guarded to record EXACTLY ONCE (issue #158). On a panic it records a 5xx server
+// error then RE-PANICS, leaving the established outer recovery boundary (Go's
+// net/http server) unchanged: a panic is never swallowed into a normal response.
+// It is safe with a no-op provider (dev without OTEL_ENABLED) and never alters
+// the response.
 func (rm *redMetrics) wrap(next http.Handler) http.Handler {
 	propagator := otel.GetTextMapPropagator()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -149,18 +169,49 @@ func (rm *redMetrics) wrap(next http.Handler) http.Handler {
 
 		rw, rec := newStatusRecorder(w)
 		start := time.Now()
+
+		// finalize records the span status attribute + RED duration histogram for
+		// this request EXACTLY ONCE. It is invoked from the inline normal path and
+		// from the deferred panic handler below; the `recorded` guard makes the
+		// second call a no-op so a request yields exactly one datapoint whether it
+		// returns or panics. `panicked` classifies a crash as a server error for
+		// both the span and the metric so the two AGREE; the raw panic value is
+		// NEVER placed in a label or attribute (free-text containment).
+		recorded := false
+		finalize := func(status int, panicked bool) {
+			if recorded {
+				return
+			}
+			recorded = true
+			class := statusClass(status)
+			span.SetAttributes(attribute.Int("http.response.status_code", status))
+			if panicked {
+				// Bounded classification only — no panic text/stack on the span.
+				span.SetStatus(codes.Error, "handler panic")
+			}
+			rm.duration.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(
+				attribute.String("http.route", route),
+				attribute.String("http.request.method", r.Method),
+				attribute.String("http.status_class", class),
+				attribute.String("http.status_code", strconv.Itoa(status)),
+			))
+		}
+
+		// The panic defer records the 5xx datapoint (if the inline path never ran)
+		// and RE-PANICS so the outer recovery boundary still runs its recovery,
+		// audit, and response. The recovery layer records its own signal, if any;
+		// this RED layer contributes exactly one datapoint per request.
+		defer func() {
+			if p := recover(); p != nil {
+				finalize(panicStatus(rec.status), true)
+				panic(p)
+			}
+		}()
+
 		next.ServeHTTP(rw, r.WithContext(ctx))
 		if rec.status == 0 {
 			rec.status = http.StatusOK
 		}
-
-		class := statusClass(rec.status)
-		span.SetAttributes(attribute.Int("http.response.status_code", rec.status))
-		rm.duration.Record(ctx, time.Since(start).Milliseconds(), metric.WithAttributes(
-			attribute.String("http.route", route),
-			attribute.String("http.request.method", r.Method),
-			attribute.String("http.status_class", class),
-			attribute.String("http.status_code", strconv.Itoa(rec.status)),
-		))
+		finalize(rec.status, false)
 	})
 }
