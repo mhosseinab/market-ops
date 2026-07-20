@@ -290,6 +290,50 @@ describe("service worker — EXT-009 kill switch: capability gates nav-shim/watc
   });
 });
 
+// issue #162: operational telemetry must survive MV3 worker restarts. The worker
+// persists a durable, allow-listed metric snapshot into chrome.storage on the
+// flush alarm, so a subsequent teardown never erases queue/upload/drift signals.
+describe("service worker — #162 durable telemetry outbox survives worker teardown", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function alarmHandler(): (a: { name: string }) => void {
+    const chromeMock = (
+      globalThis as unknown as {
+        chrome: { alarms: { onAlarm: { addListener: ReturnType<typeof vi.fn> } } };
+      }
+    ).chrome;
+    return chromeMock.alarms.onAlarm.addListener.mock.calls[0]?.[0] as (a: {
+      name: string;
+    }) => void;
+  }
+
+  it("persists a bounded, PII-free metric batch to storage on the flush alarm", async () => {
+    const product = parsedProduct();
+    vi.stubGlobal("fetch", gatewayFetchMock([ownedTargetRow(product)]));
+    const { storage } = installChromeMock();
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "pair-code" }); // records owned_targets_sync etc.
+    await send({ kind: "capture", product }); // records upload_accepted + queue_depth
+
+    // The flush alarm fires: snapshot the in-memory registry into the durable
+    // outbox (survives the next teardown) + attempt export.
+    alarmHandler()({ name: "queue-flush" });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const outbox = storage.get("telemetryOutbox") as Array<{ metrics: unknown[] }> | undefined;
+    expect(outbox).toBeDefined();
+    expect(outbox?.length).toBeGreaterThan(0);
+    // Containment: nothing in the durable batch resembles a URL / credential /
+    // raw marketplace text — bounded labels + counts only.
+    const serialized = JSON.stringify(outbox);
+    expect(serialized).not.toMatch(/https?:\/\//i);
+    expect(serialized).not.toMatch(/digikala/i);
+    expect(serialized).not.toMatch(/Bearer|cap-cred/i);
+  });
+});
+
 // #145: the Confirmed-owned-target projection is driven ONLY by the real
 // credential-scoped sync (GET /ext/owned-targets) — the untrusted setOwnedTargets
 // message is gone. These assert the fail-closed + open behaviors end to end.

@@ -60,6 +60,12 @@ export const KEY_QUEUE = "queue";
 // independently, and so a dead-letter item never re-enters an automatic flush.
 export const KEY_DEADLETTER = "deadLetter";
 export const KEY_LAST_UPLOAD = "lastUploadAt";
+// Durable operational-telemetry outbox (issue #162): bounded, allow-listed metric
+// snapshots that must survive an MV3 worker restart and be exported to an
+// operational sink. Persisted here so the storage audit walks it too — a batch
+// carries only bounded parser/version/status labels + counts, never PII, URLs, or
+// raw marketplace text (the outbox sanitizes on write).
+export const KEY_TELEMETRY_OUTBOX = "telemetryOutbox";
 
 // The ONLY fields of a stored capture credential. EXT-001: the extension holds a
 // capture/overlay credential and NEVER a seller-API token — so the persisted

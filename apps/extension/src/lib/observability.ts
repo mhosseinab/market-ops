@@ -88,6 +88,40 @@ export function resetCounters(): void {
   gauges.clear();
 }
 
+// A structured, transport-ready view of one metric in the registry. Distinct from
+// the flat metricKey string form: name and labels are separated so a durable
+// telemetry outbox can allow-list dimensions before anything leaves the extension
+// (issue #162). Values are stringified exactly as metricKey encoded them.
+export interface MetricSample {
+  name: string;
+  kind: "counter" | "gauge";
+  labels: Record<string, string>;
+  value: number;
+}
+
+// snapshotMetrics reads the WHOLE in-memory registry into structured samples. It
+// is a pure read — it never clears the maps — so the caller decides drain
+// semantics (the outbox persists a durable copy; the live registry keeps serving
+// popup/telemetry). The reverse of metricKey(): the first "|" segment is the
+// metric name and each remaining "k=v" segment is one label.
+export function snapshotMetrics(): MetricSample[] {
+  const out: MetricSample[] = [];
+  for (const [key, value] of counters) out.push({ ...parseMetricKey(key), kind: "counter", value });
+  for (const [key, value] of gauges) out.push({ ...parseMetricKey(key), kind: "gauge", value });
+  return out;
+}
+
+function parseMetricKey(key: string): { name: string; labels: Record<string, string> } {
+  const [name, ...pairs] = key.split("|");
+  const labels: Record<string, string> = {};
+  for (const pair of pairs) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) continue;
+    labels[pair.slice(0, eq)] = pair.slice(eq + 1);
+  }
+  return { name: name ?? key, labels };
+}
+
 // log emits one structured record. It NEVER logs Persian-language copy as a
 // diagnostic identifier (LOC boundary) — callers pass stable tokens only.
 export function log(level: "info" | "warn" | "error", event: string, fields: LogFields = {}): void {
