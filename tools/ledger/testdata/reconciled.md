@@ -21,4 +21,10 @@ LEDGER-VERIFICATION-GATES:END -->
 | S2 | Dev stack | verify-pending | 2 | dk-p0/S2 | ee97605 | runtime boot pending on unrestricted host |
 | S6 | CI pipeline | passed | 2 | dk-p0/S6 | 138b85e | CI green |
 
+<!-- LEDGER-TRANSITIONS:BEGIN
+TXN S1 | pending -> passed | scaffold merged, review green | fd58883
+TXN S2 | pending -> verify-pending | merged; runtime Verify gated to unrestricted host | ee97605
+TXN S6 | pending -> passed | CI pipeline merged, first-GitHub-run green | 138b85e
+LEDGER-TRANSITIONS:END -->
+
 > Status values: pending | in_progress | passed | verify-pending | blocked.
