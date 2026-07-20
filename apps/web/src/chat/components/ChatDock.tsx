@@ -63,14 +63,14 @@ function UnavailableBanner({ unavailable }: { unavailable: ChatUnavailable }) {
 
 export function ChatDock() {
   const t = useT();
-  const { locale } = useLocale();
+  const { locale, setLocale } = useLocale();
   const { chatOpen, toggleChat } = useAppState();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const rawSearch = useRouterState({ select: (s) => s.location.search });
   const context = deriveChatContext(pathname, rawSearch as Record<string, string>);
-  // The ACTIVE locale is sent with every turn (LOC-001, issue #120): it is DATA, the
-  // ONLY authoritative locale signal on the wire, never inferred from the message.
-  const { runtime, unavailable, actions, activeContext } = useChatDock(context, locale);
+  // The ACTIVE locale is sent with every turn (LOC-001, issue #120): it is DATA,
+  // never inferred from the message; the gateway echo authoritatively commits it.
+  const { runtime, unavailable, actions, activeContext } = useChatDock(context, locale, setLocale);
 
   if (!chatOpen) return null;
 

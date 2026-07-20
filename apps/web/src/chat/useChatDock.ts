@@ -129,7 +129,11 @@ export interface ChatDockRuntime {
   readonly activeContext: ChatContext;
 }
 
-export function useChatDock(context: ChatContext, locale: LocaleId): ChatDockRuntime {
+export function useChatDock(
+  context: ChatContext,
+  locale: LocaleId,
+  commitLocale: (locale: LocaleId) => void,
+): ChatDockRuntime {
   const { marketplaceAccountId } = useAccount();
   const [messages, setMessages] = useState<readonly DockMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -279,13 +283,19 @@ export function useChatDock(context: ChatContext, locale: LocaleId): ChatDockRun
               // only when the gateway omits the echo (no store wired) fall back to the
               // plan. The next turn sends this version back so a locale change is an
               // explicit, versioned transition.
-              boundLocaleRef.current =
+              const committedLocale: BoundLocale =
                 event.localeTag !== undefined
                   ? {
                       locale: event.localeTag,
                       version: event.localeVersion ?? localePlan.next.version,
                     }
                   : localePlan.next;
+              boundLocaleRef.current = committedLocale;
+              // The gateway frame is the conversation's authoritative locale
+              // binding. Commit it through the same locale provider that renders
+              // catalog copy before any terminal frame is shown, so response and
+              // failure copy cannot drift from the persisted conversation locale.
+              if (event.localeTag !== undefined) commitLocale(committedLocale.locale);
               break;
             }
             case "token":
@@ -323,7 +333,7 @@ export function useChatDock(context: ChatContext, locale: LocaleId): ChatDockRun
         setIsRunning(false);
       }
     },
-    [marketplaceAccountId, patchAssistant],
+    [marketplaceAccountId, patchAssistant, commitLocale],
   );
 
   const onNew = useCallback(

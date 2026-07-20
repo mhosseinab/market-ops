@@ -290,6 +290,37 @@ describe("ChatDock — sends the ACTIVE locale with every turn (LOC-001)", () =>
     expect(bodies[0]?.locale).toBe("en");
   });
 
+  it("renders terminal copy from the gateway-echoed locale, not a stale client locale", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        bodies.push((await request.json()) as ChatTurnRequest);
+        return sseResponse([
+          {
+            kind: "conversation",
+            conversationId: "conv-1",
+            localeTag: "fa-IR",
+            localeVersion: 1,
+          },
+          {
+            kind: "failure",
+            failure: { code: "TOOL_TIMEOUT", message: "machine diagnostic" },
+          },
+        ]);
+      }),
+    );
+    renderRoute("/today", { locale: "en" });
+    fireEvent.click(await screen.findByLabelText(en["topbar.chat.toggle"]));
+    await sendComposer("DKP-42");
+
+    await waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]?.locale).toBe("en");
+    const failure = await screen.findByTestId("chat-failure");
+    expect(failure).toHaveTextContent(faIR["chat.failure.title"]);
+    expect(failure).toHaveTextContent(faIR["chat.failure.toolTimeout"]);
+    expect(failure).not.toHaveTextContent(en["chat.failure.title"]);
+  });
+
   it("Persian digits, Latin digits, technical ids, and neutral text NEVER change the sent locale", async () => {
     const bodies: ChatTurnRequest[] = [];
     captureBodies(bodies);
