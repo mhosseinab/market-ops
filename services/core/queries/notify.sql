@@ -83,6 +83,54 @@ LIMIT 1;
 SELECT * FROM notification_digests
 WHERE marketplace_account_id = $1 AND business_day = $2;
 
+-- name: InsertUrgentOutbox :one
+-- Opens the DURABLE urgent-delivery outbox row for a bypass (execution/safety)
+-- notification. Inserted in the SAME transaction that commits the notification, so a
+-- crash before the email sends still completes delivery on restart (issue #122). ON
+-- CONFLICT DO NOTHING on the (notification_id, channel) idempotency key: a re-driven
+-- delivery inserts nothing and returns no row (the caller treats pgx.ErrNoRows as
+-- "already enqueued" — no duplicate logical email). APPEND on this projection; state
+-- is mutated only by the guarded transitions below (never on notifications/audit).
+INSERT INTO notification_urgent_outbox (notification_id, marketplace_account_id, channel)
+VALUES ($1, $2, $3)
+ON CONFLICT (notification_id, channel) DO NOTHING
+RETURNING *;
+
+-- name: GetUrgentOutbox :one
+-- Reads the urgent outbox row for a notification+channel so the dispatcher can make
+-- its idempotent decision (already delivered / dead-lettered → no-op).
+SELECT * FROM notification_urgent_outbox
+WHERE notification_id = $1 AND channel = $2;
+
+-- name: MarkUrgentOutboxDelivered :one
+-- pending → delivered transition (the ONLY success write; on the outbox projection,
+-- never on the append-only notification). Guarded by delivery_state = 'pending' so a
+-- concurrent/duplicate dispatch marks it at most once and a re-drive after delivery
+-- matches nothing (idempotent no-op — no duplicate logical email).
+UPDATE notification_urgent_outbox
+SET delivery_state = 'delivered', delivered_at = $3, attempts = attempts + 1, updated_at = $3, last_error = NULL
+WHERE notification_id = $1 AND channel = $2 AND delivery_state = 'pending'
+RETURNING *;
+
+-- name: MarkUrgentOutboxDeadLetter :one
+-- pending → dead_letter transition: a PERMANENT send failure becomes an OBSERVABLE
+-- terminal state (this durable row + a metric + a structured log). It does NOT mark
+-- the email delivered (no false "delivered"). Guarded by delivery_state = 'pending'.
+-- last_error is a bounded technical reason (never free text / Persian copy).
+UPDATE notification_urgent_outbox
+SET delivery_state = 'dead_letter', attempts = attempts + 1, updated_at = $3, last_error = $4
+WHERE notification_id = $1 AND channel = $2 AND delivery_state = 'pending'
+RETURNING *;
+
+-- name: BumpUrgentOutboxAttempt :one
+-- Records a TRANSIENT failed attempt while the row stays pending (attempts + bounded
+-- last_error), so a retry is observable without a state transition. Guarded by
+-- delivery_state = 'pending'.
+UPDATE notification_urgent_outbox
+SET attempts = attempts + 1, updated_at = $3, last_error = $4
+WHERE notification_id = $1 AND channel = $2 AND delivery_state = 'pending'
+RETURNING *;
+
 -- name: ListDigestItems :many
 -- The membership of one digest, in insertion order (the shared event ids).
 SELECT * FROM notification_digest_items

@@ -32,6 +32,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/jobs"
 )
 
 // Category is the notification kind. It DECIDES digest bypass: execution and
@@ -140,11 +141,24 @@ type Store struct {
 	pool   *pgxpool.Pool
 	now    func() time.Time
 	logger *slog.Logger
+	// urgent enqueues the durable urgent-email intent for a bypass (execution/safety)
+	// failure, transactionally with the notification commit (issue #122). Nil when no
+	// mail sender is configured — the in-app notification is still delivered; only the
+	// immediate email is skipped (mirrors the digest being disabled without a sender).
+	urgent UrgentEmailEnqueuer
 }
 
 // NewStore builds a notification store over the pool.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// SetUrgentEmailEnqueuer wires the durable urgent-email enqueuer (issue #122), set in
+// main once the River client exists — before the HTTP server serves, so there is no
+// concurrent access to the field. Without it, execution/safety failures still deliver
+// in-app and bypass the digest; only the immediate email is not enqueued.
+func (s *Store) SetUrgentEmailEnqueuer(e UrgentEmailEnqueuer) {
+	s.urgent = e
 }
 
 // WithClock overrides the clock (tests only).
@@ -189,7 +203,16 @@ func (s *Store) Deliver(ctx context.Context, p DeliverParams) (DeliverResult, er
 	if err != nil {
 		return DeliverResult{}, err
 	}
-	q := db.New(s.pool)
+	// One transaction commits the notification AND — for a bypass (execution/safety)
+	// failure — its durable urgent-delivery outbox row + urgent-email job (issue #122).
+	// So a crash between "notification committed" and "email sent" still completes
+	// delivery on restart, and a rolled-back notification enqueues no email.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return DeliverResult{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
 	row, err := q.DeliverNotification(ctx, db.DeliverNotificationParams{
 		MarketplaceAccountID: p.Account,
 		EventID:              p.EventID,
@@ -204,6 +227,18 @@ func (s *Store) Deliver(ctx context.Context, p DeliverParams) (DeliverResult, er
 	if err == nil {
 		n, err := toNotification(row)
 		if err != nil {
+			return DeliverResult{}, err
+		}
+		// A FRESH bypass failure ALSO gets an immediate email (never shed): enqueue its
+		// durable outbox row + urgent-email job in THIS transaction. Only on a fresh
+		// insert (a replay takes the collision path below and enqueues nothing again)
+		// and only when urgent delivery is wired.
+		if p.Category.BypassesDigest() && s.urgent != nil {
+			if err := s.enqueueUrgent(ctx, tx, q, n); err != nil {
+				return DeliverResult{}, err
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
 			return DeliverResult{}, err
 		}
 		return DeliverResult{Notification: n, Delivered: true}, nil
@@ -245,6 +280,41 @@ func (s *Store) Deliver(ctx context.Context, p DeliverParams) (DeliverResult, er
 		}
 	}
 	return DeliverResult{Notification: n, Delivered: false}, nil
+}
+
+// enqueueUrgent inserts the durable urgent-delivery outbox row and enqueues the
+// urgent-email job on tx, for a freshly-delivered bypass (execution/safety) failure
+// (issue #122). Both commit atomically with the notification, so a committed failure
+// always carries its immediate-email intent (restart-safe) and a rolled-back one
+// carries none. The outbox key (notification_id, channel) is the idempotency
+// authority: on the impossible-but-defensive case of a pre-existing row it enqueues
+// no duplicate job.
+func (s *Store) enqueueUrgent(ctx context.Context, tx pgx.Tx, q *db.Queries, n Notification) error {
+	_, err := q.InsertUrgentOutbox(ctx, db.InsertUrgentOutboxParams{
+		NotificationID:       n.ID,
+		MarketplaceAccountID: n.Account,
+		Channel:              ChannelEmail,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Outbox row already existed (ON CONFLICT DO NOTHING). A prior job was already
+		// enqueued for it — do not enqueue a duplicate. Cannot occur on a fresh
+		// notification insert; handled defensively for idempotency.
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return s.urgent.EnqueueUrgentEmailTx(ctx, tx, jobs.UrgentEmailArgs{
+		NotificationID: n.ID,
+		Account:        n.Account,
+		EventID:        n.EventID,
+		Channel:        ChannelEmail,
+		Category:       string(n.Category),
+		Severity:       n.Severity,
+		TitleKey:       n.TitleKey,
+		BodyKey:        n.BodyKey,
+		Params:         n.BodyParams,
+	})
 }
 
 // requestMatchesExisting reports whether a colliding delivery request is an EXACT

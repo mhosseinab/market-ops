@@ -13,6 +13,46 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const bumpUrgentOutboxAttempt = `-- name: BumpUrgentOutboxAttempt :one
+UPDATE notification_urgent_outbox
+SET attempts = attempts + 1, updated_at = $3, last_error = $4
+WHERE notification_id = $1 AND channel = $2 AND delivery_state = 'pending'
+RETURNING id, notification_id, marketplace_account_id, channel, delivery_state, attempts, last_error, created_at, updated_at, delivered_at
+`
+
+type BumpUrgentOutboxAttemptParams struct {
+	NotificationID uuid.UUID
+	Channel        string
+	UpdatedAt      time.Time
+	LastError      pgtype.Text
+}
+
+// Records a TRANSIENT failed attempt while the row stays pending (attempts + bounded
+// last_error), so a retry is observable without a state transition. Guarded by
+// delivery_state = 'pending'.
+func (q *Queries) BumpUrgentOutboxAttempt(ctx context.Context, arg BumpUrgentOutboxAttemptParams) (NotificationUrgentOutbox, error) {
+	row := q.db.QueryRow(ctx, bumpUrgentOutboxAttempt,
+		arg.NotificationID,
+		arg.Channel,
+		arg.UpdatedAt,
+		arg.LastError,
+	)
+	var i NotificationUrgentOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.NotificationID,
+		&i.MarketplaceAccountID,
+		&i.Channel,
+		&i.DeliveryState,
+		&i.Attempts,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveredAt,
+	)
+	return i, err
+}
+
 const countUnreadNotifications = `-- name: CountUnreadNotifications :one
 SELECT COUNT(*) FROM notifications
 WHERE marketplace_account_id = $1 AND read_at IS NULL
@@ -158,6 +198,36 @@ func (q *Queries) GetNotificationByDedup(ctx context.Context, arg GetNotificatio
 	return i, err
 }
 
+const getUrgentOutbox = `-- name: GetUrgentOutbox :one
+SELECT id, notification_id, marketplace_account_id, channel, delivery_state, attempts, last_error, created_at, updated_at, delivered_at FROM notification_urgent_outbox
+WHERE notification_id = $1 AND channel = $2
+`
+
+type GetUrgentOutboxParams struct {
+	NotificationID uuid.UUID
+	Channel        string
+}
+
+// Reads the urgent outbox row for a notification+channel so the dispatcher can make
+// its idempotent decision (already delivered / dead-lettered → no-op).
+func (q *Queries) GetUrgentOutbox(ctx context.Context, arg GetUrgentOutboxParams) (NotificationUrgentOutbox, error) {
+	row := q.db.QueryRow(ctx, getUrgentOutbox, arg.NotificationID, arg.Channel)
+	var i NotificationUrgentOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.NotificationID,
+		&i.MarketplaceAccountID,
+		&i.Channel,
+		&i.DeliveryState,
+		&i.Attempts,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveredAt,
+	)
+	return i, err
+}
+
 const insertDigest = `-- name: InsertDigest :one
 INSERT INTO notification_digests (marketplace_account_id, business_day, generated_at, item_count)
 VALUES ($1, $2, $3, $4)
@@ -215,6 +285,44 @@ func (q *Queries) InsertDigestItem(ctx context.Context, arg InsertDigestItemPara
 		&i.DigestID,
 		&i.NotificationID,
 		&i.EventID,
+	)
+	return i, err
+}
+
+const insertUrgentOutbox = `-- name: InsertUrgentOutbox :one
+INSERT INTO notification_urgent_outbox (notification_id, marketplace_account_id, channel)
+VALUES ($1, $2, $3)
+ON CONFLICT (notification_id, channel) DO NOTHING
+RETURNING id, notification_id, marketplace_account_id, channel, delivery_state, attempts, last_error, created_at, updated_at, delivered_at
+`
+
+type InsertUrgentOutboxParams struct {
+	NotificationID       uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	Channel              string
+}
+
+// Opens the DURABLE urgent-delivery outbox row for a bypass (execution/safety)
+// notification. Inserted in the SAME transaction that commits the notification, so a
+// crash before the email sends still completes delivery on restart (issue #122). ON
+// CONFLICT DO NOTHING on the (notification_id, channel) idempotency key: a re-driven
+// delivery inserts nothing and returns no row (the caller treats pgx.ErrNoRows as
+// "already enqueued" — no duplicate logical email). APPEND on this projection; state
+// is mutated only by the guarded transitions below (never on notifications/audit).
+func (q *Queries) InsertUrgentOutbox(ctx context.Context, arg InsertUrgentOutboxParams) (NotificationUrgentOutbox, error) {
+	row := q.db.QueryRow(ctx, insertUrgentOutbox, arg.NotificationID, arg.MarketplaceAccountID, arg.Channel)
+	var i NotificationUrgentOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.NotificationID,
+		&i.MarketplaceAccountID,
+		&i.Channel,
+		&i.DeliveryState,
+		&i.Attempts,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveredAt,
 	)
 	return i, err
 }
@@ -376,6 +484,82 @@ func (q *Queries) MarkNotificationRead(ctx context.Context, arg MarkNotification
 		&i.BodyParams,
 		&i.CreatedAt,
 		&i.ReadAt,
+	)
+	return i, err
+}
+
+const markUrgentOutboxDeadLetter = `-- name: MarkUrgentOutboxDeadLetter :one
+UPDATE notification_urgent_outbox
+SET delivery_state = 'dead_letter', attempts = attempts + 1, updated_at = $3, last_error = $4
+WHERE notification_id = $1 AND channel = $2 AND delivery_state = 'pending'
+RETURNING id, notification_id, marketplace_account_id, channel, delivery_state, attempts, last_error, created_at, updated_at, delivered_at
+`
+
+type MarkUrgentOutboxDeadLetterParams struct {
+	NotificationID uuid.UUID
+	Channel        string
+	UpdatedAt      time.Time
+	LastError      pgtype.Text
+}
+
+// pending → dead_letter transition: a PERMANENT send failure becomes an OBSERVABLE
+// terminal state (this durable row + a metric + a structured log). It does NOT mark
+// the email delivered (no false "delivered"). Guarded by delivery_state = 'pending'.
+// last_error is a bounded technical reason (never free text / Persian copy).
+func (q *Queries) MarkUrgentOutboxDeadLetter(ctx context.Context, arg MarkUrgentOutboxDeadLetterParams) (NotificationUrgentOutbox, error) {
+	row := q.db.QueryRow(ctx, markUrgentOutboxDeadLetter,
+		arg.NotificationID,
+		arg.Channel,
+		arg.UpdatedAt,
+		arg.LastError,
+	)
+	var i NotificationUrgentOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.NotificationID,
+		&i.MarketplaceAccountID,
+		&i.Channel,
+		&i.DeliveryState,
+		&i.Attempts,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveredAt,
+	)
+	return i, err
+}
+
+const markUrgentOutboxDelivered = `-- name: MarkUrgentOutboxDelivered :one
+UPDATE notification_urgent_outbox
+SET delivery_state = 'delivered', delivered_at = $3, attempts = attempts + 1, updated_at = $3, last_error = NULL
+WHERE notification_id = $1 AND channel = $2 AND delivery_state = 'pending'
+RETURNING id, notification_id, marketplace_account_id, channel, delivery_state, attempts, last_error, created_at, updated_at, delivered_at
+`
+
+type MarkUrgentOutboxDeliveredParams struct {
+	NotificationID uuid.UUID
+	Channel        string
+	DeliveredAt    pgtype.Timestamptz
+}
+
+// pending → delivered transition (the ONLY success write; on the outbox projection,
+// never on the append-only notification). Guarded by delivery_state = 'pending' so a
+// concurrent/duplicate dispatch marks it at most once and a re-drive after delivery
+// matches nothing (idempotent no-op — no duplicate logical email).
+func (q *Queries) MarkUrgentOutboxDelivered(ctx context.Context, arg MarkUrgentOutboxDeliveredParams) (NotificationUrgentOutbox, error) {
+	row := q.db.QueryRow(ctx, markUrgentOutboxDelivered, arg.NotificationID, arg.Channel, arg.DeliveredAt)
+	var i NotificationUrgentOutbox
+	err := row.Scan(
+		&i.ID,
+		&i.NotificationID,
+		&i.MarketplaceAccountID,
+		&i.Channel,
+		&i.DeliveryState,
+		&i.Attempts,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveredAt,
 	)
 	return i, err
 }

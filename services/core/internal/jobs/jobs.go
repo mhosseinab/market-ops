@@ -83,6 +83,16 @@ type ExecutionRunners struct {
 	// dropping the durable intent); production always wires it, so a committed
 	// transition's notification is never permanently lost.
 	NotificationDeliver NotificationDeliverFunc
+	// NotificationUrgentEmail is the durable urgent-email consumer (issue #122,
+	// NOT-001 bypass + SRE never-shed): it drives notify.UrgentDispatcher.Dispatch for
+	// an execution/safety-failure notification whose durable outbox row + urgent-email
+	// intent were enqueued transactionally with the notification commit. It is
+	// event-driven (one job per bypass notification), NOT periodic, with its own
+	// retry/backoff + dead-letter — fully separate from the daily digest, so an urgent
+	// email never batches and is never shed. A nil runner fails CLOSED (the worker
+	// retries rather than silently dropping the durable intent); production wires it
+	// whenever a mail sender is configured.
+	NotificationUrgentEmail UrgentEmailFunc
 }
 
 // NewWorkers builds the worker registry for the core binary. Every worker the
@@ -119,6 +129,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewNotificationDeliverWorker(runners.NotificationDeliver, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register notification-deliver worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewUrgentEmailWorker(runners.NotificationUrgentEmail, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register urgent-email worker: %w", err)
 	}
 	return workers, nil
 }
