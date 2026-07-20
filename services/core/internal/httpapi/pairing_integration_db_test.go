@@ -119,10 +119,21 @@ func TestExtensionCaptureEndToEnd(t *testing.T) {
 		"subRoute":             "passive",
 		"sourceType":           "public-web-endpoint",
 		"parserVersion":        "dk-product@1.0.0",
-		"evidenceRef":          "fixture://ext/product.json",
-		"availabilityStatus":   "in_stock",
-		"capturedAt":           "2026-07-18T10:00:00Z",
-		"confidence":           "verified",
+		// The real extension always sends its connector version (apps/extension
+		// build-capture.ts → CONNECTOR_VERSION). The default parser registry pins
+		// dk-product@1.0.0 to exactly this connector (#154), so omitting it makes the
+		// capture a registry MISS → quarantined to Unverified. Before the #307
+		// quarantine write-guard an Unverified capture still fell through to
+		// UpsertObservedOffer and became the offer of record (the overwrite hole #307
+		// closes), which is the ONLY reason this end-to-end test used to see a current
+		// offer. Send the production connector version so the capture is a registered,
+		// schema-valid, identity-valid, verified-confidence extension upload that
+		// LEGITIMATELY becomes the one current offer — exercising the real trusted path.
+		"connectorVersion":   "market-ops-ext@0.1.0",
+		"evidenceRef":        "fixture://ext/product.json",
+		"availabilityStatus": "in_stock",
+		"capturedAt":         "2026-07-18T10:00:00Z",
+		"confidence":         "verified",
 		"price": map[string]any{
 			"text": "1٬200٬000 ریال", "value": "1200000", "unit": "IRR-rial",
 		},

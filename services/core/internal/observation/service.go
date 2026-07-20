@@ -429,6 +429,26 @@ func (s *Service) Ingest(ctx context.Context, c Capture) (IngestResult, error) {
 		return IngestResult{ObservationID: inserted.ID, Quality: Conflicted, Offer: offer}, nil
 	}
 
+	// QUARANTINE WRITE GUARD (never-cut: quarantine-over-inference; untrusted evidence
+	// never reads as current; identity quarantine). A capture that is not schema-valid
+	// (unregistered/retired/malformed parser → registry miss, #154/§10.4) or not
+	// identity-valid is UNTRUSTED: DeriveQuality floors it to Unverified, but
+	// Unverified.SatisfiesCurrentDataGate() == true, so writing it as the offer of
+	// record would OVERWRITE and DOWNGRADE a legitimate current offer (e.g. Verified
+	// 100 → Unverified 999) AND make the bogus value read as CURRENT downstream — a
+	// signal-corruption / identity-quarantine vector exploitable by any holder of a
+	// valid capture credential. Such a capture is retained ONLY as append-only evidence
+	// (already inserted above); it must NEVER become or mutate the offer of record.
+	// Leave the price/quality of record fully intact, exactly as the Conflicted path
+	// does. This runs AFTER the Conflicted branch so a REGISTERED + schema-valid +
+	// identity-valid disagreement still reaches Conflicted and blocks (#307 preserved).
+	if !schemaValid || !identityValid {
+		if err := tx.Commit(ctx); err != nil {
+			return IngestResult{}, fmt.Errorf("observation: commit quarantined evidence: %w", err)
+		}
+		return IngestResult{ObservationID: inserted.ID, Quality: quality, Offer: existing}, nil
+	}
+
 	offer, err := q.UpsertObservedOffer(ctx, db.UpsertObservedOfferParams{
 		TargetID:             c.TargetID,
 		MarketplaceAccountID: target.MarketplaceAccountID,
