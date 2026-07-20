@@ -12,6 +12,7 @@ import { ViewState } from "../components/ViewState";
 import { formatCount, formatInstant } from "../data/format";
 import { freshnessState, freshnessTransitions } from "../data/freshness";
 import { useConnectorAction, useObservationTargets, useObservedOffers } from "../data/hooks";
+import { offerRowKey, offersByTargetId } from "../data/offers";
 import type { ObservationTarget, ObservedOffer, QualityState } from "../data/types";
 
 // Market (design screen 9 / OBS-004): watch targets, observed offers, freshness
@@ -81,11 +82,12 @@ export function Market() {
   const transitions = useMemo(() => offers.flatMap((o) => freshnessTransitions(o)), [offers]);
   const now = useNow(transitions);
 
-  const offerByTarget = useMemo(() => {
-    const map = new Map<string, ObservedOffer>();
-    for (const o of offers) if (!map.has(o.targetId)) map.set(o.targetId, o);
-    return map;
-  }, [offers]);
+  // Every observed offer identity is kept and rendered on its OWN row (OBS-004):
+  // a target may carry multiple offers, so collapsing to one arbitrary row hides
+  // a conflicted/stale sibling and lets an unrelated timestamp pick the winner.
+  // Grouping is order-independent (see data/offers), so reordering `updated_at`
+  // never changes what is shown or how each offer's quality/freshness reads.
+  const offersByTarget = useMemo(() => offersByTargetId(offers), [offers]);
 
   const qualityCounts = useMemo(() => {
     const counts = new Map<QualityState, number>();
@@ -95,10 +97,13 @@ export function Market() {
 
   const conflicted = useMemo(() => offers.filter((o) => o.quality === "conflicted"), [offers]);
 
-  const rows: WatchRow[] = targets.map((target) => ({
-    target,
-    offer: offerByTarget.get(target.id),
-  }));
+  // One row per observed offer identity; a target with no observed offer keeps a
+  // single placeholder row so it never silently disappears from the watch list.
+  const rows: WatchRow[] = targets.flatMap((target) => {
+    const targetOffers = offersByTarget.get(target.id) ?? [];
+    if (targetOffers.length === 0) return [{ target }];
+    return targetOffers.map((offer) => ({ target, offer }));
+  });
 
   const columns: readonly Column<WatchRow>[] = [
     {
@@ -110,6 +115,13 @@ export function Market() {
       id: "sku",
       header: "market.col.sku",
       render: (r) => <LtrToken text={String(r.target.nativeVariantId)} />,
+    },
+    {
+      id: "offer",
+      // The observed offer identity (native variant + seller) — LTR-isolated —
+      // so sibling offers on one target are individually attributable (OBS-004).
+      header: "market.col.offer",
+      render: (r) => (r.offer ? <LtrToken text={r.offer.offerIdentity} /> : <LtrToken text="—" />),
     },
     {
       id: "quality",
@@ -198,7 +210,7 @@ export function Market() {
         ) : null}
 
         <Section titleKey="market.watch.title">
-          <DataTable columns={columns} rows={rows} rowKey={(r) => r.target.id} />
+          <DataTable columns={columns} rows={rows} rowKey={(r) => offerRowKey(r.target.id, r.offer)} />
         </Section>
       </ViewState>
     </div>

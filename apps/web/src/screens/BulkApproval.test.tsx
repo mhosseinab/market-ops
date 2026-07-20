@@ -100,6 +100,45 @@ describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set l
     expect(document.querySelector("form")).toBeNull();
   });
 
+  it("does not hide a conflicted sibling behind a verified offer on the same target (OBS-004)", async () => {
+    // ONE target, TWO offer identities: Verified + Conflicted. With Complete
+    // readiness the verified offer classifies Executable, but the conflicted
+    // sibling must NOT be hidden — it is its OWN blocked row, never executable.
+    withExecutableCandidate();
+    const verified: ObservedOffer = {
+      ...offer,
+      id: "o-verified",
+      offerIdentity: "8842213:seller-1",
+      quality: "verified",
+    };
+    const conflicted: ObservedOffer = {
+      ...offer,
+      id: "o-conflicted",
+      offerIdentity: "8842213:seller-2",
+      quality: "conflicted",
+    };
+    server.use(
+      http.get(`${BASE}/observation/observed-offers`, () =>
+        HttpResponse.json({ items: [conflicted, verified] }),
+      ),
+    );
+    renderRoute("/bulk");
+
+    const table = (await screen.findByText(faIR["bulk.table.title"])).closest(
+      ".panel",
+    ) as HTMLElement;
+    const dataTable = table.querySelector(".data-table") as HTMLElement;
+    // Both dispositions coexist: the verified offer is executable, the conflicted
+    // sibling is blocked with its own reason — neither stands in for the other.
+    expect(within(dataTable).getByText(faIR["bulk.status.executable"])).toBeInTheDocument();
+    expect(within(dataTable).getByText(faIR["bulk.status.blocked"])).toBeInTheDocument();
+    expect(within(dataTable).getByText(faIR["bulk.reason.conflicted"])).toBeInTheDocument();
+    // The conflicted offer carries no include control (never force-executable);
+    // the verified sibling does.
+    expect(screen.queryByTestId("bulk-include-8842213:seller-2")).toBeNull();
+    expect(screen.getByTestId("bulk-include-8842213:seller-1")).toBeInTheDocument();
+  });
+
   it("bounds the readiness fan-out to one page regardless of target count (§17.2, #245)", async () => {
     const targets = makeTargets(BULK_READINESS_PAGE_SIZE + 6);
     let readinessCalls = 0;
