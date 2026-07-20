@@ -66,6 +66,14 @@ func TestZeroValueMoneyIsRejected(t *testing.T) {
 		t.Errorf("Net(invalid): err = %v, want ErrInvalidMoney", err)
 	}
 
+	// IsZero must NOT report an invalid (empty-currency) zero-value as a
+	// legitimate monetary zero (issue #4 reopen residual). It rejects the invalid
+	// receiver with ErrInvalidMoney, and — even for callers that ignore the error
+	// — the boolean must be false so a missing amount never reads as a real zero.
+	if isZero, err := zero.IsZero(); !errors.Is(err, ErrInvalidMoney) || isZero {
+		t.Errorf("IsZero(invalid) = (%v, %v), want (false, ErrInvalidMoney)", isZero, err)
+	}
+
 	// String cannot return an error, so it must render an EXPLICIT invalid
 	// marker — never an empty string or a fake "0"/valid-looking encoding that a
 	// downstream reader could mistake for a real amount.
@@ -118,5 +126,40 @@ func TestConstructedMoneyStillAccepted(t *testing.T) {
 	}
 	if got := a.String(); got != "USD:250:-2" {
 		t.Fatalf("String(valid) = %q, want USD:250:-2", got)
+	}
+}
+
+// TestIsZeroDistinguishesLegitimateFromInvalid pins issue #4's reopen residual:
+// a deliberately constructed Zero(currency, exponent) is a legitimate monetary
+// zero, while the Go zero value (var m Money, empty currency) is INVALID and must
+// never be reported as a legitimate zero — it surfaces ErrInvalidMoney and a
+// false boolean (PRD §9.1, money correctness never-cut).
+func TestIsZeroDistinguishesLegitimateFromInvalid(t *testing.T) {
+	deliberateZero, err := Zero("USD", -2)
+	if err != nil {
+		t.Fatalf("Zero: %v", err)
+	}
+	if isZero, err := deliberateZero.IsZero(); err != nil || !isZero {
+		t.Errorf("IsZero(Zero(USD,-2)) = (%v, %v), want (true, nil)", isZero, err)
+	}
+
+	nonZero := mustNew(t, 250, "USD", -2)
+	if isZero, err := nonZero.IsZero(); err != nil || isZero {
+		t.Errorf("IsZero(constructed nonzero) = (%v, %v), want (false, nil)", isZero, err)
+	}
+
+	// A constructed zero in another currency is still a legitimate zero: validity,
+	// not currency, is what distinguishes it from the invalid Go zero value.
+	irrZero, err := Zero("IRR", 0)
+	if err != nil {
+		t.Fatalf("Zero(IRR): %v", err)
+	}
+	if isZero, err := irrZero.IsZero(); err != nil || !isZero {
+		t.Errorf("IsZero(Zero(IRR,0)) = (%v, %v), want (true, nil)", isZero, err)
+	}
+
+	var invalid Money // empty currency ⇒ invalid, not a legitimate zero.
+	if isZero, err := invalid.IsZero(); !errors.Is(err, ErrInvalidMoney) || isZero {
+		t.Errorf("IsZero(var Money) = (%v, %v), want (false, ErrInvalidMoney)", isZero, err)
 	}
 }

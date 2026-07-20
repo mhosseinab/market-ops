@@ -255,7 +255,12 @@ func validateStrategyParams(s Strategy, reference money.Money, undercutBp money.
 // and a reference whose currency/exponent differs from the policy money unit
 // (ErrReferenceUnitMismatch), so cross-unit money never reaches arithmetic.
 func validateReference(reference, unit money.Money) error {
-	if reference.IsZero() {
+	// An invalid (uninitialised, empty-currency) reference is "absent" just like a
+	// zero-priced one, so both fail closed with ErrMissingReference. IsZero now
+	// surfaces ErrInvalidMoney for the invalid case rather than silently reporting
+	// it as a legitimate zero (issue #4), which lands on the same rejection.
+	isZero, err := reference.IsZero()
+	if err != nil || isZero {
 		return ErrMissingReference
 	}
 	if reference.Currency() != unit.Currency() || reference.Exponent() != unit.Exponent() {
