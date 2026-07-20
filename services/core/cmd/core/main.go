@@ -263,6 +263,12 @@ func run() error {
 		analyticsEmitter = analytics.NewEmitter(pool)
 		logger.Info("notification store + analytics emitter wired")
 
+		// urgentDispatcher is the issue #122 durable urgent-email runner (NOT-001
+		// bypass + never-shed). It is populated only when a mail sender is configured
+		// (below, alongside the digest); without one, execution/safety failures still
+		// deliver in-app and bypass the digest — only the immediate email is skipped.
+		var urgentDispatcher *notify.UrgentDispatcher
+
 		// Wire the GATEWAY-owned conversation durability store (CHAT-008): the
 		// /chat path persists each turn's user + terminal assistant record under
 		// the caller's organization and denies a cross-org conversation before
@@ -342,8 +348,19 @@ func run() error {
 			// warn log), never silently swallowed.
 			digestSvc = digestSvc.WithLogger(logger)
 			logger.Info("daily email digest wired", "smtp_addr", cfg.NotifySMTPAddr)
+
+			// The durable urgent-email dispatcher (issue #122, NOT-001 bypass +
+			// never-shed): execution/safety failures reach an IMMEDIATE email through
+			// the notification_urgent_outbox, with independent retry/backoff +
+			// dead-letter — fully separate from the daily digest. It shares the same
+			// mailer + target resolver (recipient + locale as DATA, LOC-001). A permanent
+			// failure is an observable dead-letter (metric + warn log + durable row) that
+			// never marks the email delivered.
+			urgentDispatcher = notify.NewUrgentDispatcher(
+				notify.NewDBUrgentOutboxStore(pool), mailer, resolver).WithLogger(logger)
+			logger.Info("urgent-email dispatcher wired (execution/safety failures deliver immediately by email)")
 		} else {
-			logger.Warn("NOTIFY_FROM_ADDR unset; daily email digest job disabled (in-app notifications unaffected)")
+			logger.Warn("NOTIFY_FROM_ADDR unset; daily email digest + urgent-email dispatch disabled (in-app notifications unaffected)")
 		}
 
 		// Wire the execution/reconciliation/outcome plane (EXE-001..005, AUD-001,
@@ -473,6 +490,16 @@ func run() error {
 				}
 				return err
 			},
+			// Durable urgent-email consumer (issue #122, NOT-001 bypass + never-shed):
+			// each execution/safety-failure notification enqueues one urgent-email intent
+			// transactionally with its notification + durable outbox row; this worker
+			// drives the idempotent send with its OWN retry/backoff + dead-letter, fully
+			// separate from the daily digest. lastAttempt (from River's attempt
+			// bookkeeping) lets the dispatcher record the OBSERVABLE dead-letter terminal
+			// state on the final attempt instead of retrying forever — a permanent failure
+			// is never silently dropped and never marks the email delivered. Nil when no
+			// mail sender is configured (a no-op worker; intents park + retry, never lost).
+			NotificationUrgentEmail: urgentEmailRunner(urgentDispatcher),
 		}, catalogDeps)
 		if jobsErr != nil {
 			logger.Warn("job pipeline not started; periodic execution passes disabled", "error", jobsErr)
@@ -495,6 +522,15 @@ func run() error {
 			notifyDispatcher := notify.NewJobDispatcher(jobsClient)
 			eventSvc.SetNotifier(notifyDispatcher)
 			execSvc.SetNotifier(notifyDispatcher)
+			// Wire the durable urgent-email enqueuer into the notification store (issue
+			// #122) so a freshly-delivered execution/safety failure commits its outbox
+			// row + urgent-email job in the SAME transaction as the notification
+			// (restart-safe). Only when a mail sender is configured — otherwise there is
+			// no runner to send, so we do not enqueue intents that could never complete.
+			if urgentDispatcher != nil {
+				notifyStore.SetUrgentEmailEnqueuer(notify.NewUrgentEmailDispatcher(jobsClient))
+				logger.Info("urgent-email enqueuer wired into notification store (transactional outbox)")
+			}
 			// Wire the catalog-sync enqueuer now that the River client exists, so the
 			// onboarding "Sync catalog" control can initiate an idempotent incremental
 			// sync (issue #76, ACC-004/ACC-005). Nil-safe: without a wired connector
@@ -587,6 +623,18 @@ func digestRunner(svc *notify.DigestService) jobs.RunOnceFunc {
 		return nil
 	}
 	return svc.GenerateAll
+}
+
+// urgentEmailRunner adapts the urgent-email dispatcher to a jobs.UrgentEmailFunc
+// (issue #122). A nil dispatcher (no configured sender) yields a nil runner, which
+// registers a no-op worker (fail closed) — an enqueued urgent-email intent then parks
+// and retries, never silently completing. Production wires the enqueuer only when the
+// dispatcher exists, so intents are only produced when they can be sent.
+func urgentEmailRunner(d *notify.UrgentDispatcher) jobs.UrgentEmailFunc {
+	if d == nil {
+		return nil
+	}
+	return d.Dispatch
 }
 
 // executionDarkSnooze is how long a durable execution intent is parked while the

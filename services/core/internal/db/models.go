@@ -466,6 +466,19 @@ type NotificationDigestItem struct {
 	EventID        uuid.UUID
 }
 
+type NotificationUrgentOutbox struct {
+	ID                   uuid.UUID
+	NotificationID       uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	Channel              string
+	DeliveryState        string
+	Attempts             int32
+	LastError            pgtype.Text
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	DeliveredAt          pgtype.Timestamptz
+}
+
 type Observation struct {
 	ID                   uuid.UUID
 	CapturedAt           time.Time

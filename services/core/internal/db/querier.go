@@ -55,6 +55,10 @@ type Querier interface {
 	// Append the §15.3 result + confidence at window close (once per window;
 	// UNIQUE(window_id)).
 	AppendOutcomeResult(ctx context.Context, arg AppendOutcomeResultParams) (OutcomeResult, error)
+	// Records a TRANSIENT failed attempt while the row stays pending (attempts + bounded
+	// last_error), so a retry is observable without a state transition. Guarded by
+	// delivery_state = 'pending'.
+	BumpUrgentOutboxAttempt(ctx context.Context, arg BumpUrgentOutboxAttemptParams) (NotificationUrgentOutbox, error)
 	CancelCostImportBatch(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
 	// Execution + recommend-only + write-verification queries (PRD §7.5 EXE-002..005).
 	// Discipline:
@@ -413,6 +417,9 @@ type Querier interface {
 	// at/after expiry are excluded, so an expired cookie fails closed.
 	GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error)
 	GetSkuCostRequirements(ctx context.Context, variantID uuid.UUID) (SkuCostRequirement, error)
+	// Reads the urgent outbox row for a notification+channel so the dispatcher can make
+	// its idempotent decision (already delivered / dead-lettered → no-op).
+	GetUrgentOutbox(ctx context.Context, arg GetUrgentOutboxParams) (NotificationUrgentOutbox, error)
 	GetUser(ctx context.Context, id uuid.UUID) (User, error)
 	// Login identifier lookup (issue #12, #201). Both sides run through the SAME
 	// email_canonical() the write path and unique index use, so the lookup can never
@@ -559,6 +566,14 @@ type Querier interface {
 	// recommendation-account trigger — the variant's and (when present) the
 	// recommendation's account, so a cross-account member is rejected at the DB.
 	InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error)
+	// Opens the DURABLE urgent-delivery outbox row for a bypass (execution/safety)
+	// notification. Inserted in the SAME transaction that commits the notification, so a
+	// crash before the email sends still completes delivery on restart (issue #122). ON
+	// CONFLICT DO NOTHING on the (notification_id, channel) idempotency key: a re-driven
+	// delivery inserts nothing and returns no row (the caller treats pgx.ErrNoRows as
+	// "already enqueued" — no duplicate logical email). APPEND on this projection; state
+	// is mutated only by the guarded transitions below (never on notifications/audit).
+	InsertUrgentOutbox(ctx context.Context, arg InsertUrgentOutboxParams) (NotificationUrgentOutbox, error)
 	InsertWatchlistEntry(ctx context.Context, arg InsertWatchlistEntryParams) (WatchlistEntry, error)
 	// The S35 write-verification flag for an account. Returns false when there is no
 	// row (writes OFF by default) — the two-key write gate's second key.
@@ -779,6 +794,16 @@ type Querier interface {
 	// execute in the §10.3 matrix). The disagreeing capture is still retained as
 	// append-only evidence; last_observation_id points at it for traceability.
 	MarkObservedOfferConflicted(ctx context.Context, arg MarkObservedOfferConflictedParams) (ObservedOffer, error)
+	// pending → dead_letter transition: a PERMANENT send failure becomes an OBSERVABLE
+	// terminal state (this durable row + a metric + a structured log). It does NOT mark
+	// the email delivered (no false "delivered"). Guarded by delivery_state = 'pending'.
+	// last_error is a bounded technical reason (never free text / Persian copy).
+	MarkUrgentOutboxDeadLetter(ctx context.Context, arg MarkUrgentOutboxDeadLetterParams) (NotificationUrgentOutbox, error)
+	// pending → delivered transition (the ONLY success write; on the outbox projection,
+	// never on the append-only notification). Guarded by delivery_state = 'pending' so a
+	// concurrent/duplicate dispatch marks it at most once and a re-drive after delivery
+	// matches nothing (idempotent no-op — no duplicate logical email).
+	MarkUrgentOutboxDelivered(ctx context.Context, arg MarkUrgentOutboxDeliveredParams) (NotificationUrgentOutbox, error)
 	// Outcome window queries (PRD §7.5 OUT-001, §15.3). Both tables are APPEND-ONLY:
 	//   * outcome_windows — one seven-day window per reconciled action (INSERT/SELECT).
 	//   * outcome_results — the §15.3 result + confidence, computed once at close

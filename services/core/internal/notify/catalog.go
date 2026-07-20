@@ -30,6 +30,12 @@ const (
 	KeyItemMarketEvent    = "notify.item.marketEvent"      // slots: {variant}
 	KeyItemExecutionFail  = "notify.item.executionFailure" // slots: {action}
 	KeyItemSafetyFail     = "notify.item.safetyFailure"    // slots: {reason}
+	// Urgent-email FRAME keys (issue #122): the immediate execution/safety-failure
+	// email wraps the item line (rendered from one of the item keys above). Like the
+	// digest frame keys these are NOT deliverable as a notification title/body key —
+	// they are rendered internally by the urgent dispatcher.
+	KeyUrgentSubject = "notify.urgent.subject" // no slots
+	KeyUrgentFooter  = "notify.urgent.footer"  // no slots
 )
 
 // packs holds one template map per locale. Templates use {slot} placeholders that
@@ -44,6 +50,8 @@ var packs = map[string]map[string]string{
 		KeyItemMarketEvent:    "رویداد بازار برای «{variant}»",
 		KeyItemExecutionFail:  "خطای اجرا برای اقدام {action}",
 		KeyItemSafetyFail:     "توقف ایمنی: {reason}",
+		KeyUrgentSubject:      "هشدار فوری: اقدام لازم است",
+		KeyUrgentFooter:       "این پیام فوری به صورت خودکار ارسال شده است.",
 	},
 	"en": {
 		KeyDigestSubject:      "Daily digest: {count} events",
@@ -53,6 +61,8 @@ var packs = map[string]map[string]string{
 		KeyItemMarketEvent:    "Market event for “{variant}”",
 		KeyItemExecutionFail:  "Execution failure for action {action}",
 		KeyItemSafetyFail:     "Safety stop: {reason}",
+		KeyUrgentSubject:      "Urgent: action required",
+		KeyUrgentFooter:       "This urgent message was sent automatically.",
 	},
 }
 
@@ -97,6 +107,9 @@ var messageSchemas = map[string]MessageSchema{
 	KeyItemMarketEvent:    {Slots: []string{"variant"}, Categories: []Category{CategoryMarketEvent}},
 	KeyItemExecutionFail:  {Slots: []string{"action"}, Categories: []Category{CategoryExecutionFailure}},
 	KeyItemSafetyFail:     {Slots: []string{"reason"}, Categories: []Category{CategorySafetyFailure}},
+	// Urgent-email frame keys: no slots, not deliverable as a notification key.
+	KeyUrgentSubject: {Slots: nil},
+	KeyUrgentFooter:  {Slots: nil},
 }
 
 // ValidationReason is the bounded vocabulary describing WHY a message key/param set

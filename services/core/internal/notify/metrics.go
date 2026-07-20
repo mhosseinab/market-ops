@@ -38,6 +38,16 @@ type notifyMetrics struct {
 	// labeled by category. The collision fails closed with a typed conflict; this
 	// series makes a lost distinct event distinguishable from a valid replay.
 	idempotencyConflict metric.Int64Counter
+	// urgentDelivered counts urgent (execution/safety) failure emails successfully
+	// sent through the durable outbox (issue #122), labeled by category. It is the
+	// positive side of the never-shed guarantee: an urgent failure DID reach mail.
+	urgentDelivered metric.Int64Counter
+	// urgentDeadLetter counts urgent emails that PERMANENTLY failed and were
+	// dead-lettered (issue #122), labeled by category. This is the OBSERVABLE terminal
+	// signal (§20.1 alert surface): the email is NOT marked delivered — no false
+	// "delivered" — and the durable outbox row holds the dead_letter state for the
+	// urgent-delivery runbook.
+	urgentDeadLetter metric.Int64Counter
 }
 
 var (
@@ -64,8 +74,41 @@ func instruments() notifyMetrics {
 			"notify.delivery.idempotency_conflict",
 			metric.WithDescription("Notification deliveries that reused a dedup key over a different event/payload (fail-closed conflict)"),
 		)
+		metricsInst.urgentDelivered, _ = m.Int64Counter(
+			"notify.urgent.delivered",
+			metric.WithDescription("Urgent execution/safety failure emails successfully sent through the durable outbox (never shed)"),
+		)
+		metricsInst.urgentDeadLetter, _ = m.Int64Counter(
+			"notify.urgent.dead_letter",
+			metric.WithDescription("Urgent emails permanently failed and dead-lettered (observable terminal state; NOT marked delivered)"),
+		)
 	})
 	return metricsInst
+}
+
+// recordUrgentDelivered emits the urgent-email delivered counter. The only label is
+// the category — a bounded technical identifier, never rendered copy or a secret.
+func recordUrgentDelivered(ctx context.Context, category string) {
+	inst := instruments()
+	if inst.urgentDelivered == nil {
+		return
+	}
+	inst.urgentDelivered.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("category", category),
+	))
+}
+
+// recordUrgentDeadLetter emits the urgent-email dead-letter counter (the OBSERVABLE
+// permanent-failure signal). Labeled by category only; the notification id + bounded
+// reason travel on the structured log and the durable outbox row, never as labels.
+func recordUrgentDeadLetter(ctx context.Context, category string) {
+	inst := instruments()
+	if inst.urgentDeadLetter == nil {
+		return
+	}
+	inst.urgentDeadLetter.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("category", category),
+	))
 }
 
 // recordConflict emits the idempotency-conflict counter for a reused dedup key that is

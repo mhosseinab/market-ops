@@ -40,6 +40,9 @@ func TestSchema_DeliverableKeysDeclareOneCategory(t *testing.T) {
 	frame := map[string]bool{
 		KeyDigestSubject: true, KeyDigestIntro: true,
 		KeyDigestBriefingLink: true, KeyDigestFooter: true,
+		// Urgent-email frame keys (issue #122): rendered internally by the urgent
+		// dispatcher, never persisted as a notification title/body key.
+		KeyUrgentSubject: true, KeyUrgentFooter: true,
 	}
 	for key, schema := range messageSchemas {
 		if frame[key] {
