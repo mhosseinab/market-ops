@@ -7,6 +7,7 @@ import (
 	"time"
 
 	dkclient "github.com/mhosseinab/market-ops/gen/dkgo"
+	"github.com/mhosseinab/market-ops/services/core/internal/httpx"
 )
 
 // DKClient is the typed wrapper over the generated DK Seller client (gen/dkgo).
@@ -37,6 +38,13 @@ func NewDKClient(baseURL string, httpClient *http.Client) (*DKClient, error) {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 30 * time.Second}
 	}
+	// Route every DK Seller (Route A) call through the trace-propagating
+	// transport (issue #152). Instrument is idempotent and wraps a caller-supplied
+	// client's transport in place, so a recording/snapshot client (S35) still
+	// injects W3C trace context and no outbound DK call can omit it. It only adds
+	// trace/baggage headers — the DK bearer credential set by the request editor
+	// is untouched.
+	httpClient = httpx.Instrument(httpClient)
 	base, err := dkclient.NewClient(baseURL, dkclient.WithHTTPClient(httpClient))
 	if err != nil {
 		return nil, fmt.Errorf("connector: build dk client: %w", err)

@@ -16,6 +16,7 @@ import (
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/conversation"
+	"github.com/mhosseinab/market-ops/services/core/internal/httpx"
 )
 
 // ChatKillSwitch reports whether chat is disabled globally or for a specific
@@ -458,8 +459,11 @@ func NewHTTPLLMChat(baseURL, token string) LLMChatService {
 		baseURL: baseURL,
 		token:   token,
 		// No client-level timeout: SSE streams are long-lived. The request
-		// context (tied to the browser connection) governs cancellation.
-		client: &http.Client{Timeout: 0},
+		// context (tied to the browser connection) governs cancellation. The
+		// client is built through httpx so it ALWAYS injects W3C trace context
+		// (issue #152): the web → gateway → LLM trace continues across this hop
+		// and the approval-control span is reconstructable from telemetry.
+		client: httpx.NewClient(0),
 	}
 }
 

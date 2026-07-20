@@ -47,6 +47,9 @@ func Init(ctx context.Context, cfg *config.Config, logger *slog.Logger) (Shutdow
 		// (web → gateway) continues into core spans and outbound calls (core → DK,
 		// core → LLM plane). Set unconditionally with tracing so the approval-control
 		// identity (action ID + parameter/context version) survives every hop.
+		// Installing the propagator does NOT by itself mutate outbound requests:
+		// the injection seam is internal/httpx, through which every production
+		// outbound client is constructed so none can omit propagation (issue #152).
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 			propagation.TraceContext{}, propagation.Baggage{},
 		))

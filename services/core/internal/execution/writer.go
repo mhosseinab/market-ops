@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/mhosseinab/market-ops/services/core/internal/httpx"
 )
 
 // Writer is the external marketplace write seam (EXE-002). The service hands it a
@@ -36,6 +38,11 @@ func NewHTTPWriter(baseURL, token string, client *http.Client) *HTTPWriter {
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
+	// Route the DK write path through the trace-propagating transport (issue
+	// #152). Instrument only adds W3C trace/baggage headers: the bearer credential
+	// and the Idempotency-Key set per request (EXE-002) are untouched, and request
+	// cancellation is preserved.
+	client = httpx.Instrument(client)
 	return &HTTPWriter{baseURL: baseURL, token: token, client: client}
 }
 
