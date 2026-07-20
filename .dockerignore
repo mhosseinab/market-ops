@@ -55,9 +55,9 @@ tmp
 contracts
 tools
 deploy/*
-!deploy/caddy
-!deploy/caddy/Caddyfile
-!deploy/caddy/Dockerfile
+!deploy/nginx
+!deploy/nginx/nginx.conf
+!deploy/nginx/Dockerfile
 apps/extension
 apps/web/tests
 apps/web/dev-public

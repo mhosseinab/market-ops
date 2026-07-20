@@ -23,4 +23,4 @@ tasks:
   build:
     desc: Build the LLM plane wheel.
     cmds:
-      - uv build --package llm
+      - uv build --package market-ops-llm

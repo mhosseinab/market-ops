@@ -26,34 +26,26 @@ COPY runbooks/ runbooks/
 ENV VITE_GATEWAY_BASE_URL=/api
 RUN pnpm --filter @market-ops/web build
 
-FROM caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d AS caddy-runtime
-
-RUN chown -R 65532:65532 /config /data
-
-# Copying the pinned Caddy filesystem into a fresh final config intentionally
-# avoids inheriting upstream OCI labels (including its Apache license label),
-# which do not describe this unlicensed repository.
-FROM scratch
+FROM nginx:1.30.4-alpine-slim@sha256:ddde39c6e51f02fde7410c2e9c234cf2d0a4c7bdbbe176aeb37d8ad7ab4eb58c
 
 ARG VERSION=dev
 ARG REVISION=none
 ARG CREATED=unknown
 
 LABEL org.opencontainers.image.source="https://github.com/mhosseinab/market-ops" \
-      org.opencontainers.image.title="market-ops-caddy" \
-      org.opencontainers.image.description="TLS ingress and static web application for market-ops" \
+      org.opencontainers.image.title="market-ops-nginx" \
+      org.opencontainers.image.description="HTTP ingress and static web application for market-ops" \
       org.opencontainers.image.version="$VERSION" \
       org.opencontainers.image.revision="$REVISION" \
       org.opencontainers.image.created="$CREATED"
 
-ENV XDG_CONFIG_HOME=/config \
-    XDG_DATA_HOME=/data
+RUN rm -f /etc/nginx/conf.d/default.conf \
+    && chown -R 101:101 /usr/share/nginx/html
 
-COPY --from=caddy-runtime / /
-COPY --chown=65532:65532 deploy/caddy/Caddyfile /etc/caddy/Caddyfile
-COPY --chown=65532:65532 --from=web-build /src/apps/web/dist/ /srv/web/
+COPY --chown=101:101 deploy/nginx/nginx.conf /etc/nginx/nginx.conf
+COPY --chown=101:101 --from=web-build /src/apps/web/dist/ /usr/share/nginx/html/
 
-USER 65532:65532
-EXPOSE 80 443 443/udp
-ENTRYPOINT ["caddy"]
-CMD ["run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"]
+USER 101:101
+EXPOSE 8080
+ENTRYPOINT ["/usr/sbin/nginx"]
+CMD ["-g", "daemon off;"]

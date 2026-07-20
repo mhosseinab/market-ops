@@ -83,12 +83,12 @@ jobs:
             dockerfile: services/llm/Dockerfile
             platform: linux/arm64
             arch: arm64
-          - image: caddy
-            dockerfile: deploy/caddy/Dockerfile
+          - image: nginx
+            dockerfile: deploy/nginx/Dockerfile
             platform: linux/amd64
             arch: amd64
-          - image: caddy
-            dockerfile: deploy/caddy/Dockerfile
+          - image: nginx
+            dockerfile: deploy/nginx/Dockerfile
             platform: linux/arm64
             arch: arm64
     steps:
@@ -173,7 +173,7 @@ jobs:
               exit 1
             fi
           }
-          for component in core llm caddy; do
+          for component in core llm nginx; do
             image="ghcr.io/mhosseinab/market-ops-${component}"
             assert_missing "${image}:${RELEASE_VERSION}"
             assert_missing "${image}:git-${SHA8}"
@@ -220,39 +220,39 @@ jobs:
           cache-to: type=gha,mode=max,scope=release-llm-publish
           provenance: mode=max
           sbom: true
-      - name: Publish caddy
-        id: caddy
+      - name: Publish nginx
+        id: nginx
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
-          file: deploy/caddy/Dockerfile
+          file: deploy/nginx/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ghcr.io/mhosseinab/market-ops-caddy:${{ needs.metadata.outputs.version }}
-            ghcr.io/mhosseinab/market-ops-caddy:git-${{ needs.metadata.outputs.sha8 }}
+            ghcr.io/mhosseinab/market-ops-nginx:${{ needs.metadata.outputs.version }}
+            ghcr.io/mhosseinab/market-ops-nginx:git-${{ needs.metadata.outputs.sha8 }}
           build-args: |
             VERSION=${{ needs.metadata.outputs.version }}
             REVISION=${{ needs.metadata.outputs.revision }}
             CREATED=${{ needs.metadata.outputs.created }}
           cache-from: |
-            type=gha,scope=release-caddy-amd64
-            type=gha,scope=release-caddy-arm64
-          cache-to: type=gha,mode=max,scope=release-caddy-publish
+            type=gha,scope=release-nginx-amd64
+            type=gha,scope=release-nginx-arm64
+          cache-to: type=gha,mode=max,scope=release-nginx-publish
           provenance: mode=max
           sbom: true
       - name: Materialize digest-pinned references
         env:
-          CADDY_DIGEST: ${{ steps.caddy.outputs.digest }}
           CORE_DIGEST: ${{ steps.core.outputs.digest }}
           LLM_DIGEST: ${{ steps.llm.outputs.digest }}
+          NGINX_DIGEST: ${{ steps.nginx.outputs.digest }}
         shell: bash
         run: |
           mkdir -p image-digests
           {
             echo "CORE_IMAGE=ghcr.io/mhosseinab/market-ops-core@${CORE_DIGEST}"
             echo "LLM_IMAGE=ghcr.io/mhosseinab/market-ops-llm@${LLM_DIGEST}"
-            echo "CADDY_IMAGE=ghcr.io/mhosseinab/market-ops-caddy@${CADDY_DIGEST}"
+            echo "NGINX_IMAGE=ghcr.io/mhosseinab/market-ops-nginx@${NGINX_DIGEST}"
           } >image-digests/images.env
       - name: Upload digest-pinned image references
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

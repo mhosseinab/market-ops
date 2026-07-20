@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.18.0
 
-FROM python:3.13.11-slim-bookworm@sha256:20080e807bfc404f8450b185cf0fc95d553462673598549613735f70a5b4d5d0 AS build
+FROM python:3.13.14-alpine3.24@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0 AS build
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -16,9 +16,9 @@ COPY pyproject.toml uv.lock ./
 COPY services/llm/ services/llm/
 COPY gen/python/ gen/python/
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --package llm --no-editable
+    uv sync --frozen --no-dev --package market-ops-llm --no-editable
 
-FROM python:3.13.11-slim-bookworm@sha256:20080e807bfc404f8450b185cf0fc95d553462673598549613735f70a5b4d5d0
+FROM python:3.13.14-alpine3.24@sha256:399babc8b49529dabfd9c922f2b5eea81d611e4512e3ed250d75bd2e7683f4b0
 
 ARG VERSION=dev
 ARG REVISION=none
@@ -34,9 +34,6 @@ LABEL org.opencontainers.image.source="https://github.com/mhosseinab/market-ops"
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
-
-RUN groupadd --gid 65532 marketops \
-    && useradd --uid 65532 --gid 65532 --no-create-home --home-dir /nonexistent marketops
 
 COPY --from=build --chown=65532:65532 /opt/venv /opt/venv
 

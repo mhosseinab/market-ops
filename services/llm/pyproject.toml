@@ -1,5 +1,5 @@
 [project]
-name = "llm"
+name = "market-ops-llm"
 version = "0.0.0"
 description = "DK Marketplace Intelligence — Python FastAPI LLM plane (read/Draft-only, no DB)."
 requires-python = ">=3.12"

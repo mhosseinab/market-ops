@@ -3,10 +3,10 @@
 # docs/implementation/dk-p0-implementation-steps.md's S32 suite.
 #
 # Brings up the compose.test.yml stack (core + llm + web + mockdk + postgres +
-# Caddy ingress, deploy/compose.test.yml), STOPS the llm container (the actual
+# Nginx ingress, deploy/compose.test.yml), STOPS the llm container (the actual
 # kill-switch condition — not a config flag), then runs the full existing
 # Playwright journey set (apps/web/tests/e2e/journey{1,2,3,4}*.spec.ts) against
-# the single Caddy origin. Every journey must still pass: the never-cut
+# the single Nginx origin. Every journey must still pass: the never-cut
 # screens-only fallback (§8/CHAT-009) means losing the LLM plane degrades ONLY
 # chat, never any structured screen.
 #
@@ -75,14 +75,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "== build the web bundle (default /api base — routes through the Caddy test ingress) =="
+echo "== build the web bundle (default /api base — routes through the Nginx test ingress) =="
 (cd apps/web && pnpm run build)
 
 echo "== bring up the integration stack =="
-# No separate `web` service: Caddy serves the built apps/web/dist directly with
-# an SPA history fallback (deploy/compose.test.yml / Caddyfile.integration),
-# mirroring compose.prod.yml. The `pnpm run build` above produced that dist.
-$COMPOSE up -d --wait postgres mockdk llm core caddy
+# No separate `web` service: Nginx serves the built apps/web/dist directly with
+# an SPA history fallback from deploy/nginx/nginx.conf, the same config used by
+# the production image. The `pnpm run build` above produced that dist.
+$COMPOSE up -d --wait postgres mockdk llm core nginx
 
 echo "== STOP the LLM plane container (the actual kill-switch condition) =="
 $COMPOSE stop llm
@@ -90,7 +90,7 @@ $COMPOSE stop llm
 echo "== confirm /chat fails closed while screens stay up =="
 curl -sf http://localhost:8888/api/healthz >/dev/null
 
-echo "== run the full Playwright journey set against the single Caddy origin =="
+echo "== run the full Playwright journey set against the single Nginx origin =="
 (
   cd apps/web
   E2E_WEB_URL="http://localhost:8888" \

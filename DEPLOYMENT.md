@@ -7,7 +7,7 @@ and the production release sequence.
 > **Current release status:** local infrastructure and the same-origin
 > integration topology are available. Production deployment is **not runnable
 > from this repository yet**: the gated S34 production Compose file, production
-> images, TLS Caddyfile, registry workflow, WAL backup/restore tooling, and
+> images, TLS Nginx configuration, registry workflow, WAL backup/restore tooling, and
 > production user bootstrap do not exist. The extension builds and can be loaded
 > unpacked, but its production gateway host permission and several runtime data
 > seams are also unfinished. The production section below is therefore an exact
@@ -23,16 +23,16 @@ Production and the reliable local integration topology use one browser origin:
 
 ```mermaid
 flowchart LR
-    Browser[SPA or extension] --> Caddy[Caddy ingress]
-    Caddy --> Web[SPA static files]
-    Caddy --> Core[Go gateway]
+    Browser[SPA or extension] --> Nginx[Nginx ingress]
+    Nginx --> Web[SPA static files]
+    Nginx --> Core[Go gateway]
     Core --> DB[(PostgreSQL 18)]
     Core --> LLM[Python LLM plane]
     LLM -->|read and Draft token| Core
     Core --> DK[DK Seller API]
 ```
 
-Only Caddy should be internet-facing. PostgreSQL and the LLM plane remain on the
+Only the Nginx edge should be internet-facing. PostgreSQL and the LLM plane remain on the
 private container network. The LLM plane must never receive `DATABASE_URL`, the
 DK seller token, or `CONNECTOR_ENCRYPTION_KEY`.
 
@@ -98,7 +98,7 @@ their named consumers:
 | `LLM_PROVIDER_API_KEY` | LLM only |
 | registry credential | CI/deployment host only |
 | backup-destination credential | PostgreSQL backup job only |
-| TLS DNS credential, if DNS challenge is used | Caddy only |
+| TLS certificate/ACME credential, if required | Nginx/TLS termination layer only |
 
 DK seller access/refresh tokens are not deployment secrets: the core receives
 them through the seller authorization exchange and stores them sealed.
@@ -190,7 +190,7 @@ bundle.
 
 | Surface | Variable | Recommended value |
 |---|---|---|
-| SPA | `VITE_GATEWAY_BASE_URL` | `/api` behind same-origin Caddy |
+| SPA | `VITE_GATEWAY_BASE_URL` | `/api` behind same-origin Nginx |
 | SPA | `VITE_MARKETPLACE_ACCOUNT_ID` | selected/bootstrap account UUID |
 | SPA | `VITE_SENTRY_SPOTLIGHT` | local dev only; empty for production |
 | extension | `VITE_GATEWAY_BASE_URL` | absolute gateway base, such as `https://ops.example.com/api` |
@@ -289,7 +289,7 @@ individually instead.
    or provide your own via `GF_SECURITY_ADMIN_PASSWORD`.
 
 `task up` configures Vite to proxy `/api` to the core and strip the prefix,
-matching the local Caddy integration route without requiring core CORS.
+matching the local Nginx integration route without requiring core CORS.
 
 Stop the infrastructure without deleting its named volumes:
 
@@ -303,7 +303,7 @@ other named dev volumes.
 ## 5. Local same-origin deployment: SPA, core, LLM, and DK mock
 
 This is the closest runnable local equivalent to the planned production shape.
-It serves the built SPA and `/api` through Caddy at one origin.
+It serves the built SPA and `/api` through Nginx at one origin.
 
 1. Stop the dev stack if it is using local PostgreSQL port 5432:
 
@@ -335,7 +335,7 @@ It serves the built SPA and `/api` through Caddy at one origin.
 5. Start the stack and wait for health checks:
 
    ```sh
-   docker compose -f deploy/compose.test.yml up -d --wait postgres mockdk llm core caddy
+   docker compose -f deploy/compose.test.yml up -d --wait postgres mockdk llm core nginx
    docker compose -f deploy/compose.test.yml ps
    ```
 
@@ -378,7 +378,7 @@ It serves the built SPA and `/api` through Caddy at one origin.
 9. Diagnose failures with:
 
    ```sh
-   docker compose -f deploy/compose.test.yml logs core llm mockdk migrate caddy
+   docker compose -f deploy/compose.test.yml logs core llm mockdk migrate nginx
    ```
 
 10. Stop and delete the disposable integration database:
@@ -552,8 +552,9 @@ All boxes below must be satisfied before the first live deployment:
 - [ ] pinned, immutable core and LLM production images authored
 - [ ] core image runs as non-root with a minimal/distroless runtime
 - [ ] LLM image installs from the uv lock without editable source mounts
-- [ ] production Caddyfile serves the SPA, proxies `/api`, and manages TLS
-- [ ] production Caddyfile exposes the S34 `/healthz` probe through the core
+- [ ] production Nginx configuration serves the SPA and proxies `/api`
+- [ ] approved TLS termination and certificate renewal are configured for Nginx
+- [ ] production Nginx configuration exposes the S34 `/healthz` probe
 - [ ] PostgreSQL 18 mounts `/var/lib/postgresql`, not the legacy
       `/var/lib/postgresql/data` path
 - [ ] WAL archiving targets an isolated destination
@@ -590,8 +591,8 @@ artifacts exist. Keep `<release>`, `<domain>`, and paths explicit; do not deploy
    and telemetry backends.
 
 4. **Configure DNS.** Point the domain’s A/AAAA records at the VPS and verify
-   resolution before starting Caddy. Caddy needs reachable ports 80 and 443 for
-   automatic certificate issuance and renewal.
+   resolution before starting Nginx. Install the approved certificate and
+   renewal mechanism; the public ingress needs reachable ports 80 and 443.
 
 5. **Install secrets.** Put per-service environment files outside the checkout,
    owned by the deployment account and readable only by it. Split secrets so the
@@ -622,7 +623,7 @@ artifacts exist. Keep `<release>`, `<domain>`, and paths explicit; do not deploy
    `task db:reset` or load development fixtures in production.
 
 10. **Start private services, then ingress.** Start PostgreSQL, telemetry, LLM,
-    and core; wait for health checks; then start Caddy:
+    and core; wait for health checks; then start Nginx:
 
     ```sh
     docker compose -f deploy/compose.prod.yml up -d --wait
@@ -673,7 +674,7 @@ If the release fails:
    isolated to chat
 2. keep marketplace writes dark; revoke extension credentials if capture is
    implicated
-3. collect core, LLM, Caddy, job, and migration logs without logging secrets
+3. collect core, LLM, Nginx, job, and migration logs without logging secrets
 4. switch Compose back to the previous immutable image tags
 5. roll back schema only when the reviewed migration policy says the down path
    is safe; otherwise roll the application forward with a compatibility fix
@@ -708,7 +709,7 @@ The binding release gates remain in
 ## References
 
 - [Docker Compose production guidance](https://docs.docker.com/compose/how-tos/production/)
-- [Caddy automatic HTTPS requirements](https://caddyserver.com/docs/automatic-https)
+- [NGINX HTTPS server configuration](https://nginx.org/en/docs/http/configuring_https_servers.html)
 - [Chrome: load an unpacked extension](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world)
 - [Chrome extension host permissions](https://developer.chrome.com/docs/extensions/develop/concepts/declare-permissions)
 - [Chrome extension cross-origin network requests](https://developer.chrome.com/docs/extensions/develop/concepts/network-requests)
