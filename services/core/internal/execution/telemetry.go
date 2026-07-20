@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 )
 
@@ -34,6 +35,7 @@ type telemetry struct {
 	terminals       metric.Int64Counter
 	auditFailures   metric.Int64Counter
 	enablementDenie metric.Int64Counter
+	recoveries      metric.Int64Counter
 }
 
 // newTelemetry builds the execution telemetry against the global OTel provider. A
@@ -64,6 +66,7 @@ func newTelemetry(logger *slog.Logger) *telemetry {
 		terminals:       ctr("execution.terminal_results", "reconciled terminal external results (by state)"),
 		auditFailures:   ctr("execution.audit_write_failures", "audit-record append failures that rolled the state change back (AUD-001)"),
 		enablementDenie: ctr("execution.enablement_denied", "write enablement denied (capability/region)"),
+		recoveries:      ctr("execution.crash_recoveries", "crash-stranded write resumes (a non-Approved card resumed the write path; EXE-002/003)"),
 	}
 }
 
@@ -90,6 +93,19 @@ func (t *telemetry) gateBlocked(ctx context.Context, card db.ApprovalCard, gate 
 	t.gateBlocks.Add(ctx, 1, metric.WithAttributes(attribute.String("gate", string(gate)), attribute.String("mode", string(mode))))
 	t.logger.WarnContext(ctx, "execution gate blocked write", "gate", gate, "mode", mode,
 		"action_id", card.ActionID.String(), "parameter_version", card.ParameterVersion, "context_version", card.ContextVersion)
+}
+
+// recovered records that executeWrite RESUMED a crash-stranded card (a non-Approved
+// entry: Revalidating or Executing). Crash recovery is never silent (§4.6 / CLAUDE.md
+// "a breaker or fallback engaging without an emitted, traced, audited event"): this
+// emits the metric + structured log within the execution.write span, and the resume
+// path additionally stamps recovery:true onto the append-only audit trail so a
+// recovery is reproducible from immutable rows alone.
+func (t *telemetry) recovered(ctx context.Context, card db.ApprovalCard, from approval.State) {
+	t.recoveries.Add(ctx, 1, metric.WithAttributes(attribute.String("recovered_from", string(from))))
+	t.logger.WarnContext(ctx, "execution resumed a crash-stranded write (recovery)",
+		"recovered_from", string(from), "action_id", card.ActionID.String(),
+		"parameter_version", card.ParameterVersion, "context_version", card.ContextVersion)
 }
 
 func (t *telemetry) dedupHit(ctx context.Context, key string) {
