@@ -2,6 +2,7 @@ package recommendation_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -87,6 +88,54 @@ func TestEditPriceOutsideBoundaryNeverMintsControlBearingVersion(t *testing.T) {
 	}
 	if rows[0].ParameterVersion != original.ParameterVersion {
 		t.Fatalf("parameter version advanced on a rejected edit: got %d want %d", rows[0].ParameterVersion, original.ParameterVersion)
+	}
+}
+
+// TestEditPrice_EditedValueRejectionsClassifiedAsDeclinedEdit is the issue #306
+// fix-cycle regression through a WIRED rechecker (mirrors the live edit path): a
+// cross-currency edited value AND a zero/absent edited value both stem from
+// evaluating the EDITED VALUE (the six-stage re-check pins Reference=edited), so
+// EditPrice folds BOTH into the single declined-edit class (ErrEditedPriceRejected)
+// — never a raw policy sentinel a transport could misreport as a 500. Fail closed:
+// NO new card version and NO new parameter version is minted (mintDraftCard is
+// never reached), so neither declined edit can ever reach a control-bearing state
+// (§4.6). Money never-cut: the cross-unit/zero values reject at the policy layer.
+// Deferred to CI (needs a database).
+func TestEditPriceEditedValueRejectionsClassifiedAsDeclinedEdit(t *testing.T) {
+	pool, q := newPool(t)
+	account, variant := seedVariant(t, q)
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
+	original := persistApprovableCard(t, svc, account, variant)
+
+	// admitAllRechecker derives the policy money unit from the recommendation's own
+	// current price (seeded IRR). A USD edited value is therefore cross-unit; a zero
+	// IRR edited value is a missing/zero reference. Both are edited-VALUE rejections,
+	// classified identically into the declined-edit class.
+	for _, tc := range []struct {
+		name  string
+		price money.Money
+	}{
+		{"cross-currency", mustMoney(t, 1010, "USD", 0)},
+		{"zero-value", mustMoney(t, 0, "IRR", 0)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := svc.EditPrice(context.Background(), original.ID, tc.price, time.Now().UTC()); !errors.Is(err, recommendation.ErrEditedPriceRejected) {
+				t.Fatalf("EditPrice(%s) err = %v, want ErrEditedPriceRejected", tc.name, err)
+			}
+		})
+	}
+
+	// No new version was minted by EITHER declined edit: the current head is still
+	// the original Draft at its original parameter version (fail closed, §4.6).
+	rows, err := svc.ListActions(context.Background(), account, "", 0)
+	if err != nil {
+		t.Fatalf("ListActions: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != original.ID {
+		t.Fatalf("current version changed after declined edits; rows=%d want the original card %s", len(rows), original.ID)
+	}
+	if rows[0].ParameterVersion != original.ParameterVersion {
+		t.Fatalf("parameter version advanced on a declined edit: got %d want %d", rows[0].ParameterVersion, original.ParameterVersion)
 	}
 }
 

@@ -2,6 +2,7 @@ package recommendation
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
@@ -64,9 +65,31 @@ type EditPriceRechecker interface {
 func AdmitEditedPrice(pc PolicyContext, edited money.Money, now time.Time) (policy.Result, bool, error) {
 	res, err := evaluateEditedPrice(pc, edited, now)
 	if err != nil {
-		return policy.Result{}, false, err
+		return policy.Result{}, false, classifyEditedValueRejection(err)
 	}
 	return res, admitsEditedPrice(res, edited), nil
+}
+
+// classifyEditedValueRejection folds the policy sentinels that can ONLY arise
+// from evaluating the EDITED VALUE itself — a zero/absent edited price
+// (policy.ErrMissingReference) or a cross-unit/cross-currency edited price
+// (policy.ErrReferenceUnitMismatch) — into the single declined-edit class
+// (ErrEditedPriceRejected). evaluateEditedPrice pins Strategy=Match and
+// Reference=edited, so the six-stage re-check's validateReference only ever
+// inspects the EDITED value; both sentinels are therefore ALWAYS a DECLINED edit
+// (PRC-002, §8.4, issue #306), never a server fault. This gives the transport a
+// SINGLE decision class to map to a 409, so it never keys on a shared policy
+// sentinel that could equally denote a genuine fault.
+//
+// Any OTHER error — including a stored-config resolution/integrity fault that
+// surfaces a raw policy sentinel from OUTSIDE this edited-value evaluation — is
+// returned UNCHANGED, so it still fails as a 500. A genuine server fault is never
+// masked as a declined edit (issue #306 related safety advisory).
+func classifyEditedValueRejection(err error) error {
+	if errors.Is(err, policy.ErrMissingReference) || errors.Is(err, policy.ErrReferenceUnitMismatch) {
+		return ErrEditedPriceRejected
+	}
+	return err
 }
 
 // evaluateEditedPrice runs policy.Evaluate with the account's resolved context but
