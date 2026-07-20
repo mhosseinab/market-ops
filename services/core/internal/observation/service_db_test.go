@@ -107,13 +107,16 @@ func captureFor(target, account uuid.UUID, nv int64, route obs.Route, at time.Ti
 		NativeSellerID:  "seller-9",
 		Route:           route,
 		SourceType:      obs.SourcePublicWebEndpoint,
-		ParserVersion:   "p1.0.0",
-		EvidenceRef:     "fixture://obs",
-		Availability:    obs.InStock,
-		Confidence:      obs.ConfPartiallyVerified,
-		CapturedAt:      at,
-		SchemaValid:     true,
-		Price:           money.NewRawAmount("1٬200٬000 ریال", "1200000", "IRR-rial"),
+		// A registry-registered production parser identity (#154): the server-owned
+		// registry now gates schema validity, so a fictitious version would quarantine
+		// these captures to Unverified. The Route C observer tuple is registered.
+		ParserVersion: "routec-parser/1.0.0",
+		EvidenceRef:   "fixture://obs",
+		Availability:  obs.InStock,
+		Confidence:    obs.ConfPartiallyVerified,
+		CapturedAt:    at,
+		SchemaValid:   true,
+		Price:         money.NewRawAmount("1٬200٬000 ریال", "1200000", "IRR-rial"),
 	}
 }
 
@@ -752,4 +755,200 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// captureParser builds a capture with an explicit parser identity, route, and
+// confidence so the #154 registry gate can be exercised. Same value/identity as
+// captureFor so cross-route agreement is possible.
+func captureParser(target, account uuid.UUID, nv int64, route obs.Route, parser, connector string, conf obs.Confidence, at time.Time) obs.Capture {
+	c := captureFor(target, account, nv, route, at)
+	c.ParserVersion = parser
+	c.ConnectorVersion = connector
+	c.Confidence = conf
+	return c
+}
+
+// recordingDriftSink captures the bounded parser-drift events for assertions.
+type recordingDriftSink struct {
+	mu     sync.Mutex
+	events []obs.UnsupportedParserEvent
+}
+
+func (s *recordingDriftSink) UnsupportedParser(_ context.Context, ev obs.UnsupportedParserEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = append(s.events, ev)
+}
+
+func (s *recordingDriftSink) snapshot() []obs.UnsupportedParserEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]obs.UnsupportedParserEvent, len(s.events))
+	copy(out, s.events)
+	return out
+}
+
+// TestUnknownParserQuarantinedAndExcludedFromCorroboration is the #154 end-to-end
+// proof against a live schema. An UNKNOWN parser version, even with client-asserted
+// VERIFIED confidence and a same-value sighting from a DIFFERENT route, stays
+// Unverified and NEVER corroborates a later registered capture; the rejection is
+// surfaced as a bounded parser-drift event; the append-only evidence is retained.
+func TestUnknownParserQuarantinedAndExcludedFromCorroboration(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant, nv, np := seedVariant(t, q)
+	insertConfirmedIdentity(t, pool, account, variant, nv, np)
+
+	clk := &clock{t: time.Now().UTC()}
+	sink := &recordingDriftSink{}
+	svc := obs.NewService(pool).WithClock(clk.now).WithParserDriftSink(sink)
+	created, err := svc.SyncTargetsFromConfirmed(ctx, account)
+	if err != nil || len(created) != 1 {
+		t.Fatalf("sync targets: %v (n=%d)", err, len(created))
+	}
+	target := created[0].ID
+
+	// (1) Unknown parser, Route C, CLIENT claims verified confidence.
+	unknownC := captureParser(target, account, nv, obs.RouteC, "unknown-parser@999", "", obs.ConfVerified, clk.now())
+	r1, err := svc.Ingest(ctx, unknownC)
+	if err != nil {
+		t.Fatalf("ingest unknown C: %v", err)
+	}
+	if r1.Quality != obs.Unverified {
+		t.Fatalf("unknown parser must be Unverified regardless of client confidence, got %s", r1.Quality)
+	}
+
+	// (2) Unknown parser, Route B, SAME value — cannot corroborate (both are
+	// quarantined; the in-window analysis excludes schema_valid=false rows).
+	unknownB := captureParser(target, account, nv, obs.RouteB, "unknown-parser@999", "market-ops-ext@0.1.0", obs.ConfVerified, clk.now().Add(time.Second))
+	r2, err := svc.Ingest(ctx, unknownB)
+	if err != nil {
+		t.Fatalf("ingest unknown B: %v", err)
+	}
+	if r2.Quality != obs.Unverified {
+		t.Fatalf("two unknown-parser routes must not corroborate to Verified, got %s", r2.Quality)
+	}
+
+	// (3) A REGISTERED capture (Route C observer parser) agreeing on the same value
+	// must NOT inherit corroboration/history from the quarantined rows — it is a
+	// first legitimate sighting, so Unverified (not Verified/Supported).
+	goodC := captureParser(target, account, nv, obs.RouteC, "routec-parser/1.0.0", "", obs.ConfPartiallyVerified, clk.now().Add(2*time.Second))
+	r3, err := svc.Ingest(ctx, goodC)
+	if err != nil {
+		t.Fatalf("ingest good C: %v", err)
+	}
+	if r3.Quality != obs.Unverified {
+		t.Fatalf("registered capture must not be corroborated by quarantined evidence, got %s", r3.Quality)
+	}
+
+	// (4) A DIFFERENT registered route agreeing corroborates legitimately → Verified,
+	// proving the pipeline still promotes real cross-route agreement.
+	goodB := captureParser(target, account, nv, obs.RouteB, "dk-product@1.0.0", "market-ops-ext@0.1.0", obs.ConfVerified, clk.now().Add(3*time.Second))
+	r4, err := svc.Ingest(ctx, goodB)
+	if err != nil {
+		t.Fatalf("ingest good B: %v", err)
+	}
+	if r4.Quality != obs.Verified {
+		t.Fatalf("two REGISTERED routes agreeing must reach Verified, got %s", r4.Quality)
+	}
+
+	// The bounded parser-drift signal fired for the two unknown captures, carrying the
+	// rejected version token and no raw marketplace free text (the event has no such field).
+	events := sink.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("expected 2 parser-drift rejections, got %d", len(events))
+	}
+	for _, ev := range events {
+		if ev.ParserVersion != "unknown-parser@999" {
+			t.Fatalf("drift event must carry the rejected version token, got %q", ev.ParserVersion)
+		}
+	}
+
+	// Append-only: every ingest wrote an evidence row (nothing dropped); the two
+	// unknown rows persist as schema_valid=false quarantine.
+	rows, err := svc.ListObservations(ctx, target, 100)
+	if err != nil {
+		t.Fatalf("list observations: %v", err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("expected 4 append-only evidence rows, got %d", len(rows))
+	}
+	var quarantined int
+	for _, r := range rows {
+		if !r.SchemaValid {
+			quarantined++
+		}
+	}
+	if quarantined != 2 {
+		t.Fatalf("expected 2 quarantined (schema_valid=false) rows, got %d", quarantined)
+	}
+}
+
+// TestRegistryUpdateAdmitsVersionWithoutRewritingEvidence proves version-support is
+// additive: admitting a previously-unknown parser lets NEW captures qualify while the
+// already-stored quarantined rows are untouched (append-only; no UPDATE).
+func TestRegistryUpdateAdmitsVersionWithoutRewritingEvidence(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, variant, nv, np := seedVariant(t, q)
+	insertConfirmedIdentity(t, pool, account, variant, nv, np)
+
+	clk := &clock{t: time.Now().UTC()}
+	reg := obs.NewParserRegistry(
+		obs.ParserSupport{SourceType: obs.SourcePublicWebEndpoint, ParserVersion: "routec-parser/1.0.0"},
+	)
+	svc := obs.NewService(pool).WithClock(clk.now).WithParserRegistry(reg)
+	created, err := svc.SyncTargetsFromConfirmed(ctx, account)
+	if err != nil || len(created) != 1 {
+		t.Fatalf("sync targets: %v (n=%d)", err, len(created))
+	}
+	target := created[0].ID
+
+	// Before registration: quarantined.
+	newVer := captureParser(target, account, nv, obs.RouteC, "routec-parser/2.0.0", "", obs.ConfPartiallyVerified, clk.now())
+	pre, err := svc.Ingest(ctx, newVer)
+	if err != nil {
+		t.Fatalf("ingest pre-registration: %v", err)
+	}
+	if pre.Quality != obs.Unverified {
+		t.Fatalf("unregistered version must be Unverified, got %s", pre.Quality)
+	}
+
+	// Admit the version (additive registry update). Also admit the Route B parser so a
+	// second registered route can corroborate.
+	reg.Register(obs.ParserSupport{SourceType: obs.SourcePublicWebEndpoint, ParserVersion: "routec-parser/2.0.0"})
+	reg.Register(obs.ParserSupport{SourceType: obs.SourcePublicWebEndpoint, ParserVersion: "dk-product@1.0.0", ConnectorVersions: []string{"market-ops-ext@0.1.0"}})
+
+	// The PRE-registration row stays quarantined (append-only; never rewritten), so it
+	// cannot supply corroboration. New captures made AFTER admission qualify: a fresh
+	// Route C 2.0.0 sighting (now schema_valid=true) plus an agreeing registered Route B
+	// reach Verified — proving the admission takes effect for new evidence only.
+	postC := captureParser(target, account, nv, obs.RouteC, "routec-parser/2.0.0", "", obs.ConfPartiallyVerified, clk.now().Add(time.Second))
+	if _, err := svc.Ingest(ctx, postC); err != nil {
+		t.Fatalf("ingest post-registration C: %v", err)
+	}
+	postB := captureParser(target, account, nv, obs.RouteB, "dk-product@1.0.0", "market-ops-ext@0.1.0", obs.ConfVerified, clk.now().Add(2*time.Second))
+	post, err := svc.Ingest(ctx, postB)
+	if err != nil {
+		t.Fatalf("ingest post-registration B: %v", err)
+	}
+	if post.Quality != obs.Verified {
+		t.Fatalf("after admitting the version, two registered routes agreeing must reach Verified, got %s", post.Quality)
+	}
+
+	// The first (pre-registration) evidence row is unchanged: still schema_valid=false.
+	// Exactly one quarantined row; admitting a version rewrote nothing.
+	rows, err := svc.ListObservations(ctx, target, 100)
+	if err != nil {
+		t.Fatalf("list observations: %v", err)
+	}
+	var quarantined int
+	for _, r := range rows {
+		if !r.SchemaValid {
+			quarantined++
+		}
+	}
+	if quarantined != 1 {
+		t.Fatalf("admitting a version must NOT rewrite the earlier quarantined row; want 1 schema_valid=false, got %d", quarantined)
+	}
 }

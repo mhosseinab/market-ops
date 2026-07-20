@@ -219,10 +219,14 @@ LIMIT 1;
 -- route agreeing within window), Conflicted (a different route disagreeing within
 -- window), and recent history (a prior in-window sighting) from this — never from
 -- a retained string set that has no per-route freshness.
+-- Only schema_valid rows qualify (#154): a capture from an UNKNOWN/retired/malformed
+-- parser is persisted append-only with schema_valid=false and MUST NOT contribute
+-- qualifying history or corroboration to any other capture — "unknown never enables".
 SELECT DISTINCT ON (route)
     route, price_raw_value, price_raw_unit, availability_status, freshness_deadline, captured_at
 FROM observations
 WHERE target_id = $1 AND offer_identity = $2 AND freshness_deadline > $3
+  AND schema_valid = true
 ORDER BY route, captured_at DESC;
 
 -- name: GetObservedOffer :one

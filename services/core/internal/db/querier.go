@@ -655,6 +655,9 @@ type Querier interface {
 	// route agreeing within window), Conflicted (a different route disagreeing within
 	// window), and recent history (a prior in-window sighting) from this — never from
 	// a retained string set that has no per-route freshness.
+	// Only schema_valid rows qualify (#154): a capture from an UNKNOWN/retired/malformed
+	// parser is persisted append-only with schema_valid=false and MUST NOT contribute
+	// qualifying history or corroboration to any other capture — "unknown never enables".
 	ListInWindowRouteValues(ctx context.Context, arg ListInWindowRouteValuesParams) ([]ListInWindowRouteValuesRow, error)
 	// Live (control-bearing or revalidating) cards for a variant. Used by the
 	// identity-reopen consumer to expire dependent recommendations (§16): a reopened
