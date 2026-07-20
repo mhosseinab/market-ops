@@ -5,7 +5,7 @@ description = "DK Marketplace Intelligence — uv workspace root (LLM plane live
 requires-python = ">=3.12"
 # The workspace root depends on every Python member so `uv sync` installs them
 # editable into the single shared root .venv (dk-p0-monorepo.md §2).
-dependencies = ["llm", "gen-python"]
+dependencies = ["market-ops-llm", "gen-python"]
 
 [tool.uv]
 package = false
@@ -16,7 +16,7 @@ package = false
 members = ["services/llm", "gen/python"]
 
 [tool.uv.sources]
-llm = { workspace = true }
+market-ops-llm = { workspace = true }
 gen-python = { workspace = true }
 
 [dependency-groups]

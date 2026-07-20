@@ -44,7 +44,7 @@ tasks:
       http://localhost:5173. The SPA reads VITE_GATEWAY_BASE_URL (default `/api`)
       and talks to the Go core gateway over cookie-auth — no direct LLM-plane
       access. Vite proxies `/api` to the local core on :8080 and strips the
-      prefix, matching the Caddy topology. The MV3 extension has no dev server;
+      prefix, matching the Nginx topology. The MV3 extension has no dev server;
       it builds to a load-unpacked bundle.
     cmds:
       - pnpm --filter @market-ops/web dev

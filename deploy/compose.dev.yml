@@ -4,7 +4,7 @@
 # Grafana/Loki/Tempo observability trio, Mailpit for email testing, and the
 # Spotlight dev-observability sidecar. Brought up by `task dev`.
 #
-# DEV-ONLY. The production topology (single VPS, Caddy ingress, WAL backup) is a
+# DEV-ONLY. The production topology (single VPS, Nginx ingress, WAL backup) is a
 # separate file (deploy/compose.prod.yml) and lands in S34 — the Spotlight
 # sidecar and Mailpit MUST NEVER appear there.
 #

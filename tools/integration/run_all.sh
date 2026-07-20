@@ -2,7 +2,7 @@
 # task test:integration — the S32 cross-plane integration suite
 # (dk-p0-implementation-steps.md §"S32 — Cross-plane integration + adversarial +
 # kill-switch suites"). Compose-based (deploy/compose.test.yml): core + llm +
-# web + mockdk + postgres, fronted by a Caddy ingress unifying web+gateway
+# web + mockdk + postgres, fronted by an Nginx ingress unifying web+gateway
 # under one origin (§19.3 topology).
 #
 # Runs the S32 suites and prints one PASS/FAIL line per scenario:
@@ -75,10 +75,10 @@ fi
 
 # --- bring the stack back up (with the LLM plane LIVE) for scenarios 2-5 ---
 echo "### bringing the stack up (LLM plane live) for scenarios 2-5 ###"
-# No separate `web` service — Caddy serves apps/web/dist directly (see
+# No separate `web` service — Nginx serves apps/web/dist directly (see
 # deploy/compose.test.yml). Scenarios 2-5 drive only /api, so the web bundle
 # is irrelevant here; scenario 1 (run_killswitch_journey.sh) is what builds it.
-if ! $COMPOSE up -d --wait postgres mockdk llm core caddy; then
+if ! $COMPOSE up -d --wait postgres mockdk llm core nginx; then
   echo "== compose up --wait failed; dumping llm/core/mockdk/migrate logs for diagnosis =="
   $COMPOSE logs llm core mockdk migrate || true
   report "2. adversarial containment replay (CHAT-041/045)" "FAIL"

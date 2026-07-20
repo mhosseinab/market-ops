@@ -5,10 +5,10 @@
 # This is NOT the dev stack (compose.dev.yml, which adds the full observability
 # trio + Spotlight + Mailpit for local development) and NOT the production
 # topology (compose.prod.yml, S34 — distroless core image, uv --no-editable llm
-# image, Caddy TLS ingress, WAL-backed Postgres). It is the minimal set of REAL
+# image, Nginx ingress, WAL-backed Postgres). It is the minimal set of REAL
 # services the five S32 system suites need: Postgres, mockdk (the offline DK
 # stand-in, PRD §12.5/§19.3 — never live DK), core, the LLM plane, the built
-# web static bundle, and a Caddy ingress that unifies web+gateway under ONE
+# web static bundle, and an Nginx ingress that unifies web+gateway under ONE
 # origin exactly like production (§19.3) — required so the browser-driven
 # Playwright suites see real cross-plane data instead of a same-origin-only
 # false green (see docs/implementation/dk-p0-progress.md's S32 entry for why
@@ -224,7 +224,7 @@ services:
     # NO `llm: condition: service_healthy` edge here — deliberate (CHAT-009,
     # never-cut screens-only fallback, §8). Core startup must NOT gate on the
     # chat plane being healthy: if the LLM is absent/unhealthy at cold start,
-    # core and the Caddy ingress (which depends on core, below) must STILL reach
+    # core and the Nginx ingress (which depends on core, below) must STILL reach
     # healthy and serve every structured screen — only /chat may fail closed.
     # Core makes no blocking LLM call at boot and its /healthz never touches the
     # LLM (services/core/cmd/core/main.go, internal/httpapi/chat.go): with
@@ -249,26 +249,35 @@ services:
       retries: 30
       start_period: 15s
 
-  # --- Caddy ingress: ONE origin for web + gateway, mirroring §19.3's prod
-  # topology (single VPS, Caddy ingress) — never Kubernetes, never a second
+  # --- Nginx ingress: ONE origin for web + gateway, mirroring §19.3's prod
+  # topology (single VPS, Nginx ingress) — never Kubernetes, never a second
   # bespoke proxy technology.
   #
-  # Caddy ALSO serves the built web bundle directly (file_server + SPA history
-  # fallback in Caddyfile.integration), exactly like compose.prod.yml where
-  # Caddy serves the static dist/. A prior `python3 -m http.server` web
+  # Nginx ALSO serves the built web bundle directly (try_files + SPA history
+  # fallback in nginx.conf), exactly like the production image where Nginx
+  # serves the static dist/. A prior `python3 -m http.server` web
   # container had NO history fallback, so deep-link SPA routes (/onboarding,
   # /products, /today, /bulk, …) returned 404 and the app never booted —
   # failing every S32 Playwright journey. apps/web/dist is built by the run
   # scripts (run_all.sh / run_killswitch_journey.sh) before `docker compose
   # up` and mounted read-only here; there is no separate web service to serve
   # it fallback-lessly.
-  caddy:
-    image: caddy:2.9-alpine
+  nginx:
+    image: nginx:1.30.4-alpine-slim@sha256:ddde39c6e51f02fde7410c2e9c234cf2d0a4c7bdbbe176aeb37d8ad7ab4eb58c
+    user: "101:101"
+    entrypoint: ["/usr/sbin/nginx"]
+    command: ["-g", "daemon off;"]
     volumes:
-      - ./caddy/Caddyfile.integration:/etc/caddy/Caddyfile:ro
-      - ../apps/web/dist:/srv/web:ro
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ../apps/web/dist:/usr/share/nginx/html:ro
     ports:
-      - "8888:8888"
+      - "8888:8080"
     depends_on:
       core:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/healthz"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
