@@ -41,7 +41,7 @@ from llm.orchestrator.graph import (
 )
 from llm.providers.mock import MockChatModel, MockScript
 from llm.tools.registry import build_registry
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 # Since issue #167 the /chat endpoint requires the inbound gateway bearer.
 _GATEWAY_TOKEN = "test-gateway-token"
@@ -492,3 +492,81 @@ async def test_cancellation_stops_upstream_streaming() -> None:
     await asyncio.sleep(0.1)  # far longer than several chunk delays
     # Upstream stopped: no meaningful further emission after cancellation.
     assert len(counter) - emitted_at_cancel <= 1
+
+
+# ---------------------------------------------------------------------------
+# The gateway `conversation`-frame contract (CHAT-007/#115, locale binding #120).
+#
+# The browser — and the S32 adversarial replay harness, which reuses this SHARED
+# model to fail closed on unknown frames (#163) — never sees the LLM plane's raw
+# `conversation` frame. The gateway REPLACES it with its authoritative echo
+# (services/core/internal/httpapi/chat_context_frame.go): the resolved id plus the
+# deterministic context binding and bound locale, all camelCase. So the shared
+# contract must ACCEPT that rewritten frame while still rejecting anything the
+# gateway does NOT emit — extra="forbid" stays, the known gateway fields become
+# known-optional aliases. These pin both halves of that guarantee.
+# ---------------------------------------------------------------------------
+
+# The full gateway echo: id + context binding + bound locale (all camelCase, the
+# exact keys chat_context_frame.go stamps; contextVersion/localeVersion are int32).
+_GATEWAY_CONVERSATION_FRAME_FULL = (
+    '{"kind":"conversation","conversationId":"11111111-1111-1111-1111-111111111111",'
+    '"contextKind":"product","contextVersion":3,"contextEntityId":"sku-42",'
+    '"localeTag":"fa-IR","localeVersion":1}'
+)
+
+# The exact shape the S32 adversarial replay hit once locale binding (#120) opened
+# the stream: id + bound locale, NO context binding.
+_GATEWAY_CONVERSATION_FRAME_LOCALE_ONLY = (
+    '{"conversationId":"22222222-2222-2222-2222-222222222222","kind":"conversation",'
+    '"localeTag":"fa-IR","localeVersion":1}'
+)
+
+
+def test_chat_stream_event_accepts_full_gateway_conversation_frame() -> None:
+    """The gateway's rewritten `conversation` frame validates through the shared model."""
+    ev = ChatStreamEvent.model_validate_json(_GATEWAY_CONVERSATION_FRAME_FULL)
+    assert ev.kind is StreamEventKind.CONVERSATION
+    assert ev.conversation_id == "11111111-1111-1111-1111-111111111111"
+    assert ev.context_kind == "product"
+    assert ev.context_version == 3
+    assert ev.context_entity_id == "sku-42"
+    assert ev.locale_tag == "fa-IR"
+    assert ev.locale_version == 1
+
+
+def test_chat_stream_event_accepts_locale_only_gateway_conversation_frame() -> None:
+    """Id + bound locale with NO context binding (the adv-approval-001 shape) validates."""
+    ev = ChatStreamEvent.model_validate_json(_GATEWAY_CONVERSATION_FRAME_LOCALE_ONLY)
+    assert ev.kind is StreamEventKind.CONVERSATION
+    assert ev.conversation_id == "22222222-2222-2222-2222-222222222222"
+    assert ev.locale_tag == "fa-IR"
+    assert ev.locale_version == 1
+    assert ev.context_kind is None
+    assert ev.context_entity_id is None
+    assert ev.context_version is None
+
+
+def test_chat_stream_event_still_fails_closed_on_unknown_field() -> None:
+    """A field the gateway never emits is STILL a hard error, never skipped (#163)."""
+    with pytest.raises(ValidationError):
+        ChatStreamEvent.model_validate_json(
+            '{"kind":"conversation","conversationId":"x","surpriseControl":true}'
+        )
+
+
+def test_chat_stream_event_still_fails_closed_on_unknown_kind() -> None:
+    """An unrecognized frame kind still fails closed — the fail-closed core is intact."""
+    with pytest.raises(ValidationError):
+        ChatStreamEvent.model_validate_json('{"kind":"approval","conversationId":"x"}')
+
+
+def test_llm_plane_conversation_frame_still_emits_snake_case_id() -> None:
+    """to_sse() stays snake_case: the LLM plane emits the shape the gateway rewrites.
+
+    Adding the camelCase aliases must NOT flip emission to by_alias — the LLM plane
+    keeps emitting `conversation_id`, and the gateway alone authors the camelCase echo.
+    """
+    sse = ChatStreamEvent(kind=StreamEventKind.CONVERSATION, conversation_id="c-1").to_sse()
+    assert '"conversation_id":"c-1"' in sse
+    assert "conversationId" not in sse

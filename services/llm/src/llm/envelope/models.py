@@ -181,20 +181,41 @@ class StreamEventKind(StrEnum):
 
 
 class ChatStreamEvent(BaseModel):
-    """One SSE ``data:`` frame emitted by the LLM plane's /chat endpoint.
+    """One SSE ``data:`` frame on the /chat stream (shared gateway↔LLM-plane contract).
 
     Never carries an approval control. ``envelope`` holds the final typed answer
     on the ``final`` frame; ``failure`` holds the §12.4 state on the ``failure``
     frame.
+
+    ``extra="forbid"`` keeps the stream fail-closed: an unrecognized frame kind or
+    an unknown field is a ``ValidationError``, never a silently skipped control
+    frame (issue #163). The gateway is the sole author of the ``conversation``
+    frame's authoritative context echo — it REPLACES the LLM plane's frame with the
+    resolved id, the deterministic context binding, and the bound locale, all
+    camelCase (services/core/internal/httpapi/chat_context_frame.go, CHAT-007/#115,
+    LOC-001/#120). Those keys are modeled here as known-optional aliases so the
+    shared contract mirrors the frame the browser (and the S32 replay harness that
+    reuses this model) actually sees, while everything the gateway does NOT emit
+    still fails closed. The camelCase mapping is a ``validation_alias`` (parse-only,
+    not a serialization alias): ``to_sse`` therefore stays snake_case — the LLM plane
+    emits ``conversation_id`` and the gateway alone authors the camelCase echo — and
+    ``validate_by_name`` keeps the LLM plane constructing frames by field name.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", validate_by_name=True, validate_by_alias=True)
 
     kind: StreamEventKind
-    conversation_id: str | None = None
+    conversation_id: str | None = Field(default=None, validation_alias="conversationId")
     token: str | None = None
     envelope: dict[str, Any] | None = None
     failure: TurnFailure | None = None
+    # Gateway-authored `conversation`-frame context echo — nil on the LLM plane's own
+    # frame; stamped by the gateway from the binding/locale it resolved in BeginTurn.
+    context_kind: str | None = Field(default=None, validation_alias="contextKind")
+    context_entity_id: str | None = Field(default=None, validation_alias="contextEntityId")
+    context_version: int | None = Field(default=None, validation_alias="contextVersion")
+    locale_tag: str | None = Field(default=None, validation_alias="localeTag")
+    locale_version: int | None = Field(default=None, validation_alias="localeVersion")
 
     def to_sse(self) -> str:
         """Serialize as a single SSE frame (``data: <json>\\n\\n``)."""
