@@ -307,8 +307,14 @@ func run() error {
 		if cfg.NotifyFromAddr != "" {
 			mailer := notify.NewSMTPMailer(cfg.NotifySMTPAddr, cfg.NotifyFromAddr)
 			base := cfg.AppBaseURL
-			resolver := notify.NewDBTargetResolver(pool, cfg.NotifyLocale, func(account uuid.UUID) string {
-				return base + "/briefing?account=" + account.String()
+			// The CTA deep-links to the registered, authenticated Today route (issue
+			// #127). It carries NO account UUID: the Today screen resolves the active
+			// account from the authenticated session (tenant-safe, no URL-trusted
+			// account, no enumeration oracle). notify.BriefingLinkURL is the single
+			// backend source for that path; a drift test pins it to the web ROUTES
+			// registry.
+			resolver := notify.NewDBTargetResolver(pool, cfg.NotifyLocale, func(uuid.UUID) string {
+				return notify.BriefingLinkURL(base)
 			})
 			// The digest emits a §18 briefing-family event + a §17.3 briefing cost on
 			// the analytics pipe after each send (the digest reuses/links the daily
