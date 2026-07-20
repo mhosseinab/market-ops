@@ -404,10 +404,17 @@ func run() error {
 		// passes (EXE-005 recommend-only matching, OUT-001 outcome close). Both run
 		// their REAL production logic on a schedule; while writes are dark, the
 		// matcher's default owned-price source yields no comparable Money (so actions
-		// lapse after 24h) and the closer's default evidence source yields Not
-		// Measurable — the honest fail-closed behaviour until the verified pipelines land.
+		// lapse after 24h). The outcome closer runs its REAL evidence source
+		// (outcome.NewDBSource): it reads authoritative post-action evidence
+		// (action_executions / outcome_evidence / market_events) bound to the
+		// action/account/measured window and classifies §15.3. Until the verified
+		// outcome-metric pipeline lands (S35, gated on the region money-verification
+		// probes) no outcome_evidence rows exist, so due windows resolve Incomplete
+		// and stay OPEN — the honest fail-closed behaviour. Issue #107 replaced the
+		// prior nil source, which fabricated NotMeasurable for every window regardless
+		// of evidence, violating the evidence-quality never-cut.
 		matcher := execution.NewRecommendOnlyReconciler(pool, nil)
-		closer := outcome.NewCloser(pool, nil)
+		closer := outcome.NewCloser(pool, outcome.NewDBSource(pool)).WithLogger(logger)
 		stopJobs, jobsClient, jobsErr := startJobPipeline(ctx, logger, pool, jobs.ExecutionRunners{
 			RecommendOnlyMatch: func(c context.Context) (int, error) {
 				s, err := matcher.RunOnce(c)

@@ -42,6 +42,46 @@ RETURNING *;
 -- name: GetOutcomeResult :one
 SELECT * FROM outcome_results WHERE window_id = $1;
 
+-- name: GetOutcomeEvidenceForAction :one
+-- The authoritative post-action outcome determination bound to an action's window
+-- (issue #107 / §15.3). It is scoped THREE ways so the closer never uses evidence
+-- that does not belong to this action, account, and measured window:
+--   * e.action_id matches the window's action;
+--   * when the window has a bound card, the evidence account MUST equal the card's
+--     marketplace account (a foreign-account determination matches no row);
+--   * the measured [window_start, window_end) span MUST fall inside the outcome
+--     window's [opened_at, closes_at).
+-- The NEWEST determination wins (append-only re-measurement). No row ⇒ the pipeline
+-- has not measured yet ⇒ the closer leaves the window unclosed (NEVER NotMeasurable).
+SELECT e.*
+FROM outcome_evidence e
+JOIN outcome_windows w ON w.action_id = e.action_id
+LEFT JOIN approval_cards ac ON ac.id = w.card_id
+WHERE e.action_id = $1
+  AND (ac.id IS NULL OR e.marketplace_account_id = ac.marketplace_account_id)
+  AND e.window_start >= w.opened_at
+  AND e.window_end   <= w.closes_at
+ORDER BY e.measured_at DESC
+LIMIT 1;
+
+-- name: CountMaterialConcurrentChanges :one
+-- Count the material (warning|critical) market events for the window's account and
+-- variant whose first detection falls inside the outcome window (§15.3 confidence:
+-- 0 ⇒ High, 1 ⇒ Medium, >=2 ⇒ Low). Derived from the existing append-only
+-- market_events, bound through the window's card → recommendation → variant. When
+-- the window has no bound card/recommendation (no variant to attribute to), this
+-- returns 0.
+SELECT count(*)
+FROM market_events me
+JOIN outcome_windows w ON w.action_id = $1
+JOIN approval_cards ac ON ac.id = w.card_id
+JOIN recommendations r ON r.id = ac.recommendation_id
+WHERE me.marketplace_account_id = ac.marketplace_account_id
+  AND me.variant_id = r.variant_id
+  AND me.severity IN ('warning', 'critical')
+  AND me.first_detected_at >  w.opened_at
+  AND me.first_detected_at <= w.closes_at;
+
 -- name: ListOutcomeWindowsByAccount :many
 -- The account's outcome windows (PD-3 item 5, S37), newest first, with the
 -- §15.3 result/confidence when the window has closed (absent otherwise — never

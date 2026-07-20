@@ -41,6 +41,79 @@ func (q *Queries) AppendOutcomeResult(ctx context.Context, arg AppendOutcomeResu
 	return i, err
 }
 
+const countMaterialConcurrentChanges = `-- name: CountMaterialConcurrentChanges :one
+SELECT count(*)
+FROM market_events me
+JOIN outcome_windows w ON w.action_id = $1
+JOIN approval_cards ac ON ac.id = w.card_id
+JOIN recommendations r ON r.id = ac.recommendation_id
+WHERE me.marketplace_account_id = ac.marketplace_account_id
+  AND me.variant_id = r.variant_id
+  AND me.severity IN ('warning', 'critical')
+  AND me.first_detected_at >  w.opened_at
+  AND me.first_detected_at <= w.closes_at
+`
+
+// Count the material (warning|critical) market events for the window's account and
+// variant whose first detection falls inside the outcome window (§15.3 confidence:
+// 0 ⇒ High, 1 ⇒ Medium, >=2 ⇒ Low). Derived from the existing append-only
+// market_events, bound through the window's card → recommendation → variant. When
+// the window has no bound card/recommendation (no variant to attribute to), this
+// returns 0.
+func (q *Queries) CountMaterialConcurrentChanges(ctx context.Context, actionID uuid.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countMaterialConcurrentChanges, actionID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const getOutcomeEvidenceForAction = `-- name: GetOutcomeEvidenceForAction :one
+SELECT e.id, e.action_id, e.marketplace_account_id, e.window_start, e.window_end, e.evidence_complete, e.objective_improved, e.objective_worsened, e.within_materiality, e.floor_breached, e.contribution_breached_bound, e.attribution_blocked, e.source_ref, e.measured_at, e.created_at
+FROM outcome_evidence e
+JOIN outcome_windows w ON w.action_id = e.action_id
+LEFT JOIN approval_cards ac ON ac.id = w.card_id
+WHERE e.action_id = $1
+  AND (ac.id IS NULL OR e.marketplace_account_id = ac.marketplace_account_id)
+  AND e.window_start >= w.opened_at
+  AND e.window_end   <= w.closes_at
+ORDER BY e.measured_at DESC
+LIMIT 1
+`
+
+// The authoritative post-action outcome determination bound to an action's window
+// (issue #107 / §15.3). It is scoped THREE ways so the closer never uses evidence
+// that does not belong to this action, account, and measured window:
+//   - e.action_id matches the window's action;
+//   - when the window has a bound card, the evidence account MUST equal the card's
+//     marketplace account (a foreign-account determination matches no row);
+//   - the measured [window_start, window_end) span MUST fall inside the outcome
+//     window's [opened_at, closes_at).
+//
+// The NEWEST determination wins (append-only re-measurement). No row ⇒ the pipeline
+// has not measured yet ⇒ the closer leaves the window unclosed (NEVER NotMeasurable).
+func (q *Queries) GetOutcomeEvidenceForAction(ctx context.Context, actionID uuid.UUID) (OutcomeEvidence, error) {
+	row := q.db.QueryRow(ctx, getOutcomeEvidenceForAction, actionID)
+	var i OutcomeEvidence
+	err := row.Scan(
+		&i.ID,
+		&i.ActionID,
+		&i.MarketplaceAccountID,
+		&i.WindowStart,
+		&i.WindowEnd,
+		&i.EvidenceComplete,
+		&i.ObjectiveImproved,
+		&i.ObjectiveWorsened,
+		&i.WithinMateriality,
+		&i.FloorBreached,
+		&i.ContributionBreachedBound,
+		&i.AttributionBlocked,
+		&i.SourceRef,
+		&i.MeasuredAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getOutcomeResult = `-- name: GetOutcomeResult :one
 SELECT id, window_id, result, confidence, computed_at FROM outcome_results WHERE window_id = $1
 `

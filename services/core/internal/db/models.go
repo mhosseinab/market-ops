@@ -635,6 +635,24 @@ type Organization struct {
 	UpdatedAt time.Time
 }
 
+type OutcomeEvidence struct {
+	ID                        uuid.UUID
+	ActionID                  uuid.UUID
+	MarketplaceAccountID      uuid.UUID
+	WindowStart               time.Time
+	WindowEnd                 time.Time
+	EvidenceComplete          bool
+	ObjectiveImproved         bool
+	ObjectiveWorsened         bool
+	WithinMateriality         bool
+	FloorBreached             bool
+	ContributionBreachedBound bool
+	AttributionBlocked        bool
+	SourceRef                 string
+	MeasuredAt                time.Time
+	CreatedAt                 time.Time
+}
+
 type OutcomeResult struct {
 	ID         uuid.UUID
 	WindowID   uuid.UUID
