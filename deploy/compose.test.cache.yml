@@ -1,0 +1,66 @@
+# deploy/compose.test.cache.yml — CI-ONLY caching overlay for the S32 integration
+# stack (deploy/compose.test.yml). A bare local `task test:integration` NEVER uses
+# it: it is merged in (`-f compose.test.yml -f compose.test.cache.yml`) ONLY when
+# tools/integration/run_all.sh and its child journey scripts see
+# MARKET_OPS_COMPOSE_EXTRA_FILE pointing here — which only the ci.yml `integration`
+# job sets. Unset ⇒ base stack only, behavior byte-for-byte unchanged.
+#
+# Why this exists: compose.test.yml builds core/mockdk and installs goose/river with
+# `go run`/`go install`, and syncs the LLM plane with `uv sync`, INSIDE stock
+# golang:1.25 / python:3.13-slim containers whose GOCACHE/GOMODCACHE/uv cache live
+# on the container's own throwaway filesystem. run_all.sh brings the stack up THREE
+# times (kill-switch → scenarios 2-5 → cold-start) with `docker compose down -v`
+# between them, so every bring-up re-downloads every Go module, recompiles the core
+# + goose + river from scratch, and re-runs `uv sync` from an empty cache. On the
+# S32 job that repeated work is ~66% of the run (run 29774545327: migrate ~243s +
+# core ~138s across the three bring-ups; images pull in ~17s and are NOT the cost).
+#
+# This overlay bind-mounts a SHARED, host-side Go + uv cache into those services.
+# Host bind mounts (unlike named/anonymous volumes) survive `down -v`, so the
+# second and third bring-ups reuse the first's compiled objects WITHIN one job, and
+# ci.yml wraps the same host dirs in actions/cache so they warm across runs too. The
+# mount SOURCES come from env vars the ci.yml job exports; the `:?` guards fail the
+# merge loud if this overlay is ever merged without them — never a silent no-cache.
+#
+# `-modcacherw` keeps the module cache writable so it tars/restores cleanly across
+# the actions/cache boundary (the default read-only 0444 module files otherwise need
+# a chown/chmod dance). The Go build cache is content-hashed and both caches are
+# concurrency-safe by design, so sharing them across mockdk+core+migrate building at
+# once (bring-up 2) is safe.
+
+services:
+  mockdk:
+    environment:
+      GOFLAGS: "-mod=mod -modcacherw"
+      GOMODCACHE: /gocache/mod
+      GOCACHE: /gocache/build
+    volumes:
+      - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/mod:/gocache/mod
+      - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/build:/gocache/build
+
+  migrate:
+    environment:
+      GOFLAGS: "-mod=mod -modcacherw"
+      GOMODCACHE: /gocache/mod
+      GOCACHE: /gocache/build
+    volumes:
+      - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/mod:/gocache/mod
+      - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/build:/gocache/build
+
+  core:
+    environment:
+      GOFLAGS: "-mod=mod -modcacherw"
+      GOMODCACHE: /gocache/mod
+      GOCACHE: /gocache/build
+    volumes:
+      - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/mod:/gocache/mod
+      - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/build:/gocache/build
+
+  llm:
+    # uv sync's DOWNLOAD cache only — the venv itself (/opt/llm-venv) stays
+    # container-local (see compose.test.yml's UV_PROJECT_ENVIRONMENT note); a warm
+    # download cache makes the re-sync a link-from-cache instead of a re-download.
+    environment:
+      UV_CACHE_DIR: /uvcache
+    volumes:
+      - ${MARKET_OPS_UV_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_UV_CACHE_DIR}:/uvcache
