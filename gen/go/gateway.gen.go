@@ -760,6 +760,87 @@ func (e HealthStatus) Valid() bool {
 	}
 }
 
+// Defines values for ListingDiagnosticEntity.
+const (
+	Listing ListingDiagnosticEntity = "listing"
+	Product ListingDiagnosticEntity = "product"
+	Variant ListingDiagnosticEntity = "variant"
+)
+
+// Valid indicates whether the value is a known member of the ListingDiagnosticEntity enum.
+func (e ListingDiagnosticEntity) Valid() bool {
+	switch e {
+	case Listing:
+		return true
+	case Product:
+		return true
+	case Variant:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListingDiagnosticField.
+const (
+	Description ListingDiagnosticField = "description"
+	Image       ListingDiagnosticField = "image"
+	Title       ListingDiagnosticField = "title"
+)
+
+// Valid indicates whether the value is a known member of the ListingDiagnosticField enum.
+func (e ListingDiagnosticField) Valid() bool {
+	switch e {
+	case Description:
+		return true
+	case Image:
+		return true
+	case Title:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListingDiagnosticResult.
+const (
+	Pass ListingDiagnosticResult = "pass"
+	Warn ListingDiagnosticResult = "warn"
+)
+
+// Valid indicates whether the value is a known member of the ListingDiagnosticResult enum.
+func (e ListingDiagnosticResult) Valid() bool {
+	switch e {
+	case Pass:
+		return true
+	case Warn:
+		return true
+	default:
+		return false
+	}
+}
+
+// Defines values for ListingObservedState.
+const (
+	ListingObservedStateEmpty       ListingObservedState = "empty"
+	ListingObservedStateNotObserved ListingObservedState = "not_observed"
+	ListingObservedStatePresent     ListingObservedState = "present"
+)
+
+// Valid indicates whether the value is a known member of the ListingObservedState enum.
+func (e ListingObservedState) Valid() bool {
+	switch e {
+	case ListingObservedStateEmpty:
+		return true
+	case ListingObservedStateNotObserved:
+		return true
+	case ListingObservedStatePresent:
+		return true
+	default:
+		return false
+	}
+}
+
 // Defines values for MarginReadinessState.
 const (
 	MarginReadinessStateComplete MarginReadinessState = "complete"
@@ -1991,6 +2072,63 @@ type Level2ProposalResult struct {
 	ScopeKey string `json:"scope_key"`
 }
 
+// ListingDiagnostic One READ-ONLY listing/image diagnostic (LST-001). It NAMES the observed entity + field and the rule id/version it was evaluated against, carries observed-value metadata (never content), a pass/warn result, a stable evidence reference, and the capture time of the underlying catalog data. There is deliberately NO remediation/generate/publish control on this record — a diagnostic reports, it never acts.
+type ListingDiagnostic struct {
+	// CapturedAt Capture time of the underlying catalog data the diagnostic evaluated.
+	CapturedAt time.Time `json:"capturedAt"`
+
+	// Entity The canonical entity a listing/image diagnostic observed (§15.1). The diagnostic NAMES this entity so the result is never an anonymous verdict.
+	Entity ListingDiagnosticEntity `json:"entity"`
+
+	// EvidenceRef Stable reference to the canonical source the diagnostic read (a reference, not content), e.g. catalog/variant/{nativeVariantId}.
+	EvidenceRef string `json:"evidenceRef"`
+
+	// Field The named field a listing/image diagnostic evaluated (LST-001). P0 covers the seller-facing listing quality surface: title, description, image.
+	Field ListingDiagnosticField `json:"field"`
+
+	// Observed Observed-value METADATA only — never the raw listing text or a fabricated value. Carries the observed state and, for a captured text field, its character length so the UI can describe WHAT was observed without echoing (or inventing) content.
+	Observed ListingObservedMeta `json:"observed"`
+
+	// Result The read-only pass/warn verdict of one diagnostic. `warn` flags a field that needs attention (empty or not yet observed); it NEVER triggers a write, generation, or auto-fix — remediation is a human, out-of-band act.
+	Result ListingDiagnosticResult `json:"result"`
+
+	// RuleId Stable rule identifier (LTR technical id), e.g. listing.title.present.
+	RuleId string `json:"ruleId"`
+
+	// RuleVersion Version of the rule that produced this result (LTR technical id), e.g. v1.
+	RuleVersion string `json:"ruleVersion"`
+}
+
+// ListingDiagnosticEntity The canonical entity a listing/image diagnostic observed (§15.1). The diagnostic NAMES this entity so the result is never an anonymous verdict.
+type ListingDiagnosticEntity string
+
+// ListingDiagnosticField The named field a listing/image diagnostic evaluated (LST-001). P0 covers the seller-facing listing quality surface: title, description, image.
+type ListingDiagnosticField string
+
+// ListingDiagnosticResult The read-only pass/warn verdict of one diagnostic. `warn` flags a field that needs attention (empty or not yet observed); it NEVER triggers a write, generation, or auto-fix — remediation is a human, out-of-band act.
+type ListingDiagnosticResult string
+
+// ListingDiagnosticsReport The READ-ONLY listing/image diagnostics report for one variant (LST-001). Every item names its entity + field + rule and carries a pass/warn result; the report NEVER generates or publishes content.
+type ListingDiagnosticsReport struct {
+	// EvaluatedAt Server time the read-only report was computed (a read, not a content edit).
+	EvaluatedAt          time.Time           `json:"evaluatedAt"`
+	Items                []ListingDiagnostic `json:"items"`
+	MarketplaceAccountId openapi_types.UUID  `json:"marketplaceAccountId"`
+	VariantId            openapi_types.UUID  `json:"variantId"`
+}
+
+// ListingObservedMeta Observed-value METADATA only — never the raw listing text or a fabricated value. Carries the observed state and, for a captured text field, its character length so the UI can describe WHAT was observed without echoing (or inventing) content.
+type ListingObservedMeta struct {
+	// CharacterLength Character (rune) length of the observed text field; null when the field is not a captured text value (e.g. not_observed).
+	CharacterLength *int32 `json:"characterLength,omitempty"`
+
+	// State The observed-value state a diagnostic recorded for its field. `present`: the field carried captured content; `empty`: the field was captured but blank; `not_observed`: the connector does not yet surface this field's content, so it is reported as unobserved (fail closed) rather than inferred — quarantine-over-inference (§9.1/§4.6).
+	State ListingObservedState `json:"state"`
+}
+
+// ListingObservedState The observed-value state a diagnostic recorded for its field. `present`: the field carried captured content; `empty`: the field was captured but blank; `not_observed`: the connector does not yet surface this field's content, so it is reported as unobserved (fail closed) rather than inferred — quarantine-over-inference (§9.1/§4.6).
+type ListingObservedState string
+
 // LoginRequest Email/password credential presented to open a session.
 type LoginRequest struct {
 	// Email Login identifier (the user's email).
@@ -2813,6 +2951,15 @@ type GetCatalogProductParams struct {
 	VariantId openapi_types.UUID `form:"variantId" json:"variantId"`
 }
 
+// ListProductDiagnosticsParams defines parameters for ListProductDiagnostics.
+type ListProductDiagnosticsParams struct {
+	// MarketplaceAccountId Marketplace account that must own the variant.
+	MarketplaceAccountId openapi_types.UUID `form:"marketplaceAccountId" json:"marketplaceAccountId"`
+
+	// VariantId The variant whose listing/image diagnostics are requested.
+	VariantId openapi_types.UUID `form:"variantId" json:"variantId"`
+}
+
 // ListCatalogProductsParams defines parameters for ListCatalogProducts.
 type ListCatalogProductsParams struct {
 	// MarketplaceAccountId Marketplace account whose products are requested.
@@ -3064,6 +3211,9 @@ type ServerInterface interface {
 	// GetCatalogProduct Read one canonical Product row for a variant.
 	// (GET /catalog/product)
 	GetCatalogProduct(w http.ResponseWriter, r *http.Request, params GetCatalogProductParams)
+	// ListProductDiagnostics Read READ-ONLY listing and image diagnostics for a variant.
+	// (GET /catalog/product-diagnostics)
+	ListProductDiagnostics(w http.ResponseWriter, r *http.Request, params ListProductDiagnosticsParams)
 	// ListCatalogProducts List the account's canonical Products (SKU workspace rows).
 	// (GET /catalog/products)
 	ListCatalogProducts(w http.ResponseWriter, r *http.Request, params ListCatalogProductsParams)
@@ -3536,6 +3686,52 @@ func (siw *ServerInterfaceWrapper) GetCatalogProduct(w http.ResponseWriter, r *h
 
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		siw.Handler.GetCatalogProduct(w, r, params)
+	}))
+
+	for _, middleware := range siw.HandlerMiddlewares {
+		handler = middleware(handler)
+	}
+
+	handler.ServeHTTP(w, r)
+}
+
+// ListProductDiagnostics operation middleware
+func (siw *ServerInterfaceWrapper) ListProductDiagnostics(w http.ResponseWriter, r *http.Request) {
+
+	var err error
+	_ = err
+
+	// Parameter object where we will unmarshal all parameters from the context
+	var params ListProductDiagnosticsParams
+
+	// ------------- Required query parameter "marketplaceAccountId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "marketplaceAccountId", r.URL.Query(), &params.MarketplaceAccountId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "marketplaceAccountId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "marketplaceAccountId", Err: err})
+		}
+		return
+	}
+
+	// ------------- Required query parameter "variantId" -------------
+
+	err = runtime.BindQueryParameterWithOptions("form", true, true, "variantId", r.URL.Query(), &params.VariantId, runtime.BindQueryParameterOptions{Type: "string", Format: "uuid"})
+	if err != nil {
+		var requiredError *runtime.RequiredParameterError
+		if errors.As(err, &requiredError) {
+			siw.ErrorHandlerFunc(w, r, &RequiredParamError{ParamName: "variantId"})
+		} else {
+			siw.ErrorHandlerFunc(w, r, &InvalidParamFormatError{ParamName: "variantId", Err: err})
+		}
+		return
+	}
+
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		siw.Handler.ListProductDiagnostics(w, r, params)
 	}))
 
 	for _, middleware := range siw.HandlerMiddlewares {
@@ -4784,6 +4980,7 @@ func HandlerWithOptions(si ServerInterface, options StdHTTPServerOptions) http.H
 	m.HandleFunc(http.MethodPost+" "+options.BaseURL+"/identity/defer", wrapper.DeferIdentity)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/catalog/products", wrapper.ListCatalogProducts)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/catalog/product", wrapper.GetCatalogProduct)
+	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/catalog/product-diagnostics", wrapper.ListProductDiagnostics)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/targets", wrapper.ListObservationTargets)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/observed-offers", wrapper.ListObservedOffers)
 	m.HandleFunc(http.MethodGet+" "+options.BaseURL+"/observation/observations", wrapper.ListObservations)
@@ -5348,6 +5545,45 @@ type GetCatalogProductdefaultJSONResponse struct {
 }
 
 func (response GetCatalogProductdefaultJSONResponse) VisitGetCatalogProductResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(response.StatusCode)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProductDiagnosticsRequestObject struct {
+	Params ListProductDiagnosticsParams
+}
+
+type ListProductDiagnosticsResponseObject interface {
+	VisitListProductDiagnosticsResponse(w http.ResponseWriter) error
+}
+
+type ListProductDiagnostics200JSONResponse ListingDiagnosticsReport
+
+func (response ListProductDiagnostics200JSONResponse) VisitListProductDiagnosticsResponse(w http.ResponseWriter) error {
+
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(response); err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	_, err := buf.WriteTo(w)
+	return err
+}
+
+type ListProductDiagnosticsdefaultJSONResponse struct {
+	Body       ErrorEnvelope
+	StatusCode int
+}
+
+func (response ListProductDiagnosticsdefaultJSONResponse) VisitListProductDiagnosticsResponse(w http.ResponseWriter) error {
 
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(response.Body); err != nil {
@@ -7307,6 +7543,9 @@ type StrictServerInterface interface {
 	// GetCatalogProduct Read one canonical Product row for a variant.
 	// (GET /catalog/product)
 	GetCatalogProduct(ctx context.Context, request GetCatalogProductRequestObject) (GetCatalogProductResponseObject, error)
+	// ListProductDiagnostics Read READ-ONLY listing and image diagnostics for a variant.
+	// (GET /catalog/product-diagnostics)
+	ListProductDiagnostics(ctx context.Context, request ListProductDiagnosticsRequestObject) (ListProductDiagnosticsResponseObject, error)
 	// ListCatalogProducts List the account's canonical Products (SKU workspace rows).
 	// (GET /catalog/products)
 	ListCatalogProducts(ctx context.Context, request ListCatalogProductsRequestObject) (ListCatalogProductsResponseObject, error)
@@ -7846,6 +8085,32 @@ func (sh *strictHandler) GetCatalogProduct(w http.ResponseWriter, r *http.Reques
 		sh.options.ResponseErrorHandlerFunc(w, r, err)
 	} else if validResponse, ok := response.(GetCatalogProductResponseObject); ok {
 		if err := validResponse.VisitGetCatalogProductResponse(w); err != nil {
+			sh.options.ResponseErrorHandlerFunc(w, r, err)
+		}
+	} else if response != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, fmt.Errorf("unexpected response type: %T", response))
+	}
+}
+
+// ListProductDiagnostics operation middleware
+func (sh *strictHandler) ListProductDiagnostics(w http.ResponseWriter, r *http.Request, params ListProductDiagnosticsParams) {
+	var request ListProductDiagnosticsRequestObject
+
+	request.Params = params
+
+	handler := func(ctx context.Context, w http.ResponseWriter, r *http.Request, request interface{}) (interface{}, error) {
+		return sh.ssi.ListProductDiagnostics(ctx, request.(ListProductDiagnosticsRequestObject))
+	}
+	for _, middleware := range sh.middlewares {
+		handler = middleware(handler, "ListProductDiagnostics")
+	}
+
+	response, err := handler(r.Context(), w, r, request)
+
+	if err != nil {
+		sh.options.ResponseErrorHandlerFunc(w, r, err)
+	} else if validResponse, ok := response.(ListProductDiagnosticsResponseObject); ok {
+		if err := validResponse.VisitListProductDiagnosticsResponse(w); err != nil {
 			sh.options.ResponseErrorHandlerFunc(w, r, err)
 		}
 	} else if response != nil {

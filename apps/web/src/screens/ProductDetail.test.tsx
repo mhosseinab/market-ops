@@ -2,7 +2,7 @@ import { faIR } from "@market-ops/locale";
 import { screen, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
-import { catalogProductRow, offer, target, VARIANT_ID } from "../test/msw/fixtures";
+import { catalogProductRow, offer, VARIANT_ID } from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
@@ -112,22 +112,12 @@ describe("Product detail — secondary query failures never become business abse
       expect(screen.queryByText(faIR["product.cost.notRecorded"])).toBeNull();
     });
 
-    it(`renders an actionable diagnostics error, not an absence, on observations ${status}`, async () => {
+    it(`renders an actionable diagnostics error, not an absence, when diagnostics fail on ${status}`, async () => {
+      // The diagnostics panel is sourced from the REAL listing/image diagnostics
+      // endpoint (LST-001) — never from observation capture provenance.
       server.use(
-        http.get(`${BASE}/observation/targets`, () => HttpResponse.json({ items: [target] })),
-        http.get(`${BASE}/observation/observations`, () => new HttpResponse(null, { status })),
+        http.get(`${BASE}/catalog/product-diagnostics`, () => new HttpResponse(null, { status })),
       );
-      renderRoute(`/product?variantId=${VARIANT_ID}`);
-
-      await screen.findByText("14,000,000");
-      const err = await screen.findByTestId("product-diagnostics-error");
-      expect(within(err).getByRole("button", { name: faIR["action.retry"] })).toBeInTheDocument();
-      const diagPanel = panelByHeading(faIR["product.section.diagnostics"]);
-      expect(within(diagPanel).queryByText(faIR["common.notAvailable"])).toBeNull();
-    });
-
-    it(`renders an actionable diagnostics error when the targets query fails on ${status}`, async () => {
-      server.use(http.get(`${BASE}/observation/targets`, () => new HttpResponse(null, { status })));
       renderRoute(`/product?variantId=${VARIANT_ID}`);
 
       await screen.findByText("14,000,000");
@@ -159,10 +149,16 @@ describe("Product detail — secondary query failures never become business abse
     expect(screen.queryByTestId("product-cost-error")).toBeNull();
   });
 
-  it("retains the diagnostics absence for a SUCCESSFUL empty observations response (empty != error)", async () => {
+  it("retains the diagnostics absence for a SUCCESSFUL empty diagnostics report (empty != error)", async () => {
     server.use(
-      http.get(`${BASE}/observation/targets`, () => HttpResponse.json({ items: [target] })),
-      http.get(`${BASE}/observation/observations`, () => HttpResponse.json({ items: [] })),
+      http.get(`${BASE}/catalog/product-diagnostics`, () =>
+        HttpResponse.json({
+          variantId: VARIANT_ID,
+          marketplaceAccountId: "00000000-0000-0000-0000-000000000003",
+          evaluatedAt: "2026-07-19T12:00:00Z",
+          items: [],
+        }),
+      ),
     );
     renderRoute(`/product?variantId=${VARIANT_ID}`);
 

@@ -152,6 +152,10 @@ var routePolicies = []routePolicy{
 	// owned_offer_read capability by the read service (§15.2).
 	{http.MethodGet, "/catalog/products", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/catalog/product", kindProtected, perm.ActionReadObservations},
+	// READ-ONLY listing/image diagnostics (S26, LST-001) — an L1 read of derived
+	// catalog quality; same read posture as the other catalog/observation reads. It
+	// exposes no write/generate/publish action, so it maps to a read action.
+	{http.MethodGet, "/catalog/product-diagnostics", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/observation/targets", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/observation/observed-offers", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/observation/observations", kindProtected, perm.ActionReadObservations},

@@ -75,6 +75,22 @@ export function ReadinessBadge({ state }: { state: ReadinessState }) {
   return <Badge tone={m.tone} label={t(m.key)} shape="square" />;
 }
 
+// ── Listing/image diagnostic result (LST-001, read-only) ───────────────────
+// A pass/warn verdict paired with its label — color never stands alone. `warn`
+// flags a field needing attention; it triggers no write or auto-fix.
+export type DiagnosticResultState = "pass" | "warn";
+
+const DIAGNOSTIC_RESULT: Record<DiagnosticResultState, { tone: Tone; key: MessageKey }> = {
+  pass: { tone: "tone-pos", key: "diagnostics.result.pass" },
+  warn: { tone: "tone-warn", key: "diagnostics.result.warn" },
+};
+
+export function DiagnosticResultBadge({ state }: { state: DiagnosticResultState }) {
+  const t = useT();
+  const m = DIAGNOSTIC_RESULT[state];
+  return <Badge tone={m.tone} label={t(m.key)} />;
+}
+
 // ── Execution / lifecycle status ───────────────────────────────────────────
 export type StatusState =
   | "awaitingConfirmation"

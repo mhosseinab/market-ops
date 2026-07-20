@@ -428,6 +428,16 @@ type Querier interface {
 	// The account a variant belongs to — used to recompute readiness for a variant
 	// when the caller only has the variant id (e.g. the readiness read endpoint).
 	GetVariantAccountID(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// The READ-ONLY listing/image diagnostics source projection for one variant (S26,
+	// LST-001). It reads ONLY already-captured canonical catalog data — the variant +
+	// product titles, whether a Listing presence row exists, and the variant's capture
+	// time (updated_at) — so a diagnostic can NAME the observed field and its capture
+	// moment without any write, generation, or inference. Description/image are NOT
+	// projected: the DK Seller connector does not surface that content yet, so those
+	// diagnostics are reported not_observed by the read model rather than guessed.
+	// CROSS-ACCOUNT FAIL-CLOSED: both the account ($1) and the variant id ($2) must
+	// match; a foreign or unknown variant returns no row (pgx.ErrNoRows -> 404).
+	GetVariantListingForDiagnostics(ctx context.Context, arg GetVariantListingForDiagnosticsParams) (GetVariantListingForDiagnosticsRow, error)
 	GetWatchlistEntry(ctx context.Context, arg GetWatchlistEntryParams) (WatchlistEntry, error)
 	GetWriteVerification(ctx context.Context, marketplaceAccountID uuid.UUID) (AccountWriteVerification, error)
 	// Analytics event queries (PRD §18). analytics_events is APPEND-ONLY: INSERT and

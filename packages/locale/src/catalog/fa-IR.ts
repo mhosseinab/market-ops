@@ -317,6 +317,30 @@ export const faIR: Catalog = {
   "product.diagnostics.source": "منبع",
   "product.diagnostics.evidence": "مرجع شواهد",
   "product.diagnostics.viewAll": "مشاهدهٔ تشخیص‌ها ←",
+
+  // صفحهٔ تشخیص (S26، LST-001، فقط‌خواندنی). هر نتیجه موجودیت + میدان + قاعده را
+  // نام می‌برد؛ هیچ‌چیز در اینجا آگهی را تولید، تغییر یا منتشر نمی‌کند.
+  "diagnostics.readOnlyNote":
+    "فقط‌خواندنی. تشخیص‌ها فقط آگهی شما را گزارش می‌کنند و آن را تغییر یا منتشر نمی‌کنند.",
+  "diagnostics.noVariant": "برای دیدن بررسی‌های آگهی و تصویر، تشخیص‌ها را از یک محصول باز کنید.",
+  "diagnostics.field.title": "عنوان",
+  "diagnostics.field.description": "توضیحات",
+  "diagnostics.field.image": "تصویر اصلی",
+  "diagnostics.entity.product": "محصول",
+  "diagnostics.entity.variant": "کالا",
+  "diagnostics.entity.listing": "آگهی",
+  "diagnostics.entityLabel": "موجودیت مشاهده‌شده",
+  "diagnostics.rule": "قاعده",
+  "diagnostics.result.pass": "سالم",
+  "diagnostics.result.warn": "هشدار",
+  "diagnostics.observed.label": "مقدار مشاهده‌شده",
+  "diagnostics.observed.present": "موجود",
+  "diagnostics.observed.empty": "خالی",
+  "diagnostics.observed.notObserved": "هنوز مشاهده نشده",
+  "diagnostics.observed.length": "{count} نویسه",
+  "diagnostics.evidence": "مرجع شواهد",
+  "diagnostics.capturedAt": "زمان ثبت",
+
   "product.noTarget": "برای این کالا هدف پایشی فعالی نیست.",
   "product.back": "→ بازگشت به محصولات",
 
