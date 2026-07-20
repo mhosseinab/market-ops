@@ -392,3 +392,274 @@ describe("service worker — #145 owned-target sync drives the EXT-004 gate (no 
     );
   });
 });
+
+// issue #253: a stale owned-target sync (a request started under credential A
+// that completes AFTER A is revoked or replaced by B) must NEVER apply its result.
+// The projection is bound to a monotonic generation + the initiating credential
+// identity; a completion is applied only if the generation is still current AND
+// the stored credential still matches — otherwise it is ignored as `stale`. These
+// drive every completion order with DEFERRED promises (startup/alarm sync, revoke,
+// re-pair, success, null/error, repeated pairing).
+describe("service worker — #253 stale owned-target sync after revoke / re-pair is ignored (identity quarantine, never-cut)", () => {
+  // Two distinct capture credentials → distinct fingerprints (credentialId +
+  // marketplaceAccountId). A is the initiating credential; B is the re-pair.
+  const CRED_A = {
+    credential: "cap-cred-A",
+    credentialId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    marketplaceAccountId: "a1111111-1111-1111-1111-111111111111",
+    expiresAt: "2026-08-01T00:00:00Z",
+  };
+  const CRED_B = {
+    credential: "cap-cred-B",
+    credentialId: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    marketplaceAccountId: "b2222222-2222-2222-2222-222222222222",
+    expiresAt: "2026-08-01T00:00:00Z",
+  };
+
+  function ownedRow(nativeVariantId: number, variantId: string, marketplaceAccountId: string) {
+    return {
+      id: `target-${variantId}`,
+      marketplaceAccountId,
+      identityId: "99999999-9999-9999-9999-999999999999",
+      variantId,
+      nativeVariantId,
+      nativeProductId: 1,
+      tier: "standard",
+      cadenceSeconds: 21600,
+      freshnessDeadlineSeconds: 21600,
+      active: true,
+    };
+  }
+
+  interface OwnedCall {
+    credential: string;
+    ok: (rows: unknown[]) => void;
+    fail: () => void;
+  }
+
+  // A fetch mock whose /ext/owned-targets responses are DEFERRED: each call is
+  // parked in `ownedCalls` until the test explicitly fulfills it, so we can force
+  // any completion order. Pairing + watchlist + capture resolve immediately.
+  function deferredFetch() {
+    const ownedCalls: OwnedCall[] = [];
+    const captureTargetIds: string[] = [];
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/ext/pairing/claim")) {
+        const code = JSON.parse(String(init?.body ?? "{}")).code;
+        return new Response(JSON.stringify(code === "pair-B" ? CRED_B : CRED_A), { status: 200 });
+      }
+      if (url.includes("/ext/owned-targets")) {
+        const auth = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+        const credential = auth.replace("Bearer ", "");
+        return await new Promise<Response>((resolve) => {
+          ownedCalls.push({
+            credential,
+            ok: (rows) => resolve(new Response(JSON.stringify({ items: rows }), { status: 200 })),
+            fail: () => resolve(new Response("{}", { status: 401 })),
+          });
+        });
+      }
+      if (url.includes("/watchlist")) {
+        return new Response(
+          JSON.stringify({
+            id: WATCHLIST_ENTRY_ID,
+            marketplaceAccountId: "x",
+            variantId: "v",
+            createdAt: "2026-07-18T10:00:00Z",
+          }),
+          { status: 200 },
+        );
+      }
+      // /observation/capture
+      captureTargetIds.push(JSON.parse(String(init?.body ?? "{}")).targetId);
+      return new Response(null, { status: 202 });
+    });
+    return { fetch, ownedCalls, captureTargetIds };
+  }
+
+  function callAt(i: number): OwnedCall {
+    const c = ownedCalls[i];
+    if (!c) throw new Error(`no parked owned-target call at index ${i}`);
+    return c;
+  }
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  async function waitFor(cond: () => boolean, max = 100): Promise<void> {
+    for (let i = 0; i < max && !cond(); i++) await tick();
+    if (!cond()) throw new Error("condition not met");
+  }
+  const settle = async () => {
+    for (let i = 0; i < 8; i++) await tick();
+  };
+
+  function alarmHandler(): (a: { name: string }) => void {
+    const chromeMock = (
+      globalThis as unknown as {
+        chrome: { alarms: { onAlarm: { addListener: ReturnType<typeof vi.fn> } } };
+      }
+    ).chrome;
+    return chromeMock.alarms.onAlarm.addListener.mock.calls[0]?.[0] as (a: {
+      name: string;
+    }) => void;
+  }
+
+  const productA = parsedProduct();
+  const VA = productA.offer?.nativeVariantId ?? 0;
+  const VB = VA + 7777;
+  const productB: ParsedProduct = {
+    ...productA,
+    offer: { ...(productA.offer ?? { nativeVariantId: VB }), nativeVariantId: VB },
+  };
+  const rowA = () => ownedRow(VA, "a-variant", CRED_A.marketplaceAccountId);
+  const rowB = () => ownedRow(VB, "b-variant", CRED_B.marketplaceAccountId);
+
+  let storage: Map<string, unknown>;
+  let ownedCalls: OwnedCall[];
+  let captureTargetIds: string[];
+  let send: (msg: ExtMessage, sender?: Sender) => Promise<ExtResponse>;
+
+  // Pairs credential A and lets its owned-target sync install rowA, then launches
+  // an ALARM-triggered A-sync that stays IN FLIGHT (parked, index = its position).
+  async function pairAWithInFlightAlarmSync(): Promise<number> {
+    const pairA = send({ kind: "pair", code: "pair-A" });
+    await waitFor(() => ownedCalls.length >= 1);
+    callAt(0).ok([rowA()]);
+    await pairA;
+    // A background (fire-and-forget) A-sync from the periodic alarm — deferred.
+    alarmHandler()({ name: "scheduled-refresh" });
+    await waitFor(() => ownedCalls.length >= 2);
+    return 1; // index of the in-flight A-sync
+  }
+
+  async function watchlist(product: ParsedProduct): Promise<ExtResponse> {
+    return send({ kind: "addToWatchlist", product });
+  }
+
+  beforeEach(async () => {
+    const mock = installChromeMock();
+    storage = mock.storage;
+    const df = deferredFetch();
+    ownedCalls = df.ownedCalls;
+    captureTargetIds = df.captureTargetIds;
+    vi.stubGlobal("fetch", df.fetch);
+    send = await loadWorker();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a delayed credential-A success can NOT overwrite the credential-B projection after re-pair", async () => {
+    const inflightA = await pairAWithInFlightAlarmSync();
+
+    // Re-pair to B and let B's sync install rowB.
+    const pairB = send({ kind: "pair", code: "pair-B" });
+    await waitFor(() => ownedCalls.length >= 3);
+    callAt(2).ok([rowB()]);
+    await pairB;
+
+    // NOW the stale A success lands — it must be ignored, not applied over B.
+    callAt(inflightA).ok([rowA()]);
+    await settle();
+
+    // Only B's target resolves; A's target never resurrects.
+    expect(await watchlist(productB)).toEqual({
+      ok: true,
+      watchlist: { ok: true, entryId: WATCHLIST_ENTRY_ID },
+    });
+    expect(await watchlist(productA)).toEqual({
+      ok: true,
+      watchlist: { ok: false, reason: "denied" },
+    });
+
+    // The drop is observable as a `stale` outcome (no secret logged).
+    const obs = await import("../lib/observability");
+    expect(obs.counterValue("owned_targets_sync", { outcome: "stale" })).toBeGreaterThanOrEqual(1);
+  });
+
+  it("a delayed credential-A null/failure can NOT clear the valid credential-B projection", async () => {
+    const inflightA = await pairAWithInFlightAlarmSync();
+
+    const pairB = send({ kind: "pair", code: "pair-B" });
+    await waitFor(() => ownedCalls.length >= 3);
+    callAt(2).ok([rowB()]);
+    await pairB;
+
+    // The stale A request fails (401/expired) — it must NOT clear B's projection.
+    callAt(inflightA).fail();
+    await settle();
+
+    expect(await watchlist(productB)).toEqual({
+      ok: true,
+      watchlist: { ok: true, entryId: WATCHLIST_ENTRY_ID },
+    });
+  });
+
+  it("a post-revoke credential-A response can NOT repopulate the cleared index", async () => {
+    const inflightA = await pairAWithInFlightAlarmSync();
+
+    // Revoke: index cleared + all outstanding generations invalidated.
+    await send({ kind: "revoke" });
+
+    // The in-flight A-sync now completes — it must NOT repopulate the index.
+    callAt(inflightA).ok([rowA()]);
+    await settle();
+
+    // Isolate the index-clearing from the capability gate: simulate a re-pair race
+    // that restores ready + a credential WITHOUT re-running the sync.
+    storage.set("capability", "ready");
+    storage.set("credential", CRED_A);
+    expect(await watchlist(productA)).toEqual({
+      ok: true,
+      watchlist: { ok: false, reason: "denied" },
+    });
+  });
+
+  it("overlapping same-credential syncs apply ONLY the newest generation, regardless of completion order", async () => {
+    const pairA = send({ kind: "pair", code: "pair-A" });
+    await waitFor(() => ownedCalls.length >= 1);
+    callAt(0).ok([rowA()]);
+    await pairA;
+
+    // Two overlapping alarm A-syncs. #1 (older) returns rowA; #2 (newer) rowB.
+    alarmHandler()({ name: "scheduled-refresh" });
+    await waitFor(() => ownedCalls.length >= 2);
+    alarmHandler()({ name: "scheduled-refresh" });
+    await waitFor(() => ownedCalls.length >= 3);
+
+    // The NEWER (#2) completes first and installs rowB…
+    callAt(2).ok([rowB()]);
+    await settle();
+    // …then the OLDER (#1) completes LAST and must be ignored (stale generation).
+    callAt(1).ok([rowA()]);
+    await settle();
+
+    expect(await watchlist(productB)).toEqual({
+      ok: true,
+      watchlist: { ok: true, entryId: WATCHLIST_ENTRY_ID },
+    });
+    expect(await watchlist(productA)).toEqual({
+      ok: true,
+      watchlist: { ok: false, reason: "denied" },
+    });
+  });
+
+  it("capture after re-pair uploads ONLY B-owned targets — a stale A completion never reopens A's target", async () => {
+    const inflightA = await pairAWithInFlightAlarmSync();
+
+    const pairB = send({ kind: "pair", code: "pair-B" });
+    await waitFor(() => ownedCalls.length >= 3);
+    callAt(2).ok([rowB()]);
+    await pairB;
+    callAt(inflightA).ok([rowA()]); // stale — ignored
+    await settle();
+
+    await send({ kind: "capture", product: productA }); // not owned → skipped
+    await send({ kind: "capture", product: productB }); // B-owned → uploaded
+    await settle();
+
+    // Exactly one capture upload, and it is the B target.
+    expect(captureTargetIds).toEqual(["target-b-variant"]);
+  });
+});
