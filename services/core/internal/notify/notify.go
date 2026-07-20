@@ -383,6 +383,60 @@ func (s *Store) UnreadCount(ctx context.Context, account uuid.UUID) (int64, erro
 	return db.New(s.pool).CountUnreadNotifications(ctx, account)
 }
 
+// Feed is ONE consistent snapshot of an account's notification surface (issue
+// #129): the in-app feed page and its account-wide unread badge, read under a
+// single MVCC snapshot so the badge can never claim a count impossible for the
+// returned Items (no split-brain between an interleaved ack/insert). UnreadCount is
+// the ACCOUNT-WIDE number of unread notifications (the badge), the same semantics as
+// UnreadCount — documented and preserved, not narrowed to the page.
+type Feed struct {
+	Items       []Notification
+	UnreadCount int64
+}
+
+// snapshotFeed reads the account feed page AND its account-wide unread badge from
+// ONE database snapshot (issue #129). Both queries run inside a single READ-ONLY,
+// REPEATABLE READ transaction, so they observe the same MVCC snapshot: an ack or
+// insert committed between them is invisible to BOTH, and the returned Items and
+// UnreadCount always describe the same database state. The transaction issues no
+// write (it reuses the existing ListNotifications/CountUnreadNotifications selects),
+// preserving the append-only guarantee. Any failure of either component returns a
+// ZERO Feed and the error — NEVER a partial combined response (fail closed, atomic).
+func (s *Store) snapshotFeed(ctx context.Context, account uuid.UUID) (Feed, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	})
+	if err != nil {
+		return Feed{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	rows, err := q.ListNotifications(ctx, account)
+	if err != nil {
+		return Feed{}, err
+	}
+	items := make([]Notification, 0, len(rows))
+	for _, r := range rows {
+		n, err := toNotification(r)
+		if err != nil {
+			return Feed{}, err
+		}
+		items = append(items, n)
+	}
+
+	unread, err := q.CountUnreadNotifications(ctx, account)
+	if err != nil {
+		return Feed{}, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return Feed{}, err
+	}
+	return Feed{Items: items, UnreadCount: unread}, nil
+}
+
 // MarkRead marks one notification read via the FROM-guarded projection. It is
 // idempotent: an already-read or foreign notification matches nothing and returns
 // changed=false with no error (never a blind overwrite of the append-only row).

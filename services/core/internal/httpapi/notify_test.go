@@ -25,13 +25,13 @@ type fakeNotify struct {
 	gotAck  uuid.UUID
 }
 
-func (f *fakeNotify) ListForOrg(_ context.Context, org, account uuid.UUID) ([]notify.Notification, error) {
+func (f *fakeNotify) FeedForOrg(_ context.Context, org, account uuid.UUID) (notify.Feed, error) {
 	f.gotOrg, f.gotAcct = org, account
-	return f.items, f.err
-}
-func (f *fakeNotify) UnreadCountForOrg(_ context.Context, org, account uuid.UUID) (int64, error) {
-	f.gotOrg, f.gotAcct = org, account
-	return f.unread, f.err
+	if f.err != nil {
+		// Fail closed: no partial feed accompanies an error (issue #129).
+		return notify.Feed{}, f.err
+	}
+	return notify.Feed{Items: f.items, UnreadCount: f.unread}, nil
 }
 func (f *fakeNotify) MarkReadForOrg(_ context.Context, org, account, id uuid.UUID) (notify.Notification, bool, error) {
 	f.gotOrg, f.gotAcct, f.gotAck = org, account, id
@@ -87,6 +87,31 @@ func TestListNotifications_MapsSharedEventIDs(t *testing.T) {
 	}
 	if feed.Notifications[0].ReadAt == nil {
 		t.Fatal("read_at not mapped")
+	}
+}
+
+// TestListNotifications_SnapshotErrorFailsClosed proves that when the single-snapshot
+// read fails for a non-scoping reason (issue #129: either component of the atomic
+// feed+badge read errors), the handler returns a structured 500 and NEVER a partial
+// 200 feed — the combined read is atomic.
+func TestListNotifications_SnapshotErrorFailsClosed(t *testing.T) {
+	fn := &fakeNotify{err: errors.New("snapshot read failed"), items: []notify.Notification{{ID: uuid.New()}}, unread: 7}
+	s := &gatewayServer{notify: fn}
+	resp, err := s.ListNotifications(context.Background(), gateway.ListNotificationsRequestObject{
+		Params: gateway.ListNotificationsParams{MarketplaceAccountId: uuid.New()},
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if _, ok := resp.(gateway.ListNotifications200JSONResponse); ok {
+		t.Fatal("snapshot failure must not yield a partial 200 feed")
+	}
+	def, ok := resp.(gateway.ListNotificationsdefaultJSONResponse)
+	if !ok {
+		t.Fatalf("want default (fail-closed) response, got %T", resp)
+	}
+	if def.StatusCode != 500 {
+		t.Fatalf("snapshot failure status = %d, want 500", def.StatusCode)
 	}
 }
 

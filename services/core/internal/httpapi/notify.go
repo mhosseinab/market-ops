@@ -16,13 +16,13 @@ import (
 // the caller's OWN marketplace account from the org, and predicates the read/ack on
 // it. A foreign or org-less caller — or one naming another tenant's account id — is
 // a uniform not-found (notify.ErrAccountNotFound) with no disclosure and no
-// read-state write. ListForOrg returns the in-app feed; UnreadCountForOrg the badge;
-// MarkReadForOrg advances the bounded read-state projection idempotently
-// (changed=false on a no-op, including a foreign notification id under the own
-// account — no existence oracle).
+// read-state write. FeedForOrg returns the in-app feed AND its unread badge from ONE
+// database snapshot (issue #129), so the badge can never claim a count impossible for
+// the returned items; MarkReadForOrg advances the bounded read-state projection
+// idempotently (changed=false on a no-op, including a foreign notification id under
+// the own account — no existence oracle).
 type NotifyService interface {
-	ListForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]notify.Notification, error)
-	UnreadCountForOrg(ctx context.Context, organizationID, account uuid.UUID) (int64, error)
+	FeedForOrg(ctx context.Context, organizationID, account uuid.UUID) (notify.Feed, error)
 	MarkReadForOrg(ctx context.Context, organizationID, account, id uuid.UUID) (notify.Notification, bool, error)
 }
 
@@ -41,7 +41,10 @@ func (s *gatewayServer) ListNotifications(
 	// feed or unread count.
 	account := req.Params.MarketplaceAccountId
 	org := orgFromCtx(ctx)
-	items, err := s.notify.ListForOrg(ctx, org, account)
+	// Feed page AND unread badge come from ONE database snapshot (issue #129): the
+	// badge can never report a count impossible for the returned items, and if either
+	// component fails the whole read fails closed — no partial NotificationFeed.
+	feed, err := s.notify.FeedForOrg(ctx, org, account)
 	if err != nil {
 		if errors.Is(err, notify.ErrAccountNotFound) {
 			return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 404, Body: notifyErr(err)}, nil
@@ -49,15 +52,7 @@ func (s *gatewayServer) ListNotifications(
 		s.logNotify(ctx, "list", account, err)
 		return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 500, Body: notifyErr(err)}, nil
 	}
-	unread, err := s.notify.UnreadCountForOrg(ctx, org, account)
-	if err != nil {
-		if errors.Is(err, notify.ErrAccountNotFound) {
-			return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 404, Body: notifyErr(err)}, nil
-		}
-		s.logNotify(ctx, "unread-count", account, err)
-		return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 500, Body: notifyErr(err)}, nil
-	}
-	return gateway.ListNotifications200JSONResponse(toNotificationFeed(account, unread, items)), nil
+	return gateway.ListNotifications200JSONResponse(toNotificationFeed(account, feed.UnreadCount, feed.Items)), nil
 }
 
 // AckNotification marks one notification read (NOT-001). It is idempotent: acking

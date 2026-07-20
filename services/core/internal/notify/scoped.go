@@ -69,6 +69,26 @@ func (s *Store) UnreadCountForOrg(ctx context.Context, organizationID, requested
 	return s.UnreadCount(ctx, account)
 }
 
+// FeedForOrg returns the caller's OWN account notification feed AND its account-wide
+// unread badge from ONE consistent database snapshot (issue #129), preserving the
+// issue #113 tenant scoping EXACTLY: the account is resolved FROM the authenticated
+// organization and the requested account MUST equal it — a foreign or org-less caller
+// yields ErrAccountNotFound (uniform not-found, no existence oracle), never another
+// tenant's feed or count. Ownership is enforced BEFORE the snapshot read; the read
+// itself observes the feed items and the badge under a single MVCC snapshot, so the
+// two can never describe different database states, and any component failure returns
+// NO partial feed (fail closed).
+func (s *Store) FeedForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID) (Feed, error) {
+	account, err := s.accountForOrg(ctx, organizationID)
+	if err != nil {
+		return Feed{}, err
+	}
+	if requestedAccount != account {
+		return Feed{}, ErrAccountNotFound
+	}
+	return s.snapshotFeed(ctx, account)
+}
+
 // MarkReadForOrg acknowledges one notification under the caller's OWN account (issue
 // #113). Ownership is resolved and enforced BEFORE any state change: a foreign or
 // org-less caller — including one supplying another tenant's account id — returns
