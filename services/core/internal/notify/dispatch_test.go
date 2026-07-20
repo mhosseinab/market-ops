@@ -117,3 +117,54 @@ func TestBuildArgs_DedupIdentityIsPerSource(t *testing.T) {
 		t.Fatalf("execution and safety failure dedup keys must differ: %q", ef.DedupKey)
 	}
 }
+
+// TestBuildArgs_DedupBindsToEventIdentityAndPayload proves the NOT-001 idempotency
+// key is a STABLE function of the event identity AND the notification payload (issue
+// #123): it must NOT collapse two semantically distinct notifications that share an
+// identity but differ in payload, while an exact replay (same identity + same
+// payload) MUST collapse to one. Binding to identity alone silently swallows the
+// second, distinct notification and freezes the first payload — a fail-open on a
+// safety notice.
+func TestBuildArgs_DedupBindsToEventIdentityAndPayload(t *testing.T) {
+	account := uuid.New()
+	cardID := uuid.New()
+	actionID := uuid.New()
+
+	// The core hole: the SAME card can be blocked by DIFFERENT revalidation gates
+	// (boundary vs contribution_floor vs movement_cap). Each is a distinct safety
+	// notice with a distinct {reason} payload; keying on the card identity alone
+	// collapses them and drops every gate after the first.
+	sfBoundary := buildSafetyFailureArgs(account, actionID, cardID, "boundary")
+	sfFloor := buildSafetyFailureArgs(account, actionID, cardID, "contribution_floor")
+	if sfBoundary.DedupKey == sfFloor.DedupKey {
+		t.Fatalf("same card, distinct gate payload must NOT collapse dedup key: %q", sfBoundary.DedupKey)
+	}
+
+	// An exact replay of the SAME transition (same identity + same payload) MUST
+	// collapse — the key is a deterministic, stable function of its inputs.
+	sfBoundaryReplay := buildSafetyFailureArgs(account, actionID, cardID, "boundary")
+	if sfBoundary.DedupKey != sfBoundaryReplay.DedupKey {
+		t.Fatalf("same identity + same payload must yield the SAME dedup key: %q vs %q",
+			sfBoundary.DedupKey, sfBoundaryReplay.DedupKey)
+	}
+
+	// A distinct identity (different card) never collides even at an identical payload.
+	sfOtherCard := buildSafetyFailureArgs(account, actionID, uuid.New(), "boundary")
+	if sfBoundary.DedupKey == sfOtherCard.DedupKey {
+		t.Fatalf("distinct card identity must yield a distinct dedup key: %q", sfBoundary.DedupKey)
+	}
+
+	// Market events: deterministic under a payload-carrying replay, distinct on a
+	// distinct payload (variant slot).
+	eventID := uuid.New()
+	variant := uuid.New()
+	me := buildMarketEventArgs(account, eventID, variant)
+	meReplay := buildMarketEventArgs(account, eventID, variant)
+	if me.DedupKey != meReplay.DedupKey {
+		t.Fatalf("market-event replay must yield the SAME dedup key: %q vs %q", me.DedupKey, meReplay.DedupKey)
+	}
+	meOtherVariant := buildMarketEventArgs(account, eventID, uuid.New())
+	if me.DedupKey == meOtherVariant.DedupKey {
+		t.Fatalf("distinct variant payload must yield a distinct dedup key: %q", me.DedupKey)
+	}
+}

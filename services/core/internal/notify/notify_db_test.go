@@ -2,6 +2,7 @@ package notify_test
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"sync"
@@ -114,6 +115,99 @@ func TestDeliver_DedupCreatesNoDuplicateEvent(t *testing.T) {
 	}
 	if len(list) != 1 {
 		t.Fatalf("dedup produced %d notifications, want exactly 1", len(list))
+	}
+}
+
+// TestDeliver_ConflictOnDifferentEventFailsClosed is the issue #123 never-cut
+// negative: reusing an (account, dedup_key) for a DIFFERENT source event must NOT be
+// reported as an ordinary replay — it fails closed with a typed idempotency conflict,
+// and the distinct second event is never silently discarded into the first row.
+func TestDeliver_ConflictOnDifferentEventFailsClosed(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account := seedAccount(t, q)
+	store := notify.NewStore(pool)
+
+	key := "reused-" + uuid.NewString()
+	e1 := uuid.New()
+	first, err := store.Deliver(ctx, notify.DeliverParams{
+		Account: account, EventID: e1, DedupKey: key,
+		Category: notify.CategoryMarketEvent, Severity: "info",
+		TitleKey: notify.KeyItemMarketEvent, BodyKey: notify.KeyItemMarketEvent,
+		BodyParams: map[string]string{"variant": "SKU-1"},
+	})
+	if err != nil || !first.Delivered {
+		t.Fatalf("first deliver: delivered=%v err=%v", first.Delivered, err)
+	}
+
+	// Same key, DIFFERENT event id and payload — a reused business key over a distinct
+	// event. Must fail closed with the typed conflict (never Delivered=false replay).
+	e2 := uuid.New()
+	_, err = store.Deliver(ctx, notify.DeliverParams{
+		Account: account, EventID: e2, DedupKey: key,
+		Category: notify.CategoryMarketEvent, Severity: "info",
+		TitleKey: notify.KeyItemMarketEvent, BodyKey: notify.KeyItemMarketEvent,
+		BodyParams: map[string]string{"variant": "SKU-2"},
+	})
+	var conflict *notify.IdempotencyConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("reused key over a different event must return *IdempotencyConflictError, got %v", err)
+	}
+	if !errors.Is(err, notify.ErrIdempotencyConflict) {
+		t.Fatalf("conflict must unwrap to ErrIdempotencyConflict, got %v", err)
+	}
+	if conflict.ExistingEventID != e1 || conflict.IncomingEventID != e2 {
+		t.Fatalf("conflict must carry both event ids: existing=%v incoming=%v", conflict.ExistingEventID, conflict.IncomingEventID)
+	}
+
+	// The distinct event was never absorbed: the feed still holds exactly the first.
+	list, err := store.List(ctx, account)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != 1 || list[0].EventID != e1 {
+		t.Fatalf("feed must hold exactly the first event, got %d rows", len(list))
+	}
+}
+
+// TestDeliver_ConflictOnChangedPayloadFailsClosed proves a SAME-event, same-key
+// delivery with a materially CHANGED payload (a param value) is a conflict, not a
+// replay — a changed payload is never silently frozen to the first delivery's copy.
+func TestDeliver_ConflictOnChangedPayloadFailsClosed(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account := seedAccount(t, q)
+	store := notify.NewStore(pool)
+
+	event := uuid.New()
+	key := "evt-" + event.String()
+	base := notify.DeliverParams{
+		Account: account, EventID: event, DedupKey: key,
+		Category: notify.CategorySafetyFailure, Severity: "critical",
+		TitleKey: notify.KeyItemSafetyFail, BodyKey: notify.KeyItemSafetyFail,
+		BodyParams: map[string]string{"reason": "boundary"},
+	}
+	if _, err := store.Deliver(ctx, base); err != nil {
+		t.Fatalf("first deliver: %v", err)
+	}
+
+	changed := base
+	changed.BodyParams = map[string]string{"reason": "contribution_floor"}
+	_, err := store.Deliver(ctx, changed)
+	if !errors.Is(err, notify.ErrIdempotencyConflict) {
+		t.Fatalf("changed payload on the same key must fail closed with a conflict, got %v", err)
+	}
+
+	// An EXACT replay of the original still returns the stored row (Delivered=false).
+	replay, err := store.Deliver(ctx, base)
+	if err != nil {
+		t.Fatalf("exact replay must not conflict: %v", err)
+	}
+	if replay.Delivered {
+		t.Fatal("exact replay must be Delivered=false")
+	}
+	if replay.Notification.BodyParams["reason"] != "boundary" {
+		t.Fatalf("stored payload must be the original, got %q", replay.Notification.BodyParams["reason"])
 	}
 }
 

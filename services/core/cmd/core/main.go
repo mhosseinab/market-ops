@@ -452,7 +452,11 @@ func run() error {
 			// for it exactly-once-effectively. Delivery is idempotent on (account,
 			// dedup_key), so an at-least-once retry never creates a duplicate product
 			// event; a delivery error is returned so River retries (a committed
-			// transition's notification is never lost).
+			// transition's notification is never lost). An idempotency conflict
+			// (issue #123 — a reused dedup key over a different event/payload) is a
+			// PERMANENT fault, not a transient one: it is cancelled (not retried) so it
+			// never poisons the queue, having already failed closed with safe telemetry
+			// at the store. A retry could not resolve it (idempotency gates every retry).
 			NotificationDeliver: func(c context.Context, args jobs.NotificationDeliverArgs) error {
 				_, err := notifyStore.Deliver(c, notify.DeliverParams{
 					Account:    args.Account,
@@ -464,6 +468,9 @@ func run() error {
 					BodyKey:    args.BodyKey,
 					BodyParams: args.Params,
 				})
+				if errors.Is(err, notify.ErrIdempotencyConflict) {
+					return river.JobCancel(err)
+				}
 				return err
 			},
 		}, catalogDeps)
