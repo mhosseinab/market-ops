@@ -1,6 +1,7 @@
 package recommendation_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -110,7 +111,11 @@ func TestAdmitEditedPriceNonCompleteReadinessRejected(t *testing.T) {
 
 // TestAdmitEditedPrice_MismatchedUnitRejected proves an edited price whose unit
 // differs from the policy money unit fails closed (quarantine-over-inference,
-// §9.1) rather than silently admitting.
+// §9.1) rather than silently admitting. The re-check surfaces the edited-VALUE
+// reference sentinel (policy.ErrReferenceUnitMismatch), which AdmitEditedPrice
+// folds into the single declined-edit class (recommendation.ErrEditedPriceRejected,
+// issue #306) — so a transport can key on ONE decision class and can never
+// misreport this DECLINED edit as a 500 server fault.
 func TestAdmitEditedPriceMismatchedUnitRejected(t *testing.T) {
 	pc := permissivePolicyContext(t)
 	usd, err := money.New(1010, "USD", 0)
@@ -121,7 +126,33 @@ func TestAdmitEditedPriceMismatchedUnitRejected(t *testing.T) {
 	if ok {
 		t.Fatal("a cross-unit edited price must NOT be admissible")
 	}
-	if aerr == nil {
-		t.Fatal("a cross-unit edited price must fail closed with a typed error, not a silent non-admit")
+	if !errors.Is(aerr, recommendation.ErrEditedPriceRejected) {
+		t.Fatalf("cross-unit edited price err = %v, want the declined-edit class ErrEditedPriceRejected", aerr)
+	}
+	// The raw policy sentinel must NOT leak past the domain: transport keys on the
+	// declined-edit class alone, so a shared sentinel can never drive the mapping.
+	if errors.Is(aerr, policy.ErrReferenceUnitMismatch) {
+		t.Fatal("the raw policy.ErrReferenceUnitMismatch sentinel must not leak past the domain classification")
+	}
+}
+
+// TestAdmitEditedPrice_ZeroValueRejected is the issue #306 fix-cycle regression:
+// a zero/absent edited value makes the six-stage re-check surface the edited-VALUE
+// reference sentinel (policy.ErrMissingReference) from the SAME validateReference
+// as the cross-unit case. It is identically a DECLINED EDIT, so AdmitEditedPrice
+// folds it into the single declined-edit class (ErrEditedPriceRejected) — never a
+// raw policy sentinel a transport could misreport as a 500. Fail closed: not
+// admitted. Money never-cut: the zero value is rejected at the policy layer.
+func TestAdmitEditedPriceZeroValueRejected(t *testing.T) {
+	pc := permissivePolicyContext(t)
+	_, ok, err := recommendation.AdmitEditedPrice(pc, irr(t, 0), time.Now())
+	if ok {
+		t.Fatal("a zero/absent edited price must NOT be admissible")
+	}
+	if !errors.Is(err, recommendation.ErrEditedPriceRejected) {
+		t.Fatalf("zero-value edited price err = %v, want the declined-edit class ErrEditedPriceRejected", err)
+	}
+	if errors.Is(err, policy.ErrMissingReference) {
+		t.Fatal("the raw policy.ErrMissingReference sentinel must not leak past the domain classification")
 	}
 }
