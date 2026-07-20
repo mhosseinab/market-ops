@@ -3,7 +3,7 @@ import { GatewayClient } from "../lib/gateway";
 import { buildHistorySeries } from "../lib/history";
 import { createHistoryReadGateway } from "../lib/history-read";
 import type { ExtMessage, ExtResponse } from "../lib/messages";
-import { gauge, incr, log } from "../lib/observability";
+import { gauge, incr, log, snapshotMetrics } from "../lib/observability";
 import { deriveOverlayView } from "../lib/overlay-data";
 import { createOverlayReadGateway } from "../lib/overlay-read";
 import { OwnedTargetIndex } from "../lib/owned-targets";
@@ -19,6 +19,11 @@ import {
   type PopupState,
   sanitizeCredential,
 } from "../lib/storage";
+import {
+  TelemetryOutbox,
+  type TelemetryTransport,
+  unavailableTelemetryTransport,
+} from "../lib/telemetry-outbox";
 import type { PairingCredential, ParsedProduct } from "../lib/types";
 import { createWatchlistGateway } from "../lib/watchlist";
 
@@ -34,6 +39,13 @@ const KEY_SCHEDULE_ENABLED = "scheduleEnabled";
 
 const store = chromeLocalStore();
 const queue = new UploadQueue(store);
+// Durable operational-telemetry outbox (issue #162): a bounded, allow-listed
+// metric snapshot in chrome.storage that survives MV3 worker restarts. The
+// transport is the SINGLE export seam; while no capture-credential-scoped
+// telemetry endpoint exists in the gateway contract (BLOCKED-on-endpoint), the
+// default keeps batches durably pending within the cap and NEVER blocks capture.
+const telemetry = new TelemetryOutbox(store);
+const telemetryTransport: TelemetryTransport = unavailableTelemetryTransport;
 const gateway = new GatewayClient(GATEWAY_BASE_URL);
 const watchlistGateway = createWatchlistGateway();
 const overlayReadGateway = createOverlayReadGateway();
@@ -52,6 +64,18 @@ void initDevErrorReporting("service-worker");
 // unavailable read leaves the index empty).
 void syncOwnedTargets();
 
+// On worker (re)spawn the in-memory metric registry is empty and any per-boot
+// gauge (e.g. queue_depth) has been lost. Re-derive queue depth from the
+// AUTHORITATIVE durable queue — never an accumulated counter — and flush any
+// telemetry batches that were persisted before the previous teardown. Fail-open:
+// export never blocks capture.
+void bootTelemetry();
+
+async function bootTelemetry(): Promise<void> {
+  await emitQueueDepth();
+  await pumpTelemetry();
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.alarms.create(FLUSH_ALARM, { periodInMinutes: 1 });
   // A HINT only (docs/09 closing note) — the actual bound is the server's
@@ -64,7 +88,7 @@ chrome.runtime.onStartup?.addListener(() => {
   void syncOwnedTargets();
 });
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === FLUSH_ALARM) void flush();
+  if (a.name === FLUSH_ALARM) void flush().then(() => pumpTelemetry());
   if (a.name === SCHEDULE_ALARM) {
     // Periodically re-sync owned targets to pick up account/identity changes
     // (a newly Confirmed variant, or a de-confirmed one that must drop out).
@@ -372,6 +396,24 @@ async function flush(): Promise<void> {
 async function emitQueueDepth(): Promise<void> {
   const depth = await queue.count();
   gauge("queue_depth", depth);
+}
+
+// pumpTelemetry persists the CURRENT in-memory metric registry into the durable
+// outbox and attempts an export (issue #162). It is fail-open by construction:
+// snapshot writes a bounded, allow-listed batch to chrome.storage (surviving the
+// next worker teardown), and export drains only server-accepted batches through
+// the injectable transport — a failing/absent transport leaves batches durably
+// pending within the cap. Callers invoke it fire-and-forget so a capture path is
+// NEVER blocked or degraded by telemetry.
+async function pumpTelemetry(): Promise<void> {
+  try {
+    await telemetry.snapshot(snapshotMetrics(), new Date().toISOString());
+    await telemetry.export(telemetryTransport);
+  } catch (e) {
+    // Telemetry is advisory (lowest load-shedding priority) — never surface a
+    // failure onto the capture path.
+    log("warn", "telemetry_pump_failed", { error: e instanceof Error ? e.message : "unknown" });
+  }
 }
 
 async function getCapability(): Promise<Capability> {
