@@ -92,6 +92,65 @@ func (q *Queries) CostProfileAt(ctx context.Context, arg CostProfileAtParams) ([
 	return items, nil
 }
 
+const costProfileAtForAccount = `-- name: CostProfileAtForAccount :many
+SELECT DISTINCT ON (component) id, marketplace_account_id, variant_id, component, version, amount_mantissa, amount_currency, amount_exponent, raw_text, raw_value, raw_unit, effective_from, stale_after, source, import_batch_id, created_by, created_at
+FROM cost_profiles
+WHERE variant_id = $1
+  AND marketplace_account_id = $2
+  AND effective_from <= $3
+ORDER BY component, effective_from DESC, version DESC
+`
+
+type CostProfileAtForAccountParams struct {
+	VariantID     uuid.UUID
+	AccountID     uuid.UUID
+	EffectiveFrom time.Time
+}
+
+// TENANT-SCOPED point-in-time lookup (issue #131, identity/tenant quarantine §4.6).
+// Identical to CostProfileAt but the caller's RESOLVED marketplace account (derived
+// from its authenticated organization, never a request param) bounds the read: a
+// variant owned by another organization matches NO rows, so a foreign variant is
+// indistinguishable from one with no cost profile (uniform empty result, no existence
+// oracle). Reproduces the EXACT in-force version of each component at the instant.
+func (q *Queries) CostProfileAtForAccount(ctx context.Context, arg CostProfileAtForAccountParams) ([]CostProfile, error) {
+	rows, err := q.db.Query(ctx, costProfileAtForAccount, arg.VariantID, arg.AccountID, arg.EffectiveFrom)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []CostProfile{}
+	for rows.Next() {
+		var i CostProfile
+		if err := rows.Scan(
+			&i.ID,
+			&i.MarketplaceAccountID,
+			&i.VariantID,
+			&i.Component,
+			&i.Version,
+			&i.AmountMantissa,
+			&i.AmountCurrency,
+			&i.AmountExponent,
+			&i.RawText,
+			&i.RawValue,
+			&i.RawUnit,
+			&i.EffectiveFrom,
+			&i.StaleAfter,
+			&i.Source,
+			&i.ImportBatchID,
+			&i.CreatedBy,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const countMarginReadinessStates = `-- name: CountMarginReadinessStates :many
 SELECT state, COUNT(*) AS n
 FROM margin_readiness

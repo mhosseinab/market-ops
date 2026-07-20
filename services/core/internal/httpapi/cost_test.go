@@ -27,13 +27,21 @@ type fakeCost struct {
 
 	lastPreview cost.PreviewInput
 	lastCommit  uuid.UUID
+
+	// Tenant-scoped read recording (issue #131): the *ForOrg reads record the org they
+	// were called with so a transport test can assert the handler derives scope from
+	// the authenticated principal, never from the request param.
+	lastOrg     uuid.UUID
+	lastVariant uuid.UUID
+	lastBatch   uuid.UUID
 }
 
 func (f *fakeCost) PreviewImport(_ context.Context, in cost.PreviewInput) (cost.Preview, error) {
 	f.lastPreview = in
 	return f.preview, f.err
 }
-func (f *fakeCost) GetPreview(context.Context, uuid.UUID) (cost.Preview, error) {
+func (f *fakeCost) GetPreviewForOrg(_ context.Context, org, batchID uuid.UUID) (cost.Preview, error) {
+	f.lastOrg, f.lastBatch = org, batchID
 	return f.preview, f.err
 }
 func (f *fakeCost) CommitImport(_ context.Context, batchID, _ uuid.UUID) (cost.CommitResult, error) {
@@ -43,10 +51,12 @@ func (f *fakeCost) CommitImport(_ context.Context, batchID, _ uuid.UUID) (cost.C
 func (f *fakeCost) EnterSingleCost(context.Context, cost.SingleCostInput) (db.CostProfile, error) {
 	return f.profile, f.err
 }
-func (f *fakeCost) CostProfileAt(context.Context, uuid.UUID, time.Time) ([]db.CostProfile, error) {
+func (f *fakeCost) CostProfileAtForOrg(_ context.Context, org, variant uuid.UUID, _ time.Time) ([]db.CostProfile, error) {
+	f.lastOrg, f.lastVariant = org, variant
 	return f.profiles, f.err
 }
-func (f *fakeCost) GetReadiness(context.Context, uuid.UUID) (db.MarginReadiness, error) {
+func (f *fakeCost) GetReadinessForOrg(_ context.Context, org, variant uuid.UUID) (db.MarginReadiness, error) {
+	f.lastOrg, f.lastVariant = org, variant
 	return f.readiness, f.err
 }
 

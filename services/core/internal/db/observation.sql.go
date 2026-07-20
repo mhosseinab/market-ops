@@ -978,6 +978,76 @@ func (q *Queries) ListObservationsByTarget(ctx context.Context, arg ListObservat
 	return items, nil
 }
 
+const listObservationsByTargetForAccount = `-- name: ListObservationsByTargetForAccount :many
+SELECT id, captured_at, target_id, marketplace_account_id, native_variant_id, native_seller_id, offer_identity, route, sub_route, parser_version, connector_version, source_url, source_type, evidence_ref, raw_fixture_ref, price_raw_text, price_raw_value, price_raw_unit, list_price_raw_text, list_price_raw_value, list_price_raw_unit, availability_status, stock_signal, quality, freshness_deadline, dedup_key, schema_valid, identity_valid, confidence, parsing_warnings FROM observations
+WHERE target_id = $1 AND marketplace_account_id = $2
+ORDER BY captured_at DESC
+LIMIT $3
+`
+
+type ListObservationsByTargetForAccountParams struct {
+	TargetID             uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	Limit                int32
+}
+
+// TENANT-SCOPED append-only evidence read (issue #131, identity/tenant quarantine
+// §4.6). Identical to ListObservationsByTarget but the caller's RESOLVED marketplace
+// account (derived from its authenticated organization, never a request param) bounds
+// the read: a target owned by another organization matches NO rows, so a foreign
+// target is indistinguishable from a target with no evidence (uniform empty result,
+// no existence oracle). Newest first, bounded by the caller.
+func (q *Queries) ListObservationsByTargetForAccount(ctx context.Context, arg ListObservationsByTargetForAccountParams) ([]Observation, error) {
+	rows, err := q.db.Query(ctx, listObservationsByTargetForAccount, arg.TargetID, arg.MarketplaceAccountID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Observation{}
+	for rows.Next() {
+		var i Observation
+		if err := rows.Scan(
+			&i.ID,
+			&i.CapturedAt,
+			&i.TargetID,
+			&i.MarketplaceAccountID,
+			&i.NativeVariantID,
+			&i.NativeSellerID,
+			&i.OfferIdentity,
+			&i.Route,
+			&i.SubRoute,
+			&i.ParserVersion,
+			&i.ConnectorVersion,
+			&i.SourceUrl,
+			&i.SourceType,
+			&i.EvidenceRef,
+			&i.RawFixtureRef,
+			&i.PriceRawText,
+			&i.PriceRawValue,
+			&i.PriceRawUnit,
+			&i.ListPriceRawText,
+			&i.ListPriceRawValue,
+			&i.ListPriceRawUnit,
+			&i.AvailabilityStatus,
+			&i.StockSignal,
+			&i.Quality,
+			&i.FreshnessDeadline,
+			&i.DedupKey,
+			&i.SchemaValid,
+			&i.IdentityValid,
+			&i.Confidence,
+			&i.ParsingWarnings,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listObservedOffers = `-- name: ListObservedOffers :many
 SELECT id, target_id, marketplace_account_id, offer_identity, native_variant_id, native_seller_id, price_raw_text, price_raw_value, price_raw_unit, list_price_raw_text, list_price_raw_value, list_price_raw_unit, availability_status, stock_signal, quality, captured_at, freshness_deadline, routes, last_observation_id, ended_at, created_at, updated_at FROM observed_offers
 WHERE marketplace_account_id = $1
