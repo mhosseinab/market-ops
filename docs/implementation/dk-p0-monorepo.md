@@ -113,7 +113,7 @@ Canonical command reference (the repo's real verify commands once S1/S6 land):
 | Go tests | `task go:test` (= `cd services/core && go test ./... -race`) | exit 0 |
 | Go lint | `task go:lint` (= per-module `GOWORK=off golangci-lint run ./...`) | exit 0 |
 | Python tests | `task py:test` (= `uv run pytest services/llm -q`) | exit 0 |
-| Python types/lint | `task py:lint` (= `uv run ruff check services/llm && uv run mypy services/llm` **from repo root**) | exit 0 |
+| Python types/lint | `task py:lint` (= `uv run ruff check services/llm tools/integration && uv run mypy services/llm tools/integration` **from repo root**) | exit 0 |
 | TS tests | `task ts:test` (= `pnpm -r test` → vitest run) | exit 0 |
 | TS types/lint | `task ts:lint` (= `pnpm -r typecheck` → `tsc --noEmit`; `pnpm biome check .`) | exit 0 |
 | Contracts | `task contracts:generate` then `task contracts:drift` (= `git diff --exit-code contracts gen`) | regen is idempotent; drift check exit 0 |
