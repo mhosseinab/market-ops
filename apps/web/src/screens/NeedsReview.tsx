@@ -30,10 +30,19 @@ export function NeedsReview() {
   // free-text field, not authority — but it IS the reviewer's input, so it is
   // preserved on failure (cleared only once the decision is recorded).
   const failed = confirm.isError ? confirm : reject.isError ? reject : defer.isError ? defer : null;
+  // A decision in flight locks EVERY control: no concurrent confirm/reject/defer
+  // on any candidate while one is pending.
+  const anyPending = confirm.isPending || reject.isPending || defer.isPending;
 
-  function decide(fn: typeof confirm, identityId: string) {
+  // Audit-attribution never-cut (#83): a decision always acts on the SELECTED
+  // candidate — the one whose evidence panel (and note) is visible. The row
+  // controls are inert unless their row is the selected action target, so the
+  // payload identity is structurally the visible evidence, never a mismatched
+  // candidate, and the note travels only with the identity it was typed against.
+  function decide(fn: typeof confirm) {
+    if (!selected) return;
     fn.mutate(
-      { identityId, ...(note.trim() ? { note: note.trim() } : {}) },
+      { identityId: selected.identityId, ...(note.trim() ? { note: note.trim() } : {}) },
       { onSuccess: () => setNote("") },
     );
   }
@@ -51,34 +60,39 @@ export function NeedsReview() {
     {
       id: "decision",
       header: "needsReview.col.decision",
-      render: (r) => (
-        <div className="row-actions">
-          <button
-            type="button"
-            className="btn btn--primary btn--sm"
-            disabled={confirm.isPending}
-            onClick={() => decide(confirm, r.identityId)}
-          >
-            {t("needsReview.confirm")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--danger btn--sm"
-            disabled={reject.isPending}
-            onClick={() => decide(reject, r.identityId)}
-          >
-            {t("needsReview.reject")}
-          </button>
-          <button
-            type="button"
-            className="btn btn--secondary btn--sm"
-            disabled={defer.isPending}
-            onClick={() => decide(defer, r.identityId)}
-          >
-            {t("needsReview.defer")}
-          </button>
-        </div>
-      ),
+      render: (r) => {
+        // Only the selected candidate is a valid action target; while any
+        // decision is pending, every control is locked.
+        const locked = anyPending || r.identityId !== selectedId;
+        return (
+          <div className="row-actions">
+            <button
+              type="button"
+              className="btn btn--primary btn--sm"
+              disabled={locked}
+              onClick={() => decide(confirm)}
+            >
+              {t("needsReview.confirm")}
+            </button>
+            <button
+              type="button"
+              className="btn btn--danger btn--sm"
+              disabled={locked}
+              onClick={() => decide(reject)}
+            >
+              {t("needsReview.reject")}
+            </button>
+            <button
+              type="button"
+              className="btn btn--secondary btn--sm"
+              disabled={locked}
+              onClick={() => decide(defer)}
+            >
+              {t("needsReview.defer")}
+            </button>
+          </div>
+        );
+      },
     },
   ];
 
