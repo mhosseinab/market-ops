@@ -316,10 +316,12 @@ func run() error {
 			resolver := notify.NewDBTargetResolver(pool, cfg.NotifyLocale, func(uuid.UUID) string {
 				return notify.BriefingLinkURL(base)
 			})
-			// The digest emits a §18 briefing-family event + a §17.3 briefing cost on
-			// the analytics pipe after each send (the digest reuses/links the daily
-			// briefing, §6.8 + §17.3 ladder step 2). Envelope fields are DATA from
-			// config; a lookup/emit hiccup is logged, never fatal (advisory pipe).
+			// The digest emits a §18 briefing-family event on the analytics pipe after
+			// each send (the digest reuses/LINKS the daily briefing, §6.8). It records
+			// NO §17.3 briefing cost: a link is not a billable generation, so briefing
+			// spend is owned solely by the S23 CHAT-010 generation path (issue #130).
+			// Envelope fields are DATA from config; a lookup/emit hiccup is logged,
+			// never fatal (advisory pipe).
 			emitter := analyticsEmitter
 			digestSvc = notify.NewDigestService(pool, mailer, resolver).WithObserver(
 				func(ctx context.Context, account uuid.UUID, itemCount int) {
@@ -344,9 +346,13 @@ func run() error {
 					}); err != nil {
 						logger.WarnContext(ctx, "digest analytics: emit failed", "account", account.String(), "error", err.Error())
 					}
-					if err := emitter.RecordCost(ctx, env, analytics.CostBriefing, int64(itemCount)); err != nil {
-						logger.WarnContext(ctx, "digest analytics: cost failed", "account", account.String(), "error", err.Error())
-					}
+					// A daily digest LINKS an already-generated briefing (shares briefing
+					// event IDs); it does NOT generate one, so it emits NO §17.3 briefing
+					// COST (issue #130). RecordCost(CostBriefing, itemCount) here both
+					// mis-scaled the money/minor-unit counter with an item COUNT and risked
+					// double-counting the real briefing spend whose single authoritative
+					// source is the S23 CHAT-010 briefing-GENERATION path. The legitimate
+					// digest analytics EVENT above (with item_count) stays.
 				})
 			// Attach the structured logger so a per-account digest-delivery failure is
 			// logged as it is isolated out of the fan-out (issue #124): one account's

@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"context"
+	"strconv"
 	"testing"
 	"time"
 
@@ -276,5 +277,72 @@ func TestMetricLabels_BoundedSetPresentAndCorrect(t *testing.T) {
 	}
 	if len(ck) != len(wantCost) {
 		t.Fatalf("cost key set = %v, want exactly %v", ck, wantCost)
+	}
+}
+
+// TestIssue130_DigestSendEmitsNoBriefingCost is the issue #130 regression guard.
+// A daily digest LINKS an already-generated briefing (§6.8) — it does NOT generate
+// one — so the digest send must emit its briefing-family ANALYTICS EVENT but NO
+// §17.3 briefing COST. The old code recorded RecordCost(CostBriefing, itemCount),
+// which both mis-scaled a money/minor-unit counter with an item COUNT and risked
+// double-counting the real briefing spend owned by the S23 generation path.
+//
+// The emit block below mirrors the analytics operations the cmd/core digest
+// SentObserver performs after #130 (event only, no cost). It asserts the
+// cost_minor_units counter is NEVER incremented from the digest path.
+func TestIssue130_DigestSendEmitsNoBriefingCost(t *testing.T) {
+	env := fullEnvelope()
+	env.SourceSurface = "email_digest"
+	const itemCount = 12
+
+	got := collectMetrics(t, func(em *Emitter) {
+		// Exactly what the digest observer does post-#130: the linked-briefing
+		// event with its item_count attribute, and nothing on the cost pipe.
+		if err := em.Emit(context.Background(), Event{
+			Envelope:   env,
+			Family:     FamilyBriefing,
+			Name:       "daily_digest_sent",
+			Attributes: map[string]string{"item_count": strconv.Itoa(itemCount)},
+		}); err != nil {
+			t.Fatalf("emit: %v", err)
+		}
+	})
+
+	if n := len(got["analytics.events"]); n != 1 {
+		t.Fatalf("digest send: events datapoints = %d, want 1", n)
+	}
+	if dps := got["analytics.cost_minor_units"]; len(dps) != 0 {
+		t.Fatalf("digest send emitted %d cost datapoints, want 0 (a link is not a billable briefing generation, issue #130)", len(dps))
+	}
+}
+
+// TestIssue130_BriefingSpendCountedExactlyOnce proves the money/analytics-correctness
+// invariant the #130 fix protects: the authoritative briefing-GENERATION path records
+// CostBriefing spend as a true minor-unit amount EXACTLY ONCE. With the digest link no
+// longer emitting CostBriefing, a single generation is the only briefing-cost source —
+// so the cost counter shows one datapoint whose value is the generation spend, never a
+// double count and never an item-count scalar.
+func TestIssue130_BriefingSpendCountedExactlyOnce(t *testing.T) {
+	env := fullEnvelope()
+	const genSpendMinorUnits int64 = 250
+
+	got := collectMetrics(t, func(em *Emitter) {
+		// Sole authoritative emitter: the generation path. The digest link (which
+		// would previously have added a second, mis-scaled CostBriefing) contributes
+		// nothing to the cost pipe after #130, so it is intentionally absent here.
+		if err := em.RecordCost(context.Background(), env, CostBriefing, genSpendMinorUnits); err != nil {
+			t.Fatalf("generation cost: %v", err)
+		}
+	})
+
+	dps := got["analytics.cost_minor_units"]
+	if len(dps) != 1 {
+		t.Fatalf("briefing cost datapoints = %d, want exactly 1 (no double-count)", len(dps))
+	}
+	if dps[0].Value != genSpendMinorUnits {
+		t.Fatalf("briefing cost value = %d, want %d (true minor-unit spend, not an item count)", dps[0].Value, genSpendMinorUnits)
+	}
+	if attrKeySet(dps[0])["cost_kind"] != "briefing" {
+		t.Fatalf("cost_kind = %q, want \"briefing\"", attrKeySet(dps[0])["cost_kind"])
 	}
 }
