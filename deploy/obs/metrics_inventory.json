@@ -27,27 +27,101 @@
     "histogram_suffixes": ["_bucket", "_sum", "_count"]
   },
   "emitted": {
-    "execution.write_attempts": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
-    "execution.dedup_hits": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
-    "execution.gate_blocks": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
-    "execution.pending_reconciliation": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
-    "execution.recommend_only": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
-    "execution.terminal_results": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
-    "execution.audit_write_failures": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
-    "execution.enablement_denied": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
-    "execution.pending_reconciliation_current": {"type": "gauge", "family": "domain", "source": "internal/execution/reconciliation_backlog.go"},
-    "execution.pending_reconciliation_oldest_age_seconds": {"type": "gauge", "family": "domain", "source": "internal/execution/reconciliation_backlog.go"},
-    "analytics.events": {"type": "counter", "family": "analytics", "source": "internal/analytics/telemetry.go"},
-    "analytics.cost_minor_units": {"type": "counter", "family": "analytics", "source": "internal/analytics/telemetry.go"},
-    "analytics.tenant_rejections": {"type": "counter", "family": "analytics", "source": "internal/analytics/telemetry.go"},
-    "http.server.request.duration": {"type": "histogram", "family": "red", "source": "internal/httpapi/telemetry.go"},
-    "connector.sync_failure_streak": {"type": "gauge", "family": "domain", "source": "internal/catalog/telemetry.go"},
-    "connector.sync_results": {"type": "counter", "family": "domain", "source": "internal/catalog/telemetry.go"},
-    "connector.sync_streak_seed_bound_exhausted": {"type": "counter", "family": "domain", "source": "internal/catalog/telemetry.go"},
-    "connector.catalog_sync_initiations": {"type": "counter", "family": "domain", "source": "internal/connector/telemetry.go"},
-    "connector.capability_generation_invalidations": {"type": "counter", "family": "domain", "source": "internal/connector/telemetry.go"}
+    "execution.write_attempts": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
+    "execution.dedup_hits": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
+    "execution.gate_blocks": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
+    "execution.pending_reconciliation": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
+    "execution.recommend_only": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
+    "execution.terminal_results": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
+    "execution.audit_write_failures": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
+    "execution.enablement_denied": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
+    "execution.pending_reconciliation_current": {
+      "type": "gauge",
+      "family": "domain",
+      "source": "internal/execution/reconciliation_backlog.go"
+    },
+    "execution.pending_reconciliation_oldest_age_seconds": {
+      "type": "gauge",
+      "family": "domain",
+      "source": "internal/execution/reconciliation_backlog.go"
+    },
+    "analytics.events": {
+      "type": "counter",
+      "family": "analytics",
+      "source": "internal/analytics/telemetry.go"
+    },
+    "analytics.cost_minor_units": {
+      "type": "counter",
+      "family": "analytics",
+      "source": "internal/analytics/telemetry.go"
+    },
+    "analytics.tenant_rejections": {
+      "type": "counter",
+      "family": "analytics",
+      "source": "internal/analytics/telemetry.go"
+    },
+    "http.server.request.duration": {
+      "type": "histogram",
+      "family": "red",
+      "source": "internal/httpapi/telemetry.go"
+    },
+    "connector.sync_failure_streak": {
+      "type": "gauge",
+      "family": "domain",
+      "source": "internal/catalog/telemetry.go"
+    },
+    "connector.sync_results": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/catalog/telemetry.go"
+    },
+    "connector.sync_streak_seed_bound_exhausted": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/catalog/telemetry.go"
+    },
+    "connector.catalog_sync_initiations": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/connector/telemetry.go"
+    },
+    "connector.capability_generation_invalidations": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/connector/telemetry.go"
+    }
   },
-  "collector_internal": [
-    "otelcol_exporter_sent_metric_points"
-  ]
+  "collector_internal": ["otelcol_exporter_sent_metric_points"]
 }
