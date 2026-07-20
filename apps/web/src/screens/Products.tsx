@@ -81,7 +81,15 @@ function MappingCell({ product }: { product: CatalogProductRow }) {
 
 function ReadinessCell({ value }: { value?: MarginReadiness }) {
   if (!value) return <LtrToken text="—" />;
-  return <ReadinessBadge state={value.state} />;
+  // `data-state` exposes the SERVER-DERIVED readiness verdict (CST-003) as a
+  // stable, locale-independent hook so the journey-1 real-core smoke can assert
+  // a genuine server-backed value per row (not localized copy). It mirrors the
+  // badge's own state — presentation is unchanged.
+  return (
+    <span data-testid="product-row-readiness" data-state={value.state}>
+      <ReadinessBadge state={value.state} />
+    </span>
+  );
 }
 
 // Products workspace (design screen 7). Rows are the account's CANONICAL products

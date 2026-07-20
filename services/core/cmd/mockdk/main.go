@@ -8,6 +8,11 @@
 //	              forbidden|rate_limited|malformed; default happy)
 //	MOCKDK_AUTH_MODE   mode for the auth endpoints (default happy)
 //	MOCKDK_WRITE_SCOPE whether /auth/scopes advertises a write scope (default true)
+//	MOCKDK_CATALOG whether GET /open-api/v1/variants serves a small deterministic
+//	              seller-variants fixture so a catalog sync IMPORTS real products
+//	              (default off — nil Catalog keeps the empty-page probe behavior).
+//	              Enabled by deploy/compose.test.yml so the S32 real-core journey-1
+//	              Playwright smoke drives connect → sync → a genuine Products row.
 package main
 
 import (
@@ -31,6 +36,19 @@ func main() {
 	}
 	if v := os.Getenv("MOCKDK_WRITE_SCOPE"); v != "" {
 		cfg.WriteScope = strings.EqualFold(v, "true") || v == "1"
+	}
+	if v := os.Getenv("MOCKDK_CATALOG"); strings.EqualFold(v, "true") || v == "1" {
+		// A small, deterministic, all-happy catalog so a real catalog sync imports
+		// a stable set of canonical products the Products screen (and the journey-1
+		// smoke) can read. Kept intentionally tiny (spans two pages at the default
+		// page size of 2) so the import is fast and its shape is obvious.
+		cfg.Catalog = &mockdk.CatalogFixture{
+			Items: []map[string]any{
+				mockdk.VariantItem(101, 1001, 90001, 1_000_000, 5),
+				mockdk.VariantItem(102, 1002, 90002, 2_000_000, 3),
+				mockdk.VariantItem(103, 1003, 90003, 3_000_000, 0),
+			},
+		}
 	}
 
 	// Listen address: --addr flag wins, else MOCKDK_ADDR, else :8090.

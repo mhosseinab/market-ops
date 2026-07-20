@@ -192,7 +192,9 @@ export function Onboarding() {
                 <div className="kv">
                   <div className="kv__row">
                     <span>{t("onboarding.sync.label")}</span>
-                    <span data-testid="sync-state">{t(SYNC_STATE_LABEL[syncStateOf(status)])}</span>
+                    <span data-testid="sync-state" data-state={syncStateOf(status)}>
+                      {t(SYNC_STATE_LABEL[syncStateOf(status)])}
+                    </span>
                   </div>
                 </div>
 
@@ -295,6 +297,7 @@ export function Onboarding() {
               <button
                 type="button"
                 className="btn btn--primary"
+                data-testid="connect-submit"
                 disabled={connect.isPending || authCode.trim() === ""}
                 onClick={() => connect.mutate(authCode.trim())}
               >
