@@ -1,9 +1,9 @@
-import { useRouterState } from "@tanstack/react-router";
+import { useRouter, useRouterState } from "@tanstack/react-router";
 import { useAppState } from "../app/appState";
 import { useLocale, useT } from "../app/i18n";
 import { DEFAULT_ROUTE, ROUTES } from "../app/navConfig";
 import { deriveConnectorHealth } from "../data/connectorHealth";
-import { useConnectorStatus } from "../data/hooks";
+import { useConnectorStatus, useLogout } from "../data/hooks";
 import { ConnectorHealthPill } from "./ConnectorHealthPill";
 
 // Top bar: route title/subtitle, connection-health pill, density/theme/chat
@@ -23,6 +23,18 @@ export function TopBar() {
   // "healthy" pill. The pill NEVER reads positive unless a probe confirmed it.
   const connectorQuery = useConnectorStatus();
   const health = deriveConnectorHealth(connectorQuery.data);
+
+  // Logout (issue #168): close the server-side session, then route to login. The
+  // logout mutation clears the protected Query cache on success so no
+  // account-scoped data outlives the session; navigation follows once cleared.
+  const router = useRouter();
+  const logout = useLogout();
+  const onLogout = () =>
+    logout.mutate(undefined, {
+      onSuccess: () => {
+        void router.navigate({ to: "/login" });
+      },
+    });
 
   return (
     <header className="top-bar">
@@ -65,6 +77,15 @@ export function TopBar() {
       >
         {"◧"}
         {briefingUnseen && <span className="briefing-dot" aria-hidden />}
+      </button>
+      <button
+        type="button"
+        className="top-bar__control"
+        data-testid="logout"
+        disabled={logout.isPending}
+        onClick={onLogout}
+      >
+        {t("auth.logout")}
       </button>
     </header>
   );

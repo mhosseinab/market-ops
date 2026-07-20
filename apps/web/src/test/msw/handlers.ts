@@ -110,6 +110,11 @@ export const handlers = [
 
   // ── S28 defaults ──────────────────────────────────────────────────────────
   http.get(`${B}/auth/me`, () => HttpResponse.json(sessionOwner)),
+  // Auth lifecycle (issue #168): login returns the session identity (the cookie is
+  // set by a Set-Cookie header, invisible to JS); logout is a 204. Tests override
+  // these to exercise invalid credentials, expiry, and logout transitions.
+  http.post(`${B}/auth/login`, () => HttpResponse.json(sessionOwner)),
+  http.post(`${B}/auth/logout`, () => new HttpResponse(null, { status: 204 })),
   http.get(`${B}/actions/execution`, () => HttpResponse.json(execAccepted)),
   http.get(`${B}/outcomes`, () => HttpResponse.json(outcomeClosed)),
   http.post(`${B}/actions/retry`, () =>

@@ -1005,3 +1005,55 @@
   align-items: center;
   gap: 8px;
 }
+
+/* Authentication (issue #168): the login screen + auth-gate loading state render
+ * OUTSIDE the AppShell, centered in the viewport. Logical CSS only, so the card
+ * mirrors with the document direction. */
+.auth {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: var(--bg);
+}
+
+.auth__card {
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 22px 22px 24px;
+}
+
+.auth__title {
+  font-size: 18px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.auth__subtitle {
+  font-size: 13px;
+  color: var(--ink-2);
+  margin: 0 0 6px;
+}
+
+.auth__note {
+  font-size: 12.5px;
+  color: var(--ink-2);
+  margin: 0 0 4px;
+}
+
+.auth__submit {
+  justify-content: center;
+  margin-block-start: 4px;
+}
+
+.auth__loading {
+  color: var(--ink-2);
+  font-size: 14px;
+}
