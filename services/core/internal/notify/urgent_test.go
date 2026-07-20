@@ -29,6 +29,9 @@ type fakeUrgentOutbox struct {
 	deadLetter int
 	bumped     int
 	lastReason string
+	// deadLetterFailFirst makes the first N MarkDeadLetter calls fail (the state write
+	// itself failing on the final attempt), so the recovery obligation is exercised.
+	deadLetterFailFirst int
 }
 
 func (f *fakeUrgentOutbox) Get(_ context.Context, _ uuid.UUID, _ string) (UrgentOutboxRecord, bool, error) {
@@ -46,6 +49,11 @@ func (f *fakeUrgentOutbox) MarkDelivered(_ context.Context, _ uuid.UUID, _ strin
 
 func (f *fakeUrgentOutbox) MarkDeadLetter(_ context.Context, _ uuid.UUID, _, reason string, _ time.Time) error {
 	f.deadLetter++
+	if f.deadLetterFailFirst > 0 {
+		f.deadLetterFailFirst--
+		// The state write failed: the row stays PENDING (no durable transition).
+		return errors.New("outbox: dead-letter state write failed")
+	}
 	f.lastReason = reason
 	f.rec.State = urgentStateDeadLetter
 	return nil
@@ -218,6 +226,66 @@ func TestUrgentDispatch_PermanentFailureDeadLettersNotDelivered(t *testing.T) {
 	}
 	if obsAccount != a.Account || obsNotif != a.NotificationID || obsCategory != a.Category || obsReason != reasonSendError {
 		t.Fatalf("dead-letter observer got %s/%s/%s/%s", obsAccount, obsNotif, obsCategory, obsReason)
+	}
+}
+
+// --- reopen residual: dead-letter STATE WRITE fails on the final attempt ------------
+
+// TestUrgentDispatch_DeadLetterPersistFailure_SuppressesTerminalSignalUntilPersisted is
+// the issue #122 REOPEN regression. When the FINAL attempt's send fails permanently AND
+// the pending → dead_letter state write ITSELF fails, the terminal signals (dead-letter
+// metric + observer) MUST NOT fire — monitoring must never report a durable terminal
+// dead letter that was never persisted. Instead the dispatcher returns the
+// ErrUrgentDeadLetterUnpersisted recovery marker so the worker RE-DRIVES the intent, and
+// the terminal observer fires ONLY after a later durable transition actually succeeds.
+func TestUrgentDispatch_DeadLetterPersistFailure_SuppressesTerminalSignalUntilPersisted(t *testing.T) {
+	a := urgentArgs()
+	ob := pendingOutbox(a)
+	ob.deadLetterFailFirst = 1 // first dead-letter write fails, second succeeds
+	mail := &fakeMailer{err: errors.New("smtp permanent failure")}
+
+	observed := 0
+	d := newDispatcher(ob, mail).WithDeadLetterObserver(
+		func(context.Context, uuid.UUID, uuid.UUID, string, string) { observed++ })
+
+	// Pass 1: final attempt, send fails, dead-letter STATE WRITE fails.
+	err := d.Dispatch(context.Background(), a, true)
+	if err == nil {
+		t.Fatal("unpersisted dead-letter must return an error so the worker re-drives, got nil")
+	}
+	if !errors.Is(err, jobs.ErrUrgentDeadLetterUnpersisted) {
+		t.Fatalf("error must carry the unpersisted recovery marker (worker snoozes, not discards), got %v", err)
+	}
+	if observed != 0 {
+		t.Fatalf("terminal observer fired for a state that was NEVER persisted (observed=%d)", observed)
+	}
+	if ob.delivered != 0 {
+		t.Fatal("a failed send must NEVER be marked delivered")
+	}
+	if ob.rec.State != urgentStatePending {
+		t.Fatalf("row must stay pending when the dead-letter write failed, got %q", ob.rec.State)
+	}
+	if ob.deadLetter != 1 {
+		t.Fatalf("dead-letter write must have been attempted once, got %d", ob.deadLetter)
+	}
+
+	// Pass 2: re-drive. Final attempt again, send still fails, dead-letter write NOW
+	// succeeds — the durable transition is real, so the terminal signal may fire.
+	err = d.Dispatch(context.Background(), a, true)
+	if err == nil {
+		t.Fatal("permanent failure on the final attempt must still return the send cause, got nil")
+	}
+	if errors.Is(err, jobs.ErrUrgentDeadLetterUnpersisted) {
+		t.Fatalf("a persisted dead-letter must NOT carry the unpersisted marker, got %v", err)
+	}
+	if observed != 1 {
+		t.Fatalf("terminal observer must fire exactly once, after the durable transition, got %d", observed)
+	}
+	if ob.rec.State != urgentStateDeadLetter {
+		t.Fatalf("row must be dead_letter after the successful write, got %q", ob.rec.State)
+	}
+	if ob.deadLetter != 2 {
+		t.Fatalf("dead-letter write must have been re-attempted, got %d", ob.deadLetter)
 	}
 }
 

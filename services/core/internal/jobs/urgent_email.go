@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -61,6 +62,17 @@ type UrgentEmailFunc func(ctx context.Context, args UrgentEmailArgs, lastAttempt
 // configured; without a sender the intent parks and retries (never lost).
 var errNoUrgentEmailRunner = errors.New("jobs: no urgent-email runner wired; refusing to complete intent (fail closed)")
 
+// ErrUrgentDeadLetterUnpersisted marks the recovery obligation left when the FINAL
+// attempt's send failed permanently but the pending → dead_letter state write ITSELF
+// failed (issue #122 reopen residual). The terminal signals (dead-letter metric +
+// observer) MUST NOT fire for a state that was never persisted — that would let
+// monitoring report a durable terminal dead letter that does not exist, with no retry
+// anchored to repair it. The dispatcher wraps this sentinel instead of returning the
+// send cause, so the worker RE-DRIVES the intent (JobSnooze) rather than discarding it
+// on the exhausted attempt; a terminal signal fires only after the durable transition
+// actually succeeds. Observability truthfulness + never-shed are never-cut (§4.6).
+var ErrUrgentDeadLetterUnpersisted = errors.New("jobs: urgent dead-letter state write failed; re-drive to repair (no terminal signal emitted)")
+
 // UrgentEmailWorker claims a durable urgent-email intent and runs the injected send.
 // River guarantees at-least-once delivery + durable retry; the injected runner is
 // idempotent on the outbox (notification_id, channel), so the effect is
@@ -99,8 +111,28 @@ func (w *UrgentEmailWorker) Work(ctx context.Context, job *river.Job[UrgentEmail
 			"attempt", job.Attempt, "max_attempts", job.MaxAttempts, "last_attempt", lastAttempt,
 			"error", errText(err))
 	}
+	// The exhausted attempt's send failed permanently BUT the dead-letter state write
+	// itself failed (issue #122 reopen residual). Returning the error verbatim would let
+	// River DISCARD the intent, dropping the recovery obligation while no terminal signal
+	// was ever truthfully emitted. Re-drive via JobSnooze — a bounded park that does NOT
+	// consume the exhausted attempt — so the durable pending → dead_letter transition is
+	// repaired on a later pass, and only then does the terminal signal fire.
+	if errors.Is(err, ErrUrgentDeadLetterUnpersisted) {
+		if w.logger != nil {
+			w.logger.WarnContext(ctx, "urgent email: dead-letter unpersisted; snoozing to re-drive (recovery anchored)",
+				"job_id", job.ID, "notification_id", job.Args.NotificationID, "category", job.Args.Category)
+		}
+		return river.JobSnooze(urgentDeadLetterRedriveBackoff)
+	}
 	return err
 }
+
+// urgentDeadLetterRedriveBackoff bounds how long a dead-letter re-drive parks before
+// re-attempting the durable transition. It is a bounded backpressure signal (CLAUDE.md
+// load handling: queues never grow unbounded), long enough to ride out a transient
+// outbox/DB blip, short enough that the observable terminal state is not delayed
+// materially.
+const urgentDeadLetterRedriveBackoff = 30 * time.Second
 
 // EnqueueUrgentEmailTx enqueues a durable urgent-email intent inside the caller's
 // transaction (transactional enqueue, jobs pkg invariant): the intent becomes visible
