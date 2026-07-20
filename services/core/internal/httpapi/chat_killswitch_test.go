@@ -26,8 +26,10 @@ func TestAuthoritativeChatAccount(t *testing.T) {
 		request        *uuid.UUID
 		stored         *uuid.UUID
 		resolvedStored bool
+		continuation   bool
 		wantAccount    uuid.UUID
 		wantMismatch   bool
+		wantDeny       bool
 	}{
 		{
 			name:        "new conversation with account uses request account",
@@ -44,6 +46,7 @@ func TestAuthoritativeChatAccount(t *testing.T) {
 			request:        nil,
 			stored:         ptrUUID(accA),
 			resolvedStored: true,
+			continuation:   true,
 			wantAccount:    accA,
 		},
 		{
@@ -51,6 +54,7 @@ func TestAuthoritativeChatAccount(t *testing.T) {
 			request:        ptrUUID(accA),
 			stored:         ptrUUID(accA),
 			resolvedStored: true,
+			continuation:   true,
 			wantAccount:    accA,
 		},
 		{
@@ -58,6 +62,7 @@ func TestAuthoritativeChatAccount(t *testing.T) {
 			request:        ptrUUID(accB),
 			stored:         ptrUUID(accA),
 			resolvedStored: true,
+			continuation:   true,
 			wantAccount:    accA,
 			wantMismatch:   true,
 		},
@@ -66,20 +71,32 @@ func TestAuthoritativeChatAccount(t *testing.T) {
 			request:        ptrUUID(accB),
 			stored:         nil,
 			resolvedStored: true,
+			continuation:   true,
 			wantAccount:    uuid.Nil,
 			wantMismatch:   true,
 		},
 		{
-			name:           "continuation with no store to resolve falls back to request (degraded, no stored context)",
+			// Issue #27 reopen residual: a continuation whose authoritative stored
+			// account could NOT be resolved (store unavailable/unwired) must FAIL
+			// CLOSED — never fall back to the request-supplied account, which would let
+			// an account kill switch be bypassed by omitting or substituting it.
+			name:           "continuation with no store to resolve DENIES (fail closed, never request fallback)",
 			request:        ptrUUID(accA),
 			stored:         nil,
 			resolvedStored: false,
-			wantAccount:    accA,
+			continuation:   true,
+			wantDeny:       true,
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := authoritativeChatAccount(tc.request, tc.stored, tc.resolvedStored)
+			got := authoritativeChatAccount(tc.request, tc.stored, tc.resolvedStored, tc.continuation)
+			if got.deny != tc.wantDeny {
+				t.Fatalf("deny = %v, want %v", got.deny, tc.wantDeny)
+			}
+			if tc.wantDeny {
+				return
+			}
 			if got.account != tc.wantAccount {
 				t.Fatalf("account = %s, want %s", got.account, tc.wantAccount)
 			}
@@ -180,6 +197,76 @@ func TestChatKillSwitchContinuationUnresolvableFailsClosed(t *testing.T) {
 	}
 	if llm.started != 0 {
 		t.Fatal("an unresolvable continuation must NEVER reach the LLM plane")
+	}
+}
+
+// TestChatKillSwitchContinuationStoreErrorSubstituteAccountRejected is the issue
+// #27 REOPEN focused regression: continuing a conversation whose authoritative
+// account cannot be resolved because the store ERRORS, while SUPPLYING a different
+// (non-disabled) account, must be REJECTED before any LLM proxying. The substituted
+// request account must never govern the per-account kill switch — a store failure
+// fails closed, never a permissive fallback to the request-supplied account.
+func TestChatKillSwitchContinuationStoreErrorSubstituteAccountRejected(t *testing.T) {
+	fa := newFakeAuth()
+	ownerSession(fa)
+	existing := uuid.New()
+	substitute := uuid.New() // a NON-disabled account the caller tries to sneak in
+	store := newConvStore()
+	store.accountErr = errors.New("transient store failure")
+	llm := &fakeLLMChat{frames: "data: x\n\n"}
+	srv := chatServer(t, fa,
+		// substitute is NOT in the disabled set: if it governed, the turn would proxy.
+		WithChatKillSwitch(NewStaticKillSwitch(false, nil)),
+		WithLLMChat(llm),
+		WithChatConversations(store),
+	)
+
+	rec := postChat(srv, `{"message":"go","conversationId":"`+existing.String()+`","marketplaceAccountId":"`+substitute.String()+`"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("store-error continuation with substituted account = %d, want 503 (fail closed)", rec.Code)
+	}
+	var body gateway.ChatUnavailable
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Reason != gateway.KillSwitchAccount {
+		t.Fatalf("reason = %q, want kill_switch_account", body.Reason)
+	}
+	if llm.started != 0 {
+		t.Fatal("a store-error continuation must NEVER reach the LLM plane, even with a substituted account")
+	}
+	_, _, assistant := store.snapshot()
+	if len(assistant) != 0 {
+		t.Fatal("a store-error continuation must persist no assistant turn")
+	}
+}
+
+// TestChatKillSwitchContinuationNoStoreFailsClosed is the second half of the issue
+// #27 reopen residual: when NO durability store is wired the authoritative stored
+// account cannot be resolved for a continuation, so the turn must FAIL CLOSED rather
+// than trust the request-supplied account. Omitting or substituting the account on a
+// storeless continuation must never reach the LLM plane.
+func TestChatKillSwitchContinuationNoStoreFailsClosed(t *testing.T) {
+	fa := newFakeAuth()
+	ownerSession(fa)
+	existing := uuid.New()
+	substitute := uuid.New()
+	llm := &fakeLLMChat{frames: "data: x\n\n"}
+	// Deliberately NO WithChatConversations: the store is unavailable/unwired.
+	srv := chatServer(t, fa,
+		WithChatKillSwitch(NewStaticKillSwitch(false, nil)),
+		WithLLMChat(llm),
+	)
+
+	rec := postChat(srv, `{"message":"go","conversationId":"`+existing.String()+`","marketplaceAccountId":"`+substitute.String()+`"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("storeless continuation = %d, want 503 (fail closed)", rec.Code)
+	}
+	var body gateway.ChatUnavailable
+	_ = json.Unmarshal(rec.Body.Bytes(), &body)
+	if body.Reason != gateway.KillSwitchAccount {
+		t.Fatalf("reason = %q, want kill_switch_account", body.Reason)
+	}
+	if llm.started != 0 {
+		t.Fatal("a storeless continuation must NEVER reach the LLM plane")
 	}
 }
 
