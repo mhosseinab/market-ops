@@ -144,6 +144,13 @@ exports[`app shell boots RTL, fa-IR > matches the RTL shell snapshot 1`] = `
           class="briefing-dot"
         />
       </button>
+      <button
+        class="top-bar__control"
+        data-testid="logout"
+        type="button"
+      >
+        خروج
+      </button>
     </header>
     <main
       class="route-scroll"

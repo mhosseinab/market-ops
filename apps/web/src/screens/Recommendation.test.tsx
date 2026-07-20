@@ -433,6 +433,7 @@ describe("Recommendation screen — card-ID state reset (issue #95)", () => {
       defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     });
     const router = createAppRouter(
+      queryClient,
       createMemoryHistory({ initialEntries: [`/recommendation?cardId=${cardId}`] }),
     );
     render(

@@ -1,4 +1,11 @@
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  queryOptions,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { resetUnauthenticated } from "../app/authEvents";
 import { gateway } from "../app/query";
 import { useAccount } from "./account";
 import { type ErrorEnvelope, GatewayError } from "./errors";
@@ -14,6 +21,7 @@ import type {
   CostImportPreview,
   CostProfileVersion,
   EventRelevanceKind,
+  LoginRequest,
   MarginReadiness,
   MarketEvent,
   OutcomeView,
@@ -437,13 +445,66 @@ export function useEventRelevance() {
 
 // ── S28: session / actions-outcomes / bulk ──────────────────────────────────
 
+// The single query options for the current principal (/auth/me). BOTH the router
+// auth gate (beforeLoad → ensureQueryData, issue #168) and `useSession` read this
+// EXACT options object so there is one shared cache entry — the gate resolves the
+// session before any protected/account-scoped query mounts, and the screens read
+// the already-resolved principal without a second round trip. `retry: false`: an
+// unauthenticated 401 must fail fast to the login redirect, never retry-storm.
+export function sessionQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.session(),
+    queryFn: async (): Promise<SessionInfo> => unwrap(await gateway.GET("/auth/me")),
+    retry: false,
+  });
+}
+
 // The current principal (ACC-002): role drives the SHARED permission matrix that
 // gates L3 guardrail edits (Owner-only) and the internal Operations surfaces. The
 // screen renders what the session says; it never infers or elevates a role.
 export function useSession() {
-  return useQuery({
-    queryKey: queryKeys.session(),
-    queryFn: async (): Promise<SessionInfo> => unwrap(await gateway.GET("/auth/me")),
+  return useQuery(sessionQueryOptions());
+}
+
+// Production login (issue #168): POST /auth/login with the email/password
+// credential. On success the server sets the secure httpOnly session cookie and
+// returns the SessionInfo — we prime the shared session cache from that body so
+// the destination route's auth gate resolves WITHOUT another /auth/me round trip,
+// and release the 401 storm guard so a later expiry redirects again. The password
+// lives only in the request body for this call; it is NEVER persisted anywhere
+// client-readable and NEVER cached. A 401 is surfaced as a GatewayError so the
+// login screen can render the NON-enumerating invalid-credentials copy.
+export function useLogin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (credential: LoginRequest): Promise<SessionInfo> => {
+      const res = await gateway.POST("/auth/login", { body: credential });
+      if (res.error) throw new GatewayError(res.error as ErrorEnvelope, res.response?.status);
+      if (res.data === undefined) throw new Error("empty_response");
+      return res.data;
+    },
+    onSuccess: (session) => {
+      qc.setQueryData(queryKeys.session(), session);
+      resetUnauthenticated();
+    },
+  });
+}
+
+// Logout (issue #168): POST /auth/logout closes the server-side session and
+// clears the cookie (idempotent). On EITHER transition — explicit logout or a
+// session expiry — the whole Query cache is cleared so no protected/account-scoped
+// data outlives the session; the caller then routes to the login screen.
+export function useLogout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<void> => {
+      const res = await gateway.POST("/auth/logout");
+      // 204 (no content) succeeds with no body; a structured error still throws.
+      if (res.error) throw new GatewayError(res.error as ErrorEnvelope, res.response?.status);
+    },
+    onSuccess: () => {
+      qc.clear();
+    },
   });
 }
 

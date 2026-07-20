@@ -5,6 +5,22 @@
 // (LOC-002). Canonical state terms map 1:1 to PRD §11.4 / the design glossary.
 
 export const MESSAGE_KEYS = [
+  // Authentication (production login lifecycle, issue #168). The session lives
+  // ONLY in the secure httpOnly cookie; these keys are the login surface + the
+  // /auth/me gate loading state + the logout control. The invalid-credentials
+  // error is NON-enumerating (never leaks which field was wrong, PRD §8).
+  "auth.login.title",
+  "auth.login.subtitle",
+  "auth.login.emailLabel",
+  "auth.login.passwordLabel",
+  "auth.login.submit",
+  "auth.login.submitting",
+  "auth.login.error.invalidCredentials",
+  "auth.login.error.generic",
+  "auth.login.expiredNote",
+  "auth.gate.loading",
+  "auth.logout",
+
   // App chrome
   "app.name",
   "app.langName.fa",

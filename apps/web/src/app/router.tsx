@@ -1,5 +1,6 @@
+import type { QueryClient } from "@tanstack/react-query";
 import {
-  createRootRoute,
+  createRootRouteWithContext,
   createRoute,
   createRouter,
   type RouterHistory,
@@ -8,11 +9,13 @@ import {
 import type { ReactElement } from "react";
 import { AppShell } from "../components/AppShell";
 import { EmptyState } from "../components/EmptyState";
+import { sessionQueryOptions } from "../data/hooks";
 import { Actions } from "../screens/Actions";
 import { BulkApproval } from "../screens/BulkApproval";
 import { CostImport } from "../screens/CostImport";
 import { Diagnostics } from "../screens/Diagnostics";
 import { EventDetail } from "../screens/EventDetail";
+import { AuthGateLoading, Login } from "../screens/Login";
 import { Market } from "../screens/Market";
 import { Onboarding } from "../screens/Onboarding";
 import { Operations } from "../screens/Operations";
@@ -23,18 +26,51 @@ import { RunbookViewer } from "../screens/RunbookViewer";
 import { Settings } from "../screens/Settings";
 import { Today } from "../screens/Today";
 import { ROUTES, type RouteKey } from "./navConfig";
+import { queryClient as defaultQueryClient } from "./query";
 
-// Code-based route tree derived from the DATA in navConfig. Root renders the
-// AppShell; `/` deep-links to Today; every screen + deep-link sub-route is a
-// leaf. S26 mounts the real onboarding/products/product/cost screens; the
-// remaining screens stay EmptyState scaffolds until S27–S28. Every route accepts
-// an optional `variantId` search key so deep links (products → product,
-// product → cost/diagnostics) stay typed end-to-end.
+// Code-based route tree derived from the DATA in navConfig. The tree splits into
+// a PUBLIC `/login` route and an AUTHENTICATED layout: the authed layout renders
+// the AppShell and, in its `beforeLoad`, resolves GET /auth/me BEFORE any child
+// screen (and thus any protected/account-scoped query) mounts — the fail-closed
+// auth gate (issue #168). An unresolved session redirects to `/login` preserving
+// the intended destination. Every screen + deep-link sub-route is a leaf under the
+// authed layout; each accepts optional typed search keys so deep links stay typed.
 
-const rootRoute = createRootRoute({ component: AppShell });
+const rootRoute = createRootRouteWithContext<{ queryClient: QueryClient }>()();
+
+// PUBLIC: the login screen. It carries no AppShell chrome and no auth gate, and
+// preserves the destination the user was headed to via the `redirect` search key.
+const loginRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/login",
+  component: Login,
+  validateSearch: (search: Record<string, unknown>): { redirect?: string } =>
+    typeof search.redirect === "string" ? { redirect: search.redirect } : {},
+});
+
+// AUTHENTICATED layout (pathless): the gate. `beforeLoad` blocks the route load —
+// so no child screen mounts and no protected query fires — until the session is
+// confirmed. A failure (absent/expired session, or any /auth/me error) redirects
+// to `/login`; the shared session cache entry means a later screen reads the
+// already-resolved principal without a second round trip.
+const authedRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  id: "authed",
+  component: AppShell,
+  pendingComponent: AuthGateLoading,
+  beforeLoad: async ({ context, location }) => {
+    try {
+      await context.queryClient.ensureQueryData(sessionQueryOptions());
+    } catch {
+      // Fail closed: no confirmed session ⇒ no protected screen. Preserve where the
+      // user was going so login can return them there.
+      throw redirect({ to: "/login", search: { redirect: location.href } });
+    }
+  },
+});
 
 const indexRoute = createRoute({
-  getParentRoute: () => rootRoute,
+  getParentRoute: () => authedRoute,
   path: "/",
   beforeLoad: () => {
     // Path validation needs the registered router, which is built from this tree
@@ -85,17 +121,23 @@ function validateSearch(search: Record<string, unknown>): {
 
 const screenRoutes = ROUTES.map((r) =>
   createRoute({
-    getParentRoute: () => rootRoute,
+    getParentRoute: () => authedRoute,
     path: r.path,
     component: SCREENS[r.key] ?? EmptyState,
     validateSearch,
   }),
 );
 
-const routeTree = rootRoute.addChildren([indexRoute, ...screenRoutes]);
+const routeTree = rootRoute.addChildren([
+  loginRoute,
+  authedRoute.addChildren([indexRoute, ...screenRoutes]),
+]);
 
-export function createAppRouter(history?: RouterHistory) {
-  return createRouter({ routeTree, ...(history ? { history } : {}) });
+export function createAppRouter(
+  queryClient: QueryClient = defaultQueryClient,
+  history?: RouterHistory,
+) {
+  return createRouter({ routeTree, context: { queryClient }, ...(history ? { history } : {}) });
 }
 
 export const router = createAppRouter();

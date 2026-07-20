@@ -4,6 +4,18 @@ import type { Catalog } from "./keys";
 // copied VERBATIM from design/README.md §"Canonical State Glossary" / PRD §11.4 —
 // never paraphrased, never synonymized (enforced by the glossary test).
 export const faIR: Catalog = {
+  "auth.login.title": "ورود به مرکز فرمان",
+  "auth.login.subtitle": "برای دسترسی به داشبورد وارد حساب سازمانی خود شوید.",
+  "auth.login.emailLabel": "رایانامه",
+  "auth.login.passwordLabel": "گذرواژه",
+  "auth.login.submit": "ورود",
+  "auth.login.submitting": "در حال ورود…",
+  "auth.login.error.invalidCredentials": "رایانامه یا گذرواژه نادرست است.",
+  "auth.login.error.generic": "ورود ممکن نشد. لطفاً دوباره تلاش کنید.",
+  "auth.login.expiredNote": "نشست شما پایان یافته است. لطفاً دوباره وارد شوید.",
+  "auth.gate.loading": "در حال بررسی نشست…",
+  "auth.logout": "خروج",
+
   "app.name": "مرکز فرمان دیجی‌کالا",
   "app.langName.fa": "فارسی",
   "app.langName.en": "English",

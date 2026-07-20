@@ -1,8 +1,9 @@
 import { DEFAULT_LOCALE, type LocaleId } from "@market-ops/locale";
-import { QueryClient } from "@tanstack/react-query";
+import { QueryCache, QueryClient } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, render } from "@testing-library/react";
 import { Providers } from "../app/Providers";
+import { handleQueryError } from "../app/query";
 import { createAppRouter } from "../app/router";
 import { ACCOUNT_ID } from "./msw/fixtures";
 
@@ -13,10 +14,16 @@ import { ACCOUNT_ID } from "./msw/fixtures";
 // exercise a mid-session route change (e.g. the chat context binding, CHAT-007).
 export function renderRoute(path: string, options?: { accountId?: string; locale?: LocaleId }) {
   const queryClient = new QueryClient({
+    // Arm the SAME auth error boundary the production client has (issue #168), so
+    // a mid-session 401 redirects to login in tests too; retries stay off for
+    // deterministic error-state assertions.
+    queryCache: new QueryCache({ onError: handleQueryError }),
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   const history = createMemoryHistory({ initialEntries: [path] });
-  const router = createAppRouter(history);
+  // The router auth gate resolves the session through this SAME client, so the
+  // gate and the screens share one cache entry (issue #168).
+  const router = createAppRouter(queryClient, history);
   const result = render(
     <Providers
       initialLocale={options?.locale ?? DEFAULT_LOCALE}
@@ -31,5 +38,5 @@ export function renderRoute(path: string, options?: { accountId?: string; locale
       history.push(to);
     });
   };
-  return { ...result, router, navigate };
+  return { ...result, router, queryClient, navigate };
 }

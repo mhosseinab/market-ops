@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { configure } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll } from "vitest";
+import { resetUnauthenticated } from "../app/authEvents";
 import { server } from "./msw/server";
 
 // Testing Library's async utilities (`findBy*`, `waitFor`) default to a 1000ms
@@ -62,5 +63,10 @@ if (!window.matchMedia) {
 // bypass (a screen with no fetch, like the shell snapshot, must not error);
 // per-test `server.use(...)` overrides specific endpoints.
 beforeAll(() => server.listen({ onUnhandledRequest: "bypass" }));
-afterEach(() => server.resetHandlers());
+afterEach(() => {
+  server.resetHandlers();
+  // The auth 401-storm guard is module-global; release it between tests so an
+  // unauthenticated scenario in one test never suppresses a redirect in the next.
+  resetUnauthenticated();
+});
 afterAll(() => server.close());
