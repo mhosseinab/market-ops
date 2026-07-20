@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/analytics"
@@ -25,6 +26,21 @@ func newPool(t *testing.T) (*pgxpool.Pool, *db.Queries) {
 	}
 	t.Cleanup(pool.Close)
 	return pool, db.New(pool)
+}
+
+// mapEntityResolver is a test EntityResolver: it authorizes a fixed set of
+// entity_ids to their EntityScope (owning account + classifying family), mirroring a
+// per-family, account-bound DB lookup. An unregistered entity resolves to
+// pgx.ErrNoRows, so the emitter fails it closed (issue #125 reopen residual).
+type mapEntityResolver struct {
+	scopes map[uuid.UUID]analytics.EntityScope
+}
+
+func (r *mapEntityResolver) ResolveEntity(_ context.Context, id uuid.UUID) (analytics.EntityScope, error) {
+	if s, ok := r.scopes[id]; ok {
+		return s, nil
+	}
+	return analytics.EntityScope{}, pgx.ErrNoRows
 }
 
 // seedAccount creates one org + account and returns both ids for the envelope.
@@ -55,11 +71,27 @@ func TestEmit_EveryFamilyCarriesFullEnvelope(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
 	org, account := seedAccount(t, q)
-	em := analytics.NewEmitter(pool)
+
+	// Entity-scope guard (issue #125 reopen residual): entity-LEVEL families need an
+	// EntityResolver authorizing their entity to this account+family; account-LEVEL
+	// families carry the account itself as their entity. Pre-register one authorized
+	// entity per entity-level family so every family's coherent envelope persists.
+	resolver := &mapEntityResolver{scopes: map[uuid.UUID]analytics.EntityScope{}}
+	entityFor := map[analytics.Family]uuid.UUID{}
+	for _, family := range analytics.AllFamilies {
+		if family.AccountLevel() {
+			entityFor[family] = account
+			continue
+		}
+		e := uuid.New()
+		entityFor[family] = e
+		resolver.scopes[e] = analytics.EntityScope{Account: account, Family: family}
+	}
+	em := analytics.NewEmitter(pool).WithEntityResolver(resolver)
 
 	ts := time.Now().UTC().Truncate(time.Microsecond)
 	for _, family := range analytics.AllFamilies {
-		entity := uuid.New()
+		entity := entityFor[family]
 		env := analytics.Envelope{
 			Organization:            org,
 			Account:                 account,
@@ -174,11 +206,17 @@ func TestEmit_MatchingPairPersistsAtDB(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
 	orgA, accountA := seedAccount(t, q)
-	em := analytics.NewEmitter(pool)
+	// FamilyExecution is entity-LEVEL: authorize a distinct execution entity owned by
+	// accountA and classified as execution (issue #125 reopen residual).
+	execEntity := uuid.New()
+	resolver := &mapEntityResolver{scopes: map[uuid.UUID]analytics.EntityScope{
+		execEntity: {Account: accountA, Family: analytics.FamilyExecution},
+	}}
+	em := analytics.NewEmitter(pool).WithEntityResolver(resolver)
 
 	if err := em.Emit(ctx, analytics.Event{
 		Envelope: analytics.Envelope{
-			Organization: orgA, Account: accountA, Entity: accountA,
+			Organization: orgA, Account: accountA, Entity: execEntity,
 			Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
 			SourceSurface: "system", Timestamp: time.Now().UTC(),
 		},

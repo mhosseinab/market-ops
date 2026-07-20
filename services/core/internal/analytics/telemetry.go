@@ -26,6 +26,13 @@ type telemetry struct {
 	// not leak or let explode cardinality, so the boundary is a bare, tenant-free
 	// counter — a non-zero value is the fail-closed signal, nothing more.
 	tenantRejects metric.Int64Counter
+	// entityRejects counts entity-scope rejections (issue #125 reopen residual): an
+	// entity_id not owned by the account or incompatible with the family. Like
+	// tenantRejects it is DELIBERATELY label-free — its only natural dimensions
+	// (account/entity/family) are sensitive tenant identifiers we must never leak or
+	// let explode cardinality — so a non-zero value is the fail-closed signal, nothing
+	// more.
+	entityRejects metric.Int64Counter
 }
 
 // noopMeter backs a counter when the real meter errors, so a counter is never nil.
@@ -44,6 +51,7 @@ func newTelemetry() *telemetry {
 		events:        ctr("analytics.events", "§18 analytics events emitted (by family)"),
 		costs:         ctr("analytics.cost_minor_units", "§17.3 variable cost in integer minor units (by kind)"),
 		tenantRejects: ctr("analytics.tenant_rejections", "cross-tenant analytics envelope rejections (issue #125; no labels)"),
+		entityRejects: ctr("analytics.entity_rejections", "entity-scope analytics envelope rejections (issue #125 reopen; no labels)"),
 	}
 }
 
@@ -129,6 +137,15 @@ func (t *telemetry) event(ctx context.Context, env Envelope, family Family, name
 // emitted as labels (no leak, no cardinality growth, no existence oracle).
 func (t *telemetry) tenantReject(ctx context.Context) {
 	t.tenantRejects.Add(ctx, 1)
+}
+
+// entityReject records ONE entity-scope envelope rejection (issue #125 reopen
+// residual). Like tenantReject it is deliberately label-free: the rejection must be
+// observable and fail-closed, but its only natural dimensions are the sensitive
+// account/entity/family identifiers, which are never emitted as labels (no leak, no
+// cardinality growth, no ownership oracle).
+func (t *telemetry) entityReject(ctx context.Context) {
+	t.entityRejects.Add(ctx, 1)
 }
 
 // cost adds an integer cost amount to the cost counter tagged by kind. Message

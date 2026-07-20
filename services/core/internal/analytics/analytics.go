@@ -72,6 +72,25 @@ func (f Family) Valid() bool {
 	}
 }
 
+// AccountLevel reports whether f's canonical entity IS the marketplace account itself
+// (an account-lifecycle signal), so its envelope entity_id MUST equal its account and
+// no sub-entity lookup is required or permitted (issue #125 reopen residual). The
+// classification follows the family definitions above: connection/sync are
+// account/connector-lifecycle families and briefing is the account-level daily digest
+// (the sole production emitter, cmd/core), so their entity is the account. Every OTHER
+// family is ENTITY-LEVEL: its entity is a sub-account resource whose ownership and
+// family are resolved through an EntityResolver. Moving a family across this boundary
+// is a deliberate, reviewed edit — never improvised — because it changes which guard
+// (equality vs. resolver) authorizes the entity.
+func (f Family) AccountLevel() bool {
+	switch f {
+	case FamilyConnection, FamilySync, FamilyBriefing:
+		return true
+	default:
+		return false
+	}
+}
+
 // CostKind is one of the §17.3 variable-cost counters. Every counter is a granular,
 // mandatory unit-economics signal; the amount is INTEGER minor units (no float).
 type CostKind string
@@ -133,6 +152,20 @@ var ErrInvalidCostKind = errors.New("analytics: invalid cost kind")
 // account are deliberately indistinguishable (same error, same detail).
 var ErrCrossTenant = errors.New("analytics: event envelope pairs an account with a foreign organization")
 
+// ErrEntityScope is returned when an event envelope's entity_id does not resolve to
+// an entity OWNED by the envelope's account, or whose native family is INCOMPATIBLE
+// with the event family (issue #125 reopen residual, §18 envelope + §4.6 tenant-
+// integrity never-cut). The account->organization guard (ErrCrossTenant) proves the
+// envelope names a coherent TENANT; this guard proves the envelope's ENTITY belongs
+// to that tenant and matches the event family — a cross-account or wrong-family
+// entity reference can otherwise ride inside an envelope whose org/account pair is
+// perfectly valid. Like ErrCrossTenant the rejection is fail-closed and carries ONLY
+// the caller-supplied entity id — never the entity's owning account or native family
+// — so it cannot become an ownership or existence oracle for another tenant's entity.
+// An UNKNOWN entity, a FOREIGN-account entity, and a FAMILY-mismatched entity are
+// deliberately indistinguishable (same error, same detail).
+var ErrEntityScope = errors.New("analytics: event envelope entity is not owned by the account or is incompatible with the family")
+
 // Validate returns nil only when every mandatory envelope field is present. The
 // error names the FIRST missing field so a misuse is actionable.
 func (e Envelope) Validate() error {
@@ -177,12 +210,47 @@ type store interface {
 	InsertAnalyticsEvent(ctx context.Context, arg db.InsertAnalyticsEventParams) (db.AnalyticsEvent, error)
 }
 
+// EntityScope is the AUTHORITATIVE tenant scope of an analytics entity_id: the account
+// that OWNS the entity and the family that CLASSIFIES it. An EntityResolver returns it;
+// Emit admits an entity-level event only when BOTH the owning account AND the
+// classifying family match the envelope (issue #125 reopen residual).
+type EntityScope struct {
+	Account uuid.UUID
+	Family  Family
+}
+
+// EntityResolver resolves an entity-LEVEL entity_id to its AUTHORITATIVE EntityScope
+// (owning account + classifying family) via a per-family, account-bound lookup. It is
+// the seam that closes the ENTITY half of tenant integrity: an entity that does not
+// resolve returns pgx.ErrNoRows and Emit rejects it fail-closed; any other error is a
+// genuine infrastructure failure surfaced as-is (never a tenant-reject signal). It is
+// consumer-defined (ISP) and account/marketplace-agnostic — the Go core owns the
+// contract; a DB-backed implementation is injected by the caller that activates an
+// entity-level family (see WithEntityResolver). Account-LEVEL families never consult
+// it (their entity is the account itself, checked by equality).
+type EntityResolver interface {
+	ResolveEntity(ctx context.Context, entityID uuid.UUID) (EntityScope, error)
+}
+
 // Emitter writes §18 events to analytics_events and increments the matching OTel
 // counters (the "same pipe" the cost counters ride). A nil store yields a counter-
-// only emitter (telemetry without persistence), for callers that only meter.
+// only emitter (telemetry without persistence), for callers that only meter. A nil
+// entities resolver leaves entity-LEVEL families fail-closed (they cannot be persisted
+// until a resolver is wired); account-LEVEL families never need one.
 type Emitter struct {
-	store store
-	tel   *telemetry
+	store    store
+	entities EntityResolver
+	tel      *telemetry
+}
+
+// WithEntityResolver returns em wired with an EntityResolver that authorizes
+// entity-LEVEL families (issue #125 reopen residual). Without it, an entity-level
+// event fails closed at Emit — an explicitly-planned stub the caller activating such a
+// family completes by injecting a per-family, account-bound resolver. Account-level
+// families (Family.AccountLevel) do not require it.
+func (em *Emitter) WithEntityResolver(r EntityResolver) *Emitter {
+	em.entities = r
+	return em
 }
 
 // NewEmitter builds an emitter over the pool and the global OTel meter. A nil pool
@@ -232,6 +300,14 @@ func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 		if err != nil {
 			return err
 		}
+		// TENANT INTEGRITY — ENTITY HALF (issue #125 reopen residual): the org/account
+		// pair is now proven coherent; also prove the envelope's ENTITY belongs to that
+		// account and matches the family BEFORE any row or event telemetry. A
+		// cross-account or family-mismatched entity fails closed here (no row, no event
+		// counter) — it can never ride inside an otherwise tenant-valid envelope.
+		if err := em.validateEntityScope(ctx, ev.Envelope, ev.Family); err != nil {
+			return err
+		}
 		if _, err := em.store.InsertAnalyticsEvent(ctx, db.InsertAnalyticsEventParams{
 			OrganizationID:          org,
 			MarketplaceAccountID:    ev.Account,
@@ -273,6 +349,46 @@ func (em *Emitter) resolveOwnerOrg(ctx context.Context, suppliedOrg, account uui
 		return uuid.Nil, fmt.Errorf("%w: account %s", ErrCrossTenant, account)
 	}
 	return acct.OrganizationID, nil
+}
+
+// validateEntityScope closes the ENTITY half of tenant integrity (issue #125 reopen
+// residual): the envelope's entity_id must reference an entity OWNED by the account and
+// COMPATIBLE with the family, resolved BEFORE any row or event telemetry. It fails
+// closed and UNIFORMLY (ErrEntityScope carrying only the caller-supplied entity id): an
+// unknown, foreign-account, or family-mismatched entity are indistinguishable, so the
+// rejection is no ownership/existence oracle. A genuine infrastructure error from the
+// resolver (not a not-found) is surfaced as-is, WITHOUT the entity-reject signal.
+func (em *Emitter) validateEntityScope(ctx context.Context, env Envelope, fam Family) error {
+	if fam.AccountLevel() {
+		// The canonical entity of an account-level family IS the account; any other
+		// entity_id is a cross-account/foreign reference. No resolver is consulted.
+		if env.Entity == env.Account {
+			return nil
+		}
+		em.tel.entityReject(ctx)
+		return fmt.Errorf("%w: entity %s", ErrEntityScope, env.Entity)
+	}
+	// Entity-level family: the entity is a sub-account resource; resolve its
+	// authoritative scope. With no resolver we CANNOT authorize the entity, so we fail
+	// closed (never infer ownership) — the explicitly-planned stub for families whose
+	// per-family resolver is not yet wired.
+	if em.entities == nil {
+		em.tel.entityReject(ctx)
+		return fmt.Errorf("%w: entity %s", ErrEntityScope, env.Entity)
+	}
+	scope, err := em.entities.ResolveEntity(ctx, env.Entity)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			em.tel.entityReject(ctx)
+			return fmt.Errorf("%w: entity %s", ErrEntityScope, env.Entity)
+		}
+		return fmt.Errorf("analytics: resolve entity scope: %w", err)
+	}
+	if scope.Account != env.Account || scope.Family != fam {
+		em.tel.entityReject(ctx)
+		return fmt.Errorf("%w: entity %s", ErrEntityScope, env.Entity)
+	}
+	return nil
 }
 
 // RecordCost increments a §17.3 variable-cost counter by an INTEGER amount of

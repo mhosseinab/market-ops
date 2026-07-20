@@ -140,10 +140,14 @@ func TestEmit_MatchingPairPersistsAuthoritativeOrg(t *testing.T) {
 	fs := &fakeStore{owner: map[uuid.UUID]uuid.UUID{accountA: orgA}}
 	em := newEmitterWithStore(fs)
 
+	// An account-LEVEL family (briefing) whose entity IS the account (tenantEnvelope
+	// sets Entity=account) is the coherent positive path here; the assertion under
+	// test is the AUTHORITATIVE org written to the row, not the entity scope (issue
+	// #125 reopen residual covers entity scope separately in entity_scope_test.go).
 	if err := em.Emit(context.Background(), Event{
 		Envelope: tenantEnvelope(orgA, accountA),
-		Family:   FamilyExecution,
-		Name:     "execution_attempted",
+		Family:   FamilyBriefing,
+		Name:     "daily_digest_sent",
 	}); err != nil {
 		t.Fatalf("matching emit rejected: %v", err)
 	}
