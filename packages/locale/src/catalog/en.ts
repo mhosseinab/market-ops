@@ -173,6 +173,7 @@ export const en: Catalog = {
   "chat.briefing.failure.title": "Briefing unavailable",
   "chat.briefing.failure.unknownLast":
     "The last successful briefing is unavailable. Today stays current.",
+  "chat.briefing.eventTypeUnknown": "Unavailable event type",
   "chat.unavailable.title": "Assistant unavailable",
   "chat.unavailable.kill_switch_global": "The assistant is temporarily disabled.",
   "chat.unavailable.kill_switch_account": "The assistant is disabled for this account.",
@@ -183,6 +184,13 @@ export const en: Catalog = {
   "chat.failure.deepLink": "Continue in screen →",
   "chat.failure.transportBody":
     "The connection ended before the answer was verified. Use the structured screens for a complete, grounded view.",
+  "chat.failure.recursionLimit": "The request exceeded the per-turn step limit.",
+  "chat.failure.toolCallLimit": "The request exceeded the data-lookup limit.",
+  "chat.failure.toolTimeout": "A data lookup took too long to complete.",
+  "chat.failure.tokenCeiling": "The response exceeded the length limit.",
+  "chat.failure.providerError": "The assistant service returned an error.",
+  "chat.failure.transient": "The assistant is temporarily unavailable.",
+  "chat.failure.unsupported": "This response could not be completed.",
 
   "action.retry": "Try again",
   "action.resolve": "Resolve",

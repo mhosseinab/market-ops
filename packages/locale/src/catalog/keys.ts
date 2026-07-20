@@ -197,6 +197,10 @@ export const MESSAGE_KEYS = [
   // Provenance (evidence-quality never-cut, #119): on failure the last SUCCESSFUL
   // briefing is unknown/unavailable — never the requested day synthesized as a date.
   "chat.briefing.failure.unknownLast",
+  // Closed briefing event-type labels (LOC-002, #121): an eventType OUTSIDE the
+  // five P0 types renders this catalog-backed unavailable label — never the raw
+  // machine value.
+  "chat.briefing.eventTypeUnknown",
   // Kill switch / provider outage (CHAT-009 / §16)
   "chat.unavailable.title",
   "chat.unavailable.kill_switch_global",
@@ -204,10 +208,20 @@ export const MESSAGE_KEYS = [
   "chat.unavailable.provider_unavailable",
   "chat.unavailable.screensNote",
   "chat.unavailable.toActions",
-  // Structured failure (§12.4)
+  // Structured failure (§12.4). The server `failure.code` (stable machine code)
+  // maps to ONE of these localized bodies at the web edge (LOC-002, #121); the
+  // server `failure.message` is NEVER rendered as authoritative copy. An unmapped
+  // code renders `chat.failure.unsupported`.
   "chat.failure.title",
   "chat.failure.deepLink",
   "chat.failure.transportBody",
+  "chat.failure.recursionLimit",
+  "chat.failure.toolCallLimit",
+  "chat.failure.toolTimeout",
+  "chat.failure.tokenCeiling",
+  "chat.failure.providerError",
+  "chat.failure.transient",
+  "chat.failure.unsupported",
 
   // ── S26 screens ──────────────────────────────────────────────────────────
   // Shared actions / common

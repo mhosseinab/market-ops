@@ -1,5 +1,6 @@
 import type { MessageState } from "@assistant-ui/react";
 import { useT } from "../../app/i18n";
+import { failureMessageKey } from "../catalogMaps";
 import { parseDeepLink } from "../envelope";
 import type { ChatEnvelope, ChatFailure, DockCard } from "../types";
 import { CardView } from "./CardView";
@@ -10,14 +11,18 @@ import { DeepLinkButton } from "./DeepLinkButton";
 // `data` parts are OUR structured content (envelope / cards / failure) mounted as
 // custom parts — assistant-ui only supplies the message + part iteration.
 
-function FailureView({ failure }: { failure: ChatFailure }) {
+// §12.4 structured failure (LOC-002, #121). The localized summary comes from the
+// stable `failure.code` mapped to a CLOSED catalog key — an unmapped code renders
+// the catalog-backed unavailable label + drift telemetry. The server
+// `failure.message` is a machine diagnostic and is NEVER rendered as authoritative
+// localized copy (it may carry English text or internal detail).
+export function FailureView({ failure }: { failure: ChatFailure }) {
   const t = useT();
   const link = parseDeepLink(failure.deepLink);
   return (
     <div className="chat-failure" data-testid="chat-failure">
       <p className="chat-failure__title">{t("chat.failure.title")}</p>
-      {/* §12.4: a concise message (localized at the edge) plus a deep link. */}
-      <p className="chat-failure__body">{failure.message}</p>
+      <p className="chat-failure__body">{t(failureMessageKey(failure.code))}</p>
       {link ? <DeepLinkButton link={link} labelKey="chat.failure.deepLink" /> : null}
     </div>
   );

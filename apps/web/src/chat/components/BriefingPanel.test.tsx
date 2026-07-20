@@ -1,4 +1,11 @@
-import { DEFAULT_LOCALE, type LocaleId, PSEUDO_CLOSE, PSEUDO_OPEN } from "@market-ops/locale";
+import {
+  DEFAULT_LOCALE,
+  en,
+  faIR,
+  type LocaleId,
+  PSEUDO_CLOSE,
+  PSEUDO_OPEN,
+} from "@market-ops/locale";
 import { QueryClient } from "@tanstack/react-query";
 import {
   createMemoryHistory,
@@ -10,6 +17,11 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Providers } from "../../app/Providers";
+import {
+  resetUnsupportedValueSink,
+  setUnsupportedValueSink,
+  type UnsupportedValueReport,
+} from "../../app/unsupportedTelemetry";
 import { formatInstant } from "../../data/format";
 import { ACCOUNT_ID, dailyBriefing } from "../../test/msw/fixtures";
 import { BASE } from "../../test/msw/handlers";
@@ -60,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  resetUnsupportedValueSink();
   document.documentElement.removeAttribute("dir");
   document.documentElement.removeAttribute("lang");
 });
@@ -145,5 +158,71 @@ describe("BriefingPanel — #119 no fabricated last-briefing date on failure", (
     expect(unknown.textContent ?? "").toContain(PSEUDO_OPEN);
     expect(unknown.textContent ?? "").toContain(PSEUDO_CLOSE);
     expect(DIGIT.test(unknown.textContent ?? "")).toBe(false);
+  });
+});
+
+// LOC-002 (#121): `BriefingEvent.eventType` is an unconstrained string in the
+// contract; the web edge maps it to a CLOSED catalog label. A supported type
+// renders its glossary label (never the raw snake_case value); an unknown type
+// renders the localized unavailable label + PII-free drift telemetry. Severity
+// stays independently catalog-mapped.
+describe("BriefingPanel — #121 closed eventType localization", () => {
+  it("renders the localized event label + severity (both catalog-mapped), never the raw eventType", async () => {
+    server.use(http.get(`${BASE}/briefing`, () => HttpResponse.json(dailyBriefing)));
+
+    renderPanel("en");
+
+    const rows = await screen.findAllByTestId("briefing-eventType");
+    // competitor_price → glossary label; winning_state → glossary label.
+    expect(rows[0]?.textContent).toBe(en["eventType.competitorOffer"]);
+    expect(rows[1]?.textContent).toBe(en["eventType.buyBox"]);
+    // The raw machine values never reach the DOM.
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain("competitor_price");
+    expect(text).not.toContain("winning_state");
+    // Severity is independently localized and present alongside the event label.
+    const severities = screen.getAllByText((_c, el) => el?.className === "briefing__severity");
+    expect(severities).toHaveLength(2);
+    expect(severities[0]?.textContent).toBe(en["event.severity.warning"]);
+  });
+
+  it("localizes the event label independently of severity under fa-IR", async () => {
+    server.use(http.get(`${BASE}/briefing`, () => HttpResponse.json(dailyBriefing)));
+
+    renderPanel("fa-IR");
+
+    const rows = await screen.findAllByTestId("briefing-eventType");
+    expect(rows[0]?.textContent).toBe(faIR["eventType.competitorOffer"]);
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain("competitor_price");
+    expect(text).toContain(faIR["event.severity.warning"]);
+  });
+
+  it("an unknown eventType renders the localized unavailable label + telemetry, never the raw value", async () => {
+    const reports: UnsupportedValueReport[] = [];
+    setUnsupportedValueSink((r) => reports.push(r));
+    server.use(
+      http.get(`${BASE}/briefing`, () =>
+        HttpResponse.json({
+          ...dailyBriefing,
+          events: [
+            {
+              rank: 1,
+              eventId: dailyBriefing.events[0]?.eventId ?? "",
+              eventType: "mystery_signal",
+              severity: "info",
+            },
+          ],
+        }),
+      ),
+    );
+
+    renderPanel("en");
+
+    const row = await screen.findByTestId("briefing-eventType");
+    expect(row.textContent).toBe(en["chat.briefing.eventTypeUnknown"]);
+    expect(document.body.textContent ?? "").not.toContain("mystery_signal");
+    expect(reports).toHaveLength(1);
+    expect(reports[0]).toMatchObject({ kind: "briefing_event_type", value: "mystery_signal" });
   });
 });
