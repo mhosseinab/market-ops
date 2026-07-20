@@ -304,10 +304,14 @@ func (s *gatewayServer) Chat(
 		return chatUnavailable(gateway.ProviderUnavailable), nil
 	}
 
-	// Tee the stream: relay the upstream SSE bytes verbatim to the browser while
-	// capturing the terminal assistant envelope/failure so it persists after the
-	// stream completes (or a deterministic interrupted marker if it does not).
+	// Make the gateway the PRODUCER of the `conversation` frame's context echo
+	// (CHAT-007, issue #115): the gateway alone resolved and persisted the
+	// deterministic binding, so it — not the read/Draft-only LLM plane — stamps the
+	// authoritative conversationId + contextKind/contextEntityId/contextVersion the
+	// browser renders the chip from. Every other frame relays byte-for-byte. Then
+	// tee the (augmented) stream so the terminal assistant record persists at Close.
 	if s.conversations != nil {
+		stream = newConversationFrameInjector(stream, conversationID, turn.Context)
 		stream = newPersistingStream(stream, s.conversations, conversationID, s.logger)
 	}
 	return gateway.Chat200TexteventStreamResponse{Body: stream}, nil
