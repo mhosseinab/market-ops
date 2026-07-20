@@ -2,7 +2,6 @@ package recommendation
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
@@ -53,58 +52,63 @@ type EditPriceRechecker interface {
 	PolicyContextFor(ctx context.Context, rec db.Recommendation) (PolicyContext, error)
 }
 
-// AdmitEditedPrice re-runs the canonical six-stage policy chain (policy.Evaluate)
-// against edited and reports whether edited is admissible: every hard stage
+// AdmitEditedPrice re-runs the account/SKU's AUTHORITATIVE six-stage policy chain
+// (policy.Evaluate) under its REAL configured strategy AND objective (issue #134),
+// and reports whether the operator-edited price is admissible: the edited value is
+// well-formed and same-unit (else a declined edit), every hard stage
 // (boundary → floor → movement cap → cooldown) passes, the strategy is enabled,
-// the verified readiness is Complete, and the chain's accepted proposal is
-// EXACTLY the edited price. It REUSES the single canonical ordering in
-// internal/policy — it never re-implements a stage (DRY; the order is a never-cut
-// invariant, §4.6). Any hard-stage blocker, a clamp/move away from the edited
-// price, a non-Complete readiness, or a cross-unit edit yields a non-admitting
-// (or errored) result — fail closed.
+// the verified readiness is Complete, and the chain's AUTHORITATIVE accepted
+// proposal is EXACTLY the edited price. It REUSES the single canonical ordering in
+// internal/policy — it never re-implements a stage NOR pins a subordinate
+// selection (DRY; the order and the configured strategy/objective are never-cut,
+// §4.6). It fails CLOSED: a zero/absent or cross-unit edited value returns the
+// single declined-edit class (ErrEditedPriceRejected); a hard-stage blocker, a
+// non-Complete readiness, or a proposal that differs from the edited price
+// (including because the account's real objective — e.g. MaximizeContribution —
+// would choose a DIFFERENT price) yields a non-admitting result.
 func AdmitEditedPrice(pc PolicyContext, edited money.Money, now time.Time) (policy.Result, bool, error) {
-	res, err := evaluateEditedPrice(pc, edited, now)
+	if err := validateEditedValue(edited, pc.CurrentPrice); err != nil {
+		return policy.Result{}, false, err
+	}
+	res, err := evaluateEditedPrice(pc, now)
 	if err != nil {
-		return policy.Result{}, false, classifyEditedValueRejection(err)
+		return policy.Result{}, false, err
 	}
 	return res, admitsEditedPrice(res, edited), nil
 }
 
-// classifyEditedValueRejection folds the policy sentinels that can ONLY arise
-// from evaluating the EDITED VALUE itself — a zero/absent edited price
-// (policy.ErrMissingReference) or a cross-unit/cross-currency edited price
-// (policy.ErrReferenceUnitMismatch) — into the single declined-edit class
-// (ErrEditedPriceRejected). evaluateEditedPrice pins Strategy=Match and
-// Reference=edited, so the six-stage re-check's validateReference only ever
-// inspects the EDITED value; both sentinels are therefore ALWAYS a DECLINED edit
-// (PRC-002, §8.4, issue #306), never a server fault. This gives the transport a
-// SINGLE decision class to map to a 409, so it never keys on a shared policy
-// sentinel that could equally denote a genuine fault.
-//
-// Any OTHER error — including a stored-config resolution/integrity fault that
-// surfaces a raw policy sentinel from OUTSIDE this edited-value evaluation — is
-// returned UNCHANGED, so it still fails as a 500. A genuine server fault is never
-// masked as a declined edit (issue #306 related safety advisory).
-func classifyEditedValueRejection(err error) error {
-	if errors.Is(err, policy.ErrMissingReference) || errors.Is(err, policy.ErrReferenceUnitMismatch) {
+// validateEditedValue fails an operator-edited price CLOSED, on its OWN terms and
+// BEFORE the authoritative chain runs, into the single declined-edit class
+// (ErrEditedPriceRejected, issue #306): a zero/absent value, or a value whose
+// currency/exponent differs from the policy money unit (the in-force current
+// price), is a DECLINED edit the transport maps to a structured 409 — never a 500
+// server fault, and never coerced (quarantine-over-inference, §9.1). Deciding the
+// edited VALUE explicitly — rather than by pinning it as the strategy reference —
+// keeps this class INDEPENDENT of which strategy the account actually runs (issue
+// #134): a raw policy sentinel that later surfaces from the account's OWN stored
+// strategy/reference config is a genuine integrity fault, is NOT folded here, and
+// still fails as a 500 (via evaluateEditedPrice).
+func validateEditedValue(edited, unit money.Money) error {
+	if edited.IsZero() {
 		return ErrEditedPriceRejected
 	}
-	return err
+	if edited.Currency() != unit.Currency() || edited.Exponent() != unit.Exponent() {
+		return ErrEditedPriceRejected
+	}
+	return nil
 }
 
-// evaluateEditedPrice runs policy.Evaluate with the account's resolved context but
-// with the subordinate strategy/objective (stages 5–6) set to TARGET the edited
-// price, so the returned Result reflects whether the EDITED value itself survives
-// the hard stages. The account's real StrategyEnabled (stage 5 gate) is preserved;
-// only the desired-price selection is redirected to the edited price. Stage 6
-// (objective) never emits a blocker in P0, so overriding it suppresses nothing.
-func evaluateEditedPrice(pc PolicyContext, edited money.Money, now time.Time) (policy.Result, error) {
-	cfg := pc.Config
-	cfg.Strategy = policy.StrategyMatch
-	cfg.Reference = edited
-	cfg.Objective = policy.ObjectiveTrackStrategy
+// evaluateEditedPrice runs policy.Evaluate with the account/SKU's AUTHORITATIVE,
+// resolved policy configuration UNCHANGED — the real strategy AND the real
+// objective (issue #134). It no longer pins Strategy=Match / Objective=TrackStrategy
+// / Reference=edited: hardcoding a subordinate stage-5/6 selection re-checked the
+// edited price under a DIFFERENT policy than the seller actually runs, which could
+// admit an edit the account's real chain (e.g. Hold + MaximizeContribution) would
+// never propose. The edited value is compared against this chain's authoritative
+// proposal by admitsEditedPrice; it is NEVER injected as the strategy's target.
+func evaluateEditedPrice(pc PolicyContext, now time.Time) (policy.Result, error) {
 	return policy.Evaluate(policy.EvaluateInput{
-		Config:       cfg,
+		Config:       pc.Config,
 		CurrentPrice: pc.CurrentPrice,
 		Contribution: pc.Contribution,
 		Now:          now,
@@ -115,10 +119,10 @@ func evaluateEditedPrice(pc PolicyContext, edited money.Money, now time.Time) (p
 
 // admitsEditedPrice reports whether a re-check Result admits exactly the edited
 // price: the result must be Approvable (no blocker, not a simulation, readiness
-// Complete, a proposal present — policy.Result.Approvable) AND its accepted price
-// must equal the edited price. A clamp to a window edge (proposal != edited) is a
-// non-admit. Comparison is Money-only (mismatched unit is a non-admit, never a
-// panic).
+// Complete, a proposal present — policy.Result.Approvable) AND its authoritative
+// accepted price must equal the edited price. A proposal the account's real
+// strategy/objective chose DIFFERENTLY (proposal != edited) is a non-admit.
+// Comparison is Money-only (mismatched unit is a non-admit, never a panic).
 func admitsEditedPrice(res policy.Result, edited money.Money) bool {
 	if !res.Approvable() || res.Proposed == nil {
 		return false

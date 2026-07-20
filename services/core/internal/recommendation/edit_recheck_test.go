@@ -11,12 +11,15 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
-// permissivePolicyContext builds a PolicyContext whose ONLY binding hard
+// permissivePolicyContext builds a PolicyContext carrying the account's REAL
+// configured policy (Hold + MaximizeContribution): the only binding hard
 // constraints are the marketplace boundary and the 5% movement cap around the
-// current price (1000): the floor is trivially satisfiable and the contribution
+// current price (1000), the floor is trivially satisfiable, and the contribution
 // oracle returns a fixed positive amount. It is the fixture the edited-price
-// re-check unit tests target — an admitted price must live inside
-// boundary ∩ movement (here [950,1050]).
+// re-check unit tests target. The re-check runs this AUTHORITATIVE chain (issue
+// #134), so — under MaximizeContribution — its authoritative proposal is feasHigh
+// (1050 = boundary ∩ movement upper edge). An edited price is admissible ONLY when
+// it EQUALS that authoritative proposal; a merely in-window price is not.
 func permissivePolicyContext(t *testing.T) recommendation.PolicyContext {
 	t.Helper()
 	return recommendation.PolicyContext{
@@ -80,17 +83,40 @@ func TestAdmitEditedPriceBelowFloorRejected(t *testing.T) {
 	}
 }
 
-// TestAdmitEditedPrice_ValidPriceAdmitted proves a valid edited price — inside
-// the boundary and the movement window, floor-satisfying, readiness Complete —
+// TestAdmitEditedPrice_ValidPriceAdmitted proves an edited price that EQUALS the
+// account's authoritative proposal — here feasHigh (1050) under the fixture's real
+// Hold + MaximizeContribution chain, floor-satisfying, readiness Complete —
 // re-passes every stage and IS admissible (so the edit may mint a new version).
 func TestAdmitEditedPriceValidPriceAdmitted(t *testing.T) {
 	pc := permissivePolicyContext(t)
-	res, ok, err := recommendation.AdmitEditedPrice(pc, irr(t, 1010), time.Now())
+	res, ok, err := recommendation.AdmitEditedPrice(pc, irr(t, 1050), time.Now())
 	if err != nil {
 		t.Fatalf("AdmitEditedPrice: %v", err)
 	}
 	if !ok {
-		t.Fatalf("a valid in-window edited price must be admissible; result blockers=%v", res.Blockers)
+		t.Fatalf("an edited price equal to the authoritative proposal must be admissible; result blockers=%v", res.Blockers)
+	}
+}
+
+// TestAdmitEditedPrice_RejectsPriceAdmissibleOnlyUnderADifferentStrategy is the
+// issue #134 REOPEN regression (§4.6 never-cut policy order + §9.3 authoritative
+// strategy/objective): the re-check evaluates the account's REAL configured chain,
+// NEVER a hardcoded Match/TrackStrategy. permissivePolicyContext is Hold +
+// MaximizeContribution, whose authoritative proposal is feasHigh (1050). An
+// in-window price (1010) that would pass ONLY if the chain were pinned to
+// Match/TrackStrategy targeting it (the old defect) is NOT that authoritative
+// proposal, so it is NOT admissible and can never reach review/confirmation.
+func TestAdmitEditedPrice_RejectsPriceAdmissibleOnlyUnderADifferentStrategy(t *testing.T) {
+	pc := permissivePolicyContext(t) // the account's REAL config: Hold + MaximizeContribution.
+	// 1010 is inside boundary ∩ the 5% movement window ([950,1050]) and floor-
+	// satisfying, so a chain hardcoded to Match/TrackStrategy targeting 1010 would
+	// admit it. The account's real chain proposes feasHigh (1050); 1010 is not it.
+	_, ok, err := recommendation.AdmitEditedPrice(pc, irr(t, 1010), time.Now())
+	if err != nil {
+		t.Fatalf("AdmitEditedPrice: %v", err)
+	}
+	if ok {
+		t.Fatal("a price admissible only under Match/TrackStrategy must NOT be admitted under the account's real Hold/MaximizeContribution chain (issue #134)")
 	}
 }
 
