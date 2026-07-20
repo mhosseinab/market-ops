@@ -45,11 +45,27 @@ type Service struct {
 	// logger carries the structured observability signal for the dedup conflict
 	// boundary (issue #44); defaults to slog.Default().
 	logger *slog.Logger
+	// registry is the SERVER-OWNED allow-list of supported capture parser identities
+	// (#154). It is consulted before quality derivation so an unknown/retired/malformed
+	// parser fails closed to Unverified and never accumulates qualifying history or
+	// corroboration. Defaults to DefaultParserRegistry (the real production tuples).
+	registry *ParserRegistry
+	// driftSink receives the bounded parser-drift signal when a capture's parser
+	// identity is not registered (§10.4). Defaults to the OTel+slog telemetry sink.
+	driftSink ParserDriftSink
 }
 
-// NewService builds an observation Service bound to the pool.
+// NewService builds an observation Service bound to the pool. It seeds the
+// server-owned parser registry (#154) with the production tuples and the default
+// telemetry parser-drift sink; override via WithParserRegistry / WithParserDriftSink.
 func NewService(pool *pgxpool.Pool) *Service {
-	return &Service{pool: pool, now: time.Now, logger: slog.Default()}
+	return &Service{
+		pool:      pool,
+		now:       time.Now,
+		logger:    slog.Default(),
+		registry:  DefaultParserRegistry(),
+		driftSink: newTelemetryDriftSink(slog.Default()),
+	}
 }
 
 // WithClock overrides the clock (tests only).
@@ -62,6 +78,24 @@ func (s *Service) WithClock(now func() time.Time) *Service {
 func (s *Service) WithLogger(logger *slog.Logger) *Service {
 	if logger != nil {
 		s.logger = logger
+	}
+	return s
+}
+
+// WithParserRegistry overrides the server-owned parser registry (#154). A nil
+// registry is ignored so the service never loses its fail-closed authority.
+func (s *Service) WithParserRegistry(r *ParserRegistry) *Service {
+	if r != nil {
+		s.registry = r
+	}
+	return s
+}
+
+// WithParserDriftSink overrides the parser-drift sink (#154, tests/observability
+// wiring). A nil sink is ignored so a rejected parser is always surfaced.
+func (s *Service) WithParserDriftSink(sink ParserDriftSink) *Service {
+	if sink != nil {
+		s.driftSink = sink
 	}
 	return s
 }
@@ -209,12 +243,34 @@ func (s *Service) Ingest(ctx context.Context, c Capture) (IngestResult, error) {
 	}
 	analysis := analyzeRoutes(inWindow, c)
 
+	// SERVER-OWNED parser-version gate (#154, §10.4). Schema validity is NOT merely
+	// "the JSON decoded": it additionally requires the capture's parser identity to be
+	// registered. An unknown/retired/malformed (sourceType, parserVersion[, connector])
+	// is quarantined — the structural flag is ANDed with a registry hit, so schemaValid
+	// collapses to false and DeriveQuality floors the value at Unverified. The client's
+	// SchemaValid and Confidence are evidence, never authority: a registry miss can
+	// never be overridden by a client claim. The false flag is ALSO persisted on the
+	// append-only row (below), so ListInWindowRouteValues excludes this quarantined
+	// evidence from every OTHER capture's history/corroboration.
+	registered := s.registry.Supported(c.SourceType, c.ParserVersion, c.ConnectorVersion)
+	schemaValid := c.SchemaValid && registered
+	if !registered {
+		s.driftSink.UnsupportedParser(ctx, UnsupportedParserEvent{
+			Account:          target.MarketplaceAccountID,
+			TargetID:         c.TargetID,
+			Route:            string(c.Route),
+			SourceType:       string(c.SourceType),
+			ParserVersion:    c.ParserVersion,
+			ConnectorVersion: c.ConnectorVersion,
+		})
+	}
+
 	fresh := !now.After(deadline)
 	quality := DeriveQuality(QualitySignals{
 		HasValue:      c.HasCurrentPriceValue(),
 		Disappeared:   c.Availability == Disappeared,
 		Fresh:         fresh,
-		SchemaValid:   c.SchemaValid,
+		SchemaValid:   schemaValid,
 		IdentityValid: identityValid,
 		LowConfidence: c.Confidence.low(),
 		Conflicted:    analysis.conflicted,
@@ -315,10 +371,13 @@ func (s *Service) Ingest(ctx context.Context, c Capture) (IngestResult, error) {
 		Quality:              string(quality),
 		FreshnessDeadline:    deadline,
 		DedupKey:             dedupKey,
-		SchemaValid:          c.SchemaValid,
-		IdentityValid:        identityValid,
-		Confidence:           string(c.Confidence),
-		ParsingWarnings:      warnings,
+		// The registry-gated schema validity (not the raw client flag) is what is
+		// persisted, so a quarantined unknown-parser row is schema_valid=false and is
+		// excluded from every other capture's in-window corroboration/history.
+		SchemaValid:     schemaValid,
+		IdentityValid:   identityValid,
+		Confidence:      string(c.Confidence),
+		ParsingWarnings: warnings,
 	})
 	if err != nil {
 		return IngestResult{}, fmt.Errorf("observation: insert observation: %w", err)
