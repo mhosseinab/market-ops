@@ -684,6 +684,12 @@ export const en: Catalog = {
   "bulk.reason.partial": "Partial cost; analysis only",
   "bulk.reason.jitRefresh": "Needs JIT refresh",
   "bulk.reason.ready": "Ready to execute",
+  "bulk.pagination.label": "Bulk pagination",
+  "bulk.pagination.prev": "Previous",
+  "bulk.pagination.next": "Next",
+  "bulk.readiness.error.title": "Some margin readiness could not be loaded",
+  "bulk.readiness.error.body":
+    "Some rows on this page failed to load their readiness. Other rows are shown; retry to load the rest.",
 
   "settings.connection.title": "DK connection",
   "settings.connection.manage": "Manage connection →",
