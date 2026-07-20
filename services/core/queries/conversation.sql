@@ -74,3 +74,24 @@ LIMIT 1;
 INSERT INTO conversation_context_bindings (conversation_id, version, kind, entity_id)
 VALUES ($1, $2, $3, $4)
 RETURNING *;
+
+-- name: GetCurrentLocaleBinding :one
+-- Resolves a conversation's CURRENT bound locale (the highest version row) for the
+-- caller's turn (LOC-001, issue #120). The caller has already validated the
+-- conversation belongs to its organization (GetConversationForOrg), so this read is
+-- org-safe by construction. Returns no row when the conversation has no locale
+-- binding yet (a legacy or first-turn conversation). APPEND-ONLY read.
+SELECT * FROM conversation_locale_bindings
+WHERE conversation_id = $1
+ORDER BY version DESC
+LIMIT 1;
+
+-- name: CreateLocaleBinding :one
+-- Appends one locale-binding version to a conversation (LOC-001, issue #120).
+-- APPEND-ONLY: a transition inserts a NEW version; a prior binding is never updated
+-- or deleted. The (conversation_id, version) UNIQUE constraint rejects a
+-- double-apply of the same version, so a retried transition cannot silently fork
+-- the locale history.
+INSERT INTO conversation_locale_bindings (conversation_id, version, locale)
+VALUES ($1, $2, $3)
+RETURNING *;

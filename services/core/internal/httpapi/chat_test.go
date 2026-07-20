@@ -44,13 +44,42 @@ func ownerSession(fa *fakeAuth) auth.Principal {
 	return p
 }
 
+// postChat posts a chat turn, injecting a valid default `locale` ("en") when the
+// body omits one. Locale is REQUIRED on the wire (LOC-001, issue #120), so the many
+// tests that exercise an ORTHOGONAL concern (kill switch, context binding,
+// persistence) stay green without each restating a locale; the dedicated locale
+// tests post explicit or absent locales via postChatRaw.
 func postChat(srv *http.Server, body string) *httptest.ResponseRecorder {
+	return postChatRaw(srv, withDefaultLocale(body))
+}
+
+// postChatRaw posts the body VERBATIM (no locale injection), so a test can prove the
+// fail-closed rejection of a missing/unknown locale.
+func postChatRaw(srv *http.Server, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/chat", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
 	return rec
+}
+
+// withDefaultLocale adds `"locale":"en"` to a JSON object body when absent, leaving
+// an explicit locale (valid or invalid) untouched. A non-object body is returned
+// unchanged (the validator/handler rejects it on its own terms).
+func withDefaultLocale(body string) string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &m); err != nil {
+		return body
+	}
+	if _, ok := m["locale"]; !ok {
+		m["locale"] = json.RawMessage(`"en"`)
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return string(out)
 }
 
 // getMe hits a sampled READ screen endpoint to prove screens still work while

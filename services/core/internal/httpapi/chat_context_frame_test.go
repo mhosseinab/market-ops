@@ -22,6 +22,8 @@ type conversationFrame struct {
 	ContextKind     string `json:"contextKind"`
 	ContextEntityID string `json:"contextEntityId"`
 	ContextVersion  int32  `json:"contextVersion"`
+	LocaleTag       string `json:"localeTag"`
+	LocaleVersion   int32  `json:"localeVersion"`
 }
 
 // firstConversationFrame scans a relayed SSE body for the single `conversation`

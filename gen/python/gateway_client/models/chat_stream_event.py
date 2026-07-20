@@ -8,6 +8,7 @@ from attrs import define as _attrs_define
 
 from ..models.chat_stream_event_kind import ChatStreamEventKind
 from ..models.conversation_context_kind import ConversationContextKind
+from ..models.supported_locale import SupportedLocale
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -40,6 +41,14 @@ class ChatStreamEvent:
             context_version (int | Unset): Echoed on the `conversation` frame: the conversation's current server-issued
                 context version. The client sends it back on the next turn so a stale binding is rejected rather than silently
                 relabeled.
+            locale_tag (SupportedLocale | Unset): The CLOSED set of locales the application supports (PRD §11.1, LOC-001). A
+                BCP-47 language tag treated purely as DATA — it selects a locale pack (direction, digits, calendar, catalog)
+                with NO locale/calendar/currency branch in core logic. The set mirrors the web locale package's declared
+                locales; adding a locale is a new entry here plus a locale pack, never a code branch. The gateway validates
+                every chat turn's locale against this set and fails closed on anything outside it — locale is never inferred.
+            locale_version (int | Unset): Echoed on the `conversation` frame: the conversation's current server-issued
+                locale-binding version. The client sends it back on the next turn so a locale change is an explicit, versioned
+                transition and a stale binding is rejected rather than silently relabeled.
             token (str | Unset): Incremental assistant text on a `token` frame.
             envelope (ChatStreamEventEnvelope | Unset): The final typed response envelope on a `final` frame. Its internal
                 shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2).
@@ -56,6 +65,8 @@ class ChatStreamEvent:
     context_kind: ConversationContextKind | Unset = UNSET
     context_entity_id: str | Unset = UNSET
     context_version: int | Unset = UNSET
+    locale_tag: SupportedLocale | Unset = UNSET
+    locale_version: int | Unset = UNSET
     token: str | Unset = UNSET
     envelope: ChatStreamEventEnvelope | Unset = UNSET
     failure: ChatFailure | Unset = UNSET
@@ -74,6 +85,12 @@ class ChatStreamEvent:
         context_entity_id = self.context_entity_id
 
         context_version = self.context_version
+
+        locale_tag: str | Unset = UNSET
+        if not isinstance(self.locale_tag, Unset):
+            locale_tag = self.locale_tag.value
+
+        locale_version = self.locale_version
 
         token = self.token
 
@@ -100,6 +117,10 @@ class ChatStreamEvent:
             field_dict["contextEntityId"] = context_entity_id
         if context_version is not UNSET:
             field_dict["contextVersion"] = context_version
+        if locale_tag is not UNSET:
+            field_dict["localeTag"] = locale_tag
+        if locale_version is not UNSET:
+            field_dict["localeVersion"] = locale_version
         if token is not UNSET:
             field_dict["token"] = token
         if envelope is not UNSET:
@@ -135,6 +156,15 @@ class ChatStreamEvent:
 
         context_version = d.pop("contextVersion", UNSET)
 
+        _locale_tag = d.pop("localeTag", UNSET)
+        locale_tag: SupportedLocale | Unset
+        if isinstance(_locale_tag, Unset):
+            locale_tag = UNSET
+        else:
+            locale_tag = SupportedLocale(_locale_tag)
+
+        locale_version = d.pop("localeVersion", UNSET)
+
         token = d.pop("token", UNSET)
 
         _envelope = d.pop("envelope", UNSET)
@@ -157,6 +187,8 @@ class ChatStreamEvent:
             context_kind=context_kind,
             context_entity_id=context_entity_id,
             context_version=context_version,
+            locale_tag=locale_tag,
+            locale_version=locale_version,
             token=token,
             envelope=envelope,
             failure=failure,

@@ -88,6 +88,12 @@ type ChatTurn struct {
 	// never infers the bound entity from free text when a binding is present; it
 	// carries no approval authority.
 	Context *conversation.ContextBinding
+	// Locale is the conversation's AUTHORITATIVE bound locale (LOC-001, issue #120):
+	// the exact validated wire locale, resolved and versioned by the gateway. It is
+	// handed to the LLM plane as read-only pass-through business data so the response
+	// is composed for the bound locale WITHOUT inference from the message text or
+	// digit shape; it carries no approval authority. Empty only on a no-store path.
+	Locale string
 }
 
 // staticKillSwitch is the default ChatKillSwitch backed by immutable config
@@ -192,6 +198,20 @@ func (s *gatewayServer) Chat(
 		}, nil
 	}
 
+	// Locale is DATA and the ONLY authoritative locale signal (LOC-001/LOC-007):
+	// input digit normalization makes Persian and Latin digits identical on the
+	// wire, so the locale can NEVER be inferred from the message, digit shape,
+	// region, or account default. Validate the declared wire locale against the
+	// closed supported set and FAIL CLOSED on an unknown/missing value — never
+	// guess. The transport request-validator already rejects a missing/unknown
+	// locale (enum + required) before this handler; this is defense-in-depth AND
+	// the audited rejection event, and the bounded technical tag (never Persian
+	// copy) is safe to log.
+	if !req.Body.Locale.Valid() {
+		s.logChatLocaleRejected(ctx, string(req.Body.Locale))
+		return chatLocaleUnsupported(), nil
+	}
+
 	// The authenticated principal is guaranteed present (kindProtected route). We
 	// resolve it BEFORE the per-account kill switch because the authoritative
 	// account context is loaded under the caller's org, never trusted from input.
@@ -255,6 +275,11 @@ func (s *gatewayServer) Chat(
 		ConversationID:       req.Body.ConversationId,
 		MarketplaceAccountID: req.Body.MarketplaceAccountId,
 		Message:              req.Body.Message,
+		// The validated wire locale is authoritative even when no durability store is
+		// wired: it is always handed to the LLM plane. When a store IS wired, the
+		// resolved bound locale below replaces it (identical unless a transition
+		// bumped the version — the value is the same locale tag).
+		Locale: string(req.Body.Locale),
 	}
 
 	// Persist the turn under the caller's organization BEFORE proxying (CHAT-008).
@@ -265,6 +290,7 @@ func (s *gatewayServer) Chat(
 	// proxied; a persistence failure fails closed — an unpersisted turn is never
 	// proxied. When no store is wired (no DB), /chat proxies without persistence.
 	var conversationID uuid.UUID
+	var boundLocale *conversation.LocaleBinding
 	if s.conversations != nil {
 		conv, err := s.conversations.BeginTurn(ctx, conversation.OpenParams{
 			OrganizationID:       p.OrganizationID,
@@ -272,6 +298,7 @@ func (s *gatewayServer) Chat(
 			MarketplaceAccountID: req.Body.MarketplaceAccountId,
 			ConversationID:       req.Body.ConversationId,
 			Context:              toRequestedContext(req.Body.Context),
+			Locale:               toRequestedLocale(req.Body),
 		}, req.Body.Message)
 		if errors.Is(err, conversation.ErrConversationDenied) {
 			s.logChatPersist(ctx, "begin-turn-denied", uuid.Nil, err)
@@ -288,6 +315,17 @@ func (s *gatewayServer) Chat(
 			s.logChatPersist(ctx, "context-transition-required", uuid.Nil, err)
 			return chatContextTransitionRequired(), nil
 		}
+		// A stale or silently-relabeling LOCALE binding is rejected here too, BEFORE
+		// the turn is proxied (LOC-001): the conversation's bound locale is never
+		// silently relabeled and no stream opens (fail closed, no Draft).
+		if errors.Is(err, conversation.ErrLocaleVersionStale) {
+			s.logChatPersist(ctx, "locale-version-stale", uuid.Nil, err)
+			return chatLocaleStale(), nil
+		}
+		if errors.Is(err, conversation.ErrLocaleTransitionRequired) {
+			s.logChatPersist(ctx, "locale-transition-required", uuid.Nil, err)
+			return chatLocaleTransitionRequired(), nil
+		}
 		if err != nil {
 			s.logChatPersist(ctx, "begin-turn-failed", uuid.Nil, err)
 			return chatPersistFailed(), nil
@@ -295,6 +333,10 @@ func (s *gatewayServer) Chat(
 		conversationID = conv.ID
 		turn.ConversationID = &conv.ID
 		turn.Context = conv.Context
+		boundLocale = conv.Locale
+		if conv.Locale != nil {
+			turn.Locale = conv.Locale.Locale
+		}
 	}
 
 	stream, err := s.llmChat.StartTurn(ctx, turn)
@@ -311,7 +353,7 @@ func (s *gatewayServer) Chat(
 	// browser renders the chip from. Every other frame relays byte-for-byte. Then
 	// tee the (augmented) stream so the terminal assistant record persists at Close.
 	if s.conversations != nil {
-		stream = newConversationFrameInjector(stream, conversationID, turn.Context)
+		stream = newConversationFrameInjector(stream, conversationID, turn.Context, boundLocale)
 		stream = newPersistingStream(stream, s.conversations, conversationID, s.logger)
 	}
 	return gateway.Chat200TexteventStreamResponse{Body: stream}, nil
@@ -505,6 +547,15 @@ func (h *httpLLMChat) StartTurn(ctx context.Context, turn ChatTurn) (io.ReadClos
 	if turn.MarketplaceAccountID != nil {
 		payload["marketplace_account_id"] = turn.MarketplaceAccountID.String()
 	}
+	// Hand the AUTHORITATIVE bound locale to the LLM plane as read-only business
+	// data (LOC-001, issue #120): the response is composed for the bound locale
+	// WITHOUT inference from the message text or digit shape. It carries no approval
+	// authority. This is the gateway-authoritative pass-through; consuming it to
+	// compose the Persian response/failure catalog is the LLM-plane seam scoped to a
+	// downstream step (see #115's #108-escalated consumption seam).
+	if turn.Locale != "" {
+		payload["locale"] = turn.Locale
+	}
 	// Pass the AUTHORITATIVE bound context through to the LLM plane as read-only
 	// business data (CHAT-007). The resolver uses it instead of inferring the entity
 	// from free text; it carries no approval authority and never advances an action.
@@ -590,6 +641,77 @@ func toRequestedContext(b *gateway.ConversationContextBinding) *conversation.Req
 		req.Transition = *b.Transition
 	}
 	return req
+}
+
+// toRequestedLocale maps the contract turn's locale fields onto the store's
+// declared-locale input (LOC-001, issue #120). The locale is REQUIRED and already
+// validated against the supported set, so it is always present here; the optional
+// version/transition drive the append-only, versioned binding exactly like the
+// context binding. It never infers a locale — the wire value is authoritative.
+func toRequestedLocale(b *gateway.ChatTurnRequest) *conversation.RequestedLocale {
+	if b == nil {
+		return nil
+	}
+	req := &conversation.RequestedLocale{
+		Locale:  string(b.Locale),
+		Version: b.LocaleVersion,
+	}
+	if b.LocaleTransition != nil {
+		req.Transition = *b.LocaleTransition
+	}
+	return req
+}
+
+// chatLocaleUnsupported builds the 400 for a turn whose declared locale is not in
+// the closed supported set (LOC-001). Fail closed: the turn is never proxied and no
+// locale is inferred — the wire locale is the only authoritative signal.
+func chatLocaleUnsupported() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 400,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CHAT_LOCALE_UNSUPPORTED",
+			Message: "the turn's locale is missing or not a supported locale",
+		},
+	}
+}
+
+// chatLocaleStale builds the 409 for a turn whose declared locale version no longer
+// matches the conversation's current bound locale version (LOC-001). Fail closed:
+// the turn is never proxied, so no Draft is produced.
+func chatLocaleStale() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 409,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CONVERSATION_LOCALE_STALE",
+			Message: "the conversation locale has changed; resend against the current locale",
+		},
+	}
+}
+
+// chatLocaleTransitionRequired builds the 409 for a continuation whose declared
+// locale differs from the conversation's current bound locale without an explicit
+// transition (LOC-001). Fail closed: the conversation's bound locale is never
+// silently relabeled and the turn is never proxied.
+func chatLocaleTransitionRequired() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 409,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CONVERSATION_LOCALE_TRANSITION_REQUIRED",
+			Message: "changing the conversation locale requires an explicit transition",
+		},
+	}
+}
+
+// logChatLocaleRejected emits the structured boundary log for a fail-closed locale
+// rejection (never silent): a rejected unsupported locale is a countable, audited
+// runtime-boundary event. The rejected tag is a BOUNDED technical identifier (a
+// closed enum value like "fa-IR"/"en"), never Persian display copy — free-text
+// containment (§8) holds.
+func (s *gatewayServer) logChatLocaleRejected(ctx context.Context, tag string) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.WarnContext(ctx, "chat locale rejected (unsupported)", "stage", "locale-unsupported", "locale_tag", tag)
 }
 
 // chatContextStale builds the 409 for a turn whose declared context version no

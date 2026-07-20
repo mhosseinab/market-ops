@@ -191,6 +191,12 @@ type Querier interface {
 	// it appears in the review queue but cannot drive an executable path until a
 	// human confirms it. Fuzzy suggestion is P0.5 and not created here.
 	CreateIdentityCandidate(ctx context.Context, arg CreateIdentityCandidateParams) (MarketProductIdentity, error)
+	// Appends one locale-binding version to a conversation (LOC-001, issue #120).
+	// APPEND-ONLY: a transition inserts a NEW version; a prior binding is never updated
+	// or deleted. The (conversation_id, version) UNIQUE constraint rejects a
+	// double-apply of the same version, so a retried transition cannot silently fork
+	// the locale history.
+	CreateLocaleBinding(ctx context.Context, arg CreateLocaleBindingParams) (ConversationLocaleBinding, error)
 	CreateMarketplaceAccount(ctx context.Context, arg CreateMarketplaceAccountParams) (MarketplaceAccount, error)
 	// OBS-001 auto-create: a target for EXACTLY the account's active Confirmed
 	// mappings that do not yet have one. NeedsReview/Rejected/Obsolete are excluded by
@@ -354,6 +360,12 @@ type Querier interface {
 	// lineage. Comparing these to the card's BOUND versions catches an out-of-band
 	// version change that never passed through a state-machine invalidation.
 	GetCurrentExecutionContext(ctx context.Context, id uuid.UUID) (GetCurrentExecutionContextRow, error)
+	// Resolves a conversation's CURRENT bound locale (the highest version row) for the
+	// caller's turn (LOC-001, issue #120). The caller has already validated the
+	// conversation belongs to its organization (GetConversationForOrg), so this read is
+	// org-safe by construction. Returns no row when the conversation has no locale
+	// binding yet (a legacy or first-turn conversation). APPEND-ONLY read.
+	GetCurrentLocaleBinding(ctx context.Context, conversationID uuid.UUID) (ConversationLocaleBinding, error)
 	// The greatest-version row for a lineage (the current recommendation).
 	GetCurrentRecommendation(ctx context.Context, lineageID uuid.UUID) (Recommendation, error)
 	GetCurrentSelectionSet(ctx context.Context, lineageID uuid.UUID) (SelectionSet, error)
