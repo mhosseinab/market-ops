@@ -193,7 +193,7 @@ func TestConfirmBulkSelection_SupersededMemberInvalidatedButOthersAuthorized(t *
 	pool, q := newPool(t)
 	ctx := context.Background()
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetExecutionDispatcher(realDispatcherFor(t, pool))
+	svc := recommendation.NewService(pool).SetExecutionDispatcher(realDispatcherFor(t, pool)).SetEditPriceRechecker(admitAllRechecker{})
 
 	keepCard := awaitingCard(t, svc, account, variant)
 	variant2 := seedSecondVariant(t, q, account)
@@ -209,7 +209,8 @@ func TestConfirmBulkSelection_SupersededMemberInvalidatedButOthersAuthorized(t *
 	}
 
 	// Supersede the second member's live card with a new version (CHAT-044 edit).
-	newPrice := mustMoney(t, 111100, "IRR", -2)
+	// In-window edit so the #134 policy re-check admits it and V2 is minted.
+	newPrice := mustMoney(t, 1010, "IRR", 0)
 	if _, err := svc.EditPrice(ctx, supCard.ID, newPrice, time.Now().UTC()); err != nil {
 		t.Fatalf("edit price: %v", err)
 	}

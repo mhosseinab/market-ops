@@ -295,10 +295,12 @@ func TestPreviewBulkSelectionRejectsUnknownOrForeignMember(t *testing.T) {
 func TestEditPriceMintsNewCardVersionAndNewParameterVersion(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool)
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
 	original := persistApprovableCard(t, svc, account, variant)
 
-	newPrice, err := money.New(999900, "IRR", -2)
+	// Within the seeded boundary [900,1200] and the 5% movement window around the
+	// current price (1000), so the policy re-check (issue #134) admits the edit.
+	newPrice, err := money.New(1020, "IRR", 0)
 	if err != nil {
 		t.Fatalf("money.New: %v", err)
 	}
@@ -342,10 +344,11 @@ func TestEditPriceMintsNewCardVersionAndNewParameterVersion(t *testing.T) {
 func TestListActionsReturnsCurrentVersionPerLineageNewestFirst(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool)
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
 	first := persistApprovableCard(t, svc, account, variant)
 
-	newPrice, err := money.New(123400, "IRR", -2)
+	// In-window edit (see TestEditPrice…): admitted by the policy re-check (#134).
+	newPrice, err := money.New(1030, "IRR", 0)
 	if err != nil {
 		t.Fatalf("money.New: %v", err)
 	}

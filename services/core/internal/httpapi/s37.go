@@ -87,6 +87,12 @@ func (s *gatewayServer) EditApprovalCardPrice(
 		if errors.Is(err, pgx.ErrNoRows) {
 			return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
 		}
+		// The edited price failed the six-stage policy re-check (issue #134): a
+		// structured 409, never a 500 — the edit is a legitimate request the policy
+		// chain declined, and no new version was minted (fail closed, §4.6).
+		if errors.Is(err, recommendation.ErrEditedPriceRejected) {
+			return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 409, Body: approvalErr(err)}, nil
+		}
 		return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 	}
 	view, err := toApprovalCardView(card, nil)

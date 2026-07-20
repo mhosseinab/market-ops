@@ -35,6 +35,32 @@ func (s *Service) EditPrice(ctx context.Context, cardID uuid.UUID, newPrice mone
 	if err != nil {
 		return db.ApprovalCard{}, err
 	}
+
+	// Never-cut policy-order re-check (§4.6, CHAT-044, issue #134): the operator-
+	// edited price MUST re-pass the FULL boundary → floor → movement-cap → cooldown
+	// → strategy → objective chain against the EDITED value before a new control-
+	// bearing version can exist. Fail CLOSED when no rechecker is wired (dark P0) or
+	// the chain does not admit exactly the edited price — an invalid edit mints no
+	// new card version and no new parameter version, so it can never reach
+	// AwaitingConfirmation. This runs on the SAME versioned recommendation the card
+	// was minted from (CST-002 reproducibility), never the current one.
+	if s.editPriceRecheck == nil {
+		return db.ApprovalCard{}, ErrEditedPriceRejected
+	}
+	rec, err := db.New(s.pool).GetRecommendation(ctx, current.RecommendationID)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
+	pc, err := s.editPriceRecheck.PolicyContextFor(ctx, rec)
+	if err != nil {
+		return db.ApprovalCard{}, err
+	}
+	if _, admitted, err := AdmitEditedPrice(pc, newPrice, now); err != nil {
+		return db.ApprovalCard{}, err
+	} else if !admitted {
+		return db.ApprovalCard{}, ErrEditedPriceRejected
+	}
+
 	ev, err := DecodeEvidenceVersions(current.EvidenceVersions)
 	if err != nil {
 		return db.ApprovalCard{}, err
