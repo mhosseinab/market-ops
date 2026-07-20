@@ -134,7 +134,12 @@ func TestSimulatePolicy_NegativeAbsoluteDeductionRejected(t *testing.T) {
 }
 
 // TestSimulatePolicy_RateOutOfRangeRejected (issue #60) — a rate outside
-// [0,10000] bp is rejected as an invalid contribution input.
+// [0,10000] bp is rejected with a canonical 400 and no simulation. The contract
+// declares this bound (minimum:0/maximum:10000 on rateBasisPoints), so the
+// strict request-validation transport gate (issue #143) now rejects it BEFORE
+// the domain code with INVALID_REQUEST; the identical domain invariant
+// (ErrRateOutOfRange) is preserved as defense-in-depth and unit-tested in
+// internal/margin/contribution_test.go.
 func TestSimulatePolicy_RateOutOfRangeRejected(t *testing.T) {
 	for _, bp := range []string{"-1", "10001"} {
 		bp := bp
@@ -150,8 +155,8 @@ func TestSimulatePolicy_RateOutOfRangeRejected(t *testing.T) {
 			if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
-			if env.Code != "INVALID_CONTRIBUTION_INPUT" {
-				t.Fatalf("code = %q, want INVALID_CONTRIBUTION_INPUT", env.Code)
+			if env.Code != "INVALID_REQUEST" {
+				t.Fatalf("code = %q, want INVALID_REQUEST (contract-bound rate rejected at transport)", env.Code)
 			}
 		})
 	}

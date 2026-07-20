@@ -191,6 +191,17 @@ func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option)
 	strict := gateway.NewStrictHandler(gs, nil)
 	handler := gateway.HandlerFromMux(strict, mux)
 
+	// Strict OpenAPI request-body validation (issue #143). Wrapped INNER of the
+	// auth/permission middleware below (auth runs first, so a validation 400 never
+	// precedes authorization or leaks a protected resource's existence) and OUTER
+	// of the generated mux (so an invalid body — missing required field, unknown
+	// property on a closed schema, wrong type/enum/range, or trailing JSON — is
+	// rejected with a canonical ErrorEnvelope BEFORE any handler, mutation, or
+	// audit append runs). It is armed unconditionally, independent of auth, so the
+	// contract gate holds on every deployment posture. Domain validation remains
+	// as defense-in-depth.
+	handler = newRequestValidator().wrap(handler)
+
 	// Arm the permission middleware whenever auth is wired. It enforces the
 	// shared perm matrix on every non-public route and fails closed. When auth
 	// is not wired, only public routes are reachable, so no protected resource
