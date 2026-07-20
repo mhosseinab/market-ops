@@ -4,10 +4,41 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import { Providers } from "../app/Providers";
-import { ACCOUNT_ID } from "../test/msw/fixtures";
+import type { NeedsReviewItem } from "../data/types";
+import { ACCOUNT_ID, needsReviewQueue } from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { NeedsReview } from "./NeedsReview";
+
+// Candidate A is the seeded queue head; candidate B is a second, distinct
+// candidate used to prove notes stay bound to the acted-on identity (#83).
+const candidateA = needsReviewQueue.items[0] as NeedsReviewItem;
+const candidateB: NeedsReviewItem = {
+  identityId: "44444444-4444-4444-4444-444444444444",
+  variantId: "22222222-2222-2222-2222-222222222222",
+  nativeVariantId: 5560001,
+  nativeProductId: 4410002,
+  supplierCode: "DKP-5560001",
+  variantTitle: "کیبورد بی‌سیم",
+  productTitle: "K380",
+  candidateSource: "title_match",
+  version: 1,
+};
+
+/** Serve a two-candidate review queue (A then B). */
+function withTwoCandidates() {
+  server.use(
+    http.get(`${BASE}/identity/needs-review`, () =>
+      HttpResponse.json({ items: [candidateA, candidateB] }),
+    ),
+  );
+}
+
+/** The decision button (by catalog label) inside a specific candidate's row. */
+function rowButton(supplierCode: string, label: string): HTMLButtonElement {
+  const row = screen.getByText(supplierCode).closest("tr") as HTMLElement;
+  return within(row).getByText(label).closest("button") as HTMLButtonElement;
+}
 
 afterEach(() => {
   document.documentElement.removeAttribute("dir");
@@ -76,5 +107,118 @@ describe("Needs Review queue (journey 4)", () => {
     // Dismiss clears just this error; the row controls remain the recovery path.
     fireEvent.click(screen.getByTestId("decision-error-dismiss"));
     await waitFor(() => expect(screen.queryByTestId("decision-error")).toBeNull());
+  });
+
+  // ── #83: notes stay bound to the acted-on identity ─────────────────────────
+  it("prevents candidate A's note from being submitted with candidate B", async () => {
+    withTwoCandidates();
+    const bodies: { identityId: string; note?: string }[] = [];
+    for (const path of ["/identity/confirm", "/identity/reject", "/identity/defer"]) {
+      server.use(
+        http.post(`${BASE}${path}`, async ({ request }) => {
+          bodies.push((await request.json()) as { identityId: string; note?: string });
+          return HttpResponse.json({ ok: true });
+        }),
+      );
+    }
+    renderNeedsReview();
+
+    // Select candidate A and type a note that belongs to A's evidence.
+    fireEvent.click(await screen.findByText(candidateA.supplierCode));
+    const aside = document.querySelector(".split__aside") as HTMLElement;
+    fireEvent.change(within(aside).getByRole("textbox"), {
+      target: { value: "evidence for A" },
+    });
+
+    // B is NOT the visible/selected candidate → its decision controls are inert.
+    // Retry until the selection has propagated (robust under parallel-suite load);
+    // the assertion — B's confirm IS disabled — is unchanged.
+    await waitFor(
+      () => expect(rowButton(candidateB.supplierCode, faIR["needsReview.confirm"])).toBeDisabled(),
+      { timeout: 5000 },
+    );
+    const bConfirm = rowButton(candidateB.supplierCode, faIR["needsReview.confirm"]);
+    // A's own confirm control is the only enabled action target.
+    expect(rowButton(candidateA.supplierCode, faIR["needsReview.confirm"])).not.toBeDisabled();
+
+    // Attempting B's confirm must not fire a request carrying A's note (or B's id).
+    fireEvent.click(bConfirm);
+    expect(bodies).toHaveLength(0);
+  });
+
+  it("submits the decision with the VISIBLE evidence panel's identity + its note", async () => {
+    withTwoCandidates();
+    let body: { identityId: string; note?: string } | null = null;
+    server.use(
+      http.post(`${BASE}/identity/confirm`, async ({ request }) => {
+        body = (await request.json()) as typeof body;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    renderNeedsReview();
+
+    fireEvent.click(await screen.findByText(candidateA.supplierCode));
+    const aside = document.querySelector(".split__aside") as HTMLElement;
+    fireEvent.change(within(aside).getByRole("textbox"), {
+      target: { value: "evidence for A" },
+    });
+    fireEvent.click(rowButton(candidateA.supplierCode, faIR["needsReview.confirm"]));
+
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body).toEqual({ identityId: candidateA.identityId, note: "evidence for A" });
+  });
+
+  it("clears the note only after a SUCCESSFUL decision (retained on the visible panel)", async () => {
+    renderNeedsReview();
+
+    fireEvent.click(await screen.findByText(candidateA.supplierCode));
+    const aside = document.querySelector(".split__aside") as HTMLElement;
+    const note = within(aside).getByRole("textbox") as HTMLTextAreaElement;
+    fireEvent.change(note, { target: { value: "matches the DK listing" } });
+    fireEvent.click(screen.getByText(faIR["needsReview.confirm"]));
+
+    // The default handler confirms successfully → the note is cleared.
+    await waitFor(() =>
+      expect((within(aside).getByRole("textbox") as HTMLTextAreaElement).value).toBe(""),
+    );
+  });
+
+  it("disables EVERY decision control while a decision is pending", async () => {
+    withTwoCandidates();
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    server.use(
+      http.post(`${BASE}/identity/confirm`, async () => {
+        await gate;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    renderNeedsReview();
+
+    fireEvent.click(await screen.findByText(candidateA.supplierCode));
+    fireEvent.click(rowButton(candidateA.supplierCode, faIR["needsReview.confirm"]));
+
+    // While A's confirm is in flight, no other decision control is actionable —
+    // not on A, not on B (no concurrent confirm/reject/defer).
+    // Generous timeout so parallel-suite CPU contention cannot trip the gate
+    // (observed ~1059ms vs. the 1000ms default); semantics are unchanged — every
+    // decision control stays disabled while A's confirm is in flight.
+    await waitFor(
+      () => expect(rowButton(candidateA.supplierCode, faIR["needsReview.reject"])).toBeDisabled(),
+      { timeout: 5000 },
+    );
+    expect(rowButton(candidateA.supplierCode, faIR["needsReview.defer"])).toBeDisabled();
+    expect(rowButton(candidateB.supplierCode, faIR["needsReview.confirm"])).toBeDisabled();
+    expect(rowButton(candidateB.supplierCode, faIR["needsReview.reject"])).toBeDisabled();
+
+    // Once the decision settles, the selected candidate's controls re-enable.
+    release();
+    await waitFor(
+      () =>
+        expect(rowButton(candidateA.supplierCode, faIR["needsReview.reject"])).not.toBeDisabled(),
+      { timeout: 5000 },
+    );
   });
 });
