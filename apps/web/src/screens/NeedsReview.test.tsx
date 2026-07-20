@@ -131,8 +131,13 @@ describe("Needs Review queue (journey 4)", () => {
     });
 
     // B is NOT the visible/selected candidate → its decision controls are inert.
+    // Retry until the selection has propagated (robust under parallel-suite load);
+    // the assertion — B's confirm IS disabled — is unchanged.
+    await waitFor(
+      () => expect(rowButton(candidateB.supplierCode, faIR["needsReview.confirm"])).toBeDisabled(),
+      { timeout: 5000 },
+    );
     const bConfirm = rowButton(candidateB.supplierCode, faIR["needsReview.confirm"]);
-    expect(bConfirm).toBeDisabled();
     // A's own confirm control is the only enabled action target.
     expect(rowButton(candidateA.supplierCode, faIR["needsReview.confirm"])).not.toBeDisabled();
 
@@ -197,8 +202,12 @@ describe("Needs Review queue (journey 4)", () => {
 
     // While A's confirm is in flight, no other decision control is actionable —
     // not on A, not on B (no concurrent confirm/reject/defer).
-    await waitFor(() =>
-      expect(rowButton(candidateA.supplierCode, faIR["needsReview.reject"])).toBeDisabled(),
+    // Generous timeout so parallel-suite CPU contention cannot trip the gate
+    // (observed ~1059ms vs. the 1000ms default); semantics are unchanged — every
+    // decision control stays disabled while A's confirm is in flight.
+    await waitFor(
+      () => expect(rowButton(candidateA.supplierCode, faIR["needsReview.reject"])).toBeDisabled(),
+      { timeout: 5000 },
     );
     expect(rowButton(candidateA.supplierCode, faIR["needsReview.defer"])).toBeDisabled();
     expect(rowButton(candidateB.supplierCode, faIR["needsReview.confirm"])).toBeDisabled();
@@ -206,8 +215,10 @@ describe("Needs Review queue (journey 4)", () => {
 
     // Once the decision settles, the selected candidate's controls re-enable.
     release();
-    await waitFor(() =>
-      expect(rowButton(candidateA.supplierCode, faIR["needsReview.reject"])).not.toBeDisabled(),
+    await waitFor(
+      () =>
+        expect(rowButton(candidateA.supplierCode, faIR["needsReview.reject"])).not.toBeDisabled(),
+      { timeout: 5000 },
     );
   });
 });
