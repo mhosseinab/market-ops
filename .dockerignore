@@ -1,39 +1,75 @@
-# Keep Docker build contexts small. The Python image builds from the repo root
-# (dk-p0-monorepo.md §8), so the node/go trees must be excluded.
+# VCS, automation metadata, and agent-local state
 .git
 .github
+.agents
+.claude
+.codex
 
-# Node / TypeScript
-node_modules
-**/node_modules
-.pnpm-store
-dist
-**/dist
-.turbo
-*.tsbuildinfo
+# Product/reference documentation is not runtime input
+docs
+design
+AGENTS.md
+CLAUDE.md
+README*
 
-# Python
-.venv
-__pycache__
-**/__pycache__
-*.pyc
-.pytest_cache
-.mypy_cache
-.ruff_cache
-
-# Go
-go.work
-go.work.sum
-services/core/bin
-
-# Task runner / local data
-.task
-deploy/data
-deploy/volumes
-
-# Secrets & local env (never in an image)
+# Local configuration, credentials, certificates, and editor artifacts
 .env
 .env.*
 !.env.example
-*.pem
 *.key
+*.pem
+*.p12
+*.pfx
+*.swp
+.DS_Store
+.idea
+.vscode
+
+# Dependency stores, caches, coverage, and locally built output
+node_modules
+**/node_modules
+.pnpm-store
+.venv
+**/.venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+**/.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+coverage
+**/coverage
+.task
+.turbo
+dist
+**/dist
+*.tsbuildinfo
+go.work
+go.work.sum
+services/core/bin
+tmp
+
+# Dev/test infrastructure and implementation tooling
+contracts
+tools
+deploy/*
+!deploy/caddy
+!deploy/caddy/Caddyfile
+!deploy/caddy/Dockerfile
+apps/extension
+apps/web/tests
+apps/web/dev-public
+apps/web/playwright*.ts
+apps/web/index.pseudo.html
+services/llm/tests
+services/llm/fixtures
+**/*_test.go
+**/*.test.ts
+**/*.test.tsx
+**/*.spec.ts
+**/testdata
+
+# Generated clients are intentional production build inputs and remain in the
+# context: gen/go + gen/dkgo for core, gen/python for llm, gen/ts for web.

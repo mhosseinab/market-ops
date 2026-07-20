@@ -1,0 +1,35 @@
+# DOMAIN is deliberately required: with a real hostname Caddy obtains and
+# renews certificates automatically. Local image validation supplies :8080 to
+# exercise the same routes over loopback without contacting an ACME service.
+{$DOMAIN} {
+	log {
+		output stdout
+		format json
+	}
+
+	route {
+		header {
+			Content-Security-Policy "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+			Permissions-Policy "camera=(), geolocation=(), microphone=()"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Strict-Transport-Security "max-age=31536000; includeSubDomains"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+		}
+
+		@health path /healthz
+		handle @health {
+			respond "ok" 200
+		}
+
+		handle_path /api/* {
+			reverse_proxy core:8080
+		}
+
+		handle {
+			root * /srv/web
+			try_files {path} /index.html
+			file_server
+		}
+	}
+}

@@ -91,6 +91,150 @@ tasks:
       - task: py:build
       - task: ts:build
 
+  images:build:
+    desc: Build and load all three production images for the native Docker platform.
+    silent: true
+    cmds:
+      - |
+        set -eu
+        image_tag="${IMAGE_TAG:-local}"
+        image_revision="$(git rev-parse --verify HEAD)"
+        image_created="$(git show -s --format=%cI HEAD)"
+        build_image() {
+          image_name="$1"
+          dockerfile="$2"
+          echo "Building ${image_name}:${image_tag}..."
+          docker buildx build \
+            --load \
+            --tag "${image_name}:${image_tag}" \
+            --build-arg "VERSION=${image_tag}" \
+            --build-arg "REVISION=${image_revision}" \
+            --build-arg "CREATED=${image_created}" \
+            --file "${dockerfile}" \
+            .
+        }
+        build_image market-ops-core services/core/Dockerfile
+        build_image market-ops-llm services/llm/Dockerfile
+        build_image market-ops-caddy deploy/caddy/Dockerfile
+
+  images:validate:
+    desc: Build, inspect, and health-check all production images on loopback.
+    silent: true
+    deps: [images:build]
+    cmds:
+      - |
+        set -eu
+        image_tag="${IMAGE_TAG:-local}"
+        validation_suffix="$(date +%s)-$$"
+        network_name="market-ops-images-${validation_suffix}"
+        core_container="market-ops-core-${validation_suffix}"
+        llm_container="market-ops-llm-${validation_suffix}"
+        caddy_container="market-ops-caddy-${validation_suffix}"
+
+        cleanup() {
+          docker container rm -f \
+            "${caddy_container}" "${llm_container}" "${core_container}" \
+            >/dev/null 2>&1 || true
+          docker network rm "${network_name}" >/dev/null 2>&1 || true
+        }
+        trap 'cleanup' EXIT
+
+        inspect_image() {
+          image_name="$1"
+          expected_entrypoint="$2"
+          image_ref="${image_name}:${image_tag}"
+          config="$(docker image inspect "${image_ref}")"
+
+          printf '%s' "${config}" | jq -e \
+            '.[0].Config.User != "" and .[0].Config.User != "0" and .[0].Config.User != "0:0"' \
+            >/dev/null
+          actual_entrypoint="$(printf '%s' "${config}" | jq -r '.[0].Config.Entrypoint | join(" ")')"
+          if [ "${actual_entrypoint}" != "${expected_entrypoint}" ]; then
+            echo "${image_ref}: entrypoint '${actual_entrypoint}', expected '${expected_entrypoint}'" >&2
+            exit 1
+          fi
+          printf '%s' "${config}" | jq -e '
+            .[0].Config.Labels as $labels
+            | [
+                "org.opencontainers.image.source",
+                "org.opencontainers.image.title",
+                "org.opencontainers.image.description",
+                "org.opencontainers.image.version",
+                "org.opencontainers.image.revision",
+                "org.opencontainers.image.created"
+              ]
+            | all(.[]; ($labels[.] // "") | length > 0)
+            and ($labels["org.opencontainers.image.licenses"] == null)
+          ' >/dev/null
+          printf '%s' "${config}" | jq -e '
+            [
+              .[0].Config.Env[]?
+              | select(test("(^|_)(DATABASE_URL|PASSWORD|TOKEN|SECRET|API_KEY|ACCESS_KEY|PRIVATE_KEY)="; "i"))
+            ]
+            | length == 0
+          ' >/dev/null
+          echo "${image_ref}: non-root, entrypoint, OCI labels, and baked environment verified"
+        }
+
+        published_port() {
+          docker port "$1" "$2/tcp" | awk -F: 'END { print $NF }'
+        }
+
+        wait_for_url() {
+          label="$1"
+          url="$2"
+          container_name="$3"
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error "${url}" >/dev/null 2>&1; then
+              echo "${label}: healthy"
+              return 0
+            fi
+            sleep 1
+          done
+          echo "${label}: health probe timed out (${url})" >&2
+          docker logs "${container_name}" >&2 || true
+          return 1
+        }
+
+        inspect_image market-ops-core /market-ops-core
+        inspect_image market-ops-llm /opt/venv/bin/uvicorn
+        inspect_image market-ops-caddy caddy
+
+        docker network create "${network_name}" >/dev/null
+
+        docker run --detach \
+          --name "${core_container}" \
+          --network "${network_name}" \
+          --network-alias core \
+          --env APP_ENV=dev \
+          --publish 127.0.0.1::8080 \
+          "market-ops-core:${image_tag}" >/dev/null
+        core_port="$(published_port "${core_container}" 8080)"
+        wait_for_url core "http://127.0.0.1:${core_port}/healthz" "${core_container}"
+
+        docker run --detach \
+          --name "${llm_container}" \
+          --network "${network_name}" \
+          --env LLM_GATEWAY_TOKEN=local-image-validation-token \
+          --publish 127.0.0.1::8100 \
+          "market-ops-llm:${image_tag}" >/dev/null
+        llm_port="$(published_port "${llm_container}" 8100)"
+        wait_for_url llm-mock "http://127.0.0.1:${llm_port}/healthz" "${llm_container}"
+
+        docker run --detach \
+          --name "${caddy_container}" \
+          --network "${network_name}" \
+          --env DOMAIN=:8080 \
+          --publish 127.0.0.1::8080 \
+          "market-ops-caddy:${image_tag}" >/dev/null
+        caddy_port="$(published_port "${caddy_container}" 8080)"
+        caddy_base="http://127.0.0.1:${caddy_port}"
+        wait_for_url caddy "${caddy_base}/healthz" "${caddy_container}"
+        curl --fail --silent --show-error "${caddy_base}/api/healthz" >/dev/null
+        curl --fail --silent --show-error "${caddy_base}/" >/dev/null
+        curl --fail --silent --show-error "${caddy_base}/products/deep-link" >/dev/null
+        echo "caddy: /healthz, stripped /api proxy, root, and SPA deep-link fallback verified"
+
   test:all:
     desc: Run every language test suite in parallel.
     deps:

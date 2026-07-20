@@ -1,0 +1,263 @@
+name: container release
+
+on:
+  pull_request:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    name: validate release metadata
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.created }}
+      publish: ${{ steps.release.outputs.publish }}
+      revision: ${{ steps.release.outputs.revision }}
+      sha8: ${{ steps.release.outputs.sha8 }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and derive immutable metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          revision="${GITHUB_SHA}"
+          sha8="${revision:0:8}"
+          created="$(git show -s --format=%cI "${revision}")"
+          publish=false
+          version="validation-${sha8}"
+
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            version="${GITHUB_REF_NAME}"
+            semver_pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.(0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*))?$'
+            if ! grep -Eq "${semver_pattern}" <<<"${version}"; then
+              echo "Refusing invalid release tag '${version}'; expected strict vMAJOR.MINOR.PATCH[-prerelease] without build metadata." >&2
+              exit 1
+            fi
+            git fetch --no-tags origin main
+            if ! git merge-base --is-ancestor "${revision}" origin/main; then
+              echo "Refusing '${version}': tagged commit ${revision} is not reachable from origin/main." >&2
+              exit 1
+            fi
+            publish=true
+          fi
+
+          {
+            echo "created=${created}"
+            echo "publish=${publish}"
+            echo "revision=${revision}"
+            echo "sha8=${sha8}"
+            echo "version=${version}"
+          } >>"${GITHUB_OUTPUT}"
+
+  build-scan:
+    name: build and scan ${{ matrix.image }} (${{ matrix.platform }})
+    needs: metadata
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: core
+            dockerfile: services/core/Dockerfile
+            platform: linux/amd64
+            arch: amd64
+          - image: core
+            dockerfile: services/core/Dockerfile
+            platform: linux/arm64
+            arch: arm64
+          - image: llm
+            dockerfile: services/llm/Dockerfile
+            platform: linux/amd64
+            arch: amd64
+          - image: llm
+            dockerfile: services/llm/Dockerfile
+            platform: linux/arm64
+            arch: arm64
+          - image: caddy
+            dockerfile: deploy/caddy/Dockerfile
+            platform: linux/amd64
+            arch: amd64
+          - image: caddy
+            dockerfile: deploy/caddy/Dockerfile
+            platform: linux/arm64
+            arch: arm64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Build scan candidate
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: ${{ matrix.platform }}
+          load: true
+          push: false
+          provenance: false
+          sbom: false
+          tags: market-ops-${{ matrix.image }}:scan-${{ matrix.arch }}-${{ needs.metadata.outputs.sha8 }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            REVISION=${{ needs.metadata.outputs.revision }}
+            CREATED=${{ needs.metadata.outputs.created }}
+          cache-from: type=gha,scope=release-${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.image }}-${{ matrix.arch }}
+      - name: Install pinned Trivy
+        uses: aquasecurity/setup-trivy@3fb12ec12f41e471780db15c232d5dd185dcb514 # v0.2.6
+        with:
+          version: v0.70.0
+          cache: true
+      - name: Block HIGH and CRITICAL vulnerabilities
+        shell: bash
+        run: |
+          trivy image \
+            --exit-code 1 \
+            --severity HIGH,CRITICAL \
+            --scanners vuln \
+            --no-progress \
+            "market-ops-${{ matrix.image }}:scan-${{ matrix.arch }}-${{ needs.metadata.outputs.sha8 }}"
+
+  publish:
+    name: publish immutable multi-platform images
+    needs: [metadata, build-scan]
+    if: ${{ needs.metadata.outputs.publish == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    concurrency:
+      group: market-ops-container-publication
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+      - name: Log in to GHCR only after every scan passes
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Refuse existing mutable tag targets
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          SHA8: ${{ needs.metadata.outputs.sha8 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          assert_missing() {
+            image_ref="$1"
+            inspect_log="$(mktemp)"
+            if docker buildx imagetools inspect "${image_ref}" >"${inspect_log}" 2>&1; then
+              echo "Refusing to mutate existing GHCR tag: ${image_ref}" >&2
+              cat "${inspect_log}" >&2
+              exit 1
+            fi
+            if ! grep -Eiq 'not found|manifest unknown' "${inspect_log}"; then
+              echo "Could not prove GHCR tag is absent: ${image_ref}" >&2
+              cat "${inspect_log}" >&2
+              exit 1
+            fi
+          }
+          for component in core llm caddy; do
+            image="ghcr.io/mhosseinab/market-ops-${component}"
+            assert_missing "${image}:${RELEASE_VERSION}"
+            assert_missing "${image}:git-${SHA8}"
+          done
+      - name: Publish core
+        id: core
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: services/core/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/mhosseinab/market-ops-core:${{ needs.metadata.outputs.version }}
+            ghcr.io/mhosseinab/market-ops-core:git-${{ needs.metadata.outputs.sha8 }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            REVISION=${{ needs.metadata.outputs.revision }}
+            CREATED=${{ needs.metadata.outputs.created }}
+          cache-from: |
+            type=gha,scope=release-core-amd64
+            type=gha,scope=release-core-arm64
+          cache-to: type=gha,mode=max,scope=release-core-publish
+          provenance: mode=max
+          sbom: true
+      - name: Publish llm
+        id: llm
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: services/llm/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/mhosseinab/market-ops-llm:${{ needs.metadata.outputs.version }}
+            ghcr.io/mhosseinab/market-ops-llm:git-${{ needs.metadata.outputs.sha8 }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            REVISION=${{ needs.metadata.outputs.revision }}
+            CREATED=${{ needs.metadata.outputs.created }}
+          cache-from: |
+            type=gha,scope=release-llm-amd64
+            type=gha,scope=release-llm-arm64
+          cache-to: type=gha,mode=max,scope=release-llm-publish
+          provenance: mode=max
+          sbom: true
+      - name: Publish caddy
+        id: caddy
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: deploy/caddy/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/mhosseinab/market-ops-caddy:${{ needs.metadata.outputs.version }}
+            ghcr.io/mhosseinab/market-ops-caddy:git-${{ needs.metadata.outputs.sha8 }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            REVISION=${{ needs.metadata.outputs.revision }}
+            CREATED=${{ needs.metadata.outputs.created }}
+          cache-from: |
+            type=gha,scope=release-caddy-amd64
+            type=gha,scope=release-caddy-arm64
+          cache-to: type=gha,mode=max,scope=release-caddy-publish
+          provenance: mode=max
+          sbom: true
+      - name: Materialize digest-pinned references
+        env:
+          CADDY_DIGEST: ${{ steps.caddy.outputs.digest }}
+          CORE_DIGEST: ${{ steps.core.outputs.digest }}
+          LLM_DIGEST: ${{ steps.llm.outputs.digest }}
+        shell: bash
+        run: |
+          mkdir -p image-digests
+          {
+            echo "CORE_IMAGE=ghcr.io/mhosseinab/market-ops-core@${CORE_DIGEST}"
+            echo "LLM_IMAGE=ghcr.io/mhosseinab/market-ops-llm@${LLM_DIGEST}"
+            echo "CADDY_IMAGE=ghcr.io/mhosseinab/market-ops-caddy@${CADDY_DIGEST}"
+          } >image-digests/images.env
+      - name: Upload digest-pinned image references
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: image-digests-${{ needs.metadata.outputs.version }}
+          path: image-digests/images.env
+          if-no-files-found: error
+          retention-days: 90
