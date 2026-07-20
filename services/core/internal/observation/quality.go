@@ -166,22 +166,37 @@ type QualitySignals struct {
 }
 
 // DeriveQuality maps capture signals onto exactly one of the six states. The
-// order encodes the §10.3 precedence: absence and staleness dominate, then a live
-// cross-route conflict BLOCKS (§16), then below-threshold schema/identity/
-// confidence degrades to Unverified, then in-window cross-route corroboration
-// yields Verified, then a single fresh valid path WITH consistent recent history
-// yields Supported. A first-ever sighting (no history, no corroboration) is
-// Unverified — a single client capture can never self-promote to Supported or
-// Verified on its own word.
+// order encodes the §10.3 precedence: absence and staleness dominate; then a
+// STRUCTURAL/IDENTITY quarantine gate (schema-invalid or identity-invalid
+// evidence) floors to Unverified BEFORE conflict evaluation; then a live
+// cross-route conflict BLOCKS (§16); then below-threshold confidence degrades to
+// Unverified; then in-window cross-route corroboration yields Verified; then a
+// single fresh valid path WITH consistent recent history yields Supported. A
+// first-ever sighting (no history, no corroboration) is Unverified — a single
+// client capture can never self-promote to Supported or Verified on its own word.
+//
+// Why schema/identity precedes conflict (#307, follow-up to #154): an
+// unregistered/retired/malformed parser (registry miss → SchemaValid withheld) or
+// an identity-invalid capture is UNTRUSTED evidence. Untrusted evidence must not
+// be able to assert a §16 disagreement, or a client with a valid capture
+// credential could send a bogus parserVersion plus a disagreeing value to force a
+// legitimate offer to Conflicted (a signal-suppression / quarantine-isolation gap).
+// Flooring it to Unverified first keeps it non-recommend / non-execute while the
+// disagreement is still retained as append-only evidence — it just no longer
+// blocks. Registered, schema-valid, identity-valid captures are unaffected: a
+// genuine qualifying-route disagreement still reaches Conflicted below, and
+// low-confidence precedence relative to conflict is unchanged.
 func DeriveQuality(s QualitySignals) Quality {
 	switch {
 	case !s.HasValue || s.Disappeared:
 		return Unavailable
 	case !s.Fresh:
 		return Stale
+	case !s.SchemaValid || !s.IdentityValid:
+		return Unverified
 	case s.Conflicted:
 		return Conflicted
-	case !s.SchemaValid || !s.IdentityValid || s.LowConfidence:
+	case s.LowConfidence:
 		return Unverified
 	case s.Corroborated:
 		return Verified
