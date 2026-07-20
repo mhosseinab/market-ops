@@ -592,9 +592,17 @@ type Querier interface {
 	// The append-only lifecycle history for a card, in occurrence order (AUD-001).
 	ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) ([]ApprovalCardState, error)
 	// Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
-	// (greatest) version per lineage, newest first. State filtering is done in Go
-	// (internal/recommendation) to keep this one simple, always-safe read.
+	// (greatest) version per lineage, newest first. The unfiltered read: every
+	// current lineage head for the account. A deterministic id tie-break keeps
+	// ordering stable across rows sharing a created_at (stable keyset paging).
 	ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error)
+	// Actions queue narrowed to a single §8.4 state (issue #142). The state
+	// predicate is AUTHORITATIVE and runs on the current (greatest-version) lineage
+	// head BEFORE ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered
+	// newest-N prefix, so an older matching head is never hidden behind newer
+	// non-matching ones. Tenant scoping (marketplace_account_id) is unchanged and
+	// the id tie-break keeps paging stable across equal created_at.
+	ListApprovalCardsByAccountAndState(ctx context.Context, arg ListApprovalCardsByAccountAndStateParams) ([]ApprovalCard, error)
 	// The complete append-only audit trail for an action, in occurrence order. This
 	// is the reproduction read (AUD-001): it joins NOTHING in the conversation tables,
 	// so deleting a conversation leaves the trail intact.
