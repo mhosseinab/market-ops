@@ -29,6 +29,7 @@ from llm.envelope.contract import (
 )
 from llm.envelope.grounding import GroundingError, Violation, validate_grounding
 from llm.flows.deep_links import SCREENS_FALLBACK
+from llm.localization import FALLBACK_LOCALE_TAG, UnknownLocaleError, resolve_locale
 
 # The structured screen the plane deep-links to when it cannot answer in chat.
 # The canonical screens-only fallback (§12.4) and an approved recovery route
@@ -52,11 +53,19 @@ def compose(
     tables: list[InlineTable] | None = None,
     exposure: ExposureTotal | None = None,
     catalog: CatalogArg,
+    locale: str = FALLBACK_LOCALE_TAG,
 ) -> ResponseEnvelope:
     """Build and VALIDATE a response envelope.
 
     ``model_inference`` is the only slot the model authors; every other argument
     is typed, sourced data the caller assembled from service responses.
+
+    ``locale`` is the server-authoritative bound locale (issue #120): the response
+    is composed under the resolved (closed-set) tag so a surface renders the
+    category-separated keys from the Persian or English catalog accordingly. It
+    fails closed (:class:`~llm.localization.UnknownLocaleError`) on an unsupported
+    tag — never inferred — and defaults to the explicit English fallback (LOC-004)
+    when a caller has no locale to pass.
 
     ``catalog`` is MANDATORY (issue #51): passing a real
     :class:`AvailabilityCatalog` (built from validated tool outputs) enforces
@@ -67,9 +76,11 @@ def compose(
     reopen the #51 spoof gap. **S23** wires an authoritative catalog into the
     live compose path so the sentinel drops out of production turns.
 
-    Raises :class:`GroundingError` if the result is not grounded — callers that
-    must fail closed use :func:`compose_or_refuse`.
+    Raises :class:`GroundingError` if the result is not grounded, or
+    :class:`~llm.localization.UnknownLocaleError` on an unsupported locale —
+    callers that must fail closed use :func:`compose_or_refuse`.
     """
+    resolved_locale = resolve_locale(locale)
     env = ResponseEnvelope(
         observed_facts=observed_facts or [],
         dk_signals=dk_signals or [],
@@ -81,6 +92,7 @@ def compose(
         comparisons=comparisons or [],
         tables=tables or [],
         exposure=exposure,
+        locale=resolved_locale,
     )
     # UNSCOPED is the conscious trust-all opt-out; only a real catalog enforces
     # section scoping. isinstance narrows cleanly to AvailabilityCatalog | None.
@@ -96,15 +108,36 @@ def fail_closed(
     violations: list[str] | None = None,
     deep_link: str = FALLBACK_DEEP_LINK,
     reason_key: str = CANNOT_ANSWER_REASON_KEY,
+    locale: str = FALLBACK_LOCALE_TAG,
 ) -> CannotAnswer:
-    """The structured "cannot answer" refusal with a deep link (CHAT-005/§12.4)."""
+    """The structured "cannot answer" refusal with a deep link (CHAT-005/§12.4).
+
+    ``locale`` tags the refusal with the bound failure catalog (issue #120) so the
+    surface resolves ``reason_key`` from the Persian or English catalog. An
+    unsupported tag falls back to the explicit English catalog (LOC-004) — a
+    refusal never itself fails to render because of a bad locale.
+    """
     return CannotAnswer(
         reason_key=reason_key,
         message=message,
         deep_link=deep_link,
         missing=missing or [],
         violations=violations or [],
+        locale=_safe_locale(locale),
     )
+
+
+def _safe_locale(locale: str) -> str:
+    """Resolve a locale for a REFUSAL, falling back to English on the unknown.
+
+    The strict compose path raises on a bad locale, but a refusal must always
+    render — an unsupported tag here is downgraded to the explicit English
+    fallback (LOC-004) rather than blocking the fail-closed response itself.
+    """
+    try:
+        return resolve_locale(locale)
+    except UnknownLocaleError:
+        return FALLBACK_LOCALE_TAG
 
 
 def _violation_summary(violations: list[Violation]) -> list[str]:
@@ -124,6 +157,7 @@ def compose_or_refuse(
     tables: list[InlineTable] | None = None,
     exposure: ExposureTotal | None = None,
     catalog: CatalogArg,
+    locale: str = FALLBACK_LOCALE_TAG,
 ) -> ResponseEnvelope | CannotAnswer:
     """Compose a grounded envelope, or fail closed to a structured refusal.
 
@@ -133,12 +167,29 @@ def compose_or_refuse(
     input out; omitting it is a ``TypeError`` at the call site. **S23** wires an
     authoritative catalog into the live compose path.
 
+    ``locale`` is the server-authoritative bound locale (issue #120): the grounded
+    envelope AND any refusal are tagged with the resolved catalog so the surface
+    renders in the bound language. An UNSUPPORTED locale fails closed to a refusal
+    carrying ``LOCALE_UNSUPPORTED`` (never inferred, never a plausible answer);
+    the refusal itself is tagged with the explicit English fallback (LOC-004).
+
     On any grounding violation — including a wrong-section evidence_id/SourceRef
     when a real ``catalog`` is supplied (issue #51) — or any pydantic
     construction/validation error, the plane returns :class:`CannotAnswer` —
     never a degraded, plausible-looking answer — carrying the violation codes and
     any named missing data for audit, plus the deep link to the structured screen.
     """
+    # Fail closed FIRST on an unsupported locale: the plane cannot compose under a
+    # catalog it cannot select, and it never infers one (LOC-001, §4.6).
+    try:
+        resolved_locale = resolve_locale(locale)
+    except UnknownLocaleError:
+        return fail_closed(
+            message="the assistant cannot answer from the available evidence; "
+            "use the structured screen",
+            violations=["LOCALE_UNSUPPORTED"],
+            locale=FALLBACK_LOCALE_TAG,
+        )
     try:
         return compose(
             model_inference=model_inference,
@@ -152,6 +203,7 @@ def compose_or_refuse(
             tables=tables,
             exposure=exposure,
             catalog=catalog,
+            locale=resolved_locale,
         )
     except GroundingError as exc:
         # Containment (issue #52, §4.6): the rejected envelope's free text —
@@ -165,6 +217,7 @@ def compose_or_refuse(
             message="the assistant cannot answer from the available evidence; "
             "use the structured screen",
             violations=_violation_summary(exc.violations),
+            locale=resolved_locale,
         )
     except ValidationError:
         # A malformed envelope (e.g. a bad SourcedValue payload) must also fail
@@ -174,4 +227,5 @@ def compose_or_refuse(
             message="the assistant cannot answer from the available evidence; "
             "use the structured screen",
             violations=["ENVELOPE_MALFORMED"],
+            locale=resolved_locale,
         )

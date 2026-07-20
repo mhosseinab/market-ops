@@ -24,6 +24,12 @@ from typing import Any
 from pydantic import SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from llm.localization import (
+    FALLBACK_LOCALE_TAG,
+    SUPPORTED_LOCALE_TAGS,
+    resolve_locale,
+)
+
 
 class ProviderKind(StrEnum):
     """The two OpenAI-compatible transports. Never a vendor SDK branch."""
@@ -108,6 +114,15 @@ class Settings(BaseSettings):
     # (openai_compatible) transport. Off by default — fail closed.
     gateway_auth_local_bypass: bool = False
 
+    # --- locale fallback policy (LOC-004, issue #120) ------------------------
+    # The authoritative fallback locale (English, LOC-004). The bound locale is
+    # server-authoritative and arrives per-turn on the request; this is used ONLY
+    # when a turn carries no locale at all — the ONE explicit mapping for a
+    # MISSING tag. An unknown tag is always rejected, never mapped here. Data, not
+    # a branch: the composer selects the response/failure catalog by the resolved
+    # tag, it never conditions business logic on it.
+    fallback_locale: str = FALLBACK_LOCALE_TAG
+
     # --- kill switch (CHAT-009) ----------------------------------------------
     # The authoritative kill switch is the gateway's; the LLM plane also honors a
     # local disabled state so a direct probe degrades cleanly. Chat-only: never
@@ -123,6 +138,29 @@ class Settings(BaseSettings):
     # LangSmith cloud — a gated operation).
     langsmith_tracing: bool = False
     langsmith_api_key: SecretStr = SecretStr("")
+
+    @model_validator(mode="after")
+    def _validate_fallback_locale(self) -> Settings:
+        """Fail closed at load on a fallback locale outside the closed set (LOC-001).
+
+        A misconfigured fallback would silently mislocalize every no-locale turn,
+        so it is rejected at load time rather than tuned around.
+        """
+        if self.fallback_locale not in SUPPORTED_LOCALE_TAGS:
+            raise ValueError(
+                f"fallback_locale {self.fallback_locale!r} is not in the supported "
+                f"set {sorted(SUPPORTED_LOCALE_TAGS)} (LOC-001, issue #120)"
+            )
+        return self
+
+    def resolve_turn_locale(self, tag: str | None) -> str:
+        """Resolve a turn's wire locale against the closed set (issue #120).
+
+        Missing ⇒ the configured :attr:`fallback_locale` (the ONE explicit policy,
+        LOC-004); unknown ⇒ :class:`~llm.localization.UnknownLocaleError` (fail
+        closed, never inferred).
+        """
+        return resolve_locale(tag, fallback=self.fallback_locale)
 
     @model_validator(mode="after")
     def _validate_timeout_ordering(self) -> Settings:

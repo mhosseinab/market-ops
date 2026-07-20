@@ -37,6 +37,7 @@ from llm.envelope.contract import (
     SourceRef,
 )
 from llm.envelope.models import EvidenceRef, Money, RawEvidenceValue
+from llm.localization import FALLBACK_LOCALE_TAG
 
 
 def _sourced_value(spec: dict[str, Any] | None) -> SourcedValue | None:
@@ -177,6 +178,10 @@ def compose_fixture(case: dict[str, Any]) -> ResponseEnvelope | CannotAnswer:
         comparisons=[_comparison(c) for c in case.get("comparisons", [])],
         exposure=_exposure(case.get("exposure")),
         catalog=_availability(case.get("availability")),
+        # The bound locale a fixture composes under (issue #120). Absent ⇒ the
+        # explicit English fallback (LOC-004); an unsupported tag fails the case
+        # closed to a LOCALE_UNSUPPORTED refusal, never a plausible answer.
+        locale=case.get("locale", FALLBACK_LOCALE_TAG),
     )
 
 

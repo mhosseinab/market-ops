@@ -37,6 +37,24 @@ from llm.envelope.models import (
     RawEvidenceValue,
 )
 from llm.flows.deep_links import validate_recovery_route
+from llm.localization import SUPPORTED_LOCALE_TAGS
+
+
+def _validate_optional_locale(value: str | None) -> str | None:
+    """Reject a bound-locale tag outside the closed set (LOC-001, issue #120).
+
+    The composer only ever sets this from a resolved tag, but validating at the
+    model boundary keeps a hand-built envelope/refusal from carrying an
+    unsupported locale — the plane never composes under a catalog it cannot select.
+    """
+    if value is None:
+        return value
+    if value not in SUPPORTED_LOCALE_TAGS:
+        raise ValueError(
+            f"locale {value!r} is not in the supported set "
+            f"{sorted(SUPPORTED_LOCALE_TAGS)} (LOC-001, issue #120)"
+        )
+    return value
 
 # Inline tables stop at this many rows; beyond it the response summarizes and
 # deep-links instead of dumping rows into chat (CHAT-023).
@@ -430,6 +448,18 @@ class ResponseEnvelope(BaseModel):
     comparisons: list[Comparison] = Field(default_factory=list)
     tables: list[InlineTable] = Field(default_factory=list)
     exposure: ExposureTotal | None = None
+    # The server-authoritative bound locale this response was composed under
+    # (issue #120). Data, not display copy: the category-separated fields stay
+    # locale-neutral catalog keys — this tag names the response catalog a surface
+    # resolves them against, so a fa-IR turn renders from the Persian catalog and
+    # an en turn from the English one. Set from a resolved (closed-set) tag by the
+    # composer; ``None`` only for an envelope built before locale threading.
+    locale: str | None = None
+
+    @field_validator("locale")
+    @classmethod
+    def _validate_locale(cls, v: str | None) -> str | None:
+        return _validate_optional_locale(v)
 
     def operational_claims(self) -> list[Claim]:
         """Every claim that must carry evidence (CHAT-005)."""
@@ -455,6 +485,9 @@ class CannotAnswer(BaseModel):
     deep_link: str
     missing: list[str] = Field(default_factory=list)
     violations: list[str] = Field(default_factory=list)
+    # The bound locale this refusal was composed under (issue #120): names the
+    # Persian/English failure catalog a surface resolves ``reason_key`` against.
+    locale: str | None = None
 
     @field_validator("deep_link")
     @classmethod
@@ -462,3 +495,8 @@ class CannotAnswer(BaseModel):
         # A refusal always deep-links to a deterministic recovery route; a
         # model-authored/free-form path fails closed (§12.4, issue #56).
         return validate_recovery_route(v)
+
+    @field_validator("locale")
+    @classmethod
+    def _validate_locale(cls, v: str | None) -> str | None:
+        return _validate_optional_locale(v)

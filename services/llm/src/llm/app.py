@@ -26,12 +26,13 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from llm.config import ProviderKind, Settings, load_settings
 from llm.envelope.models import ChatStreamEvent, StreamEventKind
 from llm.intents.classifier import IntentClassifier
 from llm.intents.keyword_mock import default_keyword_intent
+from llm.localization import SUPPORTED_LOCALE_TAGS
 from llm.metrics import ContainmentMetrics
 from llm.observability import configure_observability
 from llm.orchestrator.agent import build_agent
@@ -51,6 +52,23 @@ class ChatRequest(BaseModel):
     marketplace_account_id: str | None = None
     user_id: str | None = None
     organization_id: str | None = None
+    # The server-authoritative bound locale for this turn (issue #120). The
+    # gateway validates + binds it and sends it on every turn; the plane
+    # re-validates against the SAME closed set and FAILS CLOSED (422) on an
+    # unsupported tag — never inferred from the message text, digit shape, region,
+    # or account. Absent (``None``) maps only via the settings fallback policy
+    # (LOC-004) at compose time.
+    locale: str | None = None
+
+    @field_validator("locale")
+    @classmethod
+    def _validate_locale(cls, v: str | None) -> str | None:
+        if v is None or v in SUPPORTED_LOCALE_TAGS:
+            return v
+        raise ValueError(
+            f"locale {v!r} is not in the supported set {sorted(SUPPORTED_LOCALE_TAGS)} "
+            "(LOC-001, issue #120 — fail closed, never inferred)"
+        )
 
 
 class AppState:
@@ -192,8 +210,16 @@ async def _stream_turn(state: AppState, req: ChatRequest) -> AsyncIterator[str]:
     A client disconnect closes this generator, which stops the upstream stream.
     """
     conversation_id = req.conversation_id or str(uuid.uuid4())
+    # Resolve the server-authoritative bound locale (issue #120). A present tag was
+    # already validated on the request (fail closed, 422); a missing one maps via
+    # the explicit fallback policy (LOC-004). The plane echoes it on its own
+    # `conversation` frame so the bound locale travels with the turn even before
+    # the gateway rewrites the frame with its authoritative context echo.
+    locale_tag = state.settings.resolve_turn_locale(req.locale)
     yield ChatStreamEvent(
-        kind=StreamEventKind.CONVERSATION, conversation_id=conversation_id
+        kind=StreamEventKind.CONVERSATION,
+        conversation_id=conversation_id,
+        locale_tag=locale_tag,
     ).to_sse()
 
     turn_state: TurnState = {
