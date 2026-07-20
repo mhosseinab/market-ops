@@ -330,6 +330,11 @@ func run() error {
 						logger.WarnContext(ctx, "digest analytics: cost failed", "account", account.String(), "error", err.Error())
 					}
 				})
+			// Attach the structured logger so a per-account digest-delivery failure is
+			// logged as it is isolated out of the fan-out (issue #124): one account's
+			// failure is contained (other accounts still deliver) and OBSERVED (metric +
+			// warn log), never silently swallowed.
+			digestSvc = digestSvc.WithLogger(logger)
 			logger.Info("daily email digest wired", "smtp_addr", cfg.NotifySMTPAddr)
 		} else {
 			logger.Warn("NOTIFY_FROM_ADDR unset; daily email digest job disabled (in-app notifications unaffected)")
