@@ -33,6 +33,11 @@ type notifyMetrics struct {
 	// never silently swallowed. The account id is NOT a label (high cardinality); it
 	// travels on the warn log + typed observer instead.
 	accountFailed metric.Int64Counter
+	// idempotencyConflict counts deliveries that reused an (account, dedup_key) over a
+	// DIFFERENT source event or materially changed payload (NOT-001, issue #123),
+	// labeled by category. The collision fails closed with a typed conflict; this
+	// series makes a lost distinct event distinguishable from a valid replay.
+	idempotencyConflict metric.Int64Counter
 }
 
 var (
@@ -55,8 +60,25 @@ func instruments() notifyMetrics {
 			"notify.digest.account_failed",
 			metric.WithDescription("Accounts whose digest delivery failed and was isolated (contained, observed) so other accounts still deliver"),
 		)
+		metricsInst.idempotencyConflict, _ = m.Int64Counter(
+			"notify.delivery.idempotency_conflict",
+			metric.WithDescription("Notification deliveries that reused a dedup key over a different event/payload (fail-closed conflict)"),
+		)
 	})
 	return metricsInst
+}
+
+// recordConflict emits the idempotency-conflict counter for a reused dedup key that is
+// not an exact replay. The only label is the category — a bounded technical identifier,
+// never rendered copy or a secret.
+func recordConflict(ctx context.Context, category string) {
+	inst := instruments()
+	if inst.idempotencyConflict == nil {
+		return
+	}
+	inst.idempotencyConflict.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("category", category),
+	))
 }
 
 // recordRejection emits the delivery-rejection counter for a schema violation.

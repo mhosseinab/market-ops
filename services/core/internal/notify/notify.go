@@ -66,6 +66,35 @@ func (c Category) BypassesDigest() bool {
 // invalid (unknown category/severity, missing key or dedup key). Fail closed.
 var ErrInvalidNotification = errors.New("notify: invalid notification")
 
+// ErrIdempotencyConflict is the sentinel a caller branches on when a delivery reuses
+// an existing (account, dedup_key) over a DIFFERENT source event or materially changed
+// payload (NOT-001, issue #123). An idempotency replay must be the SAME logical
+// operation AND payload; a collision that is not an exact replay fails CLOSED here — it
+// is never silently reported as an ordinary replay that would discard the distinct
+// event. Wrapped by *IdempotencyConflictError, which carries the safe identities.
+var ErrIdempotencyConflict = errors.New("notify: idempotency conflict")
+
+// IdempotencyConflictError is the typed conflict returned when a reused dedup key does
+// not match the stored notification's logical identity and payload. Its message and
+// fields carry ONLY safe technical identifiers (the dedup key, both event ids, and the
+// names of the diverging fields) — never rendered copy (LOC-001) or secrets — so audit
+// correlation can tell a lost distinct event from a valid replay.
+type IdempotencyConflictError struct {
+	DedupKey        string
+	IncomingEventID uuid.UUID
+	ExistingEventID uuid.UUID
+	Diverged        []string
+}
+
+func (e *IdempotencyConflictError) Error() string {
+	return fmt.Sprintf(
+		"notify: idempotency conflict on dedup key %q: incoming event %s diverges from stored event %s on %v",
+		e.DedupKey, e.IncomingEventID, e.ExistingEventID, e.Diverged)
+}
+
+// Unwrap ties the typed conflict to the ErrIdempotencyConflict sentinel.
+func (e *IdempotencyConflictError) Unwrap() error { return ErrIdempotencyConflict }
+
 var validSeverity = map[string]bool{"info": true, "warning": true, "critical": true}
 
 // Notification is one stored in-app notification. ReadAt is nil when unread.
@@ -182,7 +211,12 @@ func (s *Store) Deliver(ctx context.Context, p DeliverParams) (DeliverResult, er
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return DeliverResult{}, err
 	}
-	// Dedup collision: return the existing row unchanged (idempotent, no new event).
+	// Dedup collision: read the existing row and PROVE the incoming request is the
+	// same logical operation and payload before reporting a replay (NOT-001, issue
+	// #123). An exact replay returns the existing row unchanged (idempotent, no new
+	// event). A reused key over a different event id or materially changed payload
+	// (category/severity/keys/params) fails CLOSED with a typed conflict + safe
+	// telemetry — never a silent replay that would discard the distinct event.
 	existing, err := q.GetNotificationByDedup(ctx, db.GetNotificationByDedupParams{
 		MarketplaceAccountID: p.Account,
 		DedupKey:             p.DedupKey,
@@ -194,7 +228,67 @@ func (s *Store) Deliver(ctx context.Context, p DeliverParams) (DeliverResult, er
 	if err != nil {
 		return DeliverResult{}, err
 	}
+	if ok, diverged := requestMatchesExisting(p, n); !ok {
+		recordConflict(ctx, string(p.Category))
+		if s.logger != nil {
+			s.logger.WarnContext(ctx, "notification delivery idempotency conflict: reused dedup key over a different event/payload",
+				"account_id", p.Account, "dedup_key", p.DedupKey,
+				"incoming_event_id", p.EventID, "existing_event_id", n.EventID,
+				"incoming_category", string(p.Category), "existing_category", string(n.Category),
+				"diverged", diverged)
+		}
+		return DeliverResult{}, &IdempotencyConflictError{
+			DedupKey:        p.DedupKey,
+			IncomingEventID: p.EventID,
+			ExistingEventID: n.EventID,
+			Diverged:        diverged,
+		}
+	}
 	return DeliverResult{Notification: n, Delivered: false}, nil
+}
+
+// requestMatchesExisting reports whether a colliding delivery request is an EXACT
+// replay of the stored notification — the same source event identity AND material
+// payload — and, when it is not, the names of the diverging fields (for the typed
+// conflict and telemetry). Params are compared as decoded maps, so canonical JSON
+// ordering never creates a false mismatch, and a nil vs empty param map is the same
+// empty payload. bypass_digest is derived from the category, so it is covered by the
+// category comparison and not compared separately.
+func requestMatchesExisting(p DeliverParams, existing Notification) (bool, []string) {
+	var diverged []string
+	if p.EventID != existing.EventID {
+		diverged = append(diverged, "event_id")
+	}
+	if p.Category != existing.Category {
+		diverged = append(diverged, "category")
+	}
+	if p.Severity != existing.Severity {
+		diverged = append(diverged, "severity")
+	}
+	if p.TitleKey != existing.TitleKey {
+		diverged = append(diverged, "title_key")
+	}
+	if p.BodyKey != existing.BodyKey {
+		diverged = append(diverged, "body_key")
+	}
+	if !equalParams(p.BodyParams, existing.BodyParams) {
+		diverged = append(diverged, "body_params")
+	}
+	return len(diverged) == 0, diverged
+}
+
+// equalParams compares two named-slot maps for equality independent of JSON key
+// ordering. A nil and an empty map are equal (both the empty payload).
+func equalParams(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if bv, ok := b[k]; !ok || bv != v {
+			return false
+		}
+	}
+	return true
 }
 
 // List returns the account's in-app notification feed, newest first.
