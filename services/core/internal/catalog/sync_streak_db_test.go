@@ -164,11 +164,13 @@ func TestSyncStreak_SuffixBounded_LargeTailDoesNotIncreaseRows(t *testing.T) {
 
 	// Recent history with explicit started_at so ordering is deterministic: an oldest
 	// 'completed' run, then three newer 'failed' runs => newest-first walk yields 3.
+	// make_interval takes integer/double arguments directly, so no fragile
+	// `integer || text` cast is needed (that operator does not exist in Postgres).
 	insertRun := func(status string, offsetSeconds int) {
 		t.Helper()
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO catalog_sync_runs (marketplace_account_id, kind, status, next_page, error, started_at)
-			 VALUES ($1, 'incremental', $2, 1, $3, now() + ($4 || ' seconds')::interval)`,
+			 VALUES ($1, 'incremental', $2, 1, $3, now() + make_interval(secs => $4))`,
 			account, status, "seed test", offsetSeconds,
 		); err != nil {
 			t.Fatalf("insert recent run: %v", err)
@@ -178,6 +180,20 @@ func TestSyncStreak_SuffixBounded_LargeTailDoesNotIncreaseRows(t *testing.T) {
 	insertRun("failed", 2)
 	insertRun("failed", 3)
 	insertRun("failed", 4)
+
+	// appendOlderTail inserts n 'failed' runs OLDER than the recent history (negative
+	// hour offsets), so they never affect the streak but do grow lifetime history.
+	appendOlderTail := func(n int) {
+		t.Helper()
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO catalog_sync_runs (marketplace_account_id, kind, status, next_page, error, started_at)
+			 SELECT $1, 'incremental', 'failed', 1, 'old tail', now() - make_interval(hours => g)
+			 FROM generate_series(1, $2) g`,
+			account, n,
+		); err != nil {
+			t.Fatalf("insert old tail: %v", err)
+		}
+	}
 
 	deriveViaSeed := func() int64 {
 		t.Helper()
@@ -205,29 +221,33 @@ func TestSyncStreak_SuffixBounded_LargeTailDoesNotIncreaseRows(t *testing.T) {
 	if got := deriveViaSeed(); got != 3 {
 		t.Fatalf("pre-tail: derived streak should be 3, got %d", got)
 	}
-	baselineRows := rowsForAccount()
 
-	// Append a large OLDER tail (older started_at) exceeding the bound. Because it is
-	// older than the 'completed' run it never affects the streak; because it exceeds
-	// the bound it proves the read is suffix-bounded, not history-proportional.
-	if _, err := pool.Exec(ctx,
-		`INSERT INTO catalog_sync_runs (marketplace_account_id, kind, status, next_page, error, started_at)
-		 SELECT $1, 'incremental', 'failed', 1, 'old tail', now() - (g || ' hours')::interval
-		 FROM generate_series(1, $2) g`,
-		account, bound+50,
-	); err != nil {
-		t.Fatalf("insert old tail: %v", err)
+	// Grow lifetime history well past the bound. Once total rows exceed SeedSuffixBound
+	// the read is capped: it returns exactly `bound` rows for the account, and adding
+	// yet MORE older history does not increase that capped count — proving the read is
+	// suffix-bounded, not proportional to lifetime history. The streak stays 3 (the
+	// 'completed' run remains inside the newest suffix, so it is authoritative).
+	appendOlderTail(bound + 50)
+	afterFirstTail := rowsForAccount()
+	if afterFirstTail > bound {
+		t.Fatalf("suffix read must be bounded: got %d rows for account, want <= %d", afterFirstTail, bound)
 	}
-
-	afterRows := rowsForAccount()
-	if afterRows > bound {
-		t.Fatalf("suffix read must be bounded: got %d rows for account, want <= %d", afterRows, bound)
-	}
-	if afterRows != baselineRows {
-		t.Fatalf("older tail must not enlarge the bounded read: baseline=%d after=%d", baselineRows, afterRows)
+	if afterFirstTail != bound {
+		t.Fatalf("with history beyond the bound the read must fill exactly %d rows, got %d", bound, afterFirstTail)
 	}
 	if got := deriveViaSeed(); got != 3 {
 		t.Fatalf("post-tail: derived streak must stay 3 as history grows, got %d", got)
+	}
+
+	// More history still must NOT increase the bounded read (this is the core #211
+	// property: startup cost is independent of lifetime history depth).
+	appendOlderTail(bound + 50)
+	afterSecondTail := rowsForAccount()
+	if afterSecondTail != afterFirstTail {
+		t.Fatalf("more lifetime history must not enlarge the bounded read: first=%d second=%d", afterFirstTail, afterSecondTail)
+	}
+	if got := deriveViaSeed(); got != 3 {
+		t.Fatalf("post-second-tail: derived streak must still be 3, got %d", got)
 	}
 }
 
