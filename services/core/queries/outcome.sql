@@ -79,8 +79,8 @@ JOIN recommendations r ON r.id = ac.recommendation_id
 WHERE me.marketplace_account_id = ac.marketplace_account_id
   AND me.variant_id = r.variant_id
   AND me.severity IN ('warning', 'critical')
-  AND me.first_detected_at >  w.opened_at
-  AND me.first_detected_at <= w.closes_at;
+  AND me.first_detected_at >= w.opened_at
+  AND me.first_detected_at <  w.closes_at;
 
 -- name: ListOutcomeWindowsByAccount :many
 -- The account's outcome windows (PD-3 item 5, S37), newest first, with the
