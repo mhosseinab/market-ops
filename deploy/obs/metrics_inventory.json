@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "note": [
+    "SINGLE authoritative inventory of every metric series the §18 dashboards and",
+    "§20.1 alert rules are allowed to reference (issue #156). This REPLACES the old",
+    "hand-maintained REAL_BASE set and the permissive `^otelcol_` prefix allowlist in",
+    "validate_dashboards.py — there is now exactly one list, not two.",
+    "",
+    "`emitted` is the OTLP instruments our own Go code registers. It is kept honest",
+    "against the instrumentation by deploy/obs/inventory_drift_test.py, which parses",
+    "the instrument constructors in services/core/internal and FAILS the gate if this",
+    "file drifts from the code — so adding/removing an instrument forces a matching",
+    "edit here. FOLLOW-UP (scoped, issue #156): replace this checked-in artifact with a",
+    "codegen step that emits it directly from the Go/Python instrument registry (`task",
+    "obs:inventory`), so the drift guard becomes a build step rather than a test.",
+    "",
+    "`collector_internal` is the OpenTelemetry Collector's OWN self-telemetry",
+    "(otelcol_*): series we do not emit but scrape via the otel-collector-internal job.",
+    "They are enumerated EXPLICITLY (not by prefix) so a typo like",
+    "`otelcol_metric_that_does_not_exist` fails the gate.",
+    "",
+    "Prometheus names: OTLP `.`->`_` only (collector add_metric_suffixes:false, no",
+    "`_total`/`_seconds`). Histograms expand to _bucket/_sum/_count."
+  ],
+  "prometheus_naming": {
+    "add_metric_suffixes": false,
+    "histogram_suffixes": ["_bucket", "_sum", "_count"]
+  },
+  "emitted": {
+    "execution.write_attempts": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
+    "execution.dedup_hits": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
+    "execution.gate_blocks": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
+    "execution.pending_reconciliation": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
+    "execution.recommend_only": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
+    "execution.terminal_results": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
+    "execution.audit_write_failures": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
+    "execution.enablement_denied": {"type": "counter", "family": "domain", "source": "internal/execution/telemetry.go"},
+    "execution.pending_reconciliation_current": {"type": "gauge", "family": "domain", "source": "internal/execution/reconciliation_backlog.go"},
+    "execution.pending_reconciliation_oldest_age_seconds": {"type": "gauge", "family": "domain", "source": "internal/execution/reconciliation_backlog.go"},
+    "analytics.events": {"type": "counter", "family": "analytics", "source": "internal/analytics/telemetry.go"},
+    "analytics.cost_minor_units": {"type": "counter", "family": "analytics", "source": "internal/analytics/telemetry.go"},
+    "analytics.tenant_rejections": {"type": "counter", "family": "analytics", "source": "internal/analytics/telemetry.go"},
+    "http.server.request.duration": {"type": "histogram", "family": "red", "source": "internal/httpapi/telemetry.go"},
+    "connector.sync_failure_streak": {"type": "gauge", "family": "domain", "source": "internal/catalog/telemetry.go"},
+    "connector.sync_results": {"type": "counter", "family": "domain", "source": "internal/catalog/telemetry.go"},
+    "connector.sync_streak_seed_bound_exhausted": {"type": "counter", "family": "domain", "source": "internal/catalog/telemetry.go"},
+    "connector.catalog_sync_initiations": {"type": "counter", "family": "domain", "source": "internal/connector/telemetry.go"},
+    "connector.capability_generation_invalidations": {"type": "counter", "family": "domain", "source": "internal/connector/telemetry.go"}
+  },
+  "collector_internal": [
+    "otelcol_exporter_sent_metric_points"
+  ]
+}
