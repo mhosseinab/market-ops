@@ -18,6 +18,26 @@ INSERT INTO action_executions (
 ON CONFLICT (idempotency_key) DO NOTHING
 RETURNING *;
 
+-- name: InsertGateBlockedExecution :one
+-- Record the issue #105 gate-blocked recovery marker for a card a crash left in
+-- Executing whose EXE-001 gate FAILED on resume (no external write happened). It is
+-- written in the SAME transaction as the Executing→PendingReconciliation advance so
+-- the parked card is VISIBLE to the OPS-002 queue (ListPendingReconciliationByAccount)
+-- and the pending_reconciliation backlog gauge (AggregatePendingReconciliation), and
+-- DRAINABLE by ReconcilePending — never an operations-invisible zombie.
+--
+-- external_state = 'pending_reconciliation' and gate_blocked = true: the marker had
+-- NO write, so reconciliation may resolve it ONLY to Failed, never Accepted (EXE-003:
+-- never infer a success from a write that never happened). It claims the card's stable
+-- idempotency_key, so ON CONFLICT DO NOTHING makes concurrent resumes idempotent AND
+-- permanently forecloses any later claimAndWrite on that key (at-most-one-write,
+-- EXE-002): the marker can never be consumed as a green light for an external write.
+INSERT INTO action_executions (
+    card_id, action_id, idempotency_key, mode, external_state, gate_blocked, request_payload
+) VALUES ($1, $2, $3, 'write', 'pending_reconciliation', true, $4)
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING *;
+
 -- name: GetActionExecutionByKey :one
 SELECT * FROM action_executions WHERE idempotency_key = $1;
 

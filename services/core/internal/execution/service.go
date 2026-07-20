@@ -170,6 +170,40 @@ func (s *Service) safetyFailureHook(account, actionID, cardID uuid.UUID, gate Ga
 	}
 }
 
+// gateBlockedExecutionHook builds the in-transaction insert of the issue #105
+// gate-blocked recovery marker — a no-write action_executions row — for a card a
+// crash left in Executing whose EXE-001 gate FAILED on resume. It is passed to
+// advanceWithAudit so the marker commits ATOMICALLY with the Executing →
+// PendingReconciliation advance + its audit: either the parked card becomes VISIBLE
+// (OPS-002 queue + pending_reconciliation backlog gauge) and DRAINABLE
+// (ReconcilePending), or nothing commits. The record carries wrote:false and
+// gate_blocked=true, so an authoritative read-back may resolve it ONLY to Failed
+// (EXE-003: never infer a success from a write that never happened). It claims the
+// card's stable idempotency key with ON CONFLICT DO NOTHING, so a concurrent resume
+// is idempotent (no error, the single record stands) AND any later claimAndWrite on
+// that key is permanently foreclosed — the marker is never a live write claim
+// (EXE-002 at-most-one-write).
+func (s *Service) gateBlockedExecutionHook(card db.ApprovalCard, gate Gate) func(context.Context, pgx.Tx) error {
+	return func(ctx context.Context, tx pgx.Tx) error {
+		payload, err := json.Marshal(map[string]any{"gate_blocked": true, "gate": gate, "wrote": false})
+		if err != nil {
+			return err
+		}
+		_, err = db.New(tx).InsertGateBlockedExecution(ctx, db.InsertGateBlockedExecutionParams{
+			CardID:         card.ID,
+			ActionID:       card.ActionID,
+			IdempotencyKey: card.IdempotencyKey,
+			RequestPayload: payload,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			// ON CONFLICT DO NOTHING: a concurrent resume already recorded the single
+			// marker. Idempotent — not an error.
+			return nil
+		}
+		return err
+	}
+}
+
 // Mode is the execution mode of a completed Execute call.
 type Mode string
 
@@ -321,7 +355,17 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 	// card a crash left in Revalidating/Executing resumes from where it stopped. No
 	// step is re-applied (append-only, FROM-guarded); the idempotent claim below
 	// guarantees AT MOST ONE external write no matter how often this resumes.
-	state := approval.State(card.State)
+	//
+	// entryState is the state on ENTRY. A non-Approved entry means a crash stranded
+	// this card mid-write and this call RESUMES it; recovery is never silent (§4.6 /
+	// CLAUDE.md): emit a traced metric + log now, and stamp recovery:true onto the
+	// append-only audit below.
+	entryState := approval.State(card.State)
+	recovered := entryState != approval.StateApproved
+	if recovered {
+		s.tel.recovered(ctx, card, entryState)
+	}
+	state := entryState
 
 	// Approved → Revalidating (its append-only §8.4 history row is written in the
 	// same transaction by AdvanceTx; the semantic audit events land below).
@@ -332,10 +376,9 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 		state = approval.StateRevalidating
 	}
 
-	// Gate + Revalidating → Executing. Re-validation runs on resume from
-	// Revalidating; a card already in Executing skips the gate (it already passed and
-	// committed to the write — Executing has no →Invalidated edge, and the claim is
-	// idempotent so re-driving cannot double-write).
+	// Gate + Revalidating → Executing. Re-validation runs for a fresh Approved card
+	// AND on resume from Revalidating; a gate block fails closed via the legal §8.4
+	// Revalidating → Invalidated edge (no write occurred).
 	if state == approval.StateRevalidating {
 		gate := EvaluateGates(rc.Inputs)
 		if !gate.OK {
@@ -344,7 +387,7 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 				"gate_blocked:"+string(gate.Failed), audit.Event{
 					ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
 					Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
-					CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason},
+					CardSnapshot: cardSnapshot(card), Detail: recoveryDetail(map[string]any{"gate": gate.Failed, "reason": gate.Reason}, recovered, entryState),
 				}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil {
 				return ExecuteResult{}, err
 			}
@@ -356,9 +399,62 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 			"revalidated; executing", audit.Event{
 				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
 				Type: audit.EventExecutionStarted, Actor: actor, Binding: binding,
-				CardSnapshot: cardSnapshot(card),
+				CardSnapshot: cardSnapshot(card), Detail: recoveryDetail(nil, recovered, entryState),
 			}); err != nil {
 			return ExecuteResult{}, err
+		}
+	}
+
+	// EXE-001 gate on RESUME-FROM-EXECUTING (issue #105, never-cut §4.6). A card a
+	// crash stranded in Executing with NO execution record (the record-exists case is
+	// self-healed by replayWrite) has NOT written externally yet: the durable claim is
+	// taken BEFORE the write, so the absence of a record proves no marketplace write
+	// happened. It MUST re-validate before the fresh write — resuming straight into
+	// claimAndWrite would perform a live write even if the control EXPIRED, the actor's
+	// permission was revoked, the cited evidence went stale, or the live price moved,
+	// i.e. "loss of approval-control versioning across a retry". On a gate failure fail
+	// closed to the legal §8.4 Executing → PendingReconciliation edge (there is NO
+	// Executing → Invalidated edge; §8.4 table) and write NOTHING.
+	//
+	// The park must be DRAINABLE and VISIBLE, not a zombie: in the SAME transaction
+	// as the Executing → PendingReconciliation advance we insert a gate-blocked,
+	// no-write action_executions marker (gateBlockedExecutionHook). Every drain path
+	// keys off that row — ReconcilePending (GetActionExecutionByAction), the OPS-002
+	// operations queue (ListPendingReconciliationByAccount), and the
+	// pending_reconciliation backlog gauge (AggregatePendingReconciliation) — so the
+	// parked card is now enumerable and resolvable. The marker records wrote:false and
+	// gate_blocked=true, so reconciliation may resolve it ONLY to Failed via
+	// authoritative read-back (EXE-003: never infer a success from a write that never
+	// happened). It claims the card's stable idempotency key (ON CONFLICT DO NOTHING),
+	// so it is idempotent under concurrent resumes AND permanently forecloses any later
+	// claimAndWrite on that key — the marker can never be consumed as a green light for
+	// an external write (EXE-002 at-most-one-write).
+	if entryState == approval.StateExecuting {
+		gate := EvaluateGates(rc.Inputs)
+		if !gate.OK {
+			s.tel.gateBlocked(ctx, card, gate.Failed, ModeWrite)
+			// Tolerate ErrRejectedTransition for symmetry with replayWrite /
+			// commitWriteResult: two concurrent resumes both fail the gate and race on
+			// the FROM-guarded Executing → PendingReconciliation advance; the loser's
+			// whole transaction (marker + audit + advance) rolls back and it returns the
+			// same clean Blocked result — no write occurs on either path, and the single
+			// winner's marker stands.
+			if _, err := s.advanceWithAudit(ctx, card, approval.StateExecuting, approval.StatePendingReconciliation,
+				"gate_blocked_on_recovery:"+string(gate.Failed), audit.Event{
+					ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
+					Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
+					CardSnapshot: cardSnapshot(card),
+					Detail: recoveryDetail(map[string]any{
+						"gate": gate.Failed, "reason": gate.Reason, "wrote": false,
+					}, true, entryState),
+					TerminalState: string(approval.StatePendingReconciliation),
+				}, s.gateBlockedExecutionHook(card, gate.Failed), s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil && !errors.Is(err, recommendation.ErrRejectedTransition) {
+				return ExecuteResult{}, err
+			}
+			return ExecuteResult{
+				ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite,
+				Blocked: true, FailedGate: gate.Failed, ExternalState: StatePendingReconciliation,
+			}, nil
 		}
 	}
 
@@ -386,8 +482,10 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 
 	// Record the classified result, advance Executing → terminal/pending, append the
 	// external_result (and terminal) audit, and open the OUT-001 window — ALL in ONE
-	// transaction, so an external mutation never lands without its audit + state.
-	if err := s.commitWriteResult(ctx, card, rc, actor, req, claimed, result, extState, wrote); err != nil {
+	// transaction, so an external mutation never lands without its audit + state. A
+	// resumed write stamps recovery:true onto that append-only audit (crash recovery
+	// is reproducible from immutable rows, never only from telemetry).
+	if err := s.commitWriteResult(ctx, card, rc, actor, req, claimed, result, extState, wrote, recovered, entryState); err != nil {
 		return ExecuteResult{}, err
 	}
 
@@ -436,7 +534,7 @@ func (s *Service) claimAndWrite(ctx context.Context, card db.ApprovalCard, req W
 // transaction. On any failure the whole transaction rolls back (fail closed): the
 // execution record stays pending and the card stays Executing, so reconciliation
 // resolves it; no partial, audit-less state is ever committed.
-func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor, req WriteRequest, claimed db.ActionExecution, result WriteResult, extState ExternalState, wrote bool) error {
+func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, rc RevalidationContext, actor audit.Actor, req WriteRequest, claimed db.ActionExecution, result WriteResult, extState ExternalState, wrote, recovered bool, entryState approval.State) error {
 	binding, err := bindingOf(card)
 	if err != nil {
 		return err
@@ -479,13 +577,13 @@ func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, r
 	if _, err := audit.Append(ctx, q, audit.Event{
 		ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
 		Type: audit.EventExternalResult, Actor: actor, Binding: binding,
-		CardSnapshot: cardSnapshot(card), Detail: map[string]any{
+		CardSnapshot: cardSnapshot(card), Detail: recoveryDetail(map[string]any{
 			"external_state": extState,
 			"external_ref":   result.ExternalRef,
 			"wrote":          wrote,
 			"request":        redactedRequest(req),
 			"response":       redactedResponse(result, extState),
-		},
+		}, recovered, entryState),
 		TerminalState: string(extState),
 	}); err != nil {
 		s.tel.auditWriteFailed(ctx, card.ActionID, err)
@@ -730,6 +828,25 @@ func (s *Service) advance(ctx context.Context, card db.ApprovalCard, from, to ap
 		return db.ApprovalCard{}, err
 	}
 	return advanced, nil
+}
+
+// recoveryDetail stamps the crash-recovery marker onto an AUD-001 audit detail when
+// the write path RESUMED a crash-stranded card (issue #105). A non-recovery call
+// returns the base detail untouched (nil stays nil), so the append-only trail carries
+// recovery:true + recovered_from ONLY on a genuine resume — a recovery is then
+// reproducible from immutable rows alone, never only from telemetry (§4.6: no silent
+// recovery). It never mutates the caller's map.
+func recoveryDetail(base map[string]any, recovered bool, from approval.State) map[string]any {
+	if !recovered {
+		return base
+	}
+	out := make(map[string]any, len(base)+2)
+	for k, v := range base {
+		out[k] = v
+	}
+	out["recovery"] = true
+	out["recovered_from"] = string(from)
+	return out
 }
 
 // cardStateFor maps an external state onto the §8.4 terminal (or pending) card
