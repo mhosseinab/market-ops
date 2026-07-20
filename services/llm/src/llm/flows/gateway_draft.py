@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from typing import Any
 
 import httpx
@@ -48,7 +49,19 @@ from llm.orchestrator.cancellation import raise_if_cancelled
 # middleware timeout (an invariant ``Settings`` validates), so the network
 # operation is aborted at the transport (httpx closes the connection) instead of
 # being abandoned on a worker thread (issue #25). Configurable per instance.
-__all__ = ["DEFAULT_DRAFT_TIMEOUT_SECONDS", "DraftUnavailable", "GatewayDraftPort"]
+__all__ = [
+    "DEFAULT_DRAFT_TIMEOUT_SECONDS",
+    "DRAFT_RECONCILE_METRIC",
+    "DraftUnavailable",
+    "GatewayDraftPort",
+]
+
+# Stable, locale-neutral telemetry identifier for the Draft reconciliation boundary
+# (issue #25 residual). Reconciliation of an ambiguous post-acceptance timeout is a
+# never-cut idempotency/reconciliation event: it MUST emit, so telemetry can tell a
+# recovered Draft (or a still-unresolved one) apart from a silent false-unavailable.
+DRAFT_RECONCILE_METRIC = "llm_draft_reconcile_total"
+_LOGGER = logging.getLogger("llm.flows.gateway_draft")
 
 
 class DraftUnavailable(Exception):
@@ -105,16 +118,81 @@ class GatewayDraftPort:
                 headers=headers,
                 timeout=self._timeout_seconds,
             )
+        except httpx.TimeoutException as exc:
+            # AMBIGUOUS outcome (issue #25 residual): a timeout does NOT prove the
+            # write did not land — the gateway may have accepted the request and
+            # created the Draft before the response was lost. Failing closed here
+            # would surface a false ``DraftUnavailable`` while orphaning a real
+            # Draft. Reconcile by the STABLE idempotency key instead: exactly one
+            # idempotent replay (same key -> gateway dedups, never a duplicate)
+            # discovers the already-created Draft, or creates it exactly once.
+            return self._reconcile(path, body, headers, exc)
         except httpx.HTTPError as exc:
+            # A non-timeout transport error (e.g. connection refused) means the
+            # request never reached the gateway: nothing was accepted, so there is
+            # no Draft to reconcile. Fail closed immediately.
             raise DraftUnavailable(f"draft transport error on {path}: {exc}") from exc
-        if resp.status_code // 100 != 2:
-            raise DraftUnavailable(f"gateway returned {resp.status_code} on {path}")
+        return _parse(resp, path)
+
+    def _reconcile(
+        self,
+        path: str,
+        body: dict[str, Any],
+        headers: dict[str, str],
+        cause: httpx.TimeoutException,
+    ) -> dict[str, Any]:
+        """Resolve an ambiguous post-acceptance timeout by idempotent replay (#25).
+
+        Issues EXACTLY ONE replay reusing the identical ``headers`` — including the
+        SAME stable ``Idempotency-Key`` — so a Draft the gateway already created is
+        returned rather than duplicated (idempotency gates the retry, §9.1/§12.4).
+        The deadline stays authoritative: if the request-scoped cancel token has
+        already fired, the replay is not issued and the call fails closed via
+        cancellation. If the replay is itself unresolved, fail closed to
+        ``DraftUnavailable`` — never a fabricated Draft. The whole boundary emits so
+        the reconciliation is observable, not a silent fallback.
+        """
+        # Do not reconcile past the per-tool deadline: the token is authoritative.
+        raise_if_cancelled()
+        _LOGGER.info(
+            "draft_reconcile_attempt",
+            extra={
+                "metric": DRAFT_RECONCILE_METRIC,
+                "path": path,
+                "reason": "post_acceptance_timeout",
+                "outcome": "attempt",
+            },
+        )
         try:
-            data = resp.json()
-        except ValueError as exc:
-            raise DraftUnavailable(f"malformed draft response on {path}") from exc
-        if not isinstance(data, dict):
-            raise DraftUnavailable(f"unexpected draft response shape on {path}")
+            resp = self._client.post(
+                self._base_url + path,
+                json=body,
+                headers=headers,
+                timeout=self._timeout_seconds,
+            )
+            data = _parse(resp, path)
+        except (httpx.HTTPError, DraftUnavailable):
+            _LOGGER.warning(
+                "draft_reconcile_unresolved",
+                extra={
+                    "metric": DRAFT_RECONCILE_METRIC,
+                    "path": path,
+                    "reason": "post_acceptance_timeout",
+                    "outcome": "unresolved",
+                },
+            )
+            raise DraftUnavailable(
+                f"draft outcome unresolved after reconcile on {path}: {cause}"
+            ) from cause
+        _LOGGER.info(
+            "draft_reconcile_resolved",
+            extra={
+                "metric": DRAFT_RECONCILE_METRIC,
+                "path": path,
+                "reason": "post_acceptance_timeout",
+                "outcome": "resolved",
+            },
+        )
         return data
 
     def create_recommendation_draft(
@@ -177,6 +255,23 @@ class GatewayDraftPort:
             )
         except ValidationError as exc:
             raise DraftUnavailable(f"malformed level2 proposal: {exc}") from exc
+
+
+def _parse(resp: httpx.Response, path: str) -> dict[str, Any]:
+    """Validate a Draft-create response, failing closed on any non-2xx/malformed body.
+
+    Shared by the initial POST and the reconciliation replay so both apply the same
+    fail-closed contract (never fabricate a Draft, §12.4).
+    """
+    if resp.status_code // 100 != 2:
+        raise DraftUnavailable(f"gateway returned {resp.status_code} on {path}")
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise DraftUnavailable(f"malformed draft response on {path}") from exc
+    if not isinstance(data, dict):
+        raise DraftUnavailable(f"unexpected draft response shape on {path}")
+    return data
 
 
 def _idempotency_key(path: str, body: dict[str, Any]) -> str:
