@@ -20,11 +20,26 @@ RETURNING *;
 SELECT * FROM notifications
 WHERE marketplace_account_id = $1 AND dedup_key = $2;
 
--- name: ListNotifications :many
--- The in-app notification feed for an account, newest first.
+-- name: ListNotificationsPage :many
+-- The in-app notification feed for an account, newest first, BOUNDED by a keyset
+-- cursor (§17 bounded reads). Deterministic order is (created_at DESC, id DESC);
+-- the row-value comparison (created_at, id) < (cursor_created_at, cursor_id) reads
+-- STRICTLY OLDER rows than the cursor position, so ties on created_at are broken by
+-- id and every row is returned EXACTLY ONCE across pages (no duplicate, no skip). A
+-- NULL cursor (cursor_created_at IS NULL) is the first (newest) page. The caller
+-- passes page_limit = requested_limit + 1 and treats the extra row as the hasMore
+-- signal (then trims it). SELECT-only: the notifications store stays append-only.
+-- Backed by idx_notifications_account_created_id (marketplace_account_id,
+-- created_at DESC, id DESC) so the plan is an index range scan, never a full history
+-- scan. account-scoped WHERE is the authorization; the cursor is only a position.
 SELECT * FROM notifications
 WHERE marketplace_account_id = $1
-ORDER BY created_at DESC, id;
+  AND (
+    sqlc.narg('cursor_created_at')::timestamptz IS NULL
+    OR (created_at, id) < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT sqlc.arg('page_limit');
 
 -- name: CountUnreadNotifications :one
 SELECT COUNT(*) FROM notifications

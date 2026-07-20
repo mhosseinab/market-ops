@@ -1745,10 +1745,16 @@ paths:
       summary: List the in-app notifications for an account (NOT-001).
       description: >-
         Returns the account's in-app notification feed, newest first (PRD §7.5
-        NOT-001). Each item carries the SHARED product event id — the same id the
-        daily email digest references, so a notification is one event on two
-        surfaces, never two. Items reference locale catalog KEYS with named slots
-        (LOC-002); the surface renders copy, the core stores none. This is a read.
+        NOT-001, §17 bounded reads). Each item carries the SHARED product event id
+        — the same id the daily email digest references, so a notification is one
+        event on two surfaces, never two. Items reference locale catalog KEYS with
+        named slots (LOC-002); the surface renders copy, the core stores none. This
+        is a read. The feed is BOUNDED and keyset-paginated over `(createdAt, id)`
+        newest-first: pass `limit` for the page size (server default when omitted,
+        clamped to a hard maximum) and the opaque `cursor` from a prior response's
+        `nextCursor` to fetch the next page. Ties on `createdAt` break by `id` so
+        every notification is returned EXACTLY ONCE across pages; a newer insert
+        appears only on a refreshed first page, never duplicated mid-scroll.
       parameters:
         - name: marketplaceAccountId
           in: query
@@ -1757,6 +1763,34 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: limit
+          in: query
+          required: false
+          description: >-
+            Maximum notifications to return in this page. Optional (additive): when
+            omitted the server applies a conservative default (50). Values above the
+            hard maximum (200) are CLAMPED down to it, not rejected; values below 1
+            fall back to the default. The server always enforces the bound — a large
+            history never materializes in one response.
+          schema:
+            type: integer
+            format: int32
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: cursor
+          in: query
+          required: false
+          description: >-
+            Opaque keyset continuation token from a previous response's
+            `nextCursor`. Encodes the `(createdAt, id)` position and the owning
+            account; the server reads STRICTLY OLDER rows than that position under
+            the same account. A malformed, tampered, or foreign-account cursor is
+            rejected with a 400 (the cursor is only a position — the account
+            predicate remains the authorization, so a cursor can never read another
+            account's feed). Omit for the first (newest) page.
+          schema:
+            type: string
       responses:
         '200':
           description: The in-app notification feed with the unread count.
@@ -5434,11 +5468,16 @@ components:
       type: object
       description: >-
         The in-app notification feed for an account (NOT-001), newest first, with
-        the current unread count for the badge.
+        the current account-wide unread count for the badge and bounded keyset
+        pagination (§17). `hasMore` reports whether older notifications exist beyond
+        this page; `nextCursor` is the opaque continuation token to pass back as
+        `cursor` to fetch them (null on the last page). `unreadCount` stays the
+        ACCOUNT-WIDE badge count, not the count within the returned page.
       required:
         - marketplaceAccountId
         - unreadCount
         - notifications
+        - hasMore
       properties:
         marketplaceAccountId:
           type: string
@@ -5450,6 +5489,17 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Notification'
+        hasMore:
+          type: boolean
+          description: >-
+            True when older notifications exist beyond this page (an additional
+            page can be fetched with `nextCursor`). False on the last page.
+        nextCursor:
+          type: string
+          nullable: true
+          description: >-
+            Opaque keyset continuation token for the next (older) page, or null when
+            `hasMore` is false. Pass it back verbatim as the `cursor` query param.
       additionalProperties: false
 
     Notification:

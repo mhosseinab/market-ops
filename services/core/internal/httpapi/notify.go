@@ -22,7 +22,7 @@ import (
 // idempotently (changed=false on a no-op, including a foreign notification id under
 // the own account — no existence oracle).
 type NotifyService interface {
-	FeedForOrg(ctx context.Context, organizationID, account uuid.UUID) (notify.Feed, error)
+	FeedPageForOrg(ctx context.Context, organizationID, account uuid.UUID, req notify.PageRequest) (notify.Feed, error)
 	MarkReadForOrg(ctx context.Context, organizationID, account, id uuid.UUID) (notify.Notification, bool, error)
 }
 
@@ -41,18 +41,29 @@ func (s *gatewayServer) ListNotifications(
 	// feed or unread count.
 	account := req.Params.MarketplaceAccountId
 	org := orgFromCtx(ctx)
-	// Feed page AND unread badge come from ONE database snapshot (issue #129): the
-	// badge can never report a count impossible for the returned items, and if either
+	// Bounded keyset page (issue #128, §17): the optional limit is clamped and the
+	// optional opaque cursor is decoded + account-validated inside the store. Feed
+	// page AND unread badge come from ONE database snapshot (issue #129): the badge
+	// can never report a count impossible for the returned items, and if either
 	// component fails the whole read fails closed — no partial NotificationFeed.
-	feed, err := s.notify.FeedForOrg(ctx, org, account)
+	feed, err := s.notify.FeedPageForOrg(ctx, org, account, notify.PageRequest{
+		Limit:  req.Params.Limit,
+		Cursor: req.Params.Cursor,
+	})
 	if err != nil {
 		if errors.Is(err, notify.ErrAccountNotFound) {
 			return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 404, Body: notifyErr(err)}, nil
 		}
+		// A malformed, tampered, unknown-version, or foreign-account cursor fails
+		// safely as a canonical 400 — never a silent first-page fallback and never a
+		// cross-tenant read (issue #128).
+		if errors.Is(err, notify.ErrInvalidCursor) {
+			return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("invalid pagination cursor")}, nil
+		}
 		s.logNotify(ctx, "list", account, err)
 		return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 500, Body: notifyErr(err)}, nil
 	}
-	return gateway.ListNotifications200JSONResponse(toNotificationFeed(account, feed.UnreadCount, feed.Items)), nil
+	return gateway.ListNotifications200JSONResponse(toNotificationFeed(account, feed)), nil
 }
 
 // AckNotification marks one notification read (NOT-001). It is idempotent: acking
@@ -87,8 +98,11 @@ func (s *gatewayServer) AckNotification(
 	}, nil
 }
 
-// toNotificationFeed maps the stored feed onto the wire shape, preserving order.
-func toNotificationFeed(account uuid.UUID, unread int64, items []notify.Notification) gateway.NotificationFeed {
+// toNotificationFeed maps the stored bounded page onto the wire shape, preserving
+// newest-first order and carrying the keyset continuation (hasMore/nextCursor) and
+// the account-wide unread badge (issue #128).
+func toNotificationFeed(account uuid.UUID, feed notify.Feed) gateway.NotificationFeed {
+	items := feed.Items
 	out := make([]gateway.Notification, 0, len(items))
 	for _, n := range items {
 		wire := gateway.Notification{
@@ -113,8 +127,10 @@ func toNotificationFeed(account uuid.UUID, unread int64, items []notify.Notifica
 	}
 	return gateway.NotificationFeed{
 		MarketplaceAccountId: account,
-		UnreadCount:          unread,
+		UnreadCount:          feed.UnreadCount,
 		Notifications:        out,
+		HasMore:              feed.HasMore,
+		NextCursor:           feed.NextCursor,
 	}
 }
 
