@@ -27,6 +27,12 @@ type notifyMetrics struct {
 	// closed schema (a legacy/invalid row), labeled by reason. The skip is
 	// OBSERVABLE here — never a silent drop — while the rest of the digest renders.
 	itemIsolated metric.Int64Counter
+	// accountFailed counts accounts whose digest delivery pass failed and was
+	// ISOLATED (issue #124): the failure is contained to that account so every OTHER
+	// account in the fan-out still delivers, and the failure is OBSERVABLE here —
+	// never silently swallowed. The account id is NOT a label (high cardinality); it
+	// travels on the warn log + typed observer instead.
+	accountFailed metric.Int64Counter
 }
 
 var (
@@ -44,6 +50,10 @@ func instruments() notifyMetrics {
 		metricsInst.itemIsolated, _ = m.Int64Counter(
 			"notify.digest.item_isolated",
 			metric.WithDescription("Persisted digest rows isolated (skipped, observed) for violating the closed message schema"),
+		)
+		metricsInst.accountFailed, _ = m.Int64Counter(
+			"notify.digest.account_failed",
+			metric.WithDescription("Accounts whose digest delivery failed and was isolated (contained, observed) so other accounts still deliver"),
 		)
 	})
 	return metricsInst
@@ -78,4 +88,16 @@ func recordIsolation(ctx context.Context, e *MessageValidationError) {
 		attribute.String("reason", string(e.Reason)),
 		attribute.String("surface", e.Surface),
 	))
+}
+
+// recordAccountFailure emits the per-account digest-failure counter for one account
+// isolated out of the fan-out (issue #124). The account id is intentionally NOT a
+// label (high cardinality / PII posture) — it is carried on the warn log and the
+// typed observer; this counter answers only "how many accounts failed this pass".
+func recordAccountFailure(ctx context.Context) {
+	inst := instruments()
+	if inst.accountFailed == nil {
+		return
+	}
+	inst.accountFailed.Add(ctx, 1)
 }

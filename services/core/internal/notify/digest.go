@@ -70,6 +70,16 @@ type SentObserver func(ctx context.Context, account uuid.UUID, itemCount int)
 // warn log for every isolation. reason is the bounded ValidationReason.
 type IsolatedObserver func(ctx context.Context, account, notificationID uuid.UUID, titleKey, bodyKey string, reason ValidationReason)
 
+// AccountFailedObserver is notified when the digest fan-out ISOLATES one account
+// whose delivery pass failed (issue #124): the failure is CONTAINED to that account
+// — every OTHER account in the pass still delivers, so one tenant's failure can
+// neither leak into nor abort another's digest — and the failure is OBSERVABLE (this
+// typed observer + a metric + a warn log), never silently swallowed. The pass still
+// returns an aggregate error so the River job retries the failed account(s); retries
+// are safe because already-sent accounts are same-day idempotent no-ops. A nil
+// observer is a no-op.
+type AccountFailedObserver func(ctx context.Context, account uuid.UUID, err error)
+
 // DigestService composes and sends the once-per-business-day email digest. It is
 // idempotent per account business-day (the notification_digests unique key), so a
 // River retry never sends a duplicate digest.
@@ -79,6 +89,7 @@ type DigestService struct {
 	resolver TargetResolver
 	observer SentObserver
 	isolated IsolatedObserver
+	acctFail AccountFailedObserver
 	logger   *slog.Logger
 	now      func() time.Time
 }
@@ -110,6 +121,14 @@ func (s *DigestService) WithObserver(o SentObserver) *DigestService {
 // for every persisted digest row skipped for violating the closed message schema.
 func (s *DigestService) WithIsolatedObserver(o IsolatedObserver) *DigestService {
 	s.isolated = o
+	return s
+}
+
+// WithAccountFailedObserver attaches the per-account failure observer (issue #124):
+// it fires for every account isolated out of the fan-out because its delivery pass
+// failed, while the remaining accounts still deliver.
+func (s *DigestService) WithAccountFailedObserver(o AccountFailedObserver) *DigestService {
+	s.acctFail = o
 	return s
 }
 
@@ -235,24 +254,66 @@ func (s *DigestService) GenerateForAccount(ctx context.Context, account uuid.UUI
 
 // GenerateAll sends the current-business-day digest for every account (the River
 // job fan-out). It returns the number of digests SENT (idempotent same-day re-runs
-// and empty days send zero). An error on one account aborts the pass (fail closed)
-// so the job retries rather than silently skipping accounts.
+// and empty days send zero). One account's delivery failure is ISOLATED (issue
+// #124): it is contained to that account so every OTHER account still delivers, and
+// the pass returns an aggregate error so the River job retries the failed account(s)
+// — never silently skipping them, never aborting the healthy accounts.
 func (s *DigestService) GenerateAll(ctx context.Context) (int, error) {
 	ids, err := db.New(s.pool).ListMarketplaceAccountIDs(ctx)
 	if err != nil {
 		return 0, err
 	}
+	return s.generateEach(ctx, ids, s.GenerateForAccount)
+}
+
+// generateEach runs perAccount for every account id, ISOLATING a per-account failure
+// (issue #124, identity/tenant quarantine, §4.6): one account's failure can neither
+// abort nor leak into another account's delivery. A failed account is OBSERVED
+// (metric + warn log + typed observer) — never silently swallowed — the pass
+// continues to the next account, and at the end it returns an AGGREGATE error (nil
+// when every account succeeded) so the River job retries the failed account(s). That
+// retry is safe: an already-sent account is a same-day idempotent no-op. It returns
+// the count of digests actually SENT this pass. perAccount is injected so the
+// isolation loop is unit-testable without a database.
+func (s *DigestService) generateEach(ctx context.Context, ids []uuid.UUID, perAccount func(context.Context, uuid.UUID) (bool, error)) (int, error) {
 	sent := 0
+	var failures []error
 	for _, id := range ids {
-		ok, err := s.GenerateForAccount(ctx, id)
+		// Respect cancellation/deadline: stop hammering a dead context, but surface
+		// the reason so the pass fails closed (River retries) rather than reporting a
+		// clean finish it did not achieve.
+		if cerr := ctx.Err(); cerr != nil {
+			failures = append(failures, cerr)
+			break
+		}
+		ok, err := perAccount(ctx, id)
 		if err != nil {
-			return sent, err
+			s.isolateAccount(ctx, id, err)
+			failures = append(failures, fmt.Errorf("account %s: %w", id, err))
+			continue
 		}
 		if ok {
 			sent++
 		}
 	}
-	return sent, nil
+	return sent, errors.Join(failures...)
+}
+
+// isolateAccount records an observable, contained per-account delivery failure
+// (issue #124). It emits the metric, the warn log (technical identifiers only —
+// account id + error text, never Persian copy, never approval secrets), and the
+// typed observer. It performs NO write and mutates NO other account: the failure is
+// contained, not swallowed, and the account's own digest simply retries on the next
+// pass (idempotent per business day).
+func (s *DigestService) isolateAccount(ctx context.Context, account uuid.UUID, cause error) {
+	recordAccountFailure(ctx)
+	if s.logger != nil {
+		s.logger.WarnContext(ctx, "digest account isolated: delivery pass failed",
+			"account_id", account, "error", cause.Error())
+	}
+	if s.acctFail != nil {
+		s.acctFail(ctx, account, cause)
+	}
 }
 
 // isolate records an observable skip of one persisted digest row that violates the
