@@ -1,0 +1,7 @@
+interface:
+  display_name: "Review Merged Steps"
+  short_description: "Audit merged steps and publish verified defects"
+  default_prompt: "Use $review-merged-steps to retrospectively audit every passed implementation step merged into main."
+
+policy:
+  allow_implicit_invocation: false

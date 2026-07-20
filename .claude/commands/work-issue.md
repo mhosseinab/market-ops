@@ -1,5 +1,5 @@
 ---
-description: Continuous burn-down loop over the mhosseinab/market-ops issue backlog (tracked on Project #4, "MarketOps Engineering") — a planner subagent orders the whole eligible backlog (or the issue numbers given as args) into an implementation path persisted to disk (survives context compaction), then the LEAD keeps fresh per-issue conductor subagents running in 6 always-full parallel slots — each: assignment packet → TDD-implement in a fresh worktree → fresh area/safety review cycles (max 3) → PR against main → auto-merge (squash) once every required review verdict is PASS on the exact pushed SHA and CI is green — refilling the next issue the moment one finishes, until the path is drained. Never merges past a failing/pending check or a missing verdict, never runs live/paid ops, never mutates the Project board's fields.
+description: Continuous burn-down loop over the mhosseinab/market-ops issue backlog (tracked on Project #4, "MarketOps Engineering") — a planner subagent (sonnet) orders the whole eligible backlog (or the issue numbers given as args) into an implementation path persisted to disk (survives context compaction), scoring each issue's complexity to route it to sonnet (simple/mechanical) or opus (contracts, safety-triggering, high-severity, cross-area, or ambiguous — with a one-way sonnet→opus upgrade ratchet before any human escalation), then the LEAD keeps fresh per-issue conductor subagents running in 6 always-full parallel slots — each: assignment packet → TDD-implement in a fresh worktree → fresh area/safety review cycles (max 3) → PR against main → auto-merge (squash) once every required review verdict is PASS on the exact pushed SHA and CI is green — refilling the next issue the moment one finishes, until the path is drained. Never merges past a failing/pending check or a missing verdict, never runs live/paid ops, never mutates the Project board's fields.
 argument-hint: "[issue number(s); optional; omit to auto-pick]"
 ---
 
@@ -98,7 +98,10 @@ open issue (number, title, labels, body), applies ELIGIBLE/GUARDIAN,
 extracts each issue's Evidence-section file paths, orders per ORDER, and
 returns ONLY a compact table — issue# · title (one line) · severity ·
 step/area label · condensed evidence paths · conflicts-with (issue#s with
-overlapping paths) · touches-contracts y/n. Reading 160+ issue bodies in
+overlapping paths) · touches-contracts y/n · complexity (simple|complex,
+scored per MODEL ROUTING below — the planner sees the bodies, so it
+scores; the LEAD only reads the verdict). The PLANNER itself always runs
+on `sonnet` — its work is fetch/filter/order/score, mechanical by design. Reading 160+ issue bodies in
 the main thread is the exact context bomb that has killed an orchestrator
 before — bodies never enter the LEAD's context; the LEAD writes the table
 straight to the DURABLE QUEUE file and schedules from that file, never
@@ -116,7 +119,8 @@ from memory.
   tie-break ascending issue number — then adjusted so conflicting entries
   (overlapping evidence paths; a second `contracts/`+`gen/` toucher) never
   land in concurrent slots. SHOW the path summary (total, count by
-  severity, first ~10 rows) before starting the scheduler.
+  severity, count by routed model — sonnet vs opus — first ~10 rows)
+  before starting the scheduler.
 CONCURRENCY: non-conflicting = Evidence-section file paths don't overlap
 and at most one in-flight issue touches `contracts/`+`gen/` (mirrors the
 old `[C]`-step exclusivity, sourced from the planner's table — never from
@@ -127,6 +131,46 @@ each merge refresh local `main` (step 8) before the next merge — a sibling
 branch that falls behind or conflicts goes through step 8's UNMERGEABLE
 path (rebase + re-review), never merged stale.
 
+═══ MODEL ROUTING (token budget — score once, route every spawn) ═══
+Two tiers: `sonnet` (cheap, mechanical work) and `opus` (judgment work).
+The PLANNER scores every path entry ONCE, from the issue body it already
+read — the LEAD never re-scores, never fetches a body to second-guess.
+COMPLEX (→ `opus`) if ANY of:
+  • touches `contracts/`+`gen/`, migrations, or codegen;
+  • would trigger the §11 SAFETY review (phase-closing step label — S7,
+    S19, S24, S29, S31, S33 — or Evidence naming auth, credentials, LLM
+    tools, extension permissions/storage, money paths, public/session
+    boundaries);
+  • `severity:high`;
+  • `step:cross-step`, or evidence paths spanning more than one area/plane;
+  • >3 evidence files, or the fix plainly requires design judgment
+    (no concrete Reproduction, vague Acceptance-criteria, competing
+    plausible fixes).
+SIMPLE (→ `sonnet`) otherwise: single-area, ≤3 files, concrete
+reproduction + acceptance criteria, mechanical shape (lint/typecheck
+finding, missing test, small guard, rename, config, doc-string).
+UNCERTAIN → `opus`. Correctness outranks savings: a mis-scored sonnet run
+burns fix cycles and reviews that cost more than opus would have.
+WHO RUNS ON WHAT (pass `model:` explicitly on every Agent/Task spawn):
+  • PLANNER → always `sonnet`.
+  • CONDUCTOR, IMPLEMENTER, FIX WORKERS, AREA reviewer → the entry's
+    routed model, inherited from the queue file's `model` field.
+  • SAFETY reviewer → ALWAYS `opus`, regardless of the entry's tier — it
+    is the adversarial gate; never economize on it.
+  • LEAD → the session's own model; never spawns un-routed (a spawn with
+    no `model:` silently inherits the session default and defeats the
+    budget).
+UPGRADE RATCHET (one-way, automatic, before any human escalation): on a
+`sonnet` issue, reaching cycle 2, a ratchet warning (step 5), or a
+CHANGES_REQUESTED whose findings indicate design misjudgment (not
+mechanical slips) → the conductor upgrades ALL subsequent spawns for this
+issue (fix workers + reviewers) to `opus`, records
+`model_upgraded: cycle<n>` in its ISSUE REPORT, and the LEAD writes it to
+the queue file. Never downgrade mid-issue; never skip the upgrade to
+"save" tokens — a stuck sonnet loop is the most expensive state this run
+has. The upgrade is a model change only — it consumes no fix cycle and
+relaxes no gate.
+
 ═══ DURABLE QUEUE (the path and priorities survive context compaction) ═══
 The queue lives in a FILE, never only in the LEAD's context:
 `.git/work-issue-run.json` in the primary checkout — inside `.git/`, so it
@@ -134,9 +178,12 @@ is never tracked, never dirties the tree, and survives compaction, session
 restarts, and crashes.
 • The moment the PLANNER returns, write the full ordered table:
   {run_started, path: [{n, title, severity, area, evidence_paths,
-  conflicts_with, touches_contracts, status, detail}]} with status ∈
+  conflicts_with, touches_contracts, complexity, model, model_upgraded,
+  status, detail}]} with status ∈
   queued | in-flight(agent id) | MERGED(sha) | OPEN-PR(reason) |
-  ESCALATED | remaining.
+  ESCALATED | remaining; complexity ∈ simple | complex; model ∈
+  sonnet | opus (MODEL ROUTING — the field every spawn reads its tier
+  from); model_upgraded ∈ null | "cycle<n>".
 • Write-through on EVERY transition, in the same turn as the event:
   conductor spawned, terminal state reached, merge completed.
 • The file is the source of truth, not the LEAD's memory. After any
@@ -197,7 +244,8 @@ restarts, and crashes.
 3. RESUME check: if `.git/work-issue-run.json` exists, a prior run was
    interrupted — reconcile it against GitHub reality per DURABLE QUEUE and
    continue that queue; do NOT replan. Otherwise spawn the PLANNER (THE
-   IMPLEMENTATION PATH), receive the ordered table, and write it to the
+   IMPLEMENTATION PATH; `model: sonnet`), receive the ordered table —
+   complexity/model columns included — and write it to the
    durable queue file. Draft the run plan — assignments for all 6 slots,
    per-area implementer/reviewer roles — self-check it against the
    sources, call `advisor` on it, revise, then show the path summary +
@@ -223,13 +271,18 @@ fan out for wall-clock speed) ═══
   conductor itself runs in the background from the LEAD's side. It owns
   the FINDINGS LEDGER and arbitration (a genuine PRD gap
   still escalates — never arbitrated); follows the same working method as
-  every subagent (plan → advisor → revise → act). Its packet: the issue
+  every subagent (plan → advisor → revise → act). It is SPAWNED WITH the
+  queue entry's `model` (MODEL ROUTING) and passes that tier down to its
+  implementer, fix workers, and area reviewers — safety reviewers always
+  `opus`. Its packet: the issue
   (number/title/labels/body verbatim), the working-method block, THE LOOP
-  steps 1–7, and the binding-sources list. It ends by returning ONLY a
+  steps 1–7, the binding-sources list, and its routed model tier + the
+  UPGRADE RATCHET rule. It ends by returning ONLY a
   compact ISSUE REPORT — outcome (READY-TO-MERGE + PR URL + reviewed
   handoff SHA / ESCALATED / OPEN-PR + reason), cycles used, findings
   fixed/no-op/overruled/open, verdicts, Verify summary (actual exit
-  codes), worktree path — no narrative, no diffs, no handoff bodies.
+  codes), worktree path, model tier used + `model_upgraded: cycle<n>` if
+  the ratchet fired — no narrative, no diffs, no handoff bodies.
   If the harness rejects the conductor's own Agent calls (nested
   delegation unavailable), it reports that immediately and the LEAD runs
   steps 1–7 flat for that issue instead — where "flat" still means every
@@ -257,7 +310,8 @@ one-batch dispatcher:
 • SLOTS: keep 6 conductor slots filled at ALL times while the path has
   eligible entries — the moment an issue reaches a terminal state, its
   freed slot takes the next entry from the priority queue. Refills spawn
-  in the background, batched in one message. A free slot + an eligible
+  in the background, batched in one message, each with `model:` set from
+  its queue entry's `model` field (MODEL ROUTING) — never un-routed. A free slot + an eligible
   path entry + no stop condition ⇒ refill NOW, in the same turn — never
   wait idle, never end the turn "for now". Fewer than 6 in flight is
   legitimate ONLY when conflicts, contracts-exclusivity, or path
@@ -317,7 +371,8 @@ cycles; steps 8–9 belong to the LEAD) ═══
     named in the Primary-steps column routes by the file paths its diff
     touches"). The 6 issues titled `[S<N>][area][severity]` already carry
     their area in the title — use it directly instead of the crosswalk
-    lookup. Dispatch with isolation:"worktree". Its packet is the full §9
+    lookup. Dispatch with isolation:"worktree" AND `model:` = the issue's
+    routed tier (or `opus` if the UPGRADE RATCHET has fired). Its packet is the full §9
     assignment packet, adapted:
     • Issue number, title, labels, full body verbatim (this IS the Goal,
       Reproduction, and Verify source now — there is no separate step doc).
@@ -349,7 +404,8 @@ cycles; steps 8–9 belong to the LEAD) ═══
     • AREA review: `area_code_reviewer`, packet naming the matching charter
       file under .claude/agents/ (the §8 crosswalk row for the issue's area,
       or the file-path fallback above; a cross-area diff routes to the
-      charter of its riskiest boundary).
+      charter of its riskiest boundary). Spawned at the issue's routed
+      model tier (upgraded if the ratchet fired).
     • SAFETY review (`safety_release_reviewer`) runs IN ADDITION when §11
       triggers: the issue's step label is one of the phase-closing steps
       (S7, S19, S24, S29, S31, S33), any `[C]` contract change of
@@ -358,7 +414,8 @@ cycles; steps 8–9 belong to the LEAD) ═══
       boundaries. This is the adversarial gate — it defaults to
       CHANGES_REQUESTED when genuinely uncertain, and it runs on EVERY cycle
       that qualifies, including cycle-3 approvals: the cap limits fixes,
-      never scrutiny.
+      never scrutiny. ALWAYS spawned with `model: opus` regardless of the
+      issue's routed tier (MODEL ROUTING).
     The reviewer gets NO implementer context — only: worktree path,
     `git diff main...fix/<N>-<slug>`, the issue's body (Goal + Verify
     source), the §11 review contract, and (from cycle 1 on) the FINDINGS
@@ -395,6 +452,12 @@ cycles; steps 8–9 belong to the LEAD) ═══
     • open-BLOCKING count must strictly decrease every cycle;
     • the same finding surviving two consecutive cycles un-fixed, or a fix
       introducing NEW blockers twice → escalate now.
+    On a `sonnet` issue, fire the MODEL ROUTING UPGRADE RATCHET first:
+    reaching cycle 2, any ratchet warning above, or findings that indicate
+    design misjudgment → all subsequent fix workers and reviewers spawn on
+    `opus` (no fix cycle consumed by the upgrade itself). Human escalation
+    (step 6) on a sonnet issue without the upgrade having been tried is a
+    violation — cheap-model failure is not a product blocker.
 
  6. ESCALATION (ratchet tripped, 3 cycles exhausted, or unresolvable
     blocker): STOP work on this issue. Per guidelines §13:
@@ -511,6 +574,12 @@ cycles; steps 8–9 belong to the LEAD) ═══
   frontmatter), ledger entries are claims to verify.
 • The 3-cycle cap is a budget, not a target — escalating at cycle 1 on a
   genuine disagreement beats grinding to cycle 3.
+• MODEL ROUTING is a token budget, never a quality-gate bypass: the review
+  contract, verdict requirements, Verify gates, and merge lock are
+  IDENTICAL on both tiers; the safety reviewer is always `opus`; uncertain
+  complexity scores route to `opus`; a sonnet issue that struggles gets
+  the automatic opus upgrade BEFORE any human escalation; no spawn goes
+  out without an explicit `model:`.
 • Context hygiene is structural, two tiers deep: one FRESH conductor per
   issue, never reused across issues; all per-issue state (ledger, handoff
   blocks, review transcripts, diffs, logs) lives inside that conductor and
@@ -542,6 +611,7 @@ End with, per issue (assembled from its conductor's ISSUE REPORT, never
 from raw logs): #N · title · branch · outcome — MERGED (PR URL + merge
 SHA) / OPEN-PR (URL + reason: CI timeout, branch protection, SHA drift) /
 ESCALATED (`blocked-step` applied, comment posted) · cycles used (0–3) ·
+model (sonnet / opus / sonnet→opus@cycle<n>) ·
 findings fixed / no-op / overruled / open · verdicts (area / safety if run) ·
 CI checks result (green / failed / timed out / none reported) · worktree
 (removed / kept-with-reason) · Verify summary (actual exit codes).
@@ -549,6 +619,9 @@ Finish with `git worktree list` proving no orphans, `git branch --show-current`
 proving `main` (ff-pulled past this run's merges, step 8), the burn-down
 tally (merged / open-PR / escalated / REMAINING against the path total —
 remaining issues listed with their path position, never silently dropped),
+the MODEL ROUTING tally (issues run on sonnet / on opus / upgraded
+mid-run — upgrades listed with the cycle and reason, since a high upgrade
+rate means the complexity rubric needs tightening),
 then everything needing the human: OPEN-PRs with their reasons and CI
 status, escalations
 with the decision required, overruled findings worth a second look, any

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Work Issue"
+  short_description: "Safely burn down market-ops issues"
+  default_prompt: "Use $work-issue to process the eligible market-ops issue backlog, or add issue numbers to limit the scope."
+
+policy:
+  allow_implicit_invocation: false
