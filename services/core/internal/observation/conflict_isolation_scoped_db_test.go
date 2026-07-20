@@ -77,4 +77,26 @@ func TestUnregisteredParserCannotBlockLegitimateOffer(t *testing.T) {
 	if len(rows) != 3 {
 		t.Fatalf("want 3 append-only evidence rows (C, A, rogue), got %d", len(rows))
 	}
+
+	// SAFETY (fix cycle 1, upheld review of the DeriveQuality reorder): flooring the
+	// rogue capture to Unverified is NOT sufficient. Unverified.SatisfiesCurrentData-
+	// Gate() == true, so if the untrusted 999 were written as the offer of record it
+	// would OVERWRITE the legitimate Verified 100 AND read as CURRENT to downstream
+	// current-data consumers — a signal-corruption / identity-quarantine vector. A
+	// quarantined (schema-invalid / identity-invalid) capture must be retained ONLY as
+	// append-only evidence and must NEVER become or downgrade the offer of record, the
+	// same way the Conflicted path leaves the price/quality of record intact.
+	offers, err := svc.ListObservedOffers(ctx, account)
+	if err != nil {
+		t.Fatalf("list observed offers: %v", err)
+	}
+	if len(offers) != 1 {
+		t.Fatalf("want exactly 1 offer of record for the target, got %d", len(offers))
+	}
+	if got := offers[0].PriceRawValue; got != "100" {
+		t.Fatalf("offer of record OVERWRITTEN by untrusted capture: price_raw_value=%s, want 100", got)
+	}
+	if got := obs.Quality(offers[0].Quality); got != obs.Verified {
+		t.Fatalf("offer of record DOWNGRADED by untrusted capture: quality=%s, want verified", got)
+	}
 }
