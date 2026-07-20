@@ -419,23 +419,46 @@ func TestListActionsFilteredOnCurrentLineageHeadOnly(t *testing.T) {
 	account, variant := seedVariant(t, q)
 	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
 
-	// A price edit mints a NEW Draft head in the SAME lineage. The prior version
-	// exists in history; the head is Draft.
+	// Drive the ORIGINAL card (v1) to Approved FIRST, so the lineage genuinely
+	// has an Approved version in its append-only history. Without this the query
+	// could wrongly filter on a historic version and the test would still pass
+	// (there'd be no Approved row at all) — it would not discriminate the bug.
 	original := persistApprovableCard(t, svc, account, variant)
+	driveToState(t, svc, original.ID, approval.StateApproved)
+
+	// A price edit then mints a NEW Draft head (v2) in the SAME lineage. The
+	// Approved v1 now sits in history; the CURRENT head is Draft.
 	newPrice, err := money.New(1040, "IRR", 0)
 	if err != nil {
 		t.Fatalf("money.New: %v", err)
 	}
-	if _, err := svc.EditPrice(context.Background(), original.ID, newPrice, time.Now().UTC()); err != nil {
+	edited, err := svc.EditPrice(context.Background(), original.ID, newPrice, time.Now().UTC())
+	if err != nil {
 		t.Fatalf("EditPrice: %v", err)
 	}
 
+	// state=approved must NOT surface this lineage: the head is Draft even though
+	// an Approved version exists in history. This now fails closed against a query
+	// that (wrongly) matches a historic version's state.
 	got, err := svc.ListActions(context.Background(), account, string(approval.StateApproved), 200)
 	if err != nil {
 		t.Fatalf("ListActions(approved): %v", err)
 	}
 	if len(got) != 0 {
-		t.Fatalf("ListActions(approved) = %d rows, want 0 — the head is Draft; a historic version's state must never surface the lineage", len(got))
+		t.Fatalf("ListActions(approved) = %d rows, want 0 — the head is Draft; a historic Approved version must never surface the lineage", len(got))
+	}
+
+	// state=draft must surface exactly the CURRENT (edited) head — proving the
+	// filter is evaluated on the greatest-version lineage head, not a stale one.
+	draftHeads, err := svc.ListActions(context.Background(), account, string(approval.StateDraft), 200)
+	if err != nil {
+		t.Fatalf("ListActions(draft): %v", err)
+	}
+	if len(draftHeads) != 1 {
+		t.Fatalf("ListActions(draft) = %d rows, want 1 (the current Draft head)", len(draftHeads))
+	}
+	if draftHeads[0].ID != edited.ID {
+		t.Fatalf("ListActions(draft) returned card %s, want the current head %s", draftHeads[0].ID, edited.ID)
 	}
 }
 
