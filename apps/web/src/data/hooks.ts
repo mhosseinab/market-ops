@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { gateway } from "../app/query";
 import { useAccount } from "./account";
 import { type ErrorEnvelope, GatewayError } from "./errors";
@@ -9,6 +9,7 @@ import type {
   ApprovalConfirmResult,
   BulkApprovalConfirmRequest,
   BulkApprovalConfirmResult,
+  CatalogProductPage,
   CostImportCommitResult,
   CostImportPreview,
   CostProfileVersion,
@@ -40,8 +41,7 @@ function unwrap<T>(result: { data?: T; error?: unknown; response?: Response }): 
 
 export const queryKeys = {
   connectorStatus: (accountId: string) => ["connector-status", accountId] as const,
-  catalogProducts: (accountId: string, cursor: string) =>
-    ["catalog-products", accountId, cursor] as const,
+  catalogProductsAll: (accountId: string) => ["catalog-products-all", accountId] as const,
   catalogProduct: (accountId: string, variantId: string) =>
     ["catalog-product", accountId, variantId] as const,
   productDiagnostics: (accountId: string, variantId: string) =>
@@ -76,24 +76,42 @@ export function useConnectorStatus() {
   });
 }
 
-// The canonical Products read model (S26, PRD §6.1). Rows come from Product/
-// Variant/Owned Offer entities — never observation targets. Pagination is by the
-// stable native_variant_id cursor the server returns; the screen advances it.
-export function useCatalogProducts(cursor: string | null) {
+// The §4.5 account target ceiling is 200 canonical products, so requesting the
+// max page size (200) returns the whole catalog in a SINGLE page in production.
+// CATALOG_MAX_PAGES is defensive headroom that bounds the page walk if the server
+// ever returns smaller pages — the walk is therefore explicitly bounded, never an
+// unbounded whole-catalog crawl. The accumulated worst case is thus
+// CATALOG_PAGE_LIMIT × CATALOG_MAX_PAGES = 200 × 4 = 800 rows (4× the 200 ceiling of
+// headroom). If the server still has pages AT the cap, the accumulated set is
+// INCOMPLETE and the Products screen fails closed (a distinct truncated state), never
+// binding count/pageCount to a partial slice as if it were complete. Having the FULL
+// search-filtered set client-side is what lets the screen apply the readiness filter
+// BEFORE pagination and bind count/pageCount to the complete filtered set (issue #256).
+export const CATALOG_PAGE_LIMIT = 200;
+export const CATALOG_MAX_PAGES = 4;
+
+// The authoritative, account-scoped Products set, fetched as a BOUNDED cursor walk
+// (see CATALOG_PAGE_LIMIT/CATALOG_MAX_PAGES). The screen accumulates every page's
+// rows and paginates them client-side, so pagination metadata and the readiness
+// filter describe the complete set rather than one server page.
+export function useAllCatalogProducts() {
   const { marketplaceAccountId } = useAccount();
-  return useQuery({
-    queryKey: queryKeys.catalogProducts(marketplaceAccountId, cursor ?? ""),
-    queryFn: async () =>
+  return useInfiniteQuery({
+    queryKey: queryKeys.catalogProductsAll(marketplaceAccountId),
+    initialPageParam: null as string | null,
+    queryFn: async ({ pageParam }): Promise<CatalogProductPage> =>
       unwrap(
         await gateway.GET("/catalog/products", {
           params: {
             query: {
               marketplaceAccountId,
-              ...(cursor ? { cursor } : {}),
+              limit: CATALOG_PAGE_LIMIT,
+              ...(pageParam ? { cursor: pageParam } : {}),
             },
           },
         }),
       ),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
 }
 
