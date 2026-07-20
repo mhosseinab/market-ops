@@ -10,9 +10,16 @@ server-side and can never create a second Draft.
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
-from llm.flows.gateway_draft import DraftUnavailable, GatewayDraftPort
+from llm.flows.gateway_draft import (
+    DRAFT_RECONCILE_METRIC,
+    DraftUnavailable,
+    GatewayDraftPort,
+)
+from llm.flows.models import DraftKind
 from llm.orchestrator.cancellation import (
     CancelToken,
     ToolCancelledError,
@@ -139,6 +146,155 @@ def test_cancelled_token_aborts_the_write_before_it_is_issued() -> None:
         reset_cancel_token(reset)
 
     assert issued["n"] == 0  # no POST issued: fails closed to no ticket
+
+
+def test_post_acceptance_timeout_reconciles_to_the_created_draft(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A timeout AFTER the gateway accepted the create must NOT orphan the Draft.
+
+    Issue #25 residual: the first POST times out only because the response was lost
+    — the gateway already created the Draft. Instead of surfacing a false
+    ``DraftUnavailable`` (which hides a real Draft), the port RECONCILES by the
+    stable idempotency key: one idempotent replay with the SAME key discovers the
+    already-created Draft. The server dedups on the key, so exactly one Draft
+    exists — the reconciled ticket is returned, not ``DraftUnavailable``.
+    """
+    keys: list[str | None] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        keys.append(request.headers.get("Idempotency-Key"))
+        if len(keys) == 1:
+            # Accepted server-side, but the client's read deadline elapses before
+            # the response arrives: an AMBIGUOUS post-acceptance timeout.
+            raise httpx.ReadTimeout("response lost after acceptance", request=request)
+        # Idempotent replay under the SAME key: the gateway returns the existing
+        # Draft rather than creating a second one.
+        return httpx.Response(
+            200, json=_ok_body(draft_id="d-created", recommendation_version="rec-9")
+        )
+
+    port = GatewayDraftPort(
+        "http://gateway.internal",
+        "read-draft-token",
+        httpx.Client(transport=httpx.MockTransport(handle)),
+        timeout_seconds=1.0,
+    )
+    with caplog.at_level(logging.INFO):
+        ticket = port.create_recommendation_draft(
+            account_id="acc-1", entity_id="p-1", recommendation_id="rec-9"
+        )
+
+    assert ticket.draft_kind is DraftKind.RECOMMENDATION
+    assert ticket.draft_id == "d-created"  # the real Draft, surfaced (not unavailable)
+    assert len(keys) == 2  # exactly one reconcile replay (bounded to one retry)
+    assert keys[0] is not None and keys[0] == keys[1]  # SAME stable key -> no duplicate
+    # Reconciliation is observable, not a silent fallback.
+    assert any(
+        record.__dict__.get("metric") == DRAFT_RECONCILE_METRIC for record in caplog.records
+    )
+
+
+def test_reconcile_that_also_times_out_fails_closed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """If the idempotent reconcile is ALSO unresolved, fail closed (bounded retry).
+
+    Reconciliation is exactly one idempotent replay (§12.4). When it too times out
+    the outcome is genuinely unknown, so the port fails closed to ``DraftUnavailable``
+    — never a fabricated Draft — and never a second, third, … replay.
+    """
+    attempts = {"n": 0}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ReadTimeout("still unresolved", request=request)
+
+    port = GatewayDraftPort(
+        "http://gateway.internal",
+        "read-draft-token",
+        httpx.Client(transport=httpx.MockTransport(handle)),
+        timeout_seconds=1.0,
+    )
+    with caplog.at_level(logging.INFO), pytest.raises(DraftUnavailable):
+        port.create_recommendation_draft(
+            account_id="acc-1", entity_id="p-1", recommendation_id="rec-9"
+        )
+    assert attempts["n"] == 2  # original + exactly one reconcile, then fail closed
+    assert any(
+        record.__dict__.get("metric") == DRAFT_RECONCILE_METRIC for record in caplog.records
+    )
+
+
+def test_non_timeout_transport_error_fails_closed_without_reconcile() -> None:
+    """A non-ambiguous transport error (never accepted) fails closed with no replay.
+
+    A connection error means the request never reached the gateway — there is no
+    Draft to reconcile, so the port must NOT issue an idempotent replay; it fails
+    closed immediately as before. Reconciliation is scoped to the ambiguous
+    post-acceptance timeout case only.
+    """
+    attempts = {"n": 0}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ConnectError("connection refused", request=request)
+
+    port = GatewayDraftPort(
+        "http://gateway.internal",
+        "read-draft-token",
+        httpx.Client(transport=httpx.MockTransport(handle)),
+        timeout_seconds=1.0,
+    )
+    with pytest.raises(DraftUnavailable):
+        port.create_recommendation_draft(
+            account_id="acc-1", entity_id="p-1", recommendation_id="rec-9"
+        )
+    assert attempts["n"] == 1  # no reconcile replay for a non-ambiguous failure
+
+
+def test_cancelled_deadline_stops_reconcile(caplog: pytest.LogCaptureFixture) -> None:
+    """Reconciliation never runs past the per-tool deadline.
+
+    If the request-scoped cancel token is already cancelled when the ambiguous
+    timeout is caught, the port must NOT issue the idempotent replay — the deadline
+    is authoritative. It fails closed via cancellation without a late write.
+    """
+    attempts = {"n": 0}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ReadTimeout("lost", request=request)
+
+    port = GatewayDraftPort(
+        "http://gateway.internal",
+        "read-draft-token",
+        httpx.Client(transport=httpx.MockTransport(handle)),
+        timeout_seconds=1.0,
+    )
+    token = CancelToken()
+    reset = set_cancel_token(token)
+    try:
+        # Cancel AFTER the first POST is issued but before reconcile: emulate the
+        # per-tool deadline elapsing during the timed-out attempt.
+        def handle_then_cancel(request: httpx.Request) -> httpx.Response:
+            attempts["n"] += 1
+            token.cancel()
+            raise httpx.ReadTimeout("lost", request=request)
+
+        port = GatewayDraftPort(
+            "http://gateway.internal",
+            "read-draft-token",
+            httpx.Client(transport=httpx.MockTransport(handle_then_cancel)),
+            timeout_seconds=1.0,
+        )
+        with pytest.raises(ToolCancelledError):
+            port.create_recommendation_draft(
+                account_id="acc-1", entity_id="p-1", recommendation_id="rec-9"
+            )
+    finally:
+        reset_cancel_token(reset)
+    assert attempts["n"] == 1  # cancelled before the reconcile replay was issued
 
 
 def test_distinct_drafts_get_distinct_idempotency_keys() -> None:
