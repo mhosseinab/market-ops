@@ -3,6 +3,7 @@ package jobs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
@@ -73,6 +74,41 @@ func TestUrgentEmailWorker_InvokesRunnerAndSurfacesError(t *testing.T) {
 	w2 := NewUrgentEmailWorker(func(context.Context, UrgentEmailArgs, bool) error { return sentinel }, nil)
 	if err := w2.Work(context.Background(), &river.Job[UrgentEmailArgs]{Args: want}); !errors.Is(err, sentinel) {
 		t.Fatalf("Work must surface runner error, got %v", err)
+	}
+}
+
+// TestUrgentEmailWorker_UnpersistedDeadLetterSnoozesNotDiscard is the issue #122 REOPEN
+// regression at the worker seam. When the runner reports the dead-letter STATE WRITE
+// failed on the exhausted attempt (ErrUrgentDeadLetterUnpersisted), the worker must
+// RE-DRIVE the intent via JobSnooze — returning the error verbatim on the final attempt
+// would let River DISCARD it, dropping the recovery obligation. A plain error still
+// surfaces verbatim (normal retry/discard).
+func TestUrgentEmailWorker_UnpersistedDeadLetterSnoozesNotDiscard(t *testing.T) {
+	// Final attempt (Attempt == MaxAttempts): the exhausted attempt where a returned
+	// error would otherwise discard the durable intent.
+	job := &river.Job[UrgentEmailArgs]{
+		JobRow: &rivertype.JobRow{Attempt: 5, MaxAttempts: 5},
+		Args:   UrgentEmailArgs{NotificationID: uuid.New(), Category: "execution_failure"},
+	}
+
+	unpersisted := fmt.Errorf("notify: dead-letter unpersisted: %w", ErrUrgentDeadLetterUnpersisted)
+	w := NewUrgentEmailWorker(func(context.Context, UrgentEmailArgs, bool) error { return unpersisted }, nil)
+	err := w.Work(context.Background(), job)
+	var snooze *rivertype.JobSnoozeError
+	if !errors.As(err, &snooze) {
+		t.Fatalf("unpersisted dead-letter on the final attempt must SNOOZE (re-drive), got %v", err)
+	}
+
+	// A plain permanent failure that WAS persisted still surfaces verbatim (River
+	// discards on the exhausted attempt — the dead letter is durable and observed).
+	plain := errors.New("smtp permanent failure")
+	w2 := NewUrgentEmailWorker(func(context.Context, UrgentEmailArgs, bool) error { return plain }, nil)
+	err2 := w2.Work(context.Background(), job)
+	if errors.As(err2, &snooze) {
+		t.Fatalf("a persisted terminal failure must NOT snooze, got snooze")
+	}
+	if !errors.Is(err2, plain) {
+		t.Fatalf("Work must surface a persisted terminal failure verbatim, got %v", err2)
 	}
 }
 
