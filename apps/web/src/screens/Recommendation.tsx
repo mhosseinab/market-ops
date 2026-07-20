@@ -1,6 +1,6 @@
 import type { MessageKey } from "@market-ops/locale";
 import { useRouterState } from "@tanstack/react-router";
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useState } from "react";
 import { useLocale, useT } from "../app/i18n";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { QualityBadge, ReadinessBadge } from "../components/badges";
@@ -13,6 +13,7 @@ import { ViewState } from "../components/ViewState";
 import { formatInstant } from "../data/format";
 import { useApprovalCard, useConfirmApproval, useRecommendationDetail } from "../data/hooks";
 import type {
+  ApprovalCardView,
   ApprovalConfirmResult,
   MoneyAmount,
   PolicyObjective,
@@ -185,6 +186,94 @@ function RecommendationFields({ detail }: { detail: RecommendationDetail }) {
   );
 }
 
+// The stateful approval column (ApprovalCard + lifecycle + contribution). It is
+// MOUNTED WITH key={card.id} by the screen, so every card-local piece of state —
+// the version baseline, the edited proposed price (inside ApprovalCard), and the
+// confirmation result — is fully RESET when the resolved card id changes (issue
+// #95). A polled version bump under a LIVE control keeps the SAME card.id (no
+// remount), so `baseline` stays put and the control correctly flips stale.
+function ApprovalPanel({
+  card,
+  detail,
+  onRefetchCard,
+}: {
+  card: ApprovalCardView;
+  detail?: RecommendationDetail;
+  onRefetchCard: () => void;
+}) {
+  const t = useT();
+  const confirm = useConfirmApproval(card.id);
+
+  // Bound to THIS card's first-seen version; re-adopted only on recalculate.
+  const [baseline, setBaseline] = useState<number>(card.version);
+  const [result, setResult] = useState<ApprovalConfirmResult | null>(null);
+
+  // Late-async guard: a confirmation carries the card id it was issued for; only
+  // a result that still matches the ACTIVE card may drive the lifecycle. A stale
+  // response for a previously-active card is dropped, never rendered.
+  const activeResult = result && result.cardId === card.id ? result : null;
+
+  const errorCode = confirm.isError ? confirmErrorCode(confirm.error) : undefined;
+  const permissionDenied = Boolean(errorCode?.includes("permission"));
+  const duplicate = Boolean(errorCode && /(idempoten|duplicate)/.test(errorCode));
+
+  const hasContribution =
+    detail && (detail.contributionDeductions.length > 0 || detail.proposedContribution);
+
+  const readopt = () => {
+    setBaseline(card.version);
+    setResult(null);
+    confirm.reset();
+    onRefetchCard();
+  };
+
+  return (
+    <>
+      <ApprovalCard
+        card={card}
+        baselineVersion={baseline}
+        confirmPending={confirm.isPending}
+        onConfirm={(binding) => {
+          setResult(null);
+          confirm.mutate(binding, {
+            // Tag-and-drop: only adopt a result still bound to the active card.
+            onSuccess: (r) => {
+              if (r.cardId === card.id) setResult(r);
+            },
+          });
+        }}
+        onRecalculate={readopt}
+      />
+
+      <StateMachineView
+        state={activeResult?.state ?? card.state}
+        reason={activeResult?.reason ?? ""}
+        executionPending={activeResult?.executionPending ?? false}
+        permissionDenied={permissionDenied}
+        idempotencyKey={card.idempotencyKey}
+        onRecalculate={readopt}
+        onRequestOwner={() => confirm.reset()}
+      />
+
+      {duplicate ? (
+        <p className="blocker-note" data-testid="confirm-duplicate">
+          {t("rec.confirm.duplicate")}
+        </p>
+      ) : null}
+
+      {hasContribution ? (
+        <Section titleKey="rec.contribution.title">
+          <ContributionBreakdown
+            deductions={detail.contributionDeductions}
+            total={detail.proposedContribution}
+            readiness={detail.readiness}
+          />
+        </Section>
+      ) : null}
+    </>
+  );
+}
+
 export function Recommendation() {
   const t = useT();
   const { locale } = useLocale();
@@ -193,7 +282,6 @@ export function Recommendation() {
   });
   const cardId = search.cardId;
   const cardQuery = useApprovalCard(cardId);
-  const confirm = useConfirmApproval(cardId);
   const card = cardQuery.data;
 
   // The authoritative recommendation id: an explicit deep-link param wins,
@@ -203,21 +291,6 @@ export function Recommendation() {
   const recommendationId = search.recommendationId ?? card?.recommendationId;
   const detailQuery = useRecommendationDetail(recommendationId);
   const detail = detailQuery.data;
-
-  // The version the live control is bound to. Set on first load and re-adopted on
-  // recalculate; a polled version change under it flags the control stale.
-  const [baseline, setBaseline] = useState<number | null>(null);
-  const [result, setResult] = useState<ApprovalConfirmResult | null>(null);
-  useEffect(() => {
-    if (card && baseline === null) setBaseline(card.version);
-  }, [card, baseline]);
-
-  const errorCode = confirm.isError ? confirmErrorCode(confirm.error) : undefined;
-  const permissionDenied = Boolean(errorCode?.includes("permission"));
-  const duplicate = Boolean(errorCode && /(idempoten|duplicate)/.test(errorCode));
-
-  const hasContribution =
-    detail && (detail.contributionDeductions.length > 0 || detail.proposedContribution);
 
   // The authoritative field set renders through its own state seam so an
   // unavailable detail read degrades to the approval card (screens-only fallback,
@@ -261,52 +334,15 @@ export function Recommendation() {
         ) : (
           <div className="split">
             <div className="split__main">
-              <ApprovalCard
+              {/* Remount the whole stateful column when the card id changes so no
+                  edited price, version baseline, or confirmation result bleeds
+                  from a prior card onto this one (issue #95). */}
+              <ApprovalPanel
+                key={card.id}
                 card={card}
-                baselineVersion={baseline ?? card.version}
-                confirmPending={confirm.isPending}
-                onConfirm={(binding) => {
-                  setResult(null);
-                  confirm.mutate(binding, { onSuccess: (r) => setResult(r) });
-                }}
-                onRecalculate={() => {
-                  setBaseline(card.version);
-                  setResult(null);
-                  confirm.reset();
-                  void cardQuery.refetch();
-                }}
+                detail={detail}
+                onRefetchCard={() => void cardQuery.refetch()}
               />
-
-              <StateMachineView
-                state={result?.state ?? card.state}
-                reason={result?.reason ?? ""}
-                executionPending={result?.executionPending ?? false}
-                permissionDenied={permissionDenied}
-                idempotencyKey={card.idempotencyKey}
-                onRecalculate={() => {
-                  setBaseline(card.version);
-                  setResult(null);
-                  confirm.reset();
-                  void cardQuery.refetch();
-                }}
-                onRequestOwner={() => confirm.reset()}
-              />
-
-              {duplicate ? (
-                <p className="blocker-note" data-testid="confirm-duplicate">
-                  {t("rec.confirm.duplicate")}
-                </p>
-              ) : null}
-
-              {hasContribution ? (
-                <Section titleKey="rec.contribution.title">
-                  <ContributionBreakdown
-                    deductions={detail.contributionDeductions}
-                    total={detail.proposedContribution}
-                    readiness={detail.readiness}
-                  />
-                </Section>
-              ) : null}
             </div>
 
             <aside className="split__aside">

@@ -1,15 +1,17 @@
 import { DEFAULT_LOCALE, faIR } from "@market-ops/locale";
 import { QueryClient } from "@tanstack/react-query";
+import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Providers } from "../app/Providers";
+import { createAppRouter } from "../app/router";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { ContributionBreakdown } from "../components/ContributionBreakdown";
 import { StateMachineView } from "../components/StateMachineView";
 import { renderAmount } from "../data/format";
-import type { Contribution, MoneyAmount } from "../data/types";
+import type { ApprovalCardView, Contribution, MoneyAmount } from "../data/types";
 import {
   ACCOUNT_ID,
   ACTION_ID,
@@ -17,6 +19,7 @@ import {
   approvalCardV2,
   CARD_ID,
   confirmApproved,
+  RECOMMENDATION_ID,
   recommendationDetail,
   recommendationDetailBlocked,
 } from "../test/msw/fixtures";
@@ -394,5 +397,170 @@ describe("Recommendation screen — authoritative RecommendationDetail binding",
     expect(await screen.findByTestId("rec-detail-degraded")).toBeInTheDocument();
     expect(screen.getByTestId("confirm-approval")).toBeInTheDocument();
     expect(screen.getByTestId("rec-detail-retry")).toBeInTheDocument();
+  });
+});
+
+// ── Card-ID state reset (issue #95 / APR-001 approval-versioning adjacency) ────
+// The route must NEVER carry card A's edited price, confirmation result, or
+// version baseline onto card B. Every approval surface stays bound to the EXACT
+// current card; the confirm request keeps the ACTIVE card's full binding.
+describe("Recommendation screen — card-ID state reset (issue #95)", () => {
+  // A second live card: different id, price, version, and bound parameter version.
+  const CARD_B_ID = "abababab-abab-abab-abab-ababababab01";
+  const cardB: ApprovalCardView = {
+    ...approvalCardAwaiting,
+    id: CARD_B_ID,
+    version: 3,
+    price: { mantissa: "16000000", currency: "IRR", exponent: 0 },
+    recommendationId: RECOMMENDATION_ID,
+    idempotencyKey: "idem-abababab",
+    binding: { ...approvalCardAwaiting.binding, parameterVersion: 9 },
+  };
+
+  /** Serve the card that matches the requested cardId (A vs B). */
+  function serveCardsById() {
+    server.use(
+      http.get(`${BASE}/approvals/card`, ({ request }) => {
+        const id = new URL(request.url).searchParams.get("cardId");
+        return HttpResponse.json(id === CARD_B_ID ? cardB : approvalCardAwaiting);
+      }),
+    );
+  }
+
+  /** Render the real router so the route can be re-navigated between card ids. */
+  function renderAt(cardId: string) {
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+    const router = createAppRouter(
+      createMemoryHistory({ initialEntries: [`/recommendation?cardId=${cardId}`] }),
+    );
+    render(
+      <Providers
+        initialLocale={DEFAULT_LOCALE}
+        queryClient={queryClient}
+        marketplaceAccountId={ACCOUNT_ID}
+      >
+        <RouterProvider router={router} />
+      </Providers>,
+    );
+    return router;
+  }
+
+  /** Navigate the route to a different card id (search-param only change). The
+   *  router's typed `navigate` is cast the same way the app's index redirect is. */
+  function goToCard(router: ReturnType<typeof createAppRouter>, cardId: string) {
+    return router.navigate({ to: "/recommendation", search: { cardId } } as never);
+  }
+
+  const priceB = grouped(cardB.price);
+  const priceA = grouped(approvalCardAwaiting.price);
+
+  it("switching from an EDITED card A to card B shows B's exact price and an unedited control", async () => {
+    serveCardsById();
+    const router = renderAt(CARD_ID);
+
+    // Edit A's proposed price → A's control voids and shows the edited flag.
+    fireEvent.click(await screen.findByLabelText(faIR["rec.price.increase"]));
+    expect(screen.getByTestId("edited-flag")).toBeInTheDocument();
+    expect(screen.getByTestId("confirm-approval")).toBeDisabled();
+
+    await goToCard(router, CARD_B_ID);
+
+    // B renders its OWN authoritative price, with no A edit bleeding through.
+    await waitFor(() => expect(screen.getByTestId("approval-card")).toHaveTextContent(priceB));
+    expect(screen.getByTestId("approval-card")).not.toHaveTextContent(priceA);
+    expect(screen.queryByTestId("edited-flag")).not.toBeInTheDocument();
+    expect(screen.getByTestId("confirm-approval")).toBeEnabled();
+  });
+
+  it("switching AFTER card A is confirmed does not show A's Approved result on card B", async () => {
+    serveCardsById();
+    const router = renderAt(CARD_ID);
+
+    // Confirm A → its recommend-only terminal state renders.
+    fireEvent.click(await screen.findByTestId("confirm-approval"));
+    expect(await screen.findByTestId("recommend-only")).toBeInTheDocument();
+
+    await goToCard(router, CARD_B_ID);
+
+    // B is AwaitingConfirmation — A's Approved terminal must not carry over.
+    await waitFor(() => expect(screen.getByTestId("approval-card")).toHaveTextContent(priceB));
+    expect(screen.queryByTestId("recommend-only")).not.toBeInTheDocument();
+    expect(screen.getByTestId("confirm-approval")).toBeEnabled();
+  });
+
+  it("different card versions do NOT share a version baseline (no false stale on B)", async () => {
+    serveCardsById();
+    const router = renderAt(CARD_ID);
+    await screen.findByTestId("approval-card");
+
+    await goToCard(router, CARD_B_ID);
+
+    // B's baseline is B's own version → not stale, control live.
+    await waitFor(() => expect(screen.getByTestId("approval-card")).toHaveTextContent(priceB));
+    expect(screen.queryByTestId("stale-card")).not.toBeInTheDocument();
+    expect(screen.getByTestId("confirm-approval")).toBeEnabled();
+  });
+
+  it("IGNORES a late confirmation response for A that resolves after navigating to B", async () => {
+    let releaseA: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    server.use(
+      http.get(`${BASE}/approvals/card`, ({ request }) => {
+        const id = new URL(request.url).searchParams.get("cardId");
+        return HttpResponse.json(id === CARD_B_ID ? cardB : approvalCardAwaiting);
+      }),
+      http.post(`${BASE}/approvals/confirm`, async ({ request }) => {
+        const body = (await request.json()) as { cardId?: string };
+        if (body.cardId === CARD_ID) {
+          await gate; // A's confirm stays in-flight until we release it.
+          return HttpResponse.json(confirmApproved);
+        }
+        return HttpResponse.json({ ...confirmApproved, cardId: CARD_B_ID });
+      }),
+    );
+    const router = renderAt(CARD_ID);
+
+    // Fire A's confirm, then navigate to B before A resolves.
+    fireEvent.click(await screen.findByTestId("confirm-approval"));
+    await goToCard(router, CARD_B_ID);
+    await waitFor(() => expect(screen.getByTestId("approval-card")).toHaveTextContent(priceB));
+
+    // Release A's now-stale response: it must NOT render on B.
+    releaseA?.();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByTestId("recommend-only")).not.toBeInTheDocument();
+    expect(screen.getByTestId("confirm-approval")).toBeEnabled();
+  });
+
+  it("the confirm request after navigation carries the ACTIVE card B's full binding", async () => {
+    let captured: { cardId?: string; binding?: Record<string, unknown> } | undefined;
+    server.use(
+      http.get(`${BASE}/approvals/card`, ({ request }) => {
+        const id = new URL(request.url).searchParams.get("cardId");
+        return HttpResponse.json(id === CARD_B_ID ? cardB : approvalCardAwaiting);
+      }),
+      http.post(`${BASE}/approvals/confirm`, async ({ request }) => {
+        captured = (await request.json()) as typeof captured;
+        return HttpResponse.json({ ...confirmApproved, cardId: captured?.cardId });
+      }),
+    );
+    const router = renderAt(CARD_ID);
+    await screen.findByTestId("approval-card");
+
+    await goToCard(router, CARD_B_ID);
+    await waitFor(() => expect(screen.getByTestId("approval-card")).toHaveTextContent(priceB));
+
+    fireEvent.click(screen.getByTestId("confirm-approval"));
+
+    await waitFor(() => expect(captured).toBeTruthy());
+    // The ACTIVE card's id + full server binding travel — never card A's.
+    expect(captured?.cardId).toBe(CARD_B_ID);
+    expect(captured?.binding?.parameterVersion).toBe(cardB.binding.parameterVersion);
+    expect(captured?.binding?.actionId).toBe(ACTION_ID);
+    expect(captured?.binding?.expiresAt).toBe(cardB.binding.expiresAt);
   });
 });
