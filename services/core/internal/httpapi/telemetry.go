@@ -72,6 +72,14 @@ func statusClass(code int) string {
 }
 
 // statusRecorder captures the response status for the RED label without buffering.
+//
+// It deliberately does NOT declare a Flush method. A response wrapper must satisfy
+// http.Flusher EXACTLY when its underlying writer does (issue #148): the generated
+// /chat SSE consumer does a direct `w.(http.Flusher)` type assertion, so an
+// unconditional Flush method on this type would make a NON-flushing underlying
+// writer falsely advertise flushing and bypass the buffered io.Copy fallback. The
+// Flusher capability is therefore added conditionally by newStatusRecorder via
+// flushStatusRecorder, never statically on the base type.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -89,20 +97,37 @@ func (s *statusRecorder) Write(b []byte) (int, error) {
 	return s.ResponseWriter.Write(b)
 }
 
-// Flush keeps the wrapped writer flush-transparent so the generated SSE handler's
-// `w.(http.Flusher)` check succeeds and it flushes each event to the client
-// immediately (real streaming) instead of buffering the whole turn. Without this
-// the per-turn write deadline (issue #24) could not be enforced per chunk. A no-op
-// when the underlying writer cannot flush.
-func (s *statusRecorder) Flush() {
-	if f, ok := s.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
+// Unwrap exposes the base writer so http.NewResponseController can reach the
+// connection (write-deadline control) through this wrapper. Both statusRecorder
+// and flushStatusRecorder (which embeds it) expose Unwrap this way.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// flushStatusRecorder is a statusRecorder for an underlying writer that implements
+// http.Flusher. It adds a Flush passthrough so — and ONLY so — the generated /chat
+// SSE handler's `w.(http.Flusher)` assertion succeeds and it flushes each event to
+// the client immediately (real streaming) instead of buffering the whole turn.
+// The flush delegates to the captured underlying flusher (e.g. chatStreamWriter,
+// which flushes through http.NewResponseController so a deadline-exceeded flush is
+// observed for the per-turn write budget, issue #24). Status capture and Unwrap are
+// promoted from the embedded statusRecorder.
+type flushStatusRecorder struct {
+	*statusRecorder
+	flusher http.Flusher
 }
 
-// Unwrap exposes the base writer so http.NewResponseController can reach the
-// connection (write-deadline control) through this wrapper.
-func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+func (s *flushStatusRecorder) Flush() { s.flusher.Flush() }
+
+// newStatusRecorder wraps w for RED status capture while PRESERVING its
+// http.Flusher capability if and only if w implements it (issue #148). It returns
+// the writer to hand downstream plus the inner *statusRecorder to read the captured
+// status after the handler returns.
+func newStatusRecorder(w http.ResponseWriter) (http.ResponseWriter, *statusRecorder) {
+	rec := &statusRecorder{ResponseWriter: w, status: 0}
+	if f, ok := w.(http.Flusher); ok {
+		return &flushStatusRecorder{statusRecorder: rec, flusher: f}, rec
+	}
+	return rec, rec
+}
 
 // wrap is the outermost transport middleware: it extracts any inbound W3C trace
 // context (web → gateway), opens a server span carrying the normalized route, and
@@ -122,9 +147,9 @@ func (rm *redMetrics) wrap(next http.Handler) http.Handler {
 		)
 		defer span.End()
 
-		rec := &statusRecorder{ResponseWriter: w, status: 0}
+		rw, rec := newStatusRecorder(w)
 		start := time.Now()
-		next.ServeHTTP(rec, r.WithContext(ctx))
+		next.ServeHTTP(rw, r.WithContext(ctx))
 		if rec.status == 0 {
 			rec.status = http.StatusOK
 		}
