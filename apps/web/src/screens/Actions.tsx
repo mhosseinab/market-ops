@@ -31,6 +31,25 @@ const EXTERNAL_TO_STATUS: Record<ExecutionExternalState, StatusState> = {
   failed: "failed",
 };
 
+// Affordances derive from the TYPED EXE-003 execution-state contract, NEVER from a
+// visual-status grouping. The state machine makes Accepted, Rejected, AND Failed
+// terminal (only Pending Reconciliation is non-terminal, i.e. an UNKNOWN result);
+// reconciliation opens the OUT-001 outcome window for EVERY terminal state; and
+// /actions/retry is Failed-ONLY (Accepted/Rejected → ErrAlreadyTerminal). Deriving
+// each control from these predicates guarantees a successful read never renders a
+// control the server is guaranteed to reject.
+function isTerminalExternalState(
+  state: ExecutionExternalState | undefined,
+): state is Exclude<ExecutionExternalState, "pending_reconciliation"> {
+  return state !== undefined && state !== "pending_reconciliation";
+}
+
+// Retry is offered ONLY for a definitively Failed action — the sole retry-eligible
+// external state in the contract. A fresh approval card, never an inverse write.
+function isRetryEligibleState(state: ExecutionExternalState | undefined): boolean {
+  return state === "failed";
+}
+
 type FilterKey = "all" | "pending" | "failed" | "executed";
 
 const FILTERS: readonly { id: FilterKey; labelKey: MessageKey }[] = [
@@ -86,7 +105,12 @@ export function Actions() {
   const auditCardQuery = useApprovalCard(auditCardId);
   const auditCard = auditCardQuery.data;
 
-  const outcomeQuery = useOutcome(exec?.externalState === "accepted" ? actionId : undefined);
+  // OUT-001: every reconciled terminal execution opens the seven-day outcome
+  // window — load it for EVERY terminal external state (accepted, rejected, AND
+  // failed), not only accepted; a non-terminal (pending) action has no window.
+  const outcomeQuery = useOutcome(
+    isTerminalExternalState(exec?.externalState) ? actionId : undefined,
+  );
   const retry = useRetryAction();
 
   const rows: ActionExecutionView[] = useMemo(
@@ -153,9 +177,15 @@ export function Actions() {
           </div>
 
           <aside className="split__aside">
-            {exec?.externalState === "accepted" ? (
+            {isTerminalExternalState(exec?.externalState) ? (
               <Section titleKey="actions.outcome.title">
-                {outcomeQuery.data ? (
+                {outcomeQuery.isError ? (
+                  // An outcome-query ERROR is DISTINCT from "no outcome yet": render
+                  // an explicit, actionable error node — never as silent absence.
+                  <p className="muted" role="alert" data-testid="outcome-error">
+                    {t("actions.outcome.error")}
+                  </p>
+                ) : outcomeQuery.data ? (
                   <dl className="kv" data-testid="outcome-window">
                     <div className="kv__row">
                       <dt>{t("actions.outcome.opened")}</dt>
@@ -193,7 +223,11 @@ export function Actions() {
                     </div>
                   </dl>
                 ) : (
-                  <p className="muted">{unavailable}</p>
+                  // "No outcome yet" — the window is still loading. This is NOT an
+                  // error; it carries its own node so the two states never collapse.
+                  <p className="muted" data-testid="outcome-pending">
+                    {t("actions.outcome.pending")}
+                  </p>
                 )}
                 <p className="muted">{t("actions.outcome.attributionNote")}</p>
               </Section>
@@ -279,22 +313,46 @@ export function Actions() {
       );
     }
 
-    if (exec.externalState === "failed" || exec.externalState === "rejected") {
+    // Rejected is TERMINAL (EXE-003): it renders its own rejection context and
+    // NEVER a Retry control — /actions/retry would deterministically return
+    // ErrAlreadyTerminal. Kept strictly separate from the Failed panel so the
+    // affordance follows the typed state, not a shared visual bucket.
+    if (exec.externalState === "rejected") {
+      return (
+        <div className="panel" data-testid="action-rejected">
+          <p className="panel__title">
+            {t("actions.rejected.title", { marketplace: t("marketplace.name") })}
+          </p>
+          <p className="muted">{t("actions.rejected.body")}</p>
+          {exec.externalRef ? (
+            <p className="muted">
+              {t("actions.accepted.externalRef")} <LtrToken text={exec.externalRef} />
+            </p>
+          ) : null}
+        </div>
+      );
+    }
+
+    // Failed is the SOLE retry-eligible state. The Retry affordance is gated on the
+    // typed predicate, not on this panel's identity, so it can never leak elsewhere.
+    if (exec.externalState === "failed") {
       return (
         <div className="panel" data-testid="action-failed">
           <p className="panel__title">{t("actions.failed.title")}</p>
           <p className="muted">{t("actions.failed.body")}</p>
-          <div className="row-actions">
-            <button
-              type="button"
-              className="btn btn--secondary"
-              data-testid="action-retry"
-              disabled={retry.isPending}
-              onClick={() => retry.mutate(exec.actionId)}
-            >
-              {t("actions.action.retry")}
-            </button>
-          </div>
+          {isRetryEligibleState(exec.externalState) ? (
+            <div className="row-actions">
+              <button
+                type="button"
+                className="btn btn--secondary"
+                data-testid="action-retry"
+                disabled={retry.isPending}
+                onClick={() => retry.mutate(exec.actionId)}
+              >
+                {t("actions.action.retry")}
+              </button>
+            </div>
+          ) : null}
           {retry.data ? (
             <p className="muted" data-testid="retry-outcome">
               {retry.data.eligible ? t("actions.retry.eligible") : t("actions.retry.ineligible")}

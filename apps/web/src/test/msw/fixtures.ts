@@ -503,6 +503,17 @@ export const execAccepted: ActionExecutionView = {
   reconciledAt: "2026-07-17T11:00:00Z",
 };
 
+/**
+ * Rejected by DK — a TERMINAL external state (not retryable; /actions/retry
+ * refuses it with ErrAlreadyTerminal). Its reconciliation still opens the OUT-001
+ * outcome window, so the measurement record must render like any terminal action.
+ */
+export const execRejected: ActionExecutionView = {
+  ...execPendingReconciliation,
+  externalState: "rejected",
+  reconciledAt: "2026-07-17T11:00:00Z",
+};
+
 export const outcomeOpen: OutcomeView = {
   actionId: ACTION_ID,
   openedAt: "2026-07-17T11:00:00Z",
