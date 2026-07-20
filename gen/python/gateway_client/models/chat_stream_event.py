@@ -7,6 +7,7 @@ from uuid import UUID
 from attrs import define as _attrs_define
 
 from ..models.chat_stream_event_kind import ChatStreamEventKind
+from ..models.conversation_context_kind import ConversationContextKind
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
@@ -28,6 +29,17 @@ class ChatStreamEvent:
         Attributes:
             kind (ChatStreamEventKind): Frame discriminator.
             conversation_id (UUID | Unset): Emitted once on the `conversation` frame for a new conversation.
+            context_kind (ConversationContextKind | Unset): The kind of entity a conversation's single deterministic context
+                is bound to (PRD §8.1 CHAT-007). One canonical §15.1 record kind per value; a conversation has EXACTLY ONE
+                active context at a time, never inferred from free text. `global` is the no-entity context (the operator's whole
+                account). The gateway is authoritative for the bound kind — this field is the client's DECLARED binding,
+                validated and versioned server-side.
+            context_entity_id (str | Unset): Echoed on the `conversation` frame: the entity id of the conversation's
+                AUTHORITATIVE bound context (an LTR technical identifier), so the client renders the chip the gateway actually
+                persisted, never a claimed one. Absent for the `global` context.
+            context_version (int | Unset): Echoed on the `conversation` frame: the conversation's current server-issued
+                context version. The client sends it back on the next turn so a stale binding is rejected rather than silently
+                relabeled.
             token (str | Unset): Incremental assistant text on a `token` frame.
             envelope (ChatStreamEventEnvelope | Unset): The final typed response envelope on a `final` frame. Its internal
                 shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2).
@@ -41,6 +53,9 @@ class ChatStreamEvent:
 
     kind: ChatStreamEventKind
     conversation_id: UUID | Unset = UNSET
+    context_kind: ConversationContextKind | Unset = UNSET
+    context_entity_id: str | Unset = UNSET
+    context_version: int | Unset = UNSET
     token: str | Unset = UNSET
     envelope: ChatStreamEventEnvelope | Unset = UNSET
     failure: ChatFailure | Unset = UNSET
@@ -51,6 +66,14 @@ class ChatStreamEvent:
         conversation_id: str | Unset = UNSET
         if not isinstance(self.conversation_id, Unset):
             conversation_id = str(self.conversation_id)
+
+        context_kind: str | Unset = UNSET
+        if not isinstance(self.context_kind, Unset):
+            context_kind = self.context_kind.value
+
+        context_entity_id = self.context_entity_id
+
+        context_version = self.context_version
 
         token = self.token
 
@@ -71,6 +94,12 @@ class ChatStreamEvent:
         )
         if conversation_id is not UNSET:
             field_dict["conversationId"] = conversation_id
+        if context_kind is not UNSET:
+            field_dict["contextKind"] = context_kind
+        if context_entity_id is not UNSET:
+            field_dict["contextEntityId"] = context_entity_id
+        if context_version is not UNSET:
+            field_dict["contextVersion"] = context_version
         if token is not UNSET:
             field_dict["token"] = token
         if envelope is not UNSET:
@@ -95,6 +124,17 @@ class ChatStreamEvent:
         else:
             conversation_id = UUID(_conversation_id)
 
+        _context_kind = d.pop("contextKind", UNSET)
+        context_kind: ConversationContextKind | Unset
+        if isinstance(_context_kind, Unset):
+            context_kind = UNSET
+        else:
+            context_kind = ConversationContextKind(_context_kind)
+
+        context_entity_id = d.pop("contextEntityId", UNSET)
+
+        context_version = d.pop("contextVersion", UNSET)
+
         token = d.pop("token", UNSET)
 
         _envelope = d.pop("envelope", UNSET)
@@ -114,6 +154,9 @@ class ChatStreamEvent:
         chat_stream_event = cls(
             kind=kind,
             conversation_id=conversation_id,
+            context_kind=context_kind,
+            context_entity_id=context_entity_id,
+            context_version=context_version,
             token=token,
             envelope=envelope,
             failure=failure,

@@ -7,7 +7,7 @@ import { approvalCardAwaiting, CARD_ID, dailyBriefing, EVENT_ID } from "../test/
 import { BASE, sseResponse } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
-import type { ChatStreamEvent } from "./types";
+import type { ChatStreamEvent, ChatTurnRequest } from "./types";
 
 // S29 chat-dock component tests against MSW + a mocked SSE `/chat` stream. They
 // exercise the never-cut invariants on the dock surface: free-text containment,
@@ -50,6 +50,207 @@ describe("ChatDock — reachability + context chip (CHAT-001)", () => {
     fireEvent.click(await screen.findByLabelText(faIR["topbar.chat.toggle"]));
     const chip = await screen.findByTestId("chat-context-chip");
     expect(chip).toHaveAttribute("data-context", "recommendation");
+  });
+});
+
+// ── Deterministic context binding on the wire (CHAT-007, issue #115) ────────
+describe("ChatDock — binds route + picker context to the conversation (CHAT-007)", () => {
+  function captureChatBodies(bodies: ChatTurnRequest[]) {
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        bodies.push((await request.json()) as ChatTurnRequest);
+        return sseResponse([
+          { kind: "conversation", conversationId: `conv-${bodies.length}` },
+          { kind: "final", envelope: { sections: [], evidence: [] } },
+        ]);
+      }),
+    );
+  }
+
+  it("a first turn from a contextual route carries the exact displayed binding", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    captureChatBodies(bodies);
+    renderRoute(`/recommendation?cardId=${CARD_ID}`);
+    fireEvent.click(await screen.findByLabelText(faIR["topbar.chat.toggle"]));
+    await sendComposer("why this?");
+
+    await waitFor(() => expect(bodies.length).toBe(1));
+    const [first] = bodies;
+    expect(first?.context).toEqual({ kind: "recommendation", entityId: CARD_ID });
+    // A first turn never claims a server context version.
+    expect(first?.context?.contextVersion).toBeUndefined();
+    expect(first?.conversationId).toBeUndefined();
+  });
+
+  it("selecting a picker option binds THAT option via an explicit transition before any card", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        bodies.push((await request.json()) as ChatTurnRequest);
+        // First turn returns a picker; the picker-bound turn returns an envelope.
+        // The `conversation` frame carries the AUTHORITATIVE context the GATEWAY
+        // persisted (issue #115) — global v1 first, then the transitioned
+        // product/opt-x v2 — never a value the client fabricated.
+        const first = bodies.length === 1;
+        const conversationFrame: ChatStreamEvent = first
+          ? {
+              kind: "conversation",
+              conversationId: "conv-1",
+              contextKind: "global",
+              contextVersion: 1,
+            }
+          : {
+              kind: "conversation",
+              conversationId: "conv-1",
+              contextKind: "product",
+              contextEntityId: "opt-x",
+              contextVersion: 2,
+            };
+        const cards = first
+          ? [{ kind: "picker", options: [{ id: "opt-x", label: "Sony X" }] }]
+          : [];
+        return sseResponse([
+          conversationFrame,
+          { kind: "final", envelope: { sections: [], evidence: [], cards } },
+        ]);
+      }),
+    );
+    await openDock();
+    await sendComposer("which sony?");
+    const select = await screen.findByTestId("chat-picker-select");
+    fireEvent.click(select);
+
+    await waitFor(() => expect(bodies.length).toBe(2));
+    // The picker-bound turn carries the EXACT option as an explicit, versioned
+    // transition on the SAME conversation — never a silent relabel. The version it
+    // sends back is the one the gateway ECHOED on the first turn (v1), not a
+    // client-fabricated value.
+    const bound = bodies[1];
+    expect(bound?.conversationId).toBe("conv-1");
+    expect(bound?.context).toEqual({
+      kind: "product",
+      entityId: "opt-x",
+      contextVersion: 1,
+      transition: true,
+    });
+  });
+
+  it("the chip UPDATES to the gateway-bound kind after a picker transition from a non-product route", async () => {
+    let calls = 0;
+    server.use(
+      http.post(`${BASE}/chat`, () => {
+        calls += 1;
+        const first = calls === 1;
+        const conversationFrame: ChatStreamEvent = first
+          ? {
+              kind: "conversation",
+              conversationId: "conv-1",
+              contextKind: "global",
+              contextVersion: 1,
+            }
+          : {
+              kind: "conversation",
+              conversationId: "conv-1",
+              contextKind: "product",
+              contextEntityId: "opt-x",
+              contextVersion: 2,
+            };
+        const cards = first
+          ? [{ kind: "picker", options: [{ id: "opt-x", label: "Sony X" }] }]
+          : [];
+        return sseResponse([
+          conversationFrame,
+          { kind: "final", envelope: { sections: [], evidence: [], cards } },
+        ]);
+      }),
+    );
+    // Open on /today (global route): the chip starts global.
+    await openDock();
+    const chip = screen.getByTestId("chat-context-chip");
+    expect(chip).toHaveAttribute("data-context", "global");
+
+    await sendComposer("which sony?");
+    fireEvent.click(await screen.findByTestId("chat-picker-select"));
+
+    // After the picker binds product/opt-x, the chip renders the GATEWAY-bound kind
+    // (product) — never the route kind (global) it would show optimistically.
+    await waitFor(() =>
+      expect(screen.getByTestId("chat-context-chip")).toHaveAttribute("data-context", "product"),
+    );
+  });
+
+  it("a gateway context rejection (409) fails the turn and leaves the bound context unchanged", async () => {
+    let calls = 0;
+    server.use(
+      http.post(`${BASE}/chat`, () => {
+        calls += 1;
+        if (calls === 1) {
+          // First turn commits the authoritative recommendation binding at v1.
+          return sseResponse([
+            {
+              kind: "conversation",
+              conversationId: "conv-1",
+              contextKind: "recommendation",
+              contextEntityId: CARD_ID,
+              contextVersion: 1,
+            },
+            { kind: "final", envelope: { sections: [], evidence: [] } },
+          ]);
+        }
+        // The binding turn is REJECTED as stale (409): no envelope/cards, no relabel.
+        return HttpResponse.json(
+          {
+            code: "CONVERSATION_CONTEXT_STALE",
+            message: "the conversation context has changed; reopen it from the current screen",
+          },
+          { status: 409 },
+        );
+      }),
+    );
+    renderRoute(`/recommendation?cardId=${CARD_ID}`);
+    fireEvent.click(await screen.findByLabelText(faIR["topbar.chat.toggle"]));
+    await sendComposer("why this?");
+    // The first turn committed the authoritative recommendation chip.
+    await waitFor(() =>
+      expect(screen.getByTestId("chat-context-chip")).toHaveAttribute(
+        "data-context",
+        "recommendation",
+      ),
+    );
+
+    await sendComposer("and now?");
+    await waitFor(() => expect(calls).toBe(2));
+    // The rejected turn renders the transport-failure/incomplete state and attaches
+    // NO completed envelope/cards to THAT turn; the bound context/chip is UNCHANGED
+    // (no relabel, no fabricated success).
+    const failure = await screen.findByTestId("chat-transport-failure");
+    const rejectedTurn = failure.closest('[data-testid="chat-msg-assistant"]') as HTMLElement;
+    expect(within(rejectedTurn).queryByTestId("chat-envelope")).not.toBeInTheDocument();
+    expect(within(rejectedTurn).queryByTestId("chat-picker")).not.toBeInTheDocument();
+    expect(screen.getByTestId("chat-context-chip")).toHaveAttribute(
+      "data-context",
+      "recommendation",
+    );
+  });
+
+  it("a route change mid-conversation opens a NEW bound conversation, never relabeling", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    captureChatBodies(bodies);
+    const { navigate } = renderRoute(`/recommendation?cardId=${CARD_ID}`);
+    fireEvent.click(await screen.findByLabelText(faIR["topbar.chat.toggle"]));
+    await sendComposer("first");
+    await waitFor(() => expect(bodies.length).toBe(1));
+
+    // Navigate to a different entity context, then send again.
+    navigate(`/event?eventId=${EVENT_ID}`);
+    await sendComposer("second");
+    await waitFor(() => expect(bodies.length).toBe(2));
+
+    // The second turn did NOT continue the first conversation under a new chip; it
+    // opened a fresh bound conversation for the new context (no silent relabel).
+    const second = bodies[1];
+    expect(second?.conversationId).toBeUndefined();
+    expect(second?.context).toEqual({ kind: "event", entityId: EVENT_ID });
   });
 });
 

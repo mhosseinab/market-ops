@@ -211,6 +211,15 @@ type Conversation struct {
 	RetentionExpiresAt   time.Time
 }
 
+type ConversationContextBinding struct {
+	ID             uuid.UUID
+	ConversationID uuid.UUID
+	Version        int32
+	Kind           string
+	EntityID       pgtype.Text
+	CreatedAt      time.Time
+}
+
 type ConversationMessage struct {
 	ID             uuid.UUID
 	ConversationID uuid.UUID

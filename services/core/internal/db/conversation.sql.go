@@ -48,6 +48,42 @@ func (q *Queries) AppendConversationMessage(ctx context.Context, arg AppendConve
 	return i, err
 }
 
+const createContextBinding = `-- name: CreateContextBinding :one
+INSERT INTO conversation_context_bindings (conversation_id, version, kind, entity_id)
+VALUES ($1, $2, $3, $4)
+RETURNING id, conversation_id, version, kind, entity_id, created_at
+`
+
+type CreateContextBindingParams struct {
+	ConversationID uuid.UUID
+	Version        int32
+	Kind           string
+	EntityID       pgtype.Text
+}
+
+// Appends one context-binding version to a conversation (CHAT-007). APPEND-ONLY:
+// a transition inserts a NEW version; a prior binding is never updated or deleted.
+// The (conversation_id, version) UNIQUE constraint rejects a double-apply of the
+// same version, so a retried transition cannot silently fork the history.
+func (q *Queries) CreateContextBinding(ctx context.Context, arg CreateContextBindingParams) (ConversationContextBinding, error) {
+	row := q.db.QueryRow(ctx, createContextBinding,
+		arg.ConversationID,
+		arg.Version,
+		arg.Kind,
+		arg.EntityID,
+	)
+	var i ConversationContextBinding
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.Version,
+		&i.Kind,
+		&i.EntityID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const createConversation = `-- name: CreateConversation :one
 
 INSERT INTO conversations (organization_id, opened_by_user_id, marketplace_account_id)
@@ -123,6 +159,32 @@ func (q *Queries) GetConversationForOrg(ctx context.Context, arg GetConversation
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.RetentionExpiresAt,
+	)
+	return i, err
+}
+
+const getCurrentContextBinding = `-- name: GetCurrentContextBinding :one
+SELECT id, conversation_id, version, kind, entity_id, created_at FROM conversation_context_bindings
+WHERE conversation_id = $1
+ORDER BY version DESC
+LIMIT 1
+`
+
+// Resolves a conversation's CURRENT deterministic context binding (the highest
+// version row) for the caller's turn (CHAT-007). The caller has already validated
+// the conversation belongs to its organization (GetConversationForOrg), so this
+// read is org-safe by construction. Returns no row when the conversation has no
+// binding yet (a legacy or first-turn conversation). APPEND-ONLY read.
+func (q *Queries) GetCurrentContextBinding(ctx context.Context, conversationID uuid.UUID) (ConversationContextBinding, error) {
+	row := q.db.QueryRow(ctx, getCurrentContextBinding, conversationID)
+	var i ConversationContextBinding
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.Version,
+		&i.Kind,
+		&i.EntityID,
+		&i.CreatedAt,
 	)
 	return i, err
 }

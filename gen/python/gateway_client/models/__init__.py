@@ -52,6 +52,8 @@ from .contribution import Contribution
 from .contribution_component_input import ContributionComponentInput
 from .contribution_component_kind import ContributionComponentKind
 from .contribution_deduction import ContributionDeduction
+from .conversation_context_binding import ConversationContextBinding
+from .conversation_context_kind import ConversationContextKind
 from .cost_component import CostComponent
 from .cost_import_commit_request import CostImportCommitRequest
 from .cost_import_commit_result import CostImportCommitResult
@@ -230,6 +232,8 @@ __all__ = (
     "ContributionComponentInput",
     "ContributionComponentKind",
     "ContributionDeduction",
+    "ConversationContextBinding",
+    "ConversationContextKind",
     "CostComponent",
     "CostImportCommitRequest",
     "CostImportCommitResult",
