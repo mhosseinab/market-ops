@@ -21,6 +21,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
 	"github.com/mhosseinab/market-ops/services/core/internal/margin"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
+	"github.com/mhosseinab/market-ops/services/core/internal/observation"
 	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
 	"github.com/mhosseinab/market-ops/services/core/internal/policy"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
@@ -29,16 +30,28 @@ import (
 
 // GuardrailService backs the /guardrails routes (PD-3 item 6, S37).
 // *guardrail.Service satisfies it.
+//
+// Both methods take the authenticated organization id (issue #237, mirroring
+// issue #102) so the service resolves the caller's OWN marketplace account and
+// predicates the read/write on it. The requested account is validated against the
+// resolved one, never trusted from the request body; a foreign or org-less caller
+// is a uniform not-found (guardrail.ErrAccountNotFound) with no disclosure and — for
+// SetForOrg, a money/policy write — no mutation and no audit row.
 type GuardrailService interface {
-	Get(ctx context.Context, account uuid.UUID) (guardrail.ConfigView, error)
-	Set(ctx context.Context, account uuid.UUID, actor audit.Actor, settings guardrail.Settings) (guardrail.ConfigView, error)
+	GetForOrg(ctx context.Context, organizationID, account uuid.UUID) (guardrail.ConfigView, error)
+	SetForOrg(ctx context.Context, organizationID, account uuid.UUID, actor audit.Actor, settings guardrail.Settings) (guardrail.ConfigView, error)
 }
 
 // WatchlistService backs the /watchlist routes (EXT-007, S37).
 // *watchlist.Service satisfies it.
+//
+// Both methods take the authenticated organization id (issue #237) so the service
+// resolves the caller's OWN marketplace account and predicates the read/mutation on
+// it; a foreign or org-less caller is a uniform not-found
+// (watchlist.ErrAccountNotFound) with — for AddForOrg — no insert and no audit row.
 type WatchlistService interface {
-	List(ctx context.Context, account uuid.UUID) ([]db.WatchlistEntry, error)
-	Add(ctx context.Context, account, variant uuid.UUID, actor audit.Actor) (db.WatchlistEntry, error)
+	ListForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]db.WatchlistEntry, error)
+	AddForOrg(ctx context.Context, organizationID, account, variant uuid.UUID, actor audit.Actor) (db.WatchlistEntry, error)
 }
 
 // GetRecommendationDetail returns one recommendation's full PRC-001 record plus
@@ -250,9 +263,13 @@ func (s *gatewayServer) GetGuardrails(
 	if s.guardrail == nil {
 		return gateway.GetGuardrailsdefaultJSONResponse{StatusCode: 503, Body: guardrailUnavailableErr()}, nil
 	}
-	view, err := s.guardrail.Get(ctx, req.Params.MarketplaceAccountId)
+	// Tenant scoping (issue #237): the account is resolved from the authenticated
+	// org, and the requested id is validated against it — never trusted from the
+	// query param. A foreign or org-less caller is the SAME uniform 404 as a genuinely
+	// unconfigured account (no existence oracle).
+	view, err := s.guardrail.GetForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, guardrail.ErrAccountNotFound) {
 			return gateway.GetGuardrailsdefaultJSONResponse{StatusCode: 404, Body: guardrailErr(err)}, nil
 		}
 		return gateway.GetGuardrailsdefaultJSONResponse{StatusCode: 500, Body: guardrailErr(err)}, nil
@@ -284,8 +301,17 @@ func (s *gatewayServer) SetGuardrails(
 		Strategy:          policy.Strategy(req.Body.Settings.Strategy),
 		StrategyEnabled:   req.Body.Settings.StrategyEnabled,
 	}
-	view, err := s.guardrail.Set(ctx, req.Body.MarketplaceAccountId, actorFromPrincipal(ctx, "screens"), settings)
+	// Tenant scoping (issue #237): SetForOrg resolves the caller's OWN account from
+	// the authenticated org and enforces ownership BEFORE any state change or audit
+	// append. A foreign or org-less caller — including one supplying another tenant's
+	// account id in the body — is a uniform 404 with NO guardrail mutation and NO
+	// audit row for the foreign account (a money/policy write is the highest-severity
+	// tenant-integrity surface, §4.6).
+	view, err := s.guardrail.SetForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, actorFromPrincipal(ctx, "screens"), settings)
 	if err != nil {
+		if errors.Is(err, guardrail.ErrAccountNotFound) {
+			return gateway.SetGuardrailsdefaultJSONResponse{StatusCode: 404, Body: guardrailErr(err)}, nil
+		}
 		if errors.Is(err, guardrail.ErrInvalidStrategy) {
 			return gateway.SetGuardrailsdefaultJSONResponse{StatusCode: 400, Body: guardrailErr(err)}, nil
 		}
@@ -368,8 +394,14 @@ func (s *gatewayServer) ListMarketConflicts(
 	if s.observation == nil {
 		return gateway.ListMarketConflictsdefaultJSONResponse{StatusCode: 503, Body: observationUnavailableErr()}, nil
 	}
-	rows, err := s.observation.ListConflictedObservedOffers(ctx, req.Params.MarketplaceAccountId)
+	// Tenant scoping (issue #237): the account is resolved from the authenticated
+	// org; a foreign or org-less caller is a uniform 404, never another tenant's
+	// Market conflict view.
+	rows, err := s.observation.ListConflictedObservedOffersForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId)
 	if err != nil {
+		if errors.Is(err, observation.ErrAccountNotFound) {
+			return gateway.ListMarketConflictsdefaultJSONResponse{StatusCode: 404, Body: observationErr(err)}, nil
+		}
 		return gateway.ListMarketConflictsdefaultJSONResponse{StatusCode: 500, Body: observationErr(err)}, nil
 	}
 	out := make([]gateway.ObservedOffer, 0, len(rows))
@@ -386,8 +418,14 @@ func (s *gatewayServer) ListWatchlist(
 	if s.watchlistSvc == nil {
 		return gateway.ListWatchlistdefaultJSONResponse{StatusCode: 503, Body: watchlistUnavailableErr()}, nil
 	}
-	rows, err := s.watchlistSvc.List(ctx, req.Params.MarketplaceAccountId)
+	// Tenant scoping (issue #237): the account is resolved from the authenticated
+	// org; a foreign or org-less caller is a uniform 404, never another tenant's
+	// watchlist.
+	rows, err := s.watchlistSvc.ListForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId)
 	if err != nil {
+		if errors.Is(err, watchlist.ErrAccountNotFound) {
+			return gateway.ListWatchlistdefaultJSONResponse{StatusCode: 404, Body: watchlistErr(err)}, nil
+		}
 		return gateway.ListWatchlistdefaultJSONResponse{StatusCode: 500, Body: watchlistErr(err)}, nil
 	}
 	items := make([]gateway.WatchlistEntry, 0, len(rows))
@@ -418,9 +456,16 @@ func (s *gatewayServer) AddWatchlistEntry(
 	if req.Body == nil {
 		return gateway.AddWatchlistEntrydefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	entry, err := s.watchlistSvc.Add(ctx, req.Body.MarketplaceAccountId, req.Body.VariantId, actorFromPrincipal(ctx, "screens"))
+	// Tenant scoping (issue #237): AddForOrg resolves the caller's OWN account from
+	// the authenticated org and enforces ownership BEFORE the confirmed-identity
+	// check, cap check, insert, or audit append. A foreign or org-less caller —
+	// including one supplying another tenant's account id in the body — is a uniform
+	// 404 with NO insert and NO audit row for the foreign account.
+	entry, err := s.watchlistSvc.AddForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, req.Body.VariantId, actorFromPrincipal(ctx, "screens"))
 	if err != nil {
 		switch {
+		case errors.Is(err, watchlist.ErrAccountNotFound):
+			return gateway.AddWatchlistEntrydefaultJSONResponse{StatusCode: 404, Body: watchlistErr(err)}, nil
 		case errors.Is(err, watchlist.ErrNotConfirmed):
 			return gateway.AddWatchlistEntrydefaultJSONResponse{StatusCode: 409, Body: watchlistErr(err)}, nil
 		case errors.Is(err, watchlist.ErrCapExceeded):

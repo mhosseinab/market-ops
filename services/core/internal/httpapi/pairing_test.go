@@ -68,6 +68,10 @@ func (f *fakePairing) RevokeForOrganization(_ context.Context, org uuid.UUID) er
 // ingested so tests can assert the capture route reached ingestion.
 type fakeObservation struct {
 	ingested []observation.Capture
+	// conflictErr, when set, is returned by ListConflictedObservedOffersForOrg so a
+	// transport test can drive the tenant-scoping (issue #237) not-found mapping
+	// without a database.
+	conflictErr error
 }
 
 func (f *fakeObservation) ListTargets(context.Context, uuid.UUID) ([]db.ObservationTarget, error) {
@@ -83,8 +87,8 @@ func (f *fakeObservation) Ingest(_ context.Context, c observation.Capture) (obse
 	f.ingested = append(f.ingested, c)
 	return observation.IngestResult{ObservationID: uuid.New(), Quality: "verified"}, nil
 }
-func (f *fakeObservation) ListConflictedObservedOffers(context.Context, uuid.UUID) ([]db.ObservedOffer, error) {
-	return nil, nil
+func (f *fakeObservation) ListConflictedObservedOffersForOrg(context.Context, uuid.UUID, uuid.UUID) ([]db.ObservedOffer, error) {
+	return nil, f.conflictErr
 }
 
 func serverWithPairing(t *testing.T, fa *fakeAuth, fp *fakePairing, fo *fakeObservation) *http.Server {
