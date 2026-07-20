@@ -1,9 +1,9 @@
 import type { MessageKey } from "@market-ops/locale";
 import { useLocale, useT } from "../../app/i18n";
 import { AppLink } from "../../components/AppLink";
-import { LtrToken } from "../../components/LtrToken";
 import { ViewState } from "../../components/ViewState";
 import { formatCount, formatInstant } from "../../data/format";
+import { briefingEventTypeKey } from "../catalogMaps";
 import { useBriefing, utcBusinessDay } from "../hooks";
 import type { BriefingEvent } from "../types";
 
@@ -35,7 +35,12 @@ function BriefingRow({ event }: { event: BriefingEvent }) {
       <span className="briefing__rank">
         {t("chat.briefing.rank", { rank: formatCount(event.rank, locale) })}
       </span>
-      <LtrToken text={event.eventType} />
+      {/* LOC-002 (#121): the machine `eventType` maps to a CLOSED catalog label;
+          an unmapped type renders the localized unavailable label + drift
+          telemetry — the raw value is never shown. Independent of severity. */}
+      <span className="briefing__eventType" data-testid="briefing-eventType">
+        {t(briefingEventTypeKey(event.eventType))}
+      </span>
       {severityKey ? <span className="briefing__severity">{t(severityKey)}</span> : null}
       <AppLink
         to="/event"

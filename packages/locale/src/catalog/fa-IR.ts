@@ -171,6 +171,7 @@ export const faIR: Catalog = {
   "chat.briefing.generatedAt": "تولیدشده در {time}",
   "chat.briefing.failure.title": "گزارش در دسترس نیست",
   "chat.briefing.failure.unknownLast": "آخرین گزارش موفق در دسترس نیست. صفحهٔ امروز به‌روز است.",
+  "chat.briefing.eventTypeUnknown": "نوع رویداد نامشخص",
   "chat.unavailable.title": "دستیار در دسترس نیست",
   "chat.unavailable.kill_switch_global": "دستیار موقتاً غیرفعال است.",
   "chat.unavailable.kill_switch_account": "دستیار برای این حساب غیرفعال است.",
@@ -181,6 +182,13 @@ export const faIR: Catalog = {
   "chat.failure.deepLink": "ادامه در صفحه ←",
   "chat.failure.transportBody":
     "ارتباط پیش از تأیید پاسخ قطع شد. برای نمای کامل و مستند از صفحه‌های ساختاریافته استفاده کنید.",
+  "chat.failure.recursionLimit": "درخواست از حد مجاز مراحل هر نوبت فراتر رفت.",
+  "chat.failure.toolCallLimit": "درخواست از حد مجاز دریافت داده فراتر رفت.",
+  "chat.failure.toolTimeout": "دریافت داده بیش از حد طول کشید.",
+  "chat.failure.tokenCeiling": "پاسخ از حد مجاز طول فراتر رفت.",
+  "chat.failure.providerError": "سرویس دستیار خطا بازگرداند.",
+  "chat.failure.transient": "دستیار موقتاً در دسترس نیست.",
+  "chat.failure.unsupported": "این پاسخ کامل نشد.",
 
   "action.retry": "تلاش دوباره",
   "action.resolve": "رفع",
