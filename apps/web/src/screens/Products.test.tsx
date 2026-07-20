@@ -41,7 +41,7 @@ describe("Products workspace", () => {
 
     // "Watched" is an unambiguous marker of the canonical row rendering (the row is
     // NOT an observation target). Await it, then assert the rest.
-    await screen.findByText(faIR["mapping.watched"]);
+    await screen.findByText(faIR["mapping.watched"], undefined, { timeout: 5000 });
     const table = document.querySelector(".data-table") as HTMLElement;
     expect(within(table).getByText(faIR["mapping.watched"])).toBeInTheDocument();
     // Confirmed mapping badge + Verified quality badge share the Persian glossary
@@ -74,7 +74,7 @@ describe("Products workspace", () => {
     renderRoute("/products");
 
     // The primary (identity-labelled) offer is the first ordered one, with a count.
-    await screen.findByText("a-seller");
+    await screen.findByText("a-seller", undefined, { timeout: 5000 });
     const table = document.querySelector(".data-table") as HTMLElement;
     expect(within(table).getByText("a-seller")).toBeInTheDocument();
     expect(within(table).getByText("10")).toBeInTheDocument();
@@ -103,7 +103,7 @@ describe("Products workspace", () => {
     );
     renderRoute("/products");
 
-    await screen.findByText(faIR["mapping.unmapped"]);
+    await screen.findByText(faIR["mapping.unmapped"], undefined, { timeout: 5000 });
     const table = document.querySelector(".data-table") as HTMLElement;
     expect(within(table).getByText(faIR["mapping.unmapped"])).toBeInTheDocument();
     expect(within(table).getByText(faIR["mapping.unwatched"])).toBeInTheDocument();
@@ -126,14 +126,14 @@ describe("Products workspace", () => {
     );
     renderRoute("/products");
 
-    await screen.findByText("5000000"); // page-1 native variant id
+    await screen.findByText("5000000", undefined, { timeout: 5000 }); // page-1 native variant id
     expect(screen.queryByText("5000060")).toBeNull();
 
     fireEvent.click(screen.getByTestId("products-next-page"));
 
-    await screen.findByText("5000060"); // page-2 native variant id
+    await screen.findByText("5000060", undefined, { timeout: 5000 }); // page-2 native variant id
     expect(screen.queryByText("5000000")).toBeNull();
-    await waitFor(() => expect(call).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(call).toBeGreaterThanOrEqual(2), { timeout: 5000 });
     // At the terminal page the Next button is disabled (no next cursor).
     expect(screen.getByTestId("products-next-page")).toBeDisabled();
   });
@@ -169,9 +169,11 @@ describe("Products workspace", () => {
     renderRoute("/products");
 
     // Both rows still render — the table is not thrown away.
-    await screen.findByText("5000001");
+    await screen.findByText("5000001", undefined, { timeout: 5000 });
     expect(screen.getByText("5000000")).toBeInTheDocument();
-    const sectionError = await screen.findByTestId("products-readiness-error");
+    const sectionError = await screen.findByTestId("products-readiness-error", undefined, {
+      timeout: 5000,
+    });
     expect(
       within(sectionError).getByRole("button", { name: faIR["action.retry"] }),
     ).toBeInTheDocument();

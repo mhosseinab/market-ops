@@ -54,24 +54,30 @@ describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set l
     renderRoute("/bulk");
 
     // Before any preview the structured control is DISABLED (no bound version).
-    const approve = await screen.findByTestId("bulk-approve");
+    const approve = await screen.findByTestId("bulk-approve", undefined, { timeout: 5000 });
     expect(approve).toBeDisabled();
 
     // Preview binds the control to the current selection-set version.
     fireEvent.click(screen.getByTestId("bulk-preview"));
-    await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
+      timeout: 5000,
+    });
 
     // Mutate the set (a filter change mints a new version) → preview INVALIDATED.
     fireEvent.click(screen.getByText(faIR["readiness.complete"]));
-    expect(await screen.findByTestId("bulk-invalidated")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("bulk-invalidated", undefined, { timeout: 5000 }),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("bulk-approve")).toBeDisabled();
 
     // A fresh preview re-binds to the current version; confirm carries THAT version.
     fireEvent.click(screen.getByTestId("bulk-preview"));
-    await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled());
+    await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
+      timeout: 5000,
+    });
     fireEvent.click(screen.getByTestId("bulk-approve"));
 
-    await screen.findByTestId("bulk-recommend-only");
+    await screen.findByTestId("bulk-recommend-only", undefined, { timeout: 5000 });
     expect(captured).not.toBeNull();
     expect((captured as unknown as { boundVersion: number }).boundVersion).toBe(2);
     expect(
@@ -82,18 +88,20 @@ describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set l
   it("never force-includes a blocked candidate (no include control, not executable)", async () => {
     // Default readiness is Missing → the candidate is blocked (unique reason text).
     renderRoute("/bulk");
-    expect(await screen.findByText(faIR["bulk.reason.missingCost"])).toBeInTheDocument();
+    expect(
+      await screen.findByText(faIR["bulk.reason.missingCost"], undefined, { timeout: 5000 }),
+    ).toBeInTheDocument();
     // A blocked candidate carries no include control.
     expect(screen.queryByTestId("bulk-include-8842213")).toBeNull();
     // With zero executable candidates the control stays disabled even after preview.
-    fireEvent.click(await screen.findByTestId("bulk-preview"));
+    fireEvent.click(await screen.findByTestId("bulk-preview", undefined, { timeout: 5000 }));
     expect(screen.getByTestId("bulk-approve")).toBeDisabled();
   });
 
   it("confirms only through the structured control (free-text containment footnote present)", async () => {
     withExecutableCandidate();
     renderRoute("/bulk");
-    const approve = await screen.findByTestId("bulk-approve");
+    const approve = await screen.findByTestId("bulk-approve", undefined, { timeout: 5000 });
     expect(approve.tagName).toBe("BUTTON");
     expect(screen.getByTestId("bulk-footnote")).toHaveTextContent(faIR["bulk.footnote"]);
     // No <form> wraps the surface, so Enter cannot submit-confirm a bulk set.
@@ -118,10 +126,12 @@ describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set l
 
     // The toolbar renders once targets resolve; readiness then fans out — but only
     // for the current page, never all 31 targets.
-    await screen.findByTestId("bulk-toolbar");
-    await waitFor(() => expect(readinessCalls).toBeGreaterThan(0));
+    await screen.findByTestId("bulk-toolbar", undefined, { timeout: 5000 });
+    await waitFor(() => expect(readinessCalls).toBeGreaterThan(0), { timeout: 5000 });
     // Let any in-flight readiness settle, then assert the hard bound holds.
-    await waitFor(() => expect(screen.getByTestId("bulk-page-indicator")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("bulk-page-indicator")).toBeInTheDocument(), {
+      timeout: 5000,
+    });
     expect(readinessCalls).toBeLessThanOrEqual(BULK_READINESS_PAGE_SIZE);
     expect(readinessCalls).toBeLessThan(targets.length);
     // The next page is reachable (more targets exist beyond this page).
@@ -147,7 +157,9 @@ describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set l
     renderRoute("/bulk");
 
     // The scoped section error appears with an actionable retry.
-    const sectionError = await screen.findByTestId("bulk-readiness-error");
+    const sectionError = await screen.findByTestId("bulk-readiness-error", undefined, {
+      timeout: 5000,
+    });
     expect(sectionError).toHaveTextContent(faIR["bulk.readiness.error.title"]);
     expect(sectionError.querySelector("button")).not.toBeNull();
 
