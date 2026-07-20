@@ -271,7 +271,8 @@ export const faIR: Catalog = {
   "products.pagination.next": "بعدی",
   "products.readiness.error.title": "آمادگی حاشیهٔ برخی کالاها بارگذاری نشد",
   "products.readiness.error.body":
-    "بارگذاری آمادگی حاشیه برای {count} کالا در این صفحه ناموفق بود. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
+    "بارگذاری آمادگی حاشیه برای {count} کالا ناموفق بود. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
+  "products.readiness.unknown": "آمادگی در دسترس نیست",
   "products.market.multiple": "{count} آگهی",
   "tier.priority": "اولویت‌دار",
   "tier.standard": "استاندارد",

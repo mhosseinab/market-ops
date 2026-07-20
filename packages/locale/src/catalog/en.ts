@@ -273,7 +273,8 @@ export const en: Catalog = {
   "products.pagination.next": "Next",
   "products.readiness.error.title": "Some margin readiness could not be loaded",
   "products.readiness.error.body":
-    "Readiness for {count} products on this page failed to load. Other rows are shown; retry to load the rest.",
+    "Readiness for {count} products failed to load. Other rows are shown; retry to load the rest.",
+  "products.readiness.unknown": "Readiness unavailable",
   "products.market.multiple": "{count} offers",
   "tier.priority": "Priority",
   "tier.standard": "Standard",

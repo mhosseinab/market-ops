@@ -308,6 +308,7 @@ export const MESSAGE_KEYS = [
   "products.pagination.next",
   "products.readiness.error.title",
   "products.readiness.error.body",
+  "products.readiness.unknown",
   "products.market.multiple",
   "tier.priority",
   "tier.standard",
