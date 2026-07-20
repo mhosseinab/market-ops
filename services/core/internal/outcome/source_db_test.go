@@ -219,6 +219,50 @@ func TestDBSource_ConcurrentChangesGradeConfidence(t *testing.T) {
 	}
 }
 
+// TestDBSource_ConcurrentChangeIntervalBoundaries proves the half-open counting
+// interval [opened_at, closes_at) of CountMaterialConcurrentChanges (issue #107
+// reopen residual, §15.3). A material change first detected EXACTLY at opened_at is
+// counted; one first detected EXACTLY at closes_at is NOT. Each boundary is exercised
+// in isolation so a defect at either edge fails independently (the two edges cancel
+// out in a combined count).
+func TestDBSource_ConcurrentChangeIntervalBoundaries(t *testing.T) {
+	t.Run("opened_at boundary is counted", func(t *testing.T) {
+		pool, q := newPool(t)
+		f := seedWindowCard(t, pool, q)
+		insertEvidence(t, pool, f.actionID, f.account,
+			f.opened.Add(time.Hour), f.closes.Add(-time.Hour), true, true, false, false)
+		// Exactly at opened_at — inside the half-open interval, must be counted.
+		insertMaterialEvent(t, pool, f.account, f.variant, f.opened)
+
+		res, err := outcome.NewDBSource(pool).Evidence(context.Background(), f.actionID)
+		if err != nil {
+			t.Fatalf("Evidence: %v", err)
+		}
+		if res.Inputs.ConcurrentMaterialChanges != 1 {
+			t.Fatalf("concurrent = %d; want 1 (change exactly at opened_at is counted)",
+				res.Inputs.ConcurrentMaterialChanges)
+		}
+	})
+
+	t.Run("closes_at boundary is excluded", func(t *testing.T) {
+		pool, q := newPool(t)
+		f := seedWindowCard(t, pool, q)
+		insertEvidence(t, pool, f.actionID, f.account,
+			f.opened.Add(time.Hour), f.closes.Add(-time.Hour), true, true, false, false)
+		// Exactly at closes_at — the open end of the interval, must NOT be counted.
+		insertMaterialEvent(t, pool, f.account, f.variant, f.closes)
+
+		res, err := outcome.NewDBSource(pool).Evidence(context.Background(), f.actionID)
+		if err != nil {
+			t.Fatalf("Evidence: %v", err)
+		}
+		if res.Inputs.ConcurrentMaterialChanges != 0 {
+			t.Fatalf("concurrent = %d; want 0 (change exactly at closes_at is excluded)",
+				res.Inputs.ConcurrentMaterialChanges)
+		}
+	})
+}
+
 func insertMaterialEvent(t *testing.T, pool *pgxpool.Pool, account, variant uuid.UUID, at time.Time) {
 	t.Helper()
 	_, err := pool.Exec(context.Background(),
