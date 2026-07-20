@@ -51,6 +51,11 @@ services:
       GOWORK: "off"
       GOFLAGS: "-mod=mod"
       MOCKDK_ADDR: ":8090"
+      # Serve a small deterministic seller-variants fixture so the S32 real-core
+      # journey-1 Playwright smoke can drive connect → catalog sync → a GENUINE
+      # Products row (not an empty catalog). Test-only; the default mock catalog
+      # is off (empty-page probe behavior) everywhere else.
+      MOCKDK_CATALOG: "1"
     volumes:
       - ../:/src
     depends_on:
