@@ -17,9 +17,23 @@ import (
 // on (PRD §7.3). *observation.Service satisfies it. It is an interface so the
 // transport can be tested with a fake and httpapi stays free of DB wiring.
 type ObservationService interface {
+	// ListTargets/ListObservedOffers/ListObservations are the credential-scoped
+	// primitives (the account is authoritative, e.g. the extension owned-target read
+	// derives it from the capture credential). The human read handlers NEVER call
+	// them directly — they call the *ForOrg variants, which resolve the account from
+	// the authenticated organization (issue #131) so a caller-supplied account/target
+	// id is a selector, never authorization.
 	ListTargets(ctx context.Context, account uuid.UUID) ([]db.ObservationTarget, error)
 	ListObservedOffers(ctx context.Context, account uuid.UUID) ([]db.ObservedOffer, error)
 	ListObservations(ctx context.Context, target uuid.UUID, limit int32) ([]db.Observation, error)
+	// ListTargetsForOrg/ListObservedOffersForOrg/ListObservationsForOrg back the
+	// human /observation/* read routes (issue #131). Each takes the authenticated
+	// organization id as a MANDATORY first argument and resolves the caller's OWN
+	// marketplace account from it: a foreign account/target resolves to a uniform
+	// not-found (ErrAccountNotFound) or an empty result — never another tenant's rows.
+	ListTargetsForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]db.ObservationTarget, error)
+	ListObservedOffersForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]db.ObservedOffer, error)
+	ListObservationsForOrg(ctx context.Context, organizationID, target uuid.UUID, limit int32) ([]db.Observation, error)
 	Ingest(ctx context.Context, c observation.Capture) (observation.IngestResult, error)
 	// ListConflictedObservedOffersForOrg backs GET /market/conflicts (PD-3 item 8,
 	// S37), scoped to the caller's OWN account (issue #237): it takes the
@@ -36,8 +50,15 @@ func (s *gatewayServer) ListObservationTargets(
 	if s.observation == nil {
 		return gateway.ListObservationTargetsdefaultJSONResponse{StatusCode: 503, Body: observationUnavailableErr()}, nil
 	}
-	rows, err := s.observation.ListTargets(ctx, req.Params.MarketplaceAccountId)
+	// Tenant scoping (issue #131): the account is resolved from the authenticated
+	// organization; the caller-supplied MarketplaceAccountId is a validated selector,
+	// never trusted. A foreign or org-less caller is a uniform 404, never another
+	// tenant's targets.
+	rows, err := s.observation.ListTargetsForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId)
 	if err != nil {
+		if errors.Is(err, observation.ErrAccountNotFound) {
+			return gateway.ListObservationTargetsdefaultJSONResponse{StatusCode: 404, Body: observationNotFoundErr()}, nil
+		}
 		return gateway.ListObservationTargetsdefaultJSONResponse{StatusCode: 500, Body: observationErr(err)}, nil
 	}
 	out := make([]gateway.ObservationTarget, 0, len(rows))
@@ -85,8 +106,14 @@ func (s *gatewayServer) ListObservedOffers(
 	if s.observation == nil {
 		return gateway.ListObservedOffersdefaultJSONResponse{StatusCode: 503, Body: observationUnavailableErr()}, nil
 	}
-	rows, err := s.observation.ListObservedOffers(ctx, req.Params.MarketplaceAccountId)
+	// Tenant scoping (issue #131): the account is resolved from the authenticated
+	// organization; the caller-supplied MarketplaceAccountId is a validated selector.
+	// A foreign or org-less caller is a uniform 404, never another tenant's offers.
+	rows, err := s.observation.ListObservedOffersForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId)
 	if err != nil {
+		if errors.Is(err, observation.ErrAccountNotFound) {
+			return gateway.ListObservedOffersdefaultJSONResponse{StatusCode: 404, Body: observationNotFoundErr()}, nil
+		}
 		return gateway.ListObservedOffersdefaultJSONResponse{StatusCode: 500, Body: observationErr(err)}, nil
 	}
 	out := make([]gateway.ObservedOffer, 0, len(rows))
@@ -107,8 +134,16 @@ func (s *gatewayServer) ListObservations(
 	if req.Params.Limit != nil {
 		limit = int32(*req.Params.Limit)
 	}
-	rows, err := s.observation.ListObservations(ctx, req.Params.TargetId, limit)
+	// Tenant scoping (issue #131): the account is resolved from the authenticated
+	// organization and bounds the evidence read in SQL, so the caller-supplied TargetId
+	// is a selector — a target owned by another organization matches nothing and
+	// returns an empty list (uniform not-found, no existence oracle). An org-less
+	// caller fails closed with a uniform 404.
+	rows, err := s.observation.ListObservationsForOrg(ctx, orgFromCtx(ctx), req.Params.TargetId, limit)
 	if err != nil {
+		if errors.Is(err, observation.ErrAccountNotFound) {
+			return gateway.ListObservationsdefaultJSONResponse{StatusCode: 404, Body: observationNotFoundErr()}, nil
+		}
 		return gateway.ListObservationsdefaultJSONResponse{StatusCode: 500, Body: observationErr(err)}, nil
 	}
 	out := make([]gateway.Observation, 0, len(rows))
@@ -333,4 +368,11 @@ func observationErr(err error) gateway.ErrorEnvelope {
 
 func observationUnavailableErr() gateway.ErrorEnvelope {
 	return gateway.ErrorEnvelope{Code: "OBSERVATION_UNAVAILABLE", Message: "observation service is not configured"}
+}
+
+// observationNotFoundErr is the single fixed not-found envelope for a foreign or
+// org-less caller (issue #131) — the no-oracle response shape shared with the event
+// (issue #67) and notification (issue #113) tenant-scoping seams.
+func observationNotFoundErr() gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "NOT_FOUND", Message: "not found"}
 }

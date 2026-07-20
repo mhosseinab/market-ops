@@ -28,8 +28,13 @@ type DraftService interface {
 }
 
 // BriefingService backs GET /briefing (CHAT-010). *briefing.Service satisfies it.
+// GetForOrg takes the authenticated organization id as a MANDATORY first argument
+// (issue #131): the handler derives it from the session principal — never from the
+// request param — so a foreign marketplaceAccountId resolves to the SAME uniform
+// not-found a genuinely-missing briefing returns (no existence oracle). Notification/
+// briefing feeds are personal data, so cross-tenant disclosure here is a §4.6 breach.
 type BriefingService interface {
-	Get(ctx context.Context, account uuid.UUID, day time.Time) (briefing.Briefing, error)
+	GetForOrg(ctx context.Context, organizationID, account uuid.UUID, day time.Time) (briefing.Briefing, error)
 }
 
 // CreateRecommendationDraft mints the individual-approval Draft for a persisted,
@@ -132,10 +137,15 @@ func (s *gatewayServer) GetBriefing(
 		return gateway.GetBriefingdefaultJSONResponse{StatusCode: 503, Body: briefingUnavailableErr()}, nil
 	}
 	day := req.Params.BusinessDay.Time
-	b, err := s.briefing.Get(ctx, req.Params.MarketplaceAccountId, day)
+	// Tenant scoping (issue #131): the account is resolved from the authenticated
+	// organization; the caller-supplied MarketplaceAccountId is a validated selector.
+	// A foreign or org-less caller yields briefing.ErrAccountNotFound, mapped to the
+	// SAME 404 body a genuinely-missing briefing returns — so a foreign account is
+	// indistinguishable from an own account with no briefing (no existence oracle).
+	b, err := s.briefing.GetForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, day)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return gateway.GetBriefingdefaultJSONResponse{StatusCode: 404, Body: briefingErr(err)}, nil
+		if errors.Is(err, pgx.ErrNoRows) || errors.Is(err, briefing.ErrAccountNotFound) {
+			return gateway.GetBriefingdefaultJSONResponse{StatusCode: 404, Body: briefingNotFoundErr()}, nil
 		}
 		return gateway.GetBriefingdefaultJSONResponse{StatusCode: 500, Body: briefingErr(err)}, nil
 	}
@@ -216,6 +226,14 @@ func draftUnavailableErr() gateway.ErrorEnvelope {
 
 func briefingErr(err error) gateway.ErrorEnvelope {
 	return gateway.ErrorEnvelope{Code: "BRIEFING_ERROR", Message: err.Error()}
+}
+
+// briefingNotFoundErr is the single fixed not-found envelope for a missing briefing
+// OR a foreign/org-less caller (issue #131) — the no-oracle response shape shared with
+// the event (issue #67) and notification (issue #113) tenant-scoping seams. A foreign
+// account is indistinguishable from an own account with no briefing.
+func briefingNotFoundErr() gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "NOT_FOUND", Message: "not found"}
 }
 
 func briefingUnavailableErr() gateway.ErrorEnvelope {

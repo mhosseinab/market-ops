@@ -100,6 +100,20 @@ FROM cost_profiles
 WHERE variant_id = $1 AND effective_from <= $2
 ORDER BY component, effective_from DESC, version DESC;
 
+-- name: CostProfileAtForAccount :many
+-- TENANT-SCOPED point-in-time lookup (issue #131, identity/tenant quarantine §4.6).
+-- Identical to CostProfileAt but the caller's RESOLVED marketplace account (derived
+-- from its authenticated organization, never a request param) bounds the read: a
+-- variant owned by another organization matches NO rows, so a foreign variant is
+-- indistinguishable from one with no cost profile (uniform empty result, no existence
+-- oracle). Reproduces the EXACT in-force version of each component at the instant.
+SELECT DISTINCT ON (component) *
+FROM cost_profiles
+WHERE variant_id = sqlc.arg(variant_id)
+  AND marketplace_account_id = sqlc.arg(account_id)
+  AND effective_from <= sqlc.arg(effective_from)
+ORDER BY component, effective_from DESC, version DESC;
+
 -- name: ListCostProfileVersions :many
 -- Full version history for one (variant, component), newest first — the versioned
 -- cost-profile list the product-detail screen renders.

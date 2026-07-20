@@ -41,13 +41,17 @@ func (f *fakeDraft) PrepareLevel2Proposal(_ context.Context, _ uuid.UUID, actor 
 	return f.proposal, f.err
 }
 
-// fakeBriefing is a BriefingService stub.
+// fakeBriefing is a BriefingService stub. It records the org it was called with
+// (issue #131) so a transport test can assert the handler derives tenant scope from
+// the authenticated principal, never from the request param.
 type fakeBriefing struct {
-	b   briefing.Briefing
-	err error
+	b       briefing.Briefing
+	err     error
+	lastOrg uuid.UUID
 }
 
-func (f *fakeBriefing) Get(context.Context, uuid.UUID, time.Time) (briefing.Briefing, error) {
+func (f *fakeBriefing) GetForOrg(_ context.Context, org, _ uuid.UUID, _ time.Time) (briefing.Briefing, error) {
+	f.lastOrg = org
 	return f.b, f.err
 }
 

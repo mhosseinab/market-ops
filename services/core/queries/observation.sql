@@ -140,6 +140,18 @@ WHERE target_id = $1
 ORDER BY captured_at DESC
 LIMIT $2;
 
+-- name: ListObservationsByTargetForAccount :many
+-- TENANT-SCOPED append-only evidence read (issue #131, identity/tenant quarantine
+-- §4.6). Identical to ListObservationsByTarget but the caller's RESOLVED marketplace
+-- account (derived from its authenticated organization, never a request param) bounds
+-- the read: a target owned by another organization matches NO rows, so a foreign
+-- target is indistinguishable from a target with no evidence (uniform empty result,
+-- no existence oracle). Newest first, bounded by the caller.
+SELECT * FROM observations
+WHERE target_id = $1 AND marketplace_account_id = $2
+ORDER BY captured_at DESC
+LIMIT $3;
+
 -- name: ListUnconsumedObservationsByTarget :many
 -- Durable forward drain for the market-event producer (issue #212). Returns the
 -- target's append-only observations that lie STRICTLY AFTER each stream's durable

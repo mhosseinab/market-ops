@@ -112,6 +112,13 @@ type Querier interface {
 	// component. Reproduces the exact cost profile that produced a historical number,
 	// never the current one.
 	CostProfileAt(ctx context.Context, arg CostProfileAtParams) ([]CostProfile, error)
+	// TENANT-SCOPED point-in-time lookup (issue #131, identity/tenant quarantine §4.6).
+	// Identical to CostProfileAt but the caller's RESOLVED marketplace account (derived
+	// from its authenticated organization, never a request param) bounds the read: a
+	// variant owned by another organization matches NO rows, so a foreign variant is
+	// indistinguishable from one with no cost profile (uniform empty result, no existence
+	// oracle). Reproduces the EXACT in-force version of each component at the instant.
+	CostProfileAtForAccount(ctx context.Context, arg CostProfileAtForAccountParams) ([]CostProfile, error)
 	// Test/introspection helper: how many ACTIVE targets an identity still owns.
 	CountActiveTargetsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error)
 	CountAnalyticsEventsByFamily(ctx context.Context, arg CountAnalyticsEventsByFamilyParams) (int64, error)
@@ -709,6 +716,13 @@ type Querier interface {
 	ListObservationTargets(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservationTarget, error)
 	// Append-only evidence, newest first (bounded by the caller).
 	ListObservationsByTarget(ctx context.Context, arg ListObservationsByTargetParams) ([]Observation, error)
+	// TENANT-SCOPED append-only evidence read (issue #131, identity/tenant quarantine
+	// §4.6). Identical to ListObservationsByTarget but the caller's RESOLVED marketplace
+	// account (derived from its authenticated organization, never a request param) bounds
+	// the read: a target owned by another organization matches NO rows, so a foreign
+	// target is indistinguishable from a target with no evidence (uniform empty result,
+	// no existence oracle). Newest first, bounded by the caller.
+	ListObservationsByTargetForAccount(ctx context.Context, arg ListObservationsByTargetForAccountParams) ([]Observation, error)
 	ListObservedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ObservedOffer, error)
 	// Today feed source (EVT-004): every open|updated event for the account. Ordering
 	// here is stable but NOT the ranking — the domain computes the deterministic

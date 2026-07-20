@@ -16,13 +16,21 @@ import (
 // gateway depends on (PRD §7.2 CST-001..003). *cost.Service satisfies it. It is
 // an interface so the transport can be tested with a fake and httpapi stays free
 // of DB wiring.
+//
+// The three READ methods take the authenticated organization id as a MANDATORY
+// first argument (issue #131). The handlers derive it from the session principal —
+// never from request input — so possession of a variant or batch UUID cannot grant
+// cross-organization access: a foreign variant/batch resolves to the SAME uniform
+// not-found a genuinely-unknown one returns (no existence oracle). The write methods
+// (PreviewImport/CommitImport/EnterSingleCost) already assert the variant's owning
+// account inside their write transaction (#37).
 type CostService interface {
 	PreviewImport(ctx context.Context, in cost.PreviewInput) (cost.Preview, error)
-	GetPreview(ctx context.Context, batchID uuid.UUID) (cost.Preview, error)
+	GetPreviewForOrg(ctx context.Context, organizationID, batchID uuid.UUID) (cost.Preview, error)
 	CommitImport(ctx context.Context, batchID, createdBy uuid.UUID) (cost.CommitResult, error)
 	EnterSingleCost(ctx context.Context, in cost.SingleCostInput) (db.CostProfile, error)
-	CostProfileAt(ctx context.Context, variant uuid.UUID, at time.Time) ([]db.CostProfile, error)
-	GetReadiness(ctx context.Context, variant uuid.UUID) (db.MarginReadiness, error)
+	CostProfileAtForOrg(ctx context.Context, organizationID, variant uuid.UUID, at time.Time) ([]db.CostProfile, error)
+	GetReadinessForOrg(ctx context.Context, organizationID, variant uuid.UUID) (db.MarginReadiness, error)
 }
 
 // PreviewCostImport builds a CSV import preview (CST-001). No cost value commits.
@@ -58,7 +66,10 @@ func (s *gatewayServer) GetCostImportPreview(
 	if s.cost == nil {
 		return gateway.GetCostImportPreviewdefaultJSONResponse{StatusCode: 503, Body: costUnavailableErr()}, nil
 	}
-	preview, err := s.cost.GetPreview(ctx, req.Params.BatchId)
+	// Tenant scoping (issue #131): the batch is loaded only under the caller's OWN
+	// account (resolved from the authenticated organization). A foreign batch id is
+	// reported as the SAME BATCH_NOT_FOUND an unknown one returns (no existence oracle).
+	preview, err := s.cost.GetPreviewForOrg(ctx, orgFromCtx(ctx), req.Params.BatchId)
 	if err != nil {
 		return gateway.GetCostImportPreviewdefaultJSONResponse{StatusCode: costStatus(err), Body: costErr(err)}, nil
 	}
@@ -134,7 +145,10 @@ func (s *gatewayServer) ListCostProfiles(
 	if req.Params.AsOf != nil {
 		at = *req.Params.AsOf
 	}
-	rows, err := s.cost.CostProfileAt(ctx, req.Params.VariantId, at)
+	// Tenant scoping (issue #131): the lookup is bounded by the caller's OWN account
+	// (resolved from the authenticated organization). A foreign variant matches nothing
+	// and returns an empty list — indistinguishable from a variant with no cost profile.
+	rows, err := s.cost.CostProfileAtForOrg(ctx, orgFromCtx(ctx), req.Params.VariantId, at)
 	if err != nil {
 		return gateway.ListCostProfilesdefaultJSONResponse{StatusCode: costStatus(err), Body: costErr(err)}, nil
 	}
@@ -152,7 +166,11 @@ func (s *gatewayServer) GetMarginReadiness(
 	if s.cost == nil {
 		return gateway.GetMarginReadinessdefaultJSONResponse{StatusCode: 503, Body: costUnavailableErr()}, nil
 	}
-	row, err := s.cost.GetReadiness(ctx, req.Params.VariantId)
+	// Tenant scoping (issue #131): readiness is served only for a variant the caller's
+	// OWN account (resolved from the authenticated organization) owns. A foreign variant
+	// is reported as the SAME VARIANT_NOT_FOUND an unknown one returns (no existence
+	// oracle).
+	row, err := s.cost.GetReadinessForOrg(ctx, orgFromCtx(ctx), req.Params.VariantId)
 	if err != nil {
 		return gateway.GetMarginReadinessdefaultJSONResponse{StatusCode: costStatus(err), Body: costErr(err)}, nil
 	}
@@ -296,7 +314,11 @@ func principalID(ctx context.Context) uuid.UUID {
 
 func costStatus(err error) int {
 	switch {
-	case errors.Is(err, cost.ErrBatchNotFound), errors.Is(err, cost.ErrVariantNotFound):
+	case errors.Is(err, cost.ErrBatchNotFound), errors.Is(err, cost.ErrVariantNotFound),
+		errors.Is(err, cost.ErrAccountNotFound):
+		// Tenant boundary / not-found (issue #131 + CST): a foreign variant/batch is
+		// reported identically to a genuinely-unknown one (no existence oracle), and an
+		// org-less caller fails closed as not-found.
 		return 404
 	case errors.Is(err, cost.ErrAccountVariantMismatch):
 		// Tenant boundary breach: the supplied account does not own the variant.
@@ -317,6 +339,9 @@ func costStatus(err error) int {
 func costErr(err error) gateway.ErrorEnvelope {
 	code := "COST_ERROR"
 	switch {
+	case errors.Is(err, cost.ErrAccountNotFound):
+		// Org-less caller (issue #131): a fixed not-found, no tenant disclosure.
+		code = "NOT_FOUND"
 	case errors.Is(err, cost.ErrBatchNotFound):
 		code = "BATCH_NOT_FOUND"
 	case errors.Is(err, cost.ErrVariantNotFound):

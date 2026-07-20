@@ -72,6 +72,18 @@ type fakeObservation struct {
 	// transport test can drive the tenant-scoping (issue #237) not-found mapping
 	// without a database.
 	conflictErr error
+
+	// Tenant-scoped read fixtures (issue #131): the *ForOrg methods record the org they
+	// were called with and return the configured rows/scopeErr, so a transport test can
+	// assert the handler derives scope from the authenticated principal and maps the
+	// uniform not-found without a database.
+	targets      []db.ObservationTarget
+	offers       []db.ObservedOffer
+	observations []db.Observation
+	scopeErr     error
+	lastOrg      uuid.UUID
+	lastAccount  uuid.UUID
+	lastTarget   uuid.UUID
 }
 
 func (f *fakeObservation) ListTargets(context.Context, uuid.UUID) ([]db.ObservationTarget, error) {
@@ -82,6 +94,18 @@ func (f *fakeObservation) ListObservedOffers(context.Context, uuid.UUID) ([]db.O
 }
 func (f *fakeObservation) ListObservations(context.Context, uuid.UUID, int32) ([]db.Observation, error) {
 	return nil, nil
+}
+func (f *fakeObservation) ListTargetsForOrg(_ context.Context, org, account uuid.UUID) ([]db.ObservationTarget, error) {
+	f.lastOrg, f.lastAccount = org, account
+	return f.targets, f.scopeErr
+}
+func (f *fakeObservation) ListObservedOffersForOrg(_ context.Context, org, account uuid.UUID) ([]db.ObservedOffer, error) {
+	f.lastOrg, f.lastAccount = org, account
+	return f.offers, f.scopeErr
+}
+func (f *fakeObservation) ListObservationsForOrg(_ context.Context, org, target uuid.UUID, _ int32) ([]db.Observation, error) {
+	f.lastOrg, f.lastTarget = org, target
+	return f.observations, f.scopeErr
 }
 func (f *fakeObservation) Ingest(_ context.Context, c observation.Capture) (observation.IngestResult, error) {
 	f.ingested = append(f.ingested, c)
