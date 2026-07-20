@@ -12,15 +12,9 @@ import (
 )
 
 const countWatchlistEntries = `-- name: CountWatchlistEntries :one
-
 SELECT count(*) FROM watchlist_entries WHERE marketplace_account_id = $1
 `
 
-// EXT-007 priority watchlist (S37). Add is idempotent (ON CONFLICT DO NOTHING —
-// a duplicate variant returns no new row, never a second entry and never an
-// error); the cap is enforced in Go (internal/watchlist) BEFORE the insert, from
-// CountWatchlistEntries, so the insert itself never needs to race a check
-// constraint.
 func (q *Queries) CountWatchlistEntries(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countWatchlistEntries, marketplaceAccountID)
 	var count int64
@@ -106,4 +100,26 @@ func (q *Queries) ListWatchlistEntries(ctx context.Context, marketplaceAccountID
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockWatchlistAccount = `-- name: LockWatchlistAccount :exec
+
+SELECT pg_advisory_xact_lock(hashtextextended(($1::uuid)::text, 0))
+`
+
+// EXT-007 priority watchlist (S37). Add is idempotent (ON CONFLICT DO NOTHING —
+// a duplicate variant returns no new row, never a second entry and never an
+// error). The cap (MaxEntries) is enforced in Go (internal/watchlist) by counting
+// INSIDE the insert transaction, after acquiring an account-scoped transaction
+// advisory lock (LockWatchlistAccount), so concurrent Add()s for the same account
+// serialize and the count+insert is atomic (issue #136 — the cap check no longer
+// races the insert across distinct variants).
+// Account-scoped transaction advisory lock: serializes concurrent Add()s for the
+// SAME account so the cap check and insert are atomic (issue #136). The lock is
+// released automatically at COMMIT/ROLLBACK. The key is a stable 64-bit hash of
+// the account UUID, so DIFFERENT accounts hash to different keys and never
+// serialize against each other (no global lock).
+func (q *Queries) LockWatchlistAccount(ctx context.Context, marketplaceAccountID uuid.UUID) error {
+	_, err := q.db.Exec(ctx, lockWatchlistAccount, marketplaceAccountID)
+	return err
 }

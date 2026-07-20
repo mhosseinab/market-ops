@@ -129,11 +129,6 @@ type Querier interface {
 	CountSelectionSetMembers(ctx context.Context, selectionSetID uuid.UUID) (int64, error)
 	CountUnreadNotifications(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountVariants(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
-	// EXT-007 priority watchlist (S37). Add is idempotent (ON CONFLICT DO NOTHING —
-	// a duplicate variant returns no new row, never a second entry and never an
-	// error); the cap is enforced in Go (internal/watchlist) BEFORE the insert, from
-	// CountWatchlistEntries, so the insert itself never needs to race a check
-	// constraint.
 	CountWatchlistEntries(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	// Idempotent in-flight claim (issue #76, PRD §9.1 never-cut). ON CONFLICT DO NOTHING
 	// against uq_catalog_sync_runs_inflight (the partial unique index on
@@ -772,6 +767,19 @@ type Querier interface {
 	// — whichever transaction acquires the lock first fully serializes the other.
 	// Released automatically at transaction end (commit or rollback).
 	LockApprovalLineage(ctx context.Context, lineageID uuid.UUID) error
+	// EXT-007 priority watchlist (S37). Add is idempotent (ON CONFLICT DO NOTHING —
+	// a duplicate variant returns no new row, never a second entry and never an
+	// error). The cap (MaxEntries) is enforced in Go (internal/watchlist) by counting
+	// INSIDE the insert transaction, after acquiring an account-scoped transaction
+	// advisory lock (LockWatchlistAccount), so concurrent Add()s for the same account
+	// serialize and the count+insert is atomic (issue #136 — the cap check no longer
+	// races the insert across distinct variants).
+	// Account-scoped transaction advisory lock: serializes concurrent Add()s for the
+	// SAME account so the cap check and insert are atomic (issue #136). The lock is
+	// released automatically at COMMIT/ROLLBACK. The key is a stable 64-bit hash of
+	// the account UUID, so DIFFERENT accounts hash to different keys and never
+	// serialize against each other (no global lock).
+	LockWatchlistAccount(ctx context.Context, marketplaceAccountID uuid.UUID) error
 	// Commit a preview batch. The WHERE clause is a guard: only a batch that is still
 	// in 'preview' AND carries NO unresolved duplicate conflict (§16) may be
 	// committed. A batch that is already committed/cancelled, or that still has

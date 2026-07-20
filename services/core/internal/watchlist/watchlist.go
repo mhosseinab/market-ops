@@ -63,7 +63,27 @@ func (s *Service) Add(ctx context.Context, account, variant uuid.UUID, actor aud
 		return db.WatchlistEntry{}, err
 	}
 
-	if existing, err := q.GetWatchlistEntry(ctx, db.GetWatchlistEntryParams{
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return db.WatchlistEntry{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	txq := db.New(tx)
+
+	// Serialize concurrent Add()s for the SAME account so the cap check and the
+	// insert are atomic (issue #136 TOCTOU): without this, two adds for DISTINCT
+	// variants could both observe count < MaxEntries and both insert, transiently
+	// exceeding the cap. The account-scoped transaction advisory lock is released
+	// automatically at COMMIT/ROLLBACK; different accounts hash to different keys
+	// and never serialize against each other.
+	if err := txq.LockWatchlistAccount(ctx, account); err != nil {
+		return db.WatchlistEntry{}, err
+	}
+
+	// Under the lock: an already-present variant is idempotent (no cap check, no
+	// duplicate audit). Checked INSIDE the tx so a concurrent add of the same
+	// variant can never make us wrongly cap-reject an entry that now exists.
+	if existing, err := txq.GetWatchlistEntry(ctx, db.GetWatchlistEntryParams{
 		MarketplaceAccountID: account,
 		VariantID:            variant,
 	}); err == nil {
@@ -72,20 +92,15 @@ func (s *Service) Add(ctx context.Context, account, variant uuid.UUID, actor aud
 		return db.WatchlistEntry{}, err
 	}
 
-	count, err := q.CountWatchlistEntries(ctx, account)
+	// Cap enforced INSIDE the tx, under the account lock, so the count reflects
+	// every committed add and cannot be out-raced before our insert commits.
+	count, err := txq.CountWatchlistEntries(ctx, account)
 	if err != nil {
 		return db.WatchlistEntry{}, err
 	}
 	if count >= MaxEntries {
 		return db.WatchlistEntry{}, ErrCapExceeded
 	}
-
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return db.WatchlistEntry{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-	txq := db.New(tx)
 
 	entry, err := txq.InsertWatchlistEntry(ctx, db.InsertWatchlistEntryParams{
 		MarketplaceAccountID: account,
