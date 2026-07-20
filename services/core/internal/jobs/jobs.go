@@ -160,11 +160,14 @@ func periodicJobs() []*river.PeriodicJob {
 			func() (river.JobArgs, *river.InsertOpts) { return BriefingGenerateArgs{}, nil },
 			&river.PeriodicJobOpts{RunOnStart: true},
 		),
-		// Daily email digest (NOT-001). Runs hourly with RunOnStart; sending is
-		// idempotent per business day (unique account+business_day), so the first
-		// run each UTC day sends the digest and later runs are no-ops — "once per
-		// business day per account" without depending on a precise wake time.
-		// Execution/safety failures bypass this job (delivered immediately).
+		// Daily email digest (NOT-001). Runs hourly with RunOnStart; each pass
+		// finalizes the most recently CLOSED business day (issue #114 — never the
+		// current, still-open day, whose later notifications would otherwise be
+		// stranded). Sending is idempotent per business day (unique
+		// account+business_day), so the first pass on/after a day's boundary sends
+		// that day's digest and later passes are no-ops — "once per business day per
+		// account" without depending on a precise wake time. Execution/safety
+		// failures bypass this job (delivered immediately).
 		river.NewPeriodicJob(
 			river.PeriodicInterval(time.Hour),
 			func() (river.JobArgs, *river.InsertOpts) { return DigestGenerateArgs{}, nil },

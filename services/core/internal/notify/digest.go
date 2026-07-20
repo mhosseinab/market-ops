@@ -139,21 +139,32 @@ func (s *DigestService) WithLogger(l *slog.Logger) *DigestService {
 	return s
 }
 
-// BusinessDay is the current UTC calendar date the digest covers (locale-neutral
-// storage; Jalali is a display calendar over UTC, LOC-001).
-func (s *DigestService) BusinessDay() time.Time {
+// FinalizedBusinessDay is the most recently CLOSED UTC business day — the calendar
+// day BEFORE the current UTC day (locale-neutral storage; Jalali is a display
+// calendar over UTC, LOC-001). The digest finalizes a day only after its window has
+// closed (issue #114): finalizing the current, still-OPEN day would strand every
+// notification that arrives later the same day (the unique account/business_day
+// header turns each later pass into a no-op). Because this day is always in the
+// past, its window [day, day+24h) is complete, so the digest covers ALL of the day's
+// eligible notifications exactly once.
+func (s *DigestService) FinalizedBusinessDay() time.Time {
 	n := s.now().UTC()
-	return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC)
+	today := time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, time.UTC)
+	return today.Add(-24 * time.Hour)
 }
 
-// GenerateForAccount composes and sends the digest for one account for the current
-// business day. It gathers the day's NON-bypass notifications (execution/safety
-// failures bypassed the digest and were delivered immediately), renders from the
-// account-locale pack, sends, and records the digest + its membership snapshot in
-// ONE transaction. It is idempotent: on a same-day conflict it sends nothing and
-// reports sent=false. An empty day (no eligible notifications) is a no-op.
+// GenerateForAccount composes and sends the digest for one account for the most
+// recently CLOSED business day (issue #114 — never finalize the current, still-open
+// day). It gathers that day's NON-bypass notifications over its FULL, now-complete
+// window [day, day+24h) (execution/safety failures bypassed the digest and were
+// delivered immediately), renders from the account-locale pack, sends, and records
+// the digest + its membership snapshot in ONE transaction. It is idempotent: the
+// account/business_day header is the idempotency anchor, so a retry for an
+// already-finalized day sends nothing and reports sent=false; the covered window is
+// deterministically [business_day, business_day+24h), so the retry re-covers the
+// SAME window (no duplicate send, no lost item). An empty day is a no-op.
 func (s *DigestService) GenerateForAccount(ctx context.Context, account uuid.UUID) (sent bool, err error) {
-	day := s.BusinessDay()
+	day := s.FinalizedBusinessDay()
 	start := day
 	end := day.Add(24 * time.Hour)
 
@@ -167,7 +178,7 @@ func (s *DigestService) GenerateForAccount(ctx context.Context, account uuid.UUI
 		return false, err
 	}
 	if len(rows) == 0 {
-		return false, nil // nothing to batch today
+		return false, nil // the closed day had nothing to batch
 	}
 
 	target, err := s.resolver.Resolve(ctx, account)
@@ -220,7 +231,7 @@ func (s *DigestService) GenerateForAccount(ctx context.Context, account uuid.UUI
 		ItemCount:            int32(len(items)),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil // same-day conflict: already sent (idempotent no-op)
+		return false, nil // business-day conflict: already finalized (idempotent no-op)
 	}
 	if err != nil {
 		return false, err
@@ -252,9 +263,10 @@ func (s *DigestService) GenerateForAccount(ctx context.Context, account uuid.UUI
 	return true, nil
 }
 
-// GenerateAll sends the current-business-day digest for every account (the River
-// job fan-out). It returns the number of digests SENT (idempotent same-day re-runs
-// and empty days send zero). One account's delivery failure is ISOLATED (issue
+// GenerateAll sends the most-recently-closed business day's digest for every account
+// (the River job fan-out). It returns the number of digests SENT (idempotent re-runs
+// for an already-finalized day and empty days send zero). One account's delivery
+// failure is ISOLATED (issue
 // #124): it is contained to that account so every OTHER account still delivers, and
 // the pass returns an aggregate error so the River job retries the failed account(s)
 // — never silently skipping them, never aborting the healthy accounts.
