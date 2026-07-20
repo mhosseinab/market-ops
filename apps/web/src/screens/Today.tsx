@@ -45,7 +45,12 @@ export function Today() {
   const feedQuery = useTodayFeed();
   const items = feedQuery.data?.items ?? [];
   const blockers = collectBlockers(items);
-  const knownExposure = items.filter((i) => i.event.factors.exposure.known).length;
+  // COUNT of events whose exposure amount is known — NOT a monetary aggregate.
+  // Summing Money client-side across possibly-mixed currencies/exponents is
+  // unsafe (§4.6 money correctness), so this stat stays an honest count and is
+  // labeled/announced as such. Unknown-exposure events are simply excluded here;
+  // they are never treated as zero money.
+  const knownExposureCount = items.filter((i) => i.event.factors.exposure.known).length;
   const blockedCount = items.filter(
     (i) => blockerCategory(i.event.evidenceQuality as QualityState) !== null,
   ).length;
@@ -72,9 +77,12 @@ export function Today() {
                 accent="risk"
               />
               <StatCard
-                value={formatCount(knownExposure, locale)}
-                labelKey="today.stat.marginAtRisk"
-                accent="warn"
+                value={formatCount(knownExposureCount, locale)}
+                labelKey="today.stat.knownExposureEvents"
+                ariaLabel={t("today.stat.knownExposureEvents.aria", {
+                  count: formatCount(knownExposureCount, locale),
+                })}
+                accent="info"
               />
             </div>
 

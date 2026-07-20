@@ -426,7 +426,8 @@ export const faIR: Catalog = {
 
   // ── S27 screens ───────────────────────────────────────────────────────────
   "today.stat.highPriority": "رویدادهای پراولویت",
-  "today.stat.marginAtRisk": "حاشیه در معرض خطر",
+  "today.stat.knownExposureEvents": "رویدادهای با مواجههٔ مشخص",
+  "today.stat.knownExposureEvents.aria": "{count} رویداد با مواجههٔ مشخص",
   "today.stat.yesterdayActions": "اقدام‌های دیروز",
   "today.readiness.title": "مواردی پیش از تصمیم‌گیری نیازمند رفع‌اند",
   "today.readiness.count": "{count} مورد نیازمند رفع",

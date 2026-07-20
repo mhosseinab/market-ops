@@ -449,7 +449,8 @@ export const MESSAGE_KEYS = [
   // ── S27 screens: Today, event detail, recommendation + approval ───────────
   // Today
   "today.stat.highPriority",
-  "today.stat.marginAtRisk",
+  "today.stat.knownExposureEvents",
+  "today.stat.knownExposureEvents.aria",
   "today.stat.yesterdayActions",
   "today.readiness.title",
   "today.readiness.count",
