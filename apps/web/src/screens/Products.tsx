@@ -2,6 +2,7 @@ import type { MessageKey } from "@market-ops/locale";
 import { normalizeDigits } from "@market-ops/locale";
 import { useQueries } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
+import { reportCatalogTruncation } from "../app/catalogTruncationTelemetry";
 import { useLocale, useT } from "../app/i18n";
 import { gateway } from "../app/query";
 import { AppLink } from "../components/AppLink";
@@ -35,8 +36,12 @@ const READINESS_FILTERS: readonly { id: MarginReadinessState; labelKey: MessageK
 // readiness endpoint), always through a DOCUMENTED bound:
 //   - no readiness filter → only the current display page (≤ PAGE_SIZE requests);
 //   - readiness filter active → the whole search-filtered candidate set so the
-//     filter is applied BEFORE pagination — bounded by the §4.5 target ceiling
-//     (CATALOG_PAGE_LIMIT = 200), never an unbounded whole-catalog-per-page crawl.
+//     filter is applied BEFORE pagination. That set is the accumulated bounded walk,
+//     whose worst case is CATALOG_PAGE_LIMIT × CATALOG_MAX_PAGES = 200 × 4 = 800 rows
+//     (the §4.5 target ceiling is 200, so production returns the whole catalog in the
+//     first page; the 4× is defensive headroom). It is never an unbounded
+//     whole-catalog-per-page crawl. Beyond the cap the set is TRUNCATED and fails
+//     closed (see `catalogTruncated`), never silently presented as complete.
 // A failed or not-yet-loaded readiness value is DEGRADED/unknown — it is never
 // treated as a definitive mismatch and so is never silently filtered out.
 interface Row {
@@ -146,6 +151,18 @@ export function Products() {
       void fetchNextPage();
     }
   }, [hasNextPage, isFetching, pagesFetched, fetchNextPage]);
+
+  // FAIL CLOSED at the cap boundary (issue #256): the walk stopped at CATALOG_MAX_PAGES
+  // while the server STILL reports another page. The accumulated set is therefore an
+  // INCOMPLETE, non-authoritative slice — count/pageCount below describe only what
+  // loaded, never the full catalog. This is a distinct STATE_MATRIX state, never a
+  // silent table, and it is emitted once (per transition) so the cap hit is observable.
+  const catalogTruncated = hasNextPage === true && pagesFetched >= CATALOG_MAX_PAGES;
+  useEffect(() => {
+    if (catalogTruncated) {
+      reportCatalogTruncation({ pagesFetched, pageCap: CATALOG_MAX_PAGES });
+    }
+  }, [catalogTruncated, pagesFetched]);
 
   // Search matches the LTR native identifiers across the WHOLE fetched set (the
   // authoritative candidate set), not one server page. No server-side search param
@@ -299,7 +316,9 @@ export function Products() {
       />
 
       <p className="muted">
-        {t("products.count", { count: formatCount(authoritative.length, locale) })}
+        {catalogTruncated
+          ? t("products.truncated.count", { count: formatCount(authoritative.length, locale) })
+          : t("products.count", { count: formatCount(authoritative.length, locale) })}
       </p>
 
       <ViewState
@@ -308,6 +327,13 @@ export function Products() {
         isEmpty={products.length === 0}
         onRetry={() => void productsQuery.refetch()}
       >
+        {catalogTruncated ? (
+          <div className="view-error" role="alert" data-testid="products-truncated">
+            <p className="view-error__title">{t("products.truncated.title")}</p>
+            <p className="view-error__body">{t("products.truncated.body")}</p>
+          </div>
+        ) : null}
+
         {failedReadiness.length > 0 ? (
           <div className="view-error" role="alert" data-testid="products-readiness-error">
             <p className="view-error__title">{t("products.readiness.error.title")}</p>

@@ -80,9 +80,13 @@ export function useConnectorStatus() {
 // max page size (200) returns the whole catalog in a SINGLE page in production.
 // CATALOG_MAX_PAGES is defensive headroom that bounds the page walk if the server
 // ever returns smaller pages — the walk is therefore explicitly bounded, never an
-// unbounded whole-catalog crawl. Having the FULL search-filtered set client-side
-// is what lets the Products screen apply the readiness filter BEFORE pagination
-// and bind count/pageCount to the complete filtered set (issue #256).
+// unbounded whole-catalog crawl. The accumulated worst case is thus
+// CATALOG_PAGE_LIMIT × CATALOG_MAX_PAGES = 200 × 4 = 800 rows (4× the 200 ceiling of
+// headroom). If the server still has pages AT the cap, the accumulated set is
+// INCOMPLETE and the Products screen fails closed (a distinct truncated state), never
+// binding count/pageCount to a partial slice as if it were complete. Having the FULL
+// search-filtered set client-side is what lets the screen apply the readiness filter
+// BEFORE pagination and bind count/pageCount to the complete filtered set (issue #256).
 export const CATALOG_PAGE_LIMIT = 200;
 export const CATALOG_MAX_PAGES = 4;
 

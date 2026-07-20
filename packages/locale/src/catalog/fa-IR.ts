@@ -273,6 +273,10 @@ export const faIR: Catalog = {
   "products.readiness.error.body":
     "بارگذاری آمادگی حاشیه برای {count} کالا ناموفق بود. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
   "products.readiness.unknown": "آمادگی در دسترس نیست",
+  "products.truncated.title": "فهرست کالاها بزرگ‌تر از حد بارگذاری کامل است",
+  "products.truncated.body":
+    "این فهرست در یک حد ایمنی متوقف شد و همهٔ کالاها را دربر نمی‌گیرد. تعداد و صفحه‌های زیر فقط بخش بارگذاری‌شده را نشان می‌دهند، نه کل فهرست کالاها. برای محدودکردن نما از جست‌وجو یا صافی استفاده کنید.",
+  "products.truncated.count": "نمایش {count} کالا از یک مجموعهٔ ناقص",
   "products.market.multiple": "{count} آگهی",
   "tier.priority": "اولویت‌دار",
   "tier.standard": "استاندارد",

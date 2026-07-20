@@ -1,7 +1,11 @@
 import { faIR } from "@market-ops/locale";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  resetCatalogTruncationSink,
+  setCatalogTruncationSink,
+} from "../app/catalogTruncationTelemetry";
 import type { CatalogProductRow, ObservedOffer } from "../data/types";
 import { catalogProductRow, offer, readinessMissing } from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
@@ -11,6 +15,7 @@ import { renderRoute } from "../test/renderRoute";
 afterEach(() => {
   document.documentElement.removeAttribute("dir");
   document.documentElement.removeAttribute("lang");
+  resetCatalogTruncationSink();
 });
 
 /** N canonical product rows with distinct ids and native identifiers. */
@@ -209,6 +214,37 @@ describe("Products workspace", () => {
     // one request per candidate — never whole-catalog-per-page fan-out.
     expect(readinessCalls).toBeLessThanOrEqual(200);
     expect(readinessCalls).toBe(120);
+  }, 20000);
+
+  it("FAILS CLOSED when the bounded walk hits the page cap while the server still has pages", async () => {
+    // 200 products served in 40-row pages → 5 pages, but the walk is bounded to
+    // CATALOG_MAX_PAGES = 4. Page 4 lands 160 rows while the server still reports a
+    // next cursor: the loaded set is an INCOMPLETE, non-authoritative slice and must
+    // NOT be presented as the complete catalog (issue #256, cap-boundary regression).
+    const rows = makeRows(200);
+    installPaginatedCatalog(rows, 40);
+    installReadiness();
+    const sink = vi.fn();
+    setCatalogTruncationSink(sink);
+
+    renderRoute("/products");
+
+    // A distinct truncated/degraded state renders (STATE_MATRIX), not a silent table.
+    const banner = await screen.findByTestId("products-truncated", undefined, { timeout: 10000 });
+    expect(within(banner).getByText(faIR["products.truncated.title"])).toBeInTheDocument();
+    expect(within(banner).getByText(faIR["products.truncated.body"])).toBeInTheDocument();
+
+    // The count is NOT presented as authoritative: the plain "160 products" count is
+    // absent; the annotated, explicitly-incomplete count is shown instead.
+    expect(screen.queryByText(faIR["products.count"].replace("{count}", "۱۶۰"))).toBeNull();
+    expect(
+      screen.getByText(faIR["products.truncated.count"].replace("{count}", "۱۶۰")),
+    ).toBeInTheDocument();
+
+    // The cap hit is observable (bounded, no PII: only counts).
+    await waitFor(() => expect(sink).toHaveBeenCalled(), { timeout: 10000 });
+    const report = sink.mock.calls[0]?.[0];
+    expect(report).toMatchObject({ pagesFetched: 4, pageCap: 4 });
   }, 20000);
 
   it("bounds readiness fan-out to the visible page when no readiness filter is active", async () => {

@@ -275,6 +275,10 @@ export const en: Catalog = {
   "products.readiness.error.body":
     "Readiness for {count} products failed to load. Other rows are shown; retry to load the rest.",
   "products.readiness.unknown": "Readiness unavailable",
+  "products.truncated.title": "Catalog too large to load completely",
+  "products.truncated.body":
+    "This list stopped at a safety limit and does not include every product. The count and pages below describe only the loaded part, not your full catalog. Use search or a filter to narrow the view.",
+  "products.truncated.count": "Showing {count} products from an incomplete set",
   "products.market.multiple": "{count} offers",
   "tier.priority": "Priority",
   "tier.standard": "Standard",
