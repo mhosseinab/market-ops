@@ -153,10 +153,13 @@ tasks:
 
   obs:validate:
     desc: >-
-      Validate the §18 dashboards + §20.1 alert rules offline: every PromQL parses,
-      every referenced series is one the instrumentation actually emits, and every
-      runbook names an existing Operations queue + alert. Runs without the compose
-      stack; the live non-empty-panel check is tools/obs/check_panels.sh (needs dev).
+      Validate the §18 dashboards + §20.1 alert rules offline, FAIL-CLOSED (issue
+      #156): every dashboard + alert-rule PromQL is parsed with the REQUIRED
+      promql_parser (a missing validator fails the gate, never skips), every
+      referenced series is in the single authoritative inventory
+      (deploy/obs/metrics_inventory.json), and every runbook names an existing
+      Operations queue + alert. Needs promql-parser + PyYAML installed (pinned in
+      CI). The live non-empty-panel check is tools/obs/check_panels.sh (needs dev).
     silent: true
     cmds:
       # Fail if the committed dashboards drift from their generator source.
@@ -180,6 +183,14 @@ tasks:
             sys.exit(1)
         PY
       - python3 deploy/grafana/validate_dashboards.py
+      # Fail-closed negative fixtures for the gate itself (issue #156): missing
+      # validator dep → fail, invalid PromQL in a dashboard AND an alert → fail,
+      # a typo in each metric family → fail, odd-prefix selector still discovered.
+      - python3 deploy/grafana/validate_dashboards_test.py
+      # Drift guard: the SINGLE metric inventory (deploy/obs/metrics_inventory.json)
+      # mirrors the Go instrument constructors — adding/removing an instrument must
+      # update the one inventory, not a second handwritten list (issue #156).
+      - python3 deploy/obs/inventory_drift_test.py
       # §20.1 connector-sync trip wire: prove ConnectorSyncFailureStreak expresses
       # TRUE consecutive-streak semantics (issue #146), not a rolling-window count.
       # promtool is not wired here, so this is a self-contained deterministic gate.

@@ -308,10 +308,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      # Deep PromQL parse is best-effort; the drift + series + runbook checks are
-      # stdlib-only, so the gate holds even if the optional parser is unavailable.
-      - name: install optional validators
-        run: pip install promql-parser pyyaml || true
+      # The PromQL parser and the alert-rule YAML parser are REQUIRED validators,
+      # not optional (issue #156): the gate parses every dashboard/alert expression
+      # for real and FAILS CLOSED if a validator is unavailable. Pinned exact
+      # versions; NO `|| true` — an install failure fails the job so a broken gate
+      # can never merge behind green.
+      - name: install required validators
+        run: pip install "promql-parser==0.10.0" "PyYAML==6.0.3"
       # §18 dashboard JSON drift + PromQL/series + §20.1 alert-rule/runbook checks.
       - run: task obs:validate
       # Docker-free guard that the S32 integration entrypoints never destroy a

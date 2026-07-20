@@ -1,14 +1,21 @@
 #!/usr/bin/env python3
 """Offline validator for the §18 dashboards and §20.1 alert rules (S33).
 
-Two guarantees, both runnable without the compose stack:
+Two guarantees, both runnable without the compose stack — and both FAIL CLOSED
+(issue #156). A mandatory correctness gate never reports success when it could
+not actually check something:
 
-1. Every PromQL expression in the dashboards and the alert rules PARSES
-   (promql_parser), so a query typo cannot ship.
-2. Every metric name referenced by those expressions is a REAL emitted series —
-   one the S18 execution telemetry, S19 analytics/cost pipe, or S33 gateway RED
-   seam actually emits through the collector (OTLP name with `.`→`_`, histograms
-   expanded to _bucket/_sum/_count), or a documented collector-internal series.
+1. Every PromQL expression in the dashboards AND every alert-rule expression is
+   PARSED with the real parser (``promql_parser``); a parse error fails the gate.
+   The parser is a REQUIRED dependency — if it cannot be imported the gate FAILS
+   with an actionable message, it does not skip to success.
+2. Every metric name referenced by those expressions is a REAL series listed in
+   the SINGLE authoritative inventory (``deploy/obs/metrics_inventory.json``):
+   the OTLP instruments our Go code emits (`.`->`_`, histograms expanded to
+   _bucket/_sum/_count) plus the explicitly enumerated collector self-telemetry.
+   There is no permissive `^otelcol_` prefix and no second hand-maintained list —
+   a typo in ANY family fails because it is not in the inventory. Selectors are
+   discovered from the parsed AST, so an unknown series with ANY prefix is caught.
 
 Run: ``python3 deploy/grafana/validate_dashboards.py`` (also invoked by
 ``task obs:validate`` and mirrored inside ``task ci:local``).
@@ -16,20 +23,13 @@ Run: ``python3 deploy/grafana/validate_dashboards.py`` (also invoked by
 
 from __future__ import annotations
 
+import importlib
 import json
 import pathlib
 import re
 import sys
-
-try:
-    import promql_parser  # optional: deep PromQL parse when available
-except Exception:  # noqa: BLE001
-    promql_parser = None
-
-try:
-    import yaml
-except Exception:  # noqa: BLE001
-    yaml = None
+from collections.abc import Callable
+from typing import Any, cast
 
 HERE = pathlib.Path(__file__).parent
 DASH_DIR = HERE / "dashboards"
@@ -45,85 +45,137 @@ NAV_CONFIG = WEB_SRC / "app" / "navConfig.ts"
 # Operations queue by design, so it has no registry deep link (README documents it).
 NO_QUEUE_RUNBOOK = "runbooks/llm-outage.md"
 
-# Base metric names the instrumentation actually emits (OTLP `.`→`_`).
-#   S18 execution telemetry  (internal/execution/telemetry.go)
-#   S19 analytics/cost pipe   (internal/analytics/telemetry.go)
-#   S33 gateway RED seam      (internal/httpapi/telemetry.go)
-#   catalog sync-streak seam  (internal/catalog/telemetry.go — issue #146)
-REAL_BASE = {
-    "execution_write_attempts",
-    "execution_dedup_hits",
-    "execution_gate_blocks",
-    "execution_pending_reconciliation",
-    "execution_recommend_only",
-    "execution_terminal_results",
-    "execution_audit_write_failures",
-    "execution_enablement_denied",
-    "analytics_events",
-    "analytics_cost_minor_units",
-    "http_server_request_duration",
-    # Bounded gauge: current consecutive catalog-sync failures per account/connector,
-    # reset to 0 on a successful sync; backs ConnectorSyncFailureStreak (§20.1).
-    "connector_sync_failure_streak",
-    # Counter: terminal catalog-sync attempts by disposition (success/http_4xx/
-    # http_5xx/transport/typed); the by-disposition evidence for the streak.
-    "connector_sync_results",
-    # Bounded async gauge: current DURABLE count of action_executions parked in
-    # pending_reconciliation, per account; read live from the store each scrape.
-    # Backs ReconciliationBacklog (§20.1, EXE-003, issue #147).
-    "execution_pending_reconciliation_current",
-    # Bounded async gauge: age (seconds) of the oldest still-pending reconciliation
-    # item per account; proves the SAME durable work remains unresolved (issue #147).
-    "execution_pending_reconciliation_oldest_age_seconds",
-}
-# Histogram expansion suffixes Prometheus adds for a float histogram.
-HIST_SUFFIXES = ("_bucket", "_sum", "_count")
-# Collector-internal series (the collector's own /metrics; documented in
-# prometheus.yml job otel-collector-internal). Allow-listed so the SLO dashboard's
-# collection-layer health panel is honest without a domain seam.
-COLLECTOR_INTERNAL = re.compile(r"^otelcol_")
-
-METRIC_RE = re.compile(r"[a-zA-Z_:][a-zA-Z0-9_:]*")
-PROM_FUNCS = {
-    "sum", "rate", "increase", "histogram_quantile", "by", "le", "avg", "max", "min",
-    "count", "topk", "absent", "absent_over_time", "or", "and", "unless", "on",
-    "without", "group_left", "group_right", "irate", "delta", "clamp_min", "clamp_max",
-}
+# SINGLE authoritative metric inventory (issue #156): replaces the old REAL_BASE
+# set and the permissive `^otelcol_` prefix. Kept honest against the Go
+# instrumentation by deploy/obs/inventory_drift_test.py.
+INVENTORY_PATH = HERE.parent / "obs" / "metrics_inventory.json"
 
 
-def real_series(name: str) -> bool:
-    if name in REAL_BASE:
-        return True
-    for suf in HIST_SUFFIXES:
-        if name.endswith(suf) and name[: -len(suf)] in REAL_BASE:
-            return True
-    return bool(COLLECTOR_INTERNAL.match(name))
+class GateError(Exception):
+    """A gate could not run its required check — fail closed, never skip."""
 
 
-def metric_names(expr: str) -> set[str]:
-    """Heuristic metric-name extraction: identifiers immediately followed by `{`,
-    `[`, an operator, or whitespace-then-operator, minus PromQL keywords/labels."""
+# Indirection so a test can simulate an import failure without uninstalling.
+_import: Callable[[str], Any] = importlib.import_module
+
+
+def _require(module: str, pip_name: str, why: str) -> Any:
+    """Import a REQUIRED validator or FAIL the gate. `Parser unavailable` is a gate
+    FAILURE (CLAUDE.md fail-closed), never a silent skip-to-success."""
+    try:
+        return _import(module)
+    except Exception as exc:  # noqa: BLE001
+        raise GateError(
+            f"required validator '{module}' is unavailable ({exc!r}); the observability "
+            f"gate cannot {why} and FAILS CLOSED. Install it: `pip install {pip_name}` "
+            f"(pinned in .github/workflows/ci.yml / task obs:validate). Do NOT skip."
+        ) from exc
+
+
+def require_promql_parser() -> Any:
+    return _require("promql_parser", "promql-parser", "parse PromQL expressions")
+
+
+def require_yaml() -> Any:
+    return _require("yaml", "PyYAML", "parse the §20.1 alert-rule YAML")
+
+
+# ── authoritative inventory ──────────────────────────────────────────────────
+class Inventory:
+    """The one list of real series. `emitted` OTLP instruments are translated to
+    their Prometheus names (`.`->`_`, histograms expanded); `collector_internal`
+    series are enumerated verbatim (no prefix matching)."""
+
+    def __init__(self, version: int, prom_names: set[str]) -> None:
+        self.version = version
+        self.prom_names = prom_names
+
+    def is_real(self, name: str) -> bool:
+        return name in self.prom_names
+
+
+def load_inventory(path: pathlib.Path) -> Inventory:
+    if not path.exists():
+        raise GateError(
+            f"metric inventory '{path}' is missing; the gate cannot validate series "
+            f"names and FAILS CLOSED (issue #156)."
+        )
+    data = json.loads(path.read_text())
+    hist_suffixes: tuple[str, ...] = tuple(
+        data.get("prometheus_naming", {}).get("histogram_suffixes", ["_bucket", "_sum", "_count"])
+    )
+    prom_names: set[str] = set()
+    for otlp, meta in data.get("emitted", {}).items():
+        base = otlp.replace(".", "_")
+        if meta.get("type") == "histogram":
+            for suf in hist_suffixes:
+                prom_names.add(base + suf)
+        else:
+            prom_names.add(base)
+    for series in data.get("collector_internal", []):
+        prom_names.add(str(series))
+    if not prom_names:
+        raise GateError(f"metric inventory '{path}' is empty; refusing to pass vacuously.")
+    return Inventory(int(data.get("version", 0)), prom_names)
+
+
+# ── selector discovery from the parsed AST (every prefix) ────────────────────
+_CHILD_ATTRS = ("expr", "lhs", "rhs", "param", "vector_selector")
+
+
+def selector_names(expr: str, parser: Any) -> set[str]:
+    """Every metric selector in `expr`, discovered by walking the parsed AST — so a
+    series with ANY prefix is found, and label keys in `{...}` / `by (...)` are
+    never mistaken for metric names. Raises on a parse error (the caller reports it
+    as a PARSE failure)."""
+    ast = parser.parse(expr)
     names: set[str] = set()
-    # Strip label matchers and grouping clauses so label keys (e.g. http_route in
-    # `by (le, http_route)`) are not mistaken for metric selectors.
-    stripped = re.sub(r"\{[^}]*\}", " ", expr)
-    stripped = re.sub(r"\b(by|without|on|ignoring|group_left|group_right)\s*\([^)]*\)", " ", stripped)
-    for tok in METRIC_RE.findall(stripped):
-        if tok in PROM_FUNCS or tok.isdigit():
-            continue
-        # label-ish bare identifiers used in by()/legend are not metric selectors;
-        # only flag tokens that look like our namespaced series.
-        if "_" in tok and (tok.startswith(("execution_", "analytics_", "http_", "connector_", "otelcol_"))):
-            names.add(tok)
+    _walk(ast, names)
     return names
 
 
-# Regex fallbacks so the checks run even without pyyaml (stdlib-only in CI).
-ALERT_NAME_RE = re.compile(r"^\s*-\s*alert:\s*(\S+)", re.M)
-ALERT_EXPR_RE = re.compile(r"expr:\s*\|?\s*\n((?:\s{2,}.*\n?)+)")
-ANNOTATION_RE = re.compile(r"^\s*(runbook|ops_queue):\s*\"?([^\"\n]+)\"?", re.M)
+def _walk(node: Any, out: set[str]) -> None:
+    if type(node).__name__ == "VectorSelector":
+        if getattr(node, "name", None):
+            out.add(node.name)
+        matchers = getattr(node, "matchers", None)
+        for m in getattr(matchers, "matchers", []) or []:
+            if getattr(m, "name", None) == "__name__" and getattr(m, "value", None):
+                out.add(m.value)
+        return
+    for attr in _CHILD_ATTRS:
+        child = getattr(node, attr, None)
+        if child is not None and hasattr(type(child), "__name__"):
+            _walk(child, out)
+    args = getattr(node, "args", None)
+    if args:
+        for a in args:
+            _walk(a, out)
 
 
+def check_metric_exprs(
+    exprs: list[tuple[str, str]], parser: Any, inv: Inventory
+) -> tuple[list[str], set[str]]:
+    """Parse every expression for real and check every discovered selector against
+    the inventory. Returns (errors, referenced-series)."""
+    errors: list[str] = []
+    referenced: set[str] = set()
+    for where, expr in exprs:
+        try:
+            names = selector_names(expr, parser)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"PARSE  {where}: {exc}\n       expr: {expr}")
+            continue
+        for name in names:
+            referenced.add(name)
+            if not inv.is_real(name):
+                errors.append(
+                    f"SERIES {where}: metric '{name}' is not in the inventory (issue #156)"
+                )
+    return errors, referenced
+
+
+# ── expression sources ───────────────────────────────────────────────────────
 def dashboard_exprs() -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for f in sorted(DASH_DIR.glob("*.json")):
@@ -134,19 +186,21 @@ def dashboard_exprs() -> list[tuple[str, str]]:
     return out
 
 
-def alert_exprs() -> list[tuple[str, str]]:
-    text = ALERTS.read_text()
-    if yaml is not None:
-        rules = yaml.safe_load(text)
-        return [
-            (f"{ALERTS.name}:{r.get('alert')}", r["expr"])
-            for g in rules.get("groups", [])
-            for r in g.get("rules", [])
-        ]
-    # stdlib fallback: pull each expr block textually.
-    blocks = ALERT_EXPR_RE.findall(text)
-    names = ALERT_NAME_RE.findall(text)
-    return [(f"{ALERTS.name}:{n}", b) for n, b in zip(names, blocks)]
+def alert_exprs(yaml_mod: Any) -> list[tuple[str, str]]:
+    """Every §20.1 alert-rule expression, parsed from YAML with the REQUIRED parser
+    (no stdlib regex fallback: a fallback that silently under-collects rules is the
+    same silent-skip failure mode we are removing)."""
+    rules = yaml_mod.safe_load(ALERTS.read_text())
+    return [
+        (f"{ALERTS.name}:{r.get('alert')}", r["expr"])
+        for g in rules.get("groups", [])
+        for r in g.get("rules", [])
+    ]
+
+
+# ── runbook / registry checks (unchanged; stdlib-only) ───────────────────────
+ALERT_NAME_RE = re.compile(r"^\s*-\s*alert:\s*(\S+)", re.M)
+ANNOTATION_RE = re.compile(r"^\s*(runbook|ops_queue):\s*\"?([^\"\n]+)\"?", re.M)
 
 
 def parse_registry() -> list[dict[str, object]]:
@@ -222,7 +276,7 @@ def check_registry() -> list[str]:
             # registry keys on the <q> suffix. Normalize to the suffix.
             queue = oq.group(1).strip().removeprefix("operations.queue.")
             ann_by_queue.setdefault(queue, set()).add(name)
-    reg_by_queue = {str(e["queue"]): set(e["alerts"]) for e in registry}  # type: ignore[arg-type]
+    reg_by_queue = {str(e["queue"]): set(cast(list[str], e["alerts"])) for e in registry}
     for queue, alerts in reg_by_queue.items():
         expected = ann_by_queue.get(queue, set())
         if alerts != expected:
@@ -273,22 +327,21 @@ def check_runbooks() -> list[str]:
 
 
 def main() -> int:
-    errors: list[str] = []
-    referenced: set[str] = set()
-    exprs = dashboard_exprs() + alert_exprs()
-    for where, expr in exprs:
-        if promql_parser is not None:
-            try:
-                promql_parser.parse(expr)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"PARSE  {where}: {exc}\n       expr: {expr}")
-        for name in metric_names(expr):
-            referenced.add(name)
-            if not real_series(name):
-                errors.append(f"SERIES {where}: metric '{name}' is not an emitted series")
+    # Fail closed BEFORE any check if a required validator or artifact is missing.
+    try:
+        parser = require_promql_parser()
+        yaml_mod = require_yaml()
+        inventory = load_inventory(INVENTORY_PATH)
+    except GateError as exc:
+        print("DASHBOARD/ALERT/RUNBOOK VALIDATION FAILED (fail-closed):")
+        print("  " + str(exc))
+        return 2
+
+    exprs = dashboard_exprs() + alert_exprs(yaml_mod)
+    errors, referenced = check_metric_exprs(exprs, parser, inventory)
 
     if not referenced:
-        errors.append("no namespaced metric series referenced — extraction likely broken")
+        errors.append("no metric series referenced — AST extraction likely broken")
 
     errors.extend(check_runbooks())
     errors.extend(check_registry())
@@ -299,13 +352,12 @@ def main() -> int:
             print("  " + e)
         return 1
 
-    parsed = "parsed" if promql_parser is not None else "collected (promql_parser absent; parse skipped)"
-    print(f"OK: {len(exprs)} PromQL expressions {parsed}; "
-          f"{len(referenced)} distinct series, all real.")
+    print(f"OK: {len(exprs)} PromQL expressions parsed (promql_parser); "
+          f"{len(referenced)} distinct series, all in inventory v{inventory.version}.")
     print("    series: " + ", ".join(sorted(referenced)))
     print(f"OK: {len(list(RUNBOOKS.glob('*.md'))) - 1} runbooks each name an Operations queue + alert.")
     reg = parse_registry()
-    print(f"OK: {len(reg)} Operations runbook deep links resolve (registry ↔ SPA route ↔ file ↔ alert annotations).")
+    print(f"OK: {len(reg)} Operations runbook deep links resolve (registry <-> SPA route <-> file <-> alert annotations).")
     return 0
 
 

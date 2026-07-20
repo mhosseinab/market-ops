@@ -100,7 +100,7 @@ tasks:
   lint:all:    # deps (parallel): [go:lint, py:lint, ts:lint]
   db:reset:    # drop + recreate dev DB, goose up, river migrate-up, seed fixtures
   obs:dashboards: # regenerate the §18 Grafana dashboard JSON from deploy/grafana/gen_dashboards.py
-  obs:validate:   # §18 dashboard drift + §20.1 alert-rule/runbook validation (stdlib; deep PromQL parse best-effort)
+  obs:validate:   # §18 dashboard drift + §20.1 alert-rule/runbook validation — FAIL-CLOSED (issue #156): required promql_parser parses every dashboard+alert expr, series checked vs the single deploy/obs/metrics_inventory.json
   ci:local:    # everything CI runs, in order — the pre-merge gate
 ```
 
@@ -161,7 +161,7 @@ ts:        ['apps/**', 'packages/**', 'gen/ts/**', 'contracts/**']
 deploy:    ['deploy/**', 'runbooks/**', 'tools/obs/**']
 ```
 
-Jobs (each `if:` its filter): **contracts** — `task contracts:generate` + `git diff --exit-code` (the drift check); **go** — setup-go with `go-version-file: services/core/go.mod`, `GOWORK=off` explicit on every step, golangci-lint, `go test ./... -race`, scratch-Postgres service container for DB tests (goose up/down assertions run here); **py** — `astral-sh/setup-uv`, `uv sync --frozen --group dev`, ruff, mypy from root, pytest; **ts** — pnpm `--frozen-lockfile`, biome, typecheck, vitest, extension + web builds, then a Chromium install + `task ts:pseudoloc` (pseudo-locale + copy-lint gate, LOC-011, incl. the browser layout pass `pseudoloc:visual` from #15); **deploy-obs** (from S33) — `task obs:validate` (§18 dashboard drift + PromQL/series-name + §20.1 alert-rule/runbook checks; stdlib-only so the gate holds without the optional promql-parser). A contracts change triggers the four language jobs. `task ci:local` mirrors this exactly for the pre-merge loop.
+Jobs (each `if:` its filter): **contracts** — `task contracts:generate` + `git diff --exit-code` (the drift check); **go** — setup-go with `go-version-file: services/core/go.mod`, `GOWORK=off` explicit on every step, golangci-lint, `go test ./... -race`, scratch-Postgres service container for DB tests (goose up/down assertions run here); **py** — `astral-sh/setup-uv`, `uv sync --frozen --group dev`, ruff, mypy from root, pytest; **ts** — pnpm `--frozen-lockfile`, biome, typecheck, vitest, extension + web builds, then a Chromium install + `task ts:pseudoloc` (pseudo-locale + copy-lint gate, LOC-011, incl. the browser layout pass `pseudoloc:visual` from #15); **deploy-obs** (from S33) — installs the REQUIRED validators (`promql-parser`, `PyYAML`, pinned, no `|| true`) then `task obs:validate` (§18 dashboard drift + real PromQL parse of every dashboard AND alert expr + series-name check against the single `deploy/obs/metrics_inventory.json` + §20.1 alert-rule/runbook checks). The gate FAILS CLOSED (issue #156): a missing validator or an unknown series is a job failure, never a silent skip-to-success. A contracts change triggers the four language jobs. `task ci:local` mirrors this exactly for the pre-merge loop.
 
 ## 8. Environments, deployment, secrets
 
