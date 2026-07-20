@@ -11,7 +11,11 @@ import { MutationError } from "../components/MutationError";
 import { Section, StatCard } from "../components/primitives";
 import { formatCount } from "../data/format";
 import { useCostImportCommit, useCostImportPreview, useSingleCostEntry } from "../data/hooks";
-import type { CostComponent, CostImportRow } from "../data/types";
+import type {
+  CostComponent,
+  CostImportPreview as CostImportPreviewData,
+  CostImportRow,
+} from "../data/types";
 
 const COST_COMPONENTS: readonly CostComponent[] = [
   "cogs",
@@ -42,6 +46,36 @@ const REASON_KEY: Record<string, MessageKey> = {
   invalid_amount: "costReason.invalid_amount",
   duplicate_in_file: "costReason.duplicate_in_file",
 };
+
+// The detected header→component mapping is part of the financial meaning the
+// seller confirms (CST-001): an unexpected assignment commits valid-looking
+// values into the WRONG cost-profile component and corrupts contribution
+// economics. So the mapping must be shown AND be internally consistent before
+// commit; anything missing or ambiguous fails closed (money-adjacent guard).
+type MappingCheck =
+  | { readonly resolved: true }
+  | { readonly resolved: false; readonly reasonKey: MessageKey };
+
+function resolveMapping(batch: CostImportPreviewData): MappingCheck {
+  const detected = batch.detected;
+  // Missing evidence: the server echoed no mapping (or an empty one). Never let
+  // a value commit into an unshown component.
+  if (!detected || detected.skuColumn.trim() === "" || detected.componentColumns.length === 0) {
+    return { resolved: false, reasonKey: "cost.mapping.missing" };
+  }
+  // Ambiguous evidence: a row names a component the detected mapping does not
+  // cover — the shown mapping and the committed rows would diverge.
+  const mapped = new Set(detected.componentColumns.map((c) => c.component));
+  if (batch.rows.some((r) => !mapped.has(r.component))) {
+    return { resolved: false, reasonKey: "cost.mapping.ambiguous" };
+  }
+  return { resolved: true };
+}
+
+function ComponentCell({ component }: { component: CostComponent }) {
+  const t = useT();
+  return <span>{t(COMPONENT_LABEL[component])}</span>;
+}
 
 function ReasonCell({ reason }: { reason: string }) {
   const t = useT();
@@ -78,6 +112,9 @@ export function CostImport() {
 
   const batch = preview.data;
   const hasDuplicates = (batch?.counts.duplicate ?? 0) > 0;
+  // Fail closed: an unshown or inconsistent mapping blocks commit (CST-001; §4.6
+  // money-adjacent). Evaluated only when a batch exists.
+  const mapping = batch ? resolveMapping(batch) : null;
 
   // Any change to the CSV source invalidates a prior preview (and any commit
   // result bound to it): the previewed batch id no longer matches what would be
@@ -98,6 +135,11 @@ export function CostImport() {
 
   const columns: readonly Column<CostImportRow>[] = [
     { id: "sku", header: "cost.col.sku", render: (r) => <LtrToken text={r.sku} /> },
+    {
+      id: "component",
+      header: "cost.col.component",
+      render: (r) => <ComponentCell component={r.component} />,
+    },
     {
       id: "value",
       header: "cost.col.value",
@@ -189,7 +231,40 @@ export function CostImport() {
             />
           </div>
 
+          {/* Detected header→component mapping (CST-001): the seller confirms
+              WHICH column feeds WHICH cost component before any value commits.
+              Header tokens are technical identifiers → LTR-isolated; component
+              identities render through the canonical glossary label. */}
+          {batch.detected ? (
+            <div className="cost-mapping" data-testid="cost-mapping">
+              <h3 className="cost-mapping__title">{t("cost.mapping.title")}</h3>
+              <p className="muted">{t("cost.mapping.desc")}</p>
+              <dl className="cost-mapping__list">
+                <div className="cost-mapping__row">
+                  <dt className="cost-mapping__term">{t("cost.mapping.skuColumn")}</dt>
+                  <dd className="cost-mapping__def">
+                    <LtrToken text={batch.detected.skuColumn} />
+                  </dd>
+                </div>
+                {batch.detected.componentColumns.map((m) => (
+                  <div className="cost-mapping__row" key={m.header}>
+                    <dt className="cost-mapping__term">
+                      <LtrToken text={m.header} />
+                    </dt>
+                    <dd className="cost-mapping__def">{t(COMPONENT_LABEL[m.component])}</dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          ) : null}
+
           <DataTable columns={columns} rows={batch.rows} rowKey={(r) => String(r.rowNumber)} />
+
+          {mapping && !mapping.resolved ? (
+            <p className="blocker-note" role="alert" data-testid="cost-mapping-block">
+              {t(mapping.reasonKey)}
+            </p>
+          ) : null}
 
           {hasDuplicates ? (
             <p className="blocker-note" role="alert">
@@ -221,7 +296,12 @@ export function CostImport() {
               type="button"
               className="btn btn--primary"
               data-testid="cost-commit"
-              disabled={hasDuplicates || commit.isPending || batch.counts.accept === 0}
+              disabled={
+                hasDuplicates ||
+                commit.isPending ||
+                batch.counts.accept === 0 ||
+                mapping?.resolved !== true
+              }
               onClick={() => commit.mutate(batch.batchId)}
             >
               {t("cost.confirm", { count: formatCount(batch.counts.accept, locale) })}

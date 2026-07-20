@@ -223,6 +223,79 @@ export const previewClean: CostImportPreview = {
   rows: [acceptRow],
 };
 
+/**
+ * Multi-component preview (#78): two header→component mappings (COGS, commission)
+ * and one accept row per component. Every mapping and each row's component must
+ * render before the confirm control.
+ */
+export const previewMultiComponent: CostImportPreview = {
+  batchId: "77777777-7777-7777-7777-777777777777",
+  marketplaceAccountId: ACCOUNT_ID,
+  filename: "costs.csv",
+  status: "preview",
+  counts: { accept: 2, reject: 0, duplicate: 0 },
+  detected: {
+    skuColumn: "SKU",
+    componentColumns: [
+      { header: "COGS", component: "cogs" },
+      { header: "commission", component: "commission" },
+    ],
+  },
+  rows: [
+    acceptRow,
+    {
+      rowNumber: 2,
+      sku: "DKP-8842213",
+      component: "commission",
+      rawValue: "445000",
+      normalizedValue: "445000",
+      variantId: VARIANT_ID,
+      amount: { mantissa: "445000", currency: "IRR", exponent: 0 },
+      disposition: "accept",
+      reason: "",
+    },
+  ],
+};
+
+/**
+ * Fail-closed fixture (#78): the server echoed NO detected mapping. A valid-looking
+ * accept row must NOT be committable while the mapping is unshown — commit stays
+ * disabled with a stated reason (wrong component = corrupted cost profile).
+ */
+export const previewNoMapping: CostImportPreview = {
+  ...previewClean,
+  batchId: "88888888-8888-8888-8888-888888888888",
+  detected: undefined,
+};
+
+/**
+ * Fail-closed fixture (#78): a row carries a component (`shipping`) that is NOT in
+ * the detected column mapping — an ambiguous/inconsistent echo. Commit stays
+ * disabled with a stated reason rather than committing into an unshown component.
+ */
+export const previewAmbiguousMapping: CostImportPreview = {
+  ...previewClean,
+  batchId: "99999999-9999-9999-9999-999999999999",
+  detected: {
+    skuColumn: "SKU",
+    componentColumns: [{ header: "COGS", component: "cogs" }],
+  },
+  rows: [
+    acceptRow,
+    {
+      rowNumber: 2,
+      sku: "DKP-8842213",
+      component: "shipping",
+      rawValue: "300000",
+      normalizedValue: "300000",
+      variantId: VARIANT_ID,
+      amount: { mantissa: "300000", currency: "IRR", exponent: 0 },
+      disposition: "accept",
+      reason: "",
+    },
+  ],
+};
+
 // ── S27: Today / events / recommendation + approval ─────────────────────────
 export const EVENT_ID = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 export const EVENT_ID_BLOCKED = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";

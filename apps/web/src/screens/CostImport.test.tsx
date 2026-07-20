@@ -1,8 +1,15 @@
 import { faIR } from "@market-ops/locale";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { previewClean, previewWithDuplicate, target } from "../test/msw/fixtures";
+import {
+  previewAmbiguousMapping,
+  previewClean,
+  previewMultiComponent,
+  previewNoMapping,
+  previewWithDuplicate,
+  target,
+} from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
@@ -284,5 +291,116 @@ describe("Cost import — preview before commit (CST-001)", () => {
     // No preview section and no commit control until an explicit new preview.
     await waitFor(() => expect(screen.queryByTestId("cost-commit")).toBeNull());
     expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+  });
+});
+
+// ── issue #78: detected mapping + row component before commit (CST-001) ───────
+// The mapping is part of the financial meaning being confirmed: an unexpected
+// header→component assignment can commit valid-looking values into the wrong
+// cost-profile component. The seller must SEE every mapping and each row's
+// component before the confirm control, and an unshown/ambiguous mapping must
+// keep confirmation disabled (fail closed — money-correctness-adjacent).
+describe("Cost import — detected mapping preview (#78, CST-001)", () => {
+  const MULTI_CSV = "SKU,COGS,commission\nDKP-8842213,8900000,445000\n";
+
+  it("shows the SKU column, every header→component mapping, and each row's component before confirm", async () => {
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewMultiComponent)),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: MULTI_CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    // The mapping surface renders the detected SKU column and BOTH header
+    // mappings (technical header tokens are LTR-isolated verbatim).
+    const mapping = await screen.findByTestId("cost-mapping");
+    expect(within(mapping).getByText("SKU")).toBeInTheDocument();
+    expect(within(mapping).getByText("COGS")).toBeInTheDocument();
+    expect(within(mapping).getByText("commission")).toBeInTheDocument();
+    // Component identities render via the canonical glossary label (fa-IR here).
+    expect(within(mapping).getByText(faIR["costComponent.cogs"])).toBeInTheDocument();
+    expect(within(mapping).getByText(faIR["costComponent.commission"])).toBeInTheDocument();
+
+    // Each preview row also names its component in the table: the commission
+    // label appears both in the mapping list and on its row.
+    expect(screen.getAllByText(faIR["costComponent.commission"]).length).toBeGreaterThan(1);
+
+    // A clean, fully-mapped preview → confirm becomes available once shown.
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+  });
+
+  it("keeps confirm DISABLED with a stated reason when the mapping is missing (fail closed)", async () => {
+    const commitSpy = vi.fn();
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewNoMapping)),
+      http.post(`${BASE}/cost/import/commit`, () => {
+        commitSpy();
+        return HttpResponse.json({
+          batchId: previewNoMapping.batchId,
+          status: "committed",
+          committedRows: 1,
+          affectedVariantIds: [target.variantId],
+        });
+      }),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: MULTI_CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    // Even though the single row accepts, an unshown mapping blocks commit.
+    const commitBtn = await screen.findByTestId("cost-commit");
+    expect(commitBtn).toBeDisabled();
+    expect(screen.getByText(faIR["cost.mapping.missing"])).toBeInTheDocument();
+    fireEvent.click(commitBtn);
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  it("keeps confirm DISABLED with a reason when a row's component is not in the detected mapping", async () => {
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewAmbiguousMapping)),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: MULTI_CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const commitBtn = await screen.findByTestId("cost-commit");
+    expect(commitBtn).toBeDisabled();
+    expect(screen.getByText(faIR["cost.mapping.ambiguous"])).toBeInTheDocument();
+  });
+
+  it("binds the committed batch id to the displayed mapping", async () => {
+    let committedBatchId: string | undefined;
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewMultiComponent)),
+      http.post(`${BASE}/cost/import/commit`, async ({ request }) => {
+        const body = (await request.json()) as { batchId: string };
+        committedBatchId = body.batchId;
+        return HttpResponse.json({
+          batchId: body.batchId,
+          status: "committed",
+          committedRows: 2,
+          affectedVariantIds: [target.variantId],
+        });
+      }),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: MULTI_CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+    fireEvent.click(commitBtn);
+
+    await screen.findByText(faIR["cost.committed"].replace("{count}", "۲"));
+    expect(committedBatchId).toBe(previewMultiComponent.batchId);
   });
 });

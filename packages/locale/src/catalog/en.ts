@@ -370,8 +370,17 @@ export const en: Catalog = {
   "cost.count.duplicate": "Duplicate",
   "cost.col.sku": "SKU (file)",
   "cost.col.value": "Cost",
+  "cost.col.component": "Cost component",
   "cost.col.status": "Row status",
   "cost.col.note": "Note",
+  "cost.mapping.title": "Detected column mapping",
+  "cost.mapping.desc":
+    "Confirm each column maps to the right cost component before committing these values.",
+  "cost.mapping.skuColumn": "SKU column",
+  "cost.mapping.missing":
+    "No column mapping was detected. Confirmation is blocked until the mapping is shown.",
+  "cost.mapping.ambiguous":
+    "A row has a cost component that is not in the detected column mapping. Confirmation is blocked.",
   "cost.confirm": "Confirm {count} valid rows",
   "cost.duplicateBlock": "{count} duplicate rows must be resolved before confirm.",
   "cost.committed": "{count} rows committed.",
