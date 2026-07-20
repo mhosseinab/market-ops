@@ -1,3 +1,4 @@
+import type { components } from "@market-ops/gen-ts";
 import type { MessageKey } from "@market-ops/locale";
 
 // Chat context model (PRD §8.1, CHAT-001/007). Exactly one context is active per
@@ -7,15 +8,11 @@ import type { MessageKey } from "@market-ops/locale";
 // to a card is resolved by a structured picker (rendered as a card), not by
 // silently carrying a context forward.
 
-export type ChatContextKind =
-  | "global"
-  | "product"
-  | "event"
-  | "recommendation"
-  | "bulk"
-  | "action"
-  | "settings"
-  | "operations";
+// The context kind is a CONTRACT enum: it aliases the generated
+// ConversationContextKind so the gateway OpenAPI source is its single source of
+// truth (issue #115). A kind added/removed there stops this type-checking until
+// the FE is updated in lockstep — no hand-maintained divergent list.
+export type ChatContextKind = components["schemas"]["ConversationContextKind"];
 
 export interface ChatContext {
   readonly kind: ChatContextKind;

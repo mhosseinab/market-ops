@@ -81,6 +81,13 @@ export interface ChatDockRuntime {
   readonly unavailable: ChatUnavailable | null;
   /** Actions exposed to nested structured cards (picker binding). */
   readonly actions: ChatDockActions;
+  /**
+   * The context the chip renders (CHAT-007, issue #115). Once a conversation
+   * exists it is the gateway-ECHOED authoritative binding (the kind/entity the
+   * gateway actually persisted), never a claimed one; before the first turn it is
+   * the route-derived context.
+   */
+  readonly activeContext: ChatContext;
 }
 
 export function useChatDock(context: ChatContext): ChatDockRuntime {
@@ -90,6 +97,10 @@ export function useChatDock(context: ChatContext): ChatDockRuntime {
   const [unavailable, setUnavailable] = useState<ChatUnavailable | null>(null);
   const conversationIdRef = useRef<string | undefined>(undefined);
   const boundContextRef = useRef<BoundContext | undefined>(undefined);
+  // The gateway-echoed authoritative context, committed at the `conversation`
+  // frame. Kept as STATE (not just the ref) so the chip re-renders to the bound
+  // context the gateway persisted — undefined until the first turn commits.
+  const [committedContext, setCommittedContext] = useState<ChatContext | undefined>(undefined);
   // The latest route-derived context, read at send time so a turn always binds
   // the context the operator currently sees.
   const contextRef = useRef<ChatContext>(context);
@@ -160,9 +171,12 @@ export function useChatDock(context: ChatContext): ChatDockRuntime {
 
       if (plan.startNewConversation) {
         // A route-context change opens a fresh bound conversation; the previous
-        // conversation keeps its own context (never relabeled).
+        // conversation keeps its own context (never relabeled). Drop the committed
+        // chip context so it falls back to the new route until the fresh turn's
+        // `conversation` frame commits the gateway-authoritative binding.
         conversationIdRef.current = undefined;
         boundContextRef.current = undefined;
+        setCommittedContext(undefined);
       }
 
       try {
@@ -182,16 +196,30 @@ export function useChatDock(context: ChatContext): ChatDockRuntime {
         let streamedText = "";
         for await (const event of outcome.events) {
           switch (event.kind) {
-            case "conversation":
+            case "conversation": {
               if (event.conversationId) conversationIdRef.current = event.conversationId;
-              // Commit the bound context; adopt the server-issued version when the
-              // gateway echoes it, else keep the optimistic value.
-              boundContextRef.current = {
-                kind: plan.nextBound.kind,
-                entityId: plan.nextBound.entityId,
-                version: event.contextVersion ?? plan.nextBound.version,
-              };
+              // Commit the AUTHORITATIVE binding the gateway echoes (kind/entity/
+              // version it actually persisted), never the optimistically-planned one:
+              // the chip renders what the gateway bound, so a picker transition to
+              // product/<id> shows the bound kind, not the route kind. Only when the
+              // gateway omits the echo (no store wired) fall back to the plan.
+              const committed: BoundContext =
+                event.contextKind !== undefined
+                  ? {
+                      kind: event.contextKind,
+                      ...(event.contextEntityId !== undefined
+                        ? { entityId: event.contextEntityId }
+                        : {}),
+                      version: event.contextVersion ?? plan.nextBound.version,
+                    }
+                  : plan.nextBound;
+              boundContextRef.current = committed;
+              setCommittedContext({
+                kind: committed.kind,
+                ...(committed.entityId !== undefined ? { entityId: committed.entityId } : {}),
+              });
               break;
+            }
             case "token":
               streamedText += event.token ?? "";
               patchAssistant(assistantId, { text: streamedText });
@@ -267,5 +295,10 @@ export function useChatDock(context: ChatContext): ChatDockRuntime {
   const runtime = useExternalStoreRuntime(adapter);
   const actions = useMemo<ChatDockActions>(() => ({ bindPickerOption }), [bindPickerOption]);
 
-  return { runtime, messages, isRunning, unavailable, actions };
+  // The chip renders the gateway-authoritative committed context once a
+  // conversation exists, falling back to the route-derived context only before the
+  // first turn (issue #115).
+  const activeContext = committedContext ?? context;
+
+  return { runtime, messages, isRunning, unavailable, actions, activeContext };
 }

@@ -67,7 +67,7 @@ export function ChatDock() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const rawSearch = useRouterState({ select: (s) => s.location.search });
   const context = deriveChatContext(pathname, rawSearch as Record<string, string>);
-  const { runtime, unavailable, actions } = useChatDock(context);
+  const { runtime, unavailable, actions, activeContext } = useChatDock(context);
 
   if (!chatOpen) return null;
 
@@ -80,9 +80,9 @@ export function ChatDock() {
             <span
               className="chat-context-chip"
               data-testid="chat-context-chip"
-              data-context={context.kind}
+              data-context={activeContext.kind}
             >
-              {t("chat.context.label")} {t(CONTEXT_LABEL_KEY[context.kind])}
+              {t("chat.context.label")} {t(CONTEXT_LABEL_KEY[activeContext.kind])}
             </span>
             <button
               type="button"
