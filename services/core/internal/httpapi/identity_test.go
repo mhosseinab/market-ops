@@ -17,15 +17,25 @@ import (
 
 // fakeIdentity is an IdentityService stub for transport tests.
 type fakeIdentity struct {
-	queue     []identity.QueueItem
-	mapping   db.MarketProductIdentity
-	err       error
-	lastActor identity.Actor
-	lastNote  string
-	lastID    uuid.UUID
+	queue       []identity.QueueItem
+	mapping     db.MarketProductIdentity
+	err         error
+	scopeErr    error
+	lastActor   identity.Actor
+	lastNote    string
+	lastID      uuid.UUID
+	lastOrg     uuid.UUID
+	lastAccount uuid.UUID
 }
 
 func (f *fakeIdentity) NeedsReviewQueue(context.Context, uuid.UUID) ([]identity.QueueItem, error) {
+	return f.queue, f.err
+}
+func (f *fakeIdentity) NeedsReviewQueueForOrg(_ context.Context, org, account uuid.UUID) ([]identity.QueueItem, error) {
+	f.lastOrg, f.lastAccount = org, account
+	if f.scopeErr != nil {
+		return nil, f.scopeErr
+	}
 	return f.queue, f.err
 }
 func (f *fakeIdentity) Confirm(_ context.Context, id uuid.UUID, actor identity.Actor) (db.MarketProductIdentity, error) {

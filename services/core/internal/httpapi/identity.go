@@ -15,7 +15,17 @@ import (
 // (CAT-002, journey 4). *identity.Service satisfies it. Keeping it an interface
 // lets the transport be tested with a fake and keeps httpapi free of DB wiring.
 type IdentityService interface {
+	// NeedsReviewQueue is the credential-scoped primitive (the account is
+	// authoritative). The human read handler NEVER calls it directly — it calls
+	// NeedsReviewQueueForOrg, which resolves the account from the authenticated
+	// organization (issue #346) so a caller-supplied account id is a selector, never
+	// authorization.
 	NeedsReviewQueue(ctx context.Context, account uuid.UUID) ([]identity.QueueItem, error)
+	// NeedsReviewQueueForOrg backs GET /identity/needs-review (issue #346). It takes
+	// the authenticated organization id as a MANDATORY first argument and resolves the
+	// caller's OWN marketplace account from it: a foreign or org-less caller resolves
+	// to a uniform not-found (ErrAccountNotFound), never another tenant's queue.
+	NeedsReviewQueueForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]identity.QueueItem, error)
 	Confirm(ctx context.Context, identityID uuid.UUID, actor identity.Actor) (db.MarketProductIdentity, error)
 	Reject(ctx context.Context, identityID uuid.UUID, actor identity.Actor, note string) (db.MarketProductIdentity, error)
 	Defer(ctx context.Context, identityID uuid.UUID, actor identity.Actor, note string) (db.MarketProductIdentity, error)
@@ -28,8 +38,15 @@ func (s *gatewayServer) ListNeedsReview(
 	if s.identity == nil {
 		return gateway.ListNeedsReviewdefaultJSONResponse{StatusCode: 503, Body: identityUnavailableErr()}, nil
 	}
-	items, err := s.identity.NeedsReviewQueue(ctx, req.Params.MarketplaceAccountId)
+	// Tenant scoping (issue #346): the account is resolved from the authenticated
+	// organization; the caller-supplied MarketplaceAccountId is a validated selector,
+	// never trusted. A foreign or org-less caller is a uniform 404 (identical to a
+	// genuinely-absent queue — no existence oracle), never another tenant's queue.
+	items, err := s.identity.NeedsReviewQueueForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId)
 	if err != nil {
+		if errors.Is(err, identity.ErrAccountNotFound) {
+			return gateway.ListNeedsReviewdefaultJSONResponse{StatusCode: 404, Body: identityNotFoundErr()}, nil
+		}
 		return gateway.ListNeedsReviewdefaultJSONResponse{StatusCode: identityErrStatus(err), Body: identityErr(err)}, nil
 	}
 	out := make([]gateway.NeedsReviewItem, 0, len(items))
@@ -163,6 +180,14 @@ func identityErr(err error) gateway.ErrorEnvelope {
 		code = "INVALID_ARGUMENT"
 	}
 	return gateway.ErrorEnvelope{Code: code, Message: err.Error()}
+}
+
+// identityNotFoundErr is the single fixed not-found envelope for a foreign or
+// org-less caller (issue #346) — the no-oracle response shape shared with the
+// observation/cost/briefing tenant-scoping seams (issue #131). A foreign account is
+// indistinguishable from a genuinely-absent queue.
+func identityNotFoundErr() gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "NOT_FOUND", Message: "not found"}
 }
 
 func identityUnavailableErr() gateway.ErrorEnvelope {
