@@ -86,15 +86,23 @@ func machineReq(method, path, body string) *http.Request {
 func TestDraftRoutesFailClosedWhenUnwired(t *testing.T) {
 	fa := newFakeAuth()
 	srv := NewServer(":0", BuildInfo{}, testLogger(), WithAuth(fa), WithCookieSecure(false), WithGatewayToken(testGatewayToken))
-	for _, path := range []string{
-		"/chat/cards/recommendation-draft",
-		"/chat/cards/selection-set-draft",
-		"/chat/cards/level2-proposal",
-	} {
-		rec := httptest.NewRecorder()
-		srv.Handler.ServeHTTP(rec, machineReq(http.MethodPost, path, `{"marketplace_account_id":"`+uuid.New().String()+`","query":"q","setting_key":"s","before_key":"b","after_key":"a","entity_id":"`+uuid.New().String()+`","recommendation_id":"`+uuid.New().String()+`"}`))
-		if rec.Code != http.StatusServiceUnavailable {
-			t.Fatalf("%s unwired = %d, want 503, body=%s", path, rec.Code, rec.Body.String())
+	// Each route carries its OWN closed request schema (issue #143 strict
+	// transport validation), so send each a body valid for its schema — the
+	// point of this test is the unwired-service 503, reached only after the
+	// request-validation gate passes.
+	acct := uuid.New().String()
+	variant := uuid.New().String()
+	rec := uuid.New().String()
+	bodies := map[string]string{
+		"/chat/cards/recommendation-draft": `{"marketplace_account_id":"` + acct + `","entity_id":"` + variant + `","recommendation_id":"` + rec + `"}`,
+		"/chat/cards/selection-set-draft":  `{"marketplace_account_id":"` + acct + `","query":"q"}`,
+		"/chat/cards/level2-proposal":      `{"marketplace_account_id":"` + acct + `","setting_key":"s","before_key":"b","after_key":"a"}`,
+	}
+	for path, body := range bodies {
+		rr := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rr, machineReq(http.MethodPost, path, body))
+		if rr.Code != http.StatusServiceUnavailable {
+			t.Fatalf("%s unwired = %d, want 503, body=%s", path, rr.Code, rr.Body.String())
 		}
 	}
 }

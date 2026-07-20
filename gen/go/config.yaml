@@ -7,3 +7,10 @@ generate:
   std-http-server: true
   strict-server: true
   models: true
+  # embedded-spec exposes GetSwagger()/GetSpec() so the httpapi request-validation
+  # middleware (issue #143) can enforce the OpenAPI request schemas
+  # (required props, additionalProperties:false, enum/type/min-max/collection
+  # bounds) from the SAME contract that generated the handlers — no second,
+  # hand-maintained copy of the shape. The spec is embedded from the contract at
+  # generation time, so the drift check keeps it honest.
+  embedded-spec: true
