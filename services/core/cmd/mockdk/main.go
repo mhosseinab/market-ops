@@ -40,9 +40,14 @@ func main() {
 	if v := os.Getenv("MOCKDK_CATALOG"); strings.EqualFold(v, "true") || v == "1" {
 		// A small, deterministic, all-happy catalog so a real catalog sync imports
 		// a stable set of canonical products the Products screen (and the journey-1
-		// smoke) can read. Kept intentionally tiny (spans two pages at the default
-		// page size of 2) so the import is fast and its shape is obvious.
+		// smoke) can read. PageSize MUST match the syncer's requested page size
+		// (catalog.DefaultPageSize = 50): the mock reports total_pages/total_rows
+		// for its own PageSize, and the connector rejects a pager that is
+		// incoherent with the size it requested (validatePagerCardinality, #197).
+		// With the default PageSize of 2 the mock advertised total_pages=2 for a
+		// size-50 request, failing the sync before it could reach `completed`.
 		cfg.Catalog = &mockdk.CatalogFixture{
+			PageSize: 50,
 			Items: []map[string]any{
 				mockdk.VariantItem(101, 1001, 90001, 1_000_000, 5),
 				mockdk.VariantItem(102, 1002, 90002, 2_000_000, 3),

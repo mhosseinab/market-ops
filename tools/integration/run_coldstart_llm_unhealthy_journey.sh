@@ -111,7 +111,7 @@ echo "== ASSERT /chat fails closed: HTTP 503 + reason provider_unavailable (boun
 chat_body="$(mktemp)"
 chat_code="$(curl -s -o "$chat_body" -w '%{http_code}' -b "$COOKIE_JAR" \
   -H 'Content-Type: application/json' \
-  --data '{"message":"is this screen still up?"}' \
+  --data '{"message":"is this screen still up?","locale":"fa-IR"}' \
   "${BASE}/api/chat")"
 if [ "$chat_code" != "503" ]; then
   echo "FAIL: /chat expected 503 (provider_unavailable), got ${chat_code}; body:"
@@ -143,7 +143,7 @@ echo "PASS: llm now healthy; core/nginx container ids unchanged (structured plan
 echo "== ASSERT /chat now succeeds (2xx SSE) — recovery without touching the structured plane =="
 recovered_code="$(curl -s -o /dev/null -w '%{http_code}' -b "$COOKIE_JAR" --max-time 30 \
   -H 'Content-Type: application/json' \
-  --data '{"message":"and now that chat is back?"}' \
+  --data '{"message":"and now that chat is back?","locale":"fa-IR"}' \
   "${BASE}/api/chat")"
 case "$recovered_code" in
   2*)

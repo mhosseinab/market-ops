@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/mhosseinab/market-ops/services/core/internal/mockdk"
 )
 
 // newRawVariantsClient builds a DKClient pointed at an httptest server that
@@ -334,6 +336,50 @@ func TestDKClientFetchVariantsPageCardinalityTruncated(t *testing.T) {
 	}
 	if len(page.Items) != 0 {
 		t.Fatalf("rejected page must carry no items, got %d", len(page.Items))
+	}
+}
+
+// TestDKClientFetchVariantsPageAcceptsMockCatalogFixtureAtSyncerSize is the
+// regression guard for the S32 kill-switch journey (journey-1 sync): the real
+// mockdk catalog fixture that cmd/mockdk serves in the compose test stack MUST
+// present a pager coherent with the size the syncer requests
+// (catalog.DefaultPageSize = 50), or validatePagerCardinality (#197) rejects the
+// page and the catalog sync never reaches `completed`.
+//
+// Unlike the tests above, this drives the REAL mockdk.serveVariants (not a
+// hand-crafted body), so it catches an incoherent fixture — the actual CI
+// failure was cmd/mockdk's fixture defaulting to PageSize 2 while the syncer
+// requested size 50, making the mock advertise total_pages=2 for 3 rows (want
+// 1). This test proves the MECHANISM on its own copy of that fixture (dropping
+// the PageSize below reproduces the failure); it does not pin the value in
+// cmd/mockdk/main.go — the S32 journey-1 integration run is the guard on that
+// production value. 50 is hardcoded because a `package connector` test cannot
+// import catalog (catalog imports connector).
+func TestDKClientFetchVariantsPageAcceptsMockCatalogFixtureAtSyncerSize(t *testing.T) {
+	cfg := mockdk.DefaultConfig()
+	cfg.Catalog = &mockdk.CatalogFixture{
+		PageSize: 50, // must match the requested size below (catalog.DefaultPageSize)
+		Items: []map[string]any{
+			mockdk.VariantItem(101, 1001, 90001, 1_000_000, 5),
+			mockdk.VariantItem(102, 1002, 90002, 2_000_000, 3),
+			mockdk.VariantItem(103, 1003, 90003, 3_000_000, 0),
+		},
+	}
+	srv := mockdk.NewServer(cfg)
+	defer srv.Close()
+
+	dk, err := NewDKClient(srv.URL, nil)
+	if err != nil {
+		t.Fatalf("dk client: %v", err)
+	}
+	page, err := dk.FetchVariantsPage(context.Background(), "tok", 1, 50)
+	if err != nil {
+		t.Fatalf("mock catalog fixture rejected at syncer size 50: %v", err)
+	}
+	// A single coherent page carrying all three seeded variants: the sync fetches
+	// page 1, sees total_pages=1, and stops — reaching `completed`.
+	if page.Page != 1 || page.TotalPages != 1 || page.TotalRows != 3 || len(page.Items) != 3 {
+		t.Fatalf("mock fixture pager not coherent at size 50: %+v", page)
 	}
 }
 

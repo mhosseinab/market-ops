@@ -293,7 +293,7 @@ def replay_one(
     case_id = case["id"]
     resp = client.post(
         f"{core_url}/chat",
-        json={"message": message, "marketplaceAccountId": account_id},
+        json={"message": message, "locale": "fa-IR", "marketplaceAccountId": account_id},
         timeout=30.0,
     )
     if resp.status_code == 503:
