@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 
@@ -10,12 +11,19 @@ import (
 )
 
 // NotifyService backs the /notifications routes (NOT-001). *notify.Store satisfies
-// it. List returns the in-app feed; UnreadCount the badge; MarkRead advances the
-// bounded read-state projection idempotently (changed=false on a no-op).
+// it. Every method is tenant-scoped (issue #113, mirroring #237/#102): it takes the
+// authenticated organization id and the caller-supplied account SELECTOR, resolves
+// the caller's OWN marketplace account from the org, and predicates the read/ack on
+// it. A foreign or org-less caller — or one naming another tenant's account id — is
+// a uniform not-found (notify.ErrAccountNotFound) with no disclosure and no
+// read-state write. ListForOrg returns the in-app feed; UnreadCountForOrg the badge;
+// MarkReadForOrg advances the bounded read-state projection idempotently
+// (changed=false on a no-op, including a foreign notification id under the own
+// account — no existence oracle).
 type NotifyService interface {
-	List(ctx context.Context, account uuid.UUID) ([]notify.Notification, error)
-	UnreadCount(ctx context.Context, account uuid.UUID) (int64, error)
-	MarkRead(ctx context.Context, account, id uuid.UUID) (notify.Notification, bool, error)
+	ListForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]notify.Notification, error)
+	UnreadCountForOrg(ctx context.Context, organizationID, account uuid.UUID) (int64, error)
+	MarkReadForOrg(ctx context.Context, organizationID, account, id uuid.UUID) (notify.Notification, bool, error)
 }
 
 // ListNotifications serves the account's in-app notification feed (NOT-001). Each
@@ -27,14 +35,25 @@ func (s *gatewayServer) ListNotifications(
 	if s.notify == nil {
 		return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 503, Body: notifyUnavailableErr()}, nil
 	}
+	// Tenant scoping (issue #113): the account is resolved from the authenticated
+	// org; the caller-supplied MarketplaceAccountId is a validated selector, never
+	// trusted. A foreign or org-less caller is a uniform 404, never another tenant's
+	// feed or unread count.
 	account := req.Params.MarketplaceAccountId
-	items, err := s.notify.List(ctx, account)
+	org := orgFromCtx(ctx)
+	items, err := s.notify.ListForOrg(ctx, org, account)
 	if err != nil {
+		if errors.Is(err, notify.ErrAccountNotFound) {
+			return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 404, Body: notifyErr(err)}, nil
+		}
 		s.logNotify(ctx, "list", account, err)
 		return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 500, Body: notifyErr(err)}, nil
 	}
-	unread, err := s.notify.UnreadCount(ctx, account)
+	unread, err := s.notify.UnreadCountForOrg(ctx, org, account)
 	if err != nil {
+		if errors.Is(err, notify.ErrAccountNotFound) {
+			return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 404, Body: notifyErr(err)}, nil
+		}
 		s.logNotify(ctx, "unread-count", account, err)
 		return gateway.ListNotificationsdefaultJSONResponse{StatusCode: 500, Body: notifyErr(err)}, nil
 	}
@@ -53,8 +72,17 @@ func (s *gatewayServer) AckNotification(
 	if req.Body == nil {
 		return gateway.AckNotificationdefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
 	}
-	_, changed, err := s.notify.MarkRead(ctx, req.Body.MarketplaceAccountId, req.Body.NotificationId)
+	// Tenant scoping (issue #113): MarkReadForOrg resolves the caller's OWN account
+	// from the authenticated org and enforces ownership BEFORE the FROM-guarded
+	// read-state update. A foreign or org-less caller — including one supplying
+	// another tenant's account id in the body — is a uniform 404 with NO update to
+	// the append-only notification. A foreign notification id under the own account
+	// matches nothing and returns an idempotent changed=false (no existence oracle).
+	_, changed, err := s.notify.MarkReadForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, req.Body.NotificationId)
 	if err != nil {
+		if errors.Is(err, notify.ErrAccountNotFound) {
+			return gateway.AckNotificationdefaultJSONResponse{StatusCode: 404, Body: notifyErr(err)}, nil
+		}
 		s.logNotify(ctx, "ack", req.Body.MarketplaceAccountId, err)
 		return gateway.AckNotificationdefaultJSONResponse{StatusCode: 500, Body: notifyErr(err)}, nil
 	}
