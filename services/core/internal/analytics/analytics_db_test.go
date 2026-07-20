@@ -118,6 +118,88 @@ func TestEmit_EveryFamilyCarriesFullEnvelope(t *testing.T) {
 	}
 }
 
+// TestEmit_CrossTenantRejectedAtServiceAndDB is the tenant-integrity acceptance
+// test #2 (issue #125): a cross-organization (org A, account owned by org B) pairing
+// is rejected at BOTH boundaries, and NOTHING is persisted.
+//   - SERVICE boundary: Emit resolves the authoritative org from the account row and
+//     returns ErrCrossTenant; the row is never inserted.
+//   - DB boundary: a RAW insert that bypasses the emitter (simulating any future or
+//     out-of-band writer) is rejected by the composite foreign key (migration 0036).
+func TestEmit_CrossTenantRejectedAtServiceAndDB(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	_, accountA := seedAccount(t, q) // account A owned by org A (unused org id)
+	orgB, _ := seedAccount(t, q)     // a DIFFERENT tenant, org B
+	em := analytics.NewEmitter(pool)
+
+	// SERVICE boundary: org B claims account A -> rejected, nothing persisted.
+	err := em.Emit(ctx, analytics.Event{
+		Envelope: analytics.Envelope{
+			Organization: orgB, Account: accountA, Entity: accountA,
+			Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
+			SourceSurface: "system", Timestamp: time.Now().UTC(),
+		},
+		Family: analytics.FamilyExecution, Name: "execution_attempted",
+	})
+	if err == nil {
+		t.Fatal("service boundary accepted a cross-tenant envelope")
+	}
+	n, err := q.CountAnalyticsEventsByFamily(ctx, db.CountAnalyticsEventsByFamilyParams{
+		MarketplaceAccountID: accountA, Family: string(analytics.FamilyExecution),
+	})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("cross-tenant service emit persisted %d rows, want 0", n)
+	}
+
+	// DB boundary: a raw insert pairing org B with account A must violate the
+	// composite (marketplace_account_id, organization_id) foreign key.
+	_, rawErr := q.InsertAnalyticsEvent(ctx, db.InsertAnalyticsEventParams{
+		OrganizationID: orgB, MarketplaceAccountID: accountA, EntityID: accountA,
+		Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
+		SourceSurface: "system", OccurredAt: time.Now().UTC(),
+		Family: string(analytics.FamilyExecution), Name: "execution_attempted",
+		Attributes: []byte("{}"),
+	})
+	if rawErr == nil {
+		t.Fatal("database boundary accepted an incoherent (org, account) pair — composite FK missing")
+	}
+}
+
+// TestEmit_MatchingPairPersistsAtDB is the positive path against a real database: a
+// coherent envelope persists exactly one row, written with the authoritative org.
+func TestEmit_MatchingPairPersistsAtDB(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	orgA, accountA := seedAccount(t, q)
+	em := analytics.NewEmitter(pool)
+
+	if err := em.Emit(ctx, analytics.Event{
+		Envelope: analytics.Envelope{
+			Organization: orgA, Account: accountA, Entity: accountA,
+			Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
+			SourceSurface: "system", Timestamp: time.Now().UTC(),
+		},
+		Family: analytics.FamilyExecution, Name: "execution_attempted",
+	}); err != nil {
+		t.Fatalf("matching emit rejected: %v", err)
+	}
+	rows, err := q.ListAnalyticsEventsByFamily(ctx, db.ListAnalyticsEventsByFamilyParams{
+		MarketplaceAccountID: accountA, Family: string(analytics.FamilyExecution),
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("matching emit persisted %d rows, want 1", len(rows))
+	}
+	if rows[0].OrganizationID != orgA {
+		t.Fatalf("persisted org = %s, want authoritative %s", rows[0].OrganizationID, orgA)
+	}
+}
+
 // TestRecordCost_Integer proves the §17.3 cost counter accepts every kind as an
 // integer amount (no float path) and rejects nothing valid.
 func TestRecordCost_Integer(t *testing.T) {

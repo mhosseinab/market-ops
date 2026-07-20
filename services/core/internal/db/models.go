@@ -61,6 +61,24 @@ type AnalyticsEvent struct {
 	CreatedAt               time.Time
 }
 
+type AnalyticsEventsTenantQuarantine struct {
+	ID                      uuid.UUID
+	OrganizationID          uuid.UUID
+	MarketplaceAccountID    uuid.UUID
+	EntityID                uuid.UUID
+	Locale                  string
+	Region                  string
+	CurrencyContractVersion string
+	SourceSurface           string
+	OccurredAt              time.Time
+	Family                  string
+	Name                    string
+	Attributes              []byte
+	CreatedAt               time.Time
+	QuarantinedAt           time.Time
+	QuarantineReason        string
+}
+
 type ApprovalCard struct {
 	ID                   uuid.UUID
 	RecommendationID     uuid.UUID

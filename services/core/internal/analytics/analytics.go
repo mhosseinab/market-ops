@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
@@ -122,6 +123,16 @@ var ErrInvalidFamily = errors.New("analytics: invalid event family")
 // ErrInvalidCostKind is returned when a cost record names an unknown §17.3 kind.
 var ErrInvalidCostKind = errors.New("analytics: invalid cost kind")
 
+// ErrCrossTenant is returned when an event envelope pairs an organization with a
+// marketplace account that organization does NOT own (issue #125, §18 envelope +
+// §4.6 tenant-integrity never-cut). The §18 envelope must identify ONE coherent
+// tenant aggregate; a cross-tenant pairing is rejected server-side and never
+// persisted. The rejection is fail-closed and carries only the caller-supplied
+// account id — never the authoritative owning organization — so it cannot become an
+// existence oracle for another tenant's account. An UNKNOWN account and a FOREIGN
+// account are deliberately indistinguishable (same error, same detail).
+var ErrCrossTenant = errors.New("analytics: event envelope pairs an account with a foreign organization")
+
 // Validate returns nil only when every mandatory envelope field is present. The
 // error names the FIRST missing field so a misuse is actionable.
 func (e Envelope) Validate() error {
@@ -157,17 +168,38 @@ type Event struct {
 	Attributes map[string]string
 }
 
-// Emitter writes §18 events to analytics_events and increments the matching OTel
-// counters (the "same pipe" the cost counters ride). A nil pool yields a counter-
-// only emitter (telemetry without persistence), for callers that only meter.
-type Emitter struct {
-	pool *pgxpool.Pool
-	tel  *telemetry
+// store is the narrow persistence seam the emitter needs (ISP): resolve an
+// account's AUTHORITATIVE owning organization, and append an event row. *db.Queries
+// satisfies it; tests inject a double. Keeping this interface small keeps the
+// tenant-integrity resolution unit-testable without a live Postgres.
+type store interface {
+	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (db.MarketplaceAccount, error)
+	InsertAnalyticsEvent(ctx context.Context, arg db.InsertAnalyticsEventParams) (db.AnalyticsEvent, error)
 }
 
-// NewEmitter builds an emitter over the pool and the global OTel meter.
+// Emitter writes §18 events to analytics_events and increments the matching OTel
+// counters (the "same pipe" the cost counters ride). A nil store yields a counter-
+// only emitter (telemetry without persistence), for callers that only meter.
+type Emitter struct {
+	store store
+	tel   *telemetry
+}
+
+// NewEmitter builds an emitter over the pool and the global OTel meter. A nil pool
+// yields a meter-only emitter (no persistence, no account resolution).
 func NewEmitter(pool *pgxpool.Pool) *Emitter {
-	return &Emitter{pool: pool, tel: newTelemetry()}
+	var s store
+	if pool != nil {
+		s = db.New(pool)
+	}
+	return &Emitter{store: s, tel: newTelemetry()}
+}
+
+// newEmitterWithStore builds an emitter over an injected store (tests). It is the
+// seam the tenant-integrity unit tests use to exercise account->org resolution and
+// the cross-tenant fail-closed path without a live database.
+func newEmitterWithStore(s store) *Emitter {
+	return &Emitter{store: s, tel: newTelemetry()}
 }
 
 // Emit validates the envelope, persists the event append-only, and increments the
@@ -188,9 +220,20 @@ func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 	if err != nil {
 		return err
 	}
-	if em.pool != nil {
-		if _, err := db.New(em.pool).InsertAnalyticsEvent(ctx, db.InsertAnalyticsEventParams{
-			OrganizationID:          ev.Organization,
+	if em.store != nil {
+		// TENANT INTEGRITY (issue #125, §4.6 never-cut): resolve the AUTHORITATIVE
+		// organization from the account row server-side and reject a disagreeing
+		// supplied org, so a cross-tenant envelope can never be persisted. The row is
+		// written with the RESOLVED org, never the blindly-trusted caller value. The
+		// database's composite (marketplace_account_id, organization_id) foreign key
+		// is the second, concurrency-safe guard (migration 0036) — both boundaries
+		// reject an incoherent pair.
+		org, err := em.resolveOwnerOrg(ctx, ev.Organization, ev.Account)
+		if err != nil {
+			return err
+		}
+		if _, err := em.store.InsertAnalyticsEvent(ctx, db.InsertAnalyticsEventParams{
+			OrganizationID:          org,
 			MarketplaceAccountID:    ev.Account,
 			EntityID:                ev.Entity,
 			Locale:                  ev.Locale,
@@ -207,6 +250,29 @@ func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 	}
 	em.tel.event(ctx, ev.Envelope, ev.Family, ev.Name)
 	return nil
+}
+
+// resolveOwnerOrg returns the AUTHORITATIVE organization that owns account, and
+// fails closed (ErrCrossTenant) when the account is unknown OR is owned by a
+// DIFFERENT organization than the caller supplied. The two rejection cases are
+// deliberately indistinguishable and expose only the caller-supplied account id —
+// never the owning organization — so the error is not an existence oracle for
+// another tenant's account. A genuine infrastructure error (not a tenant conflict)
+// is surfaced as-is, without the tenant-reject signal.
+func (em *Emitter) resolveOwnerOrg(ctx context.Context, suppliedOrg, account uuid.UUID) (uuid.UUID, error) {
+	acct, err := em.store.GetMarketplaceAccount(ctx, account)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			em.tel.tenantReject(ctx)
+			return uuid.Nil, fmt.Errorf("%w: account %s", ErrCrossTenant, account)
+		}
+		return uuid.Nil, fmt.Errorf("analytics: resolve account owner: %w", err)
+	}
+	if suppliedOrg != acct.OrganizationID {
+		em.tel.tenantReject(ctx)
+		return uuid.Nil, fmt.Errorf("%w: account %s", ErrCrossTenant, account)
+	}
+	return acct.OrganizationID, nil
 }
 
 // RecordCost increments a §17.3 variable-cost counter by an INTEGER amount of
