@@ -56,8 +56,18 @@ func (m Money) Currency() string { return m.currency }
 // Exponent returns the base-10 exponent applied to the mantissa.
 func (m Money) Exponent() int8 { return m.exponent }
 
-// IsZero reports whether the mantissa is zero.
-func (m Money) IsZero() bool { return m.mantissa == 0 }
+// IsZero reports whether m is a legitimate monetary zero. It rejects an invalid
+// (uninitialised, empty-currency) receiver with ErrInvalidMoney rather than
+// reporting a missing amount as a real zero (PRD §9.1, money correctness
+// never-cut). The boolean is false on the invalid path, so even a caller that
+// ignores the error never mistakes an invalid value for a legitimate zero. For a
+// value constructed via New/Zero it returns (mantissa == 0, nil).
+func (m Money) IsZero() (bool, error) {
+	if !m.valid() {
+		return false, ErrInvalidMoney
+	}
+	return m.mantissa == 0, nil
+}
 
 // invalidMoneyMarker is the canonical String() rendering of an invalid Money. It
 // is deliberately NOT a parseable "CURRENCY:mantissa:exponent" encoding and
