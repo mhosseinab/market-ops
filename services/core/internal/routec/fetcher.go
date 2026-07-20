@@ -99,6 +99,17 @@ type HTTPFetcher struct {
 // default. latencyCeiling <= 0 disables latency classification; maxBytes <= 0
 // disables the read cap.
 //
+// TRACE-CONTEXT EXCEPTION (issue #152): unlike the core → LLM and core → DK
+// Seller clients (routed through internal/httpx to inject W3C trace context),
+// Route C DELIBERATELY does NOT inject traceparent/tracestate/baggage. Route C is
+// unauthenticated public observation of a potentially hostile, anti-automation
+// host (docs/12): it attaches "a plain, honest UA. No cookies, no auth headers",
+// and adding an internal correlation header would both change the request
+// fingerprint (aiding bot detection) and leak internal trace identifiers to an
+// untrusted third party. Route C's own client span/telemetry lands via the
+// observer's instrumentation (go_connector_observer owns this transport's
+// resilience); trace propagation stops at the process boundary here by design.
+//
 // HOST PINNING (docs/12 host-scope): the fetcher installs a CheckRedirect that
 // REFUSES any redirect that changes host. DK may 302 to a challenge/login page on
 // a different host; Route C must never follow off the public API host it was
