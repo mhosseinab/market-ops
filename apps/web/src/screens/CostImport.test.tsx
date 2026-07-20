@@ -1,5 +1,5 @@
 import { faIR } from "@market-ops/locale";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -291,6 +291,55 @@ describe("Cost import — preview before commit (CST-001)", () => {
     // No preview section and no commit control until an explicit new preview.
     await waitFor(() => expect(screen.queryByTestId("cost-commit")).toBeNull());
     expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+  });
+
+  // Residual for issue #79: the async File.text() read must be GENERATION-bound.
+  // If the seller picks file B while file A's read is still in flight, the older
+  // (A) read can resolve LAST and silently overwrite the newer (B) source — a
+  // stale import would win the import boundary. Each read binds to a monotonic
+  // generation minted at pick time; a read whose generation has been superseded
+  // is DISCARDED on resolve (fail closed — an older, slower read is dropped,
+  // never applied), so only the latest selection's parse reaches the source.
+  it("discards a superseded in-flight file read so the latest selection wins (#79)", async () => {
+    const CSV_A = "SKU,COGS\nDKP-1111111,1000000\n";
+    const CSV_B = "SKU,COGS\nDKP-2222222,2000000\n";
+
+    const deferred = () => {
+      let resolve!: (value: string) => void;
+      const promise = new Promise<string>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    };
+    const readA = deferred();
+    const readB = deferred();
+
+    const fileA = new File([CSV_A], "a.csv", { type: "text/csv" });
+    const fileB = new File([CSV_B], "b.csv", { type: "text/csv" });
+    vi.spyOn(fileA, "text").mockReturnValue(readA.promise);
+    vi.spyOn(fileB, "text").mockReturnValue(readB.promise);
+
+    renderRoute("/cost");
+    const csvInput = (await screen.findByTestId("cost-csv")) as HTMLTextAreaElement;
+    const fileInput = screen.getByTestId("cost-file");
+
+    // Pick A (read in flight), then pick B (read in flight). B's selection is now
+    // authoritative; A's read is already superseded.
+    fireEvent.change(fileInput, { target: { files: [fileA] } });
+    fireEvent.change(fileInput, { target: { files: [fileB] } });
+
+    // Resolve B first: the current selection's parse populates the source.
+    await act(async () => {
+      readB.resolve(CSV_B);
+    });
+    expect(csvInput.value).toBe(CSV_B);
+
+    // Resolve A LAST (the out-of-order finish the bug exploited): it is discarded
+    // because its generation is stale — the source stays B, never reverts to A.
+    await act(async () => {
+      readA.resolve(CSV_A);
+    });
+    expect(csvInput.value).toBe(CSV_B);
   });
 });
 
