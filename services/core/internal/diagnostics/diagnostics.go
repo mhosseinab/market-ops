@@ -102,6 +102,26 @@ type Input struct {
 	// CapturedAt is when the underlying catalog data was captured (variant
 	// updated_at); every diagnostic reports it as its capture time.
 	CapturedAt time.Time
+
+	// Description is the captured listing description content, distinguishing the
+	// three evidence-quality observed states (§4.6):
+	//   nil            → NOT OBSERVED: the connector has not surfaced this field for
+	//                    the variant → not_observed/warn (fail closed, never inferred).
+	//   &""            → OBSERVED EMPTY: the field was observed and is genuinely
+	//                    absent → empty/warn (distinct from not-yet-observed).
+	//   &"<non-empty>" → OBSERVED PRESENT → present/pass, carrying LENGTH only.
+	// The pointer is the ONLY signal that separates genuinely-absent from
+	// not-yet-observed; the raw description text never leaves this boundary.
+	Description *string
+
+	// ImageCount is the captured number of listing images, with the same three-state
+	// semantics as Description:
+	//   nil  → NOT OBSERVED → not_observed/warn (fail closed).
+	//   &0   → OBSERVED EMPTY: observed with zero images → empty/warn.
+	//   &n>0 → OBSERVED PRESENT → present/pass. Image is not a text field, so no
+	//          character-length metadata is recorded. A captured count is
+	//          non-negative; a non-positive count is treated as observed-empty.
+	ImageCount *int
 }
 
 // Derive computes the deterministic, READ-ONLY diagnostics for one variant. The
@@ -111,8 +131,8 @@ type Input struct {
 func Derive(in Input) []Diagnostic {
 	return []Diagnostic{
 		titleDiagnostic(in),
-		unobservedDiagnostic(in, FieldDescription, RuleDescriptionPresent),
-		unobservedDiagnostic(in, FieldImage, RuleImagePresent),
+		descriptionDiagnostic(in),
+		imageDiagnostic(in),
 	}
 }
 
@@ -140,21 +160,64 @@ func titleDiagnostic(in Input) Diagnostic {
 	return d
 }
 
-// unobservedDiagnostic reports a field the connector does not yet surface as
-// not_observed → warn (fail closed, quarantine-over-inference). It NAMES the
-// field + rule and NEVER fabricates a pass. When the DK Seller connector begins
-// surfacing listing description/image content (a go_connector_observer step),
-// this is the seam that gains a real observed value — until then it honestly
-// reports the field as unobserved.
-func unobservedDiagnostic(in Input, field Field, ruleID string) Diagnostic {
+// listingFieldBase builds the NAMED, referenced skeleton (entity, field, rule,
+// evidence ref, capture time) shared by every listing-level diagnostic. The
+// observed state and result are filled in by the field-specific deriver.
+func listingFieldBase(in Input, field Field, ruleID string) Diagnostic {
 	return Diagnostic{
 		Entity:      EntityListing,
 		Field:       field,
 		RuleID:      ruleID,
 		RuleVersion: RuleVersionV1,
-		Result:      ResultWarn,
-		Observed:    ObservedMeta{State: StateNotObserved},
 		EvidenceRef: listingEvidenceRef(in),
 		CapturedAt:  in.CapturedAt,
 	}
+}
+
+// descriptionDiagnostic derives the listing description diagnostic from the
+// CAPTURED observation (Input.Description), honouring the three evidence-quality
+// states (§4.6, never-cut): not-observed (nil) fails closed to not_observed/warn;
+// observed-empty ("") is genuinely-absent → empty/warn; observed-present passes
+// with LENGTH metadata only — the description text itself never leaves the input.
+// It NAMES its field + rule and NEVER fabricates a pass from an unobserved field.
+func descriptionDiagnostic(in Input) Diagnostic {
+	d := listingFieldBase(in, FieldDescription, RuleDescriptionPresent)
+	if in.Description == nil {
+		d.Result = ResultWarn
+		d.Observed = ObservedMeta{State: StateNotObserved}
+		return d
+	}
+	if *in.Description == "" {
+		length := 0
+		d.Result = ResultWarn
+		d.Observed = ObservedMeta{State: StateEmpty, CharacterLength: &length}
+		return d
+	}
+	length := utf8.RuneCountInString(*in.Description)
+	d.Result = ResultPass
+	d.Observed = ObservedMeta{State: StatePresent, CharacterLength: &length}
+	return d
+}
+
+// imageDiagnostic derives the listing image diagnostic from the CAPTURED
+// observation (Input.ImageCount), honouring the same three evidence-quality states:
+// not-observed (nil) fails closed to not_observed/warn; observed with no images
+// (<= 0) is genuinely-absent → empty/warn; observed with images passes. Image is
+// not a text field, so no character-length metadata is recorded. It NAMES its field
+// + rule and NEVER fabricates a pass from an unobserved field.
+func imageDiagnostic(in Input) Diagnostic {
+	d := listingFieldBase(in, FieldImage, RuleImagePresent)
+	if in.ImageCount == nil {
+		d.Result = ResultWarn
+		d.Observed = ObservedMeta{State: StateNotObserved}
+		return d
+	}
+	if *in.ImageCount <= 0 {
+		d.Result = ResultWarn
+		d.Observed = ObservedMeta{State: StateEmpty}
+		return d
+	}
+	d.Result = ResultPass
+	d.Observed = ObservedMeta{State: StatePresent}
+	return d
 }
