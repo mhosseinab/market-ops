@@ -620,6 +620,9 @@ export const en: Catalog = {
   "actions.pending.readState": "Read current DK state",
   "actions.failed.title": "Failed",
   "actions.failed.body": "Only reconciled failures are retry-eligible.",
+  "actions.rejected.title": "Rejected by {marketplace}",
+  "actions.rejected.body":
+    "This is a terminal state. A rejected write is not retryable; propose a new recommendation if a change is still needed.",
   "actions.action.retry": "Retry",
   "actions.retry.eligible": "Eligible; a new approval card is created.",
   "actions.retry.ineligible": "Not eligible.",
@@ -630,6 +633,8 @@ export const en: Catalog = {
   "actions.outcome.result": "Result",
   "actions.outcome.open": "Window still open",
   "actions.outcome.confidence": "Confidence",
+  "actions.outcome.error": "Could not load the outcome window. Try again.",
+  "actions.outcome.pending": "Loading the outcome window…",
   "actions.outcome.attributionNote": "Concurrent changes lower attribution confidence.",
   "actions.audit.title": "Audit trail",
   "actions.audit.card": "Approval-card snapshot",

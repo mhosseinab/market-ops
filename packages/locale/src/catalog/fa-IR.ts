@@ -617,6 +617,9 @@ export const faIR: Catalog = {
   "actions.pending.readState": "خواندن وضعیت فعلی دیجی‌کالا",
   "actions.failed.title": "ناموفق",
   "actions.failed.body": "تنها خطاهای تطبیق‌شده واجد شرایط تلاش مجدد هستند.",
+  "actions.rejected.title": "ردشده توسط {marketplace}",
+  "actions.rejected.body":
+    "این یک وضعیت نهایی است. نوشتن ردشده قابل تلاش مجدد نیست؛ در صورت نیاز به تغییر، پیشنهاد جدیدی ارائه کنید.",
   "actions.action.retry": "تلاش مجدد",
   "actions.retry.eligible": "واجد شرایط؛ یک کارت تایید جدید ساخته می‌شود.",
   "actions.retry.ineligible": "واجد شرایط نیست.",
@@ -627,6 +630,8 @@ export const faIR: Catalog = {
   "actions.outcome.result": "نتیجه",
   "actions.outcome.open": "پنجره هنوز باز است",
   "actions.outcome.confidence": "اطمینان",
+  "actions.outcome.error": "بارگیری پنجرهٔ پیامد ممکن نشد. دوباره تلاش کنید.",
+  "actions.outcome.pending": "در حال بارگیری پنجرهٔ پیامد…",
   "actions.outcome.attributionNote": "تغییرات هم‌زمان اطمینان انتساب را کاهش می‌دهد.",
   "actions.audit.title": "رد ممیزی",
   "actions.audit.card": "عکس‌برداری کارت تایید",
