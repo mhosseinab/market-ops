@@ -428,7 +428,8 @@ export const en: Catalog = {
 
   // ── S27 screens ───────────────────────────────────────────────────────────
   "today.stat.highPriority": "High-priority events",
-  "today.stat.marginAtRisk": "Margin at risk",
+  "today.stat.knownExposureEvents": "Known-exposure events",
+  "today.stat.knownExposureEvents.aria": "{count} events with known exposure",
   "today.stat.yesterdayActions": "Yesterday's actions",
   "today.readiness.title": "Items need resolution before decisions",
   "today.readiness.count": "{count} items need resolution",

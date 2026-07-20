@@ -11,16 +11,33 @@ export function StatCard({
   value,
   labelKey,
   accent = "neutral",
+  ariaLabel,
 }: {
   value: ReactNode;
   labelKey: MessageKey;
   accent?: Accent;
+  /**
+   * An already-localized accessible name for the whole stat. Supply this when the
+   * value alone is ambiguous (e.g. a count whose unit must be spoken explicitly so
+   * it is never announced as a monetary amount — issue #98). When present the card
+   * is exposed as a labeled group and the raw value/label are hidden from AT.
+   */
+  ariaLabel?: string;
 }) {
   const t = useT();
+  const labeled = ariaLabel !== undefined;
   return (
-    <div className="stat-card" data-accent={accent}>
-      <div className="stat-card__value">{value}</div>
-      <div className="stat-card__label">{t(labelKey)}</div>
+    <div
+      className="stat-card"
+      data-accent={accent}
+      {...(labeled ? { role: "group", "aria-label": ariaLabel } : {})}
+    >
+      <div className="stat-card__value" aria-hidden={labeled || undefined}>
+        {value}
+      </div>
+      <div className="stat-card__label" aria-hidden={labeled || undefined}>
+        {t(labelKey)}
+      </div>
     </div>
   );
 }

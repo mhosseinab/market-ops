@@ -26,6 +26,22 @@ describe("Today (ranked feed / EVT-004)", () => {
     expect(screen.getByTestId("event-review")).toHaveTextContent(faIR["today.action.review"]);
   });
 
+  it("labels the known-exposure stat as a COUNT of events, never as a monetary margin (#98)", async () => {
+    server.use(http.get(`${BASE}/today`, () => HttpResponse.json(todayFeed)));
+    renderRoute("/today");
+
+    // The fixture has exactly one known-exposure event (14,100,000 IRR) and one
+    // unknown-exposure event. The stat is a COUNT of known-exposure events (= 1),
+    // NOT a Money aggregate — so its visible label must say so.
+    expect(await screen.findByText(faIR["today.stat.knownExposureEvents"])).toBeInTheDocument();
+
+    // The stat's accessible name is a group that explicitly states it is a count
+    // of known-exposure events — a count is never announced under a money label.
+    const expectedAria = faIR["today.stat.knownExposureEvents.aria"].replace("{count}", "۱");
+    const group = screen.getByRole("group", { name: expectedAria });
+    expect(group).toHaveTextContent("۱");
+  });
+
   it("shows the blocked panel + readiness banner for a non-actionable (conflicted) event", async () => {
     server.use(http.get(`${BASE}/today`, () => HttpResponse.json(todayFeed)));
     renderRoute("/today");
