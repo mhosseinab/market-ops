@@ -12,23 +12,29 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/notify"
 )
 
-// fakeNotify is a NotifyService stub for the handler tests.
+// fakeNotify is a NotifyService stub for the handler tests. It records the org and
+// account it was called with so the tenant-scoping tests (issue #113) can prove the
+// handler resolves scope from the authenticated principal, not from a body/param.
 type fakeNotify struct {
 	items   []notify.Notification
 	unread  int64
 	changed bool
 	err     error
+	gotOrg  uuid.UUID
+	gotAcct uuid.UUID
 	gotAck  uuid.UUID
 }
 
-func (f *fakeNotify) List(context.Context, uuid.UUID) ([]notify.Notification, error) {
+func (f *fakeNotify) ListForOrg(_ context.Context, org, account uuid.UUID) ([]notify.Notification, error) {
+	f.gotOrg, f.gotAcct = org, account
 	return f.items, f.err
 }
-func (f *fakeNotify) UnreadCount(context.Context, uuid.UUID) (int64, error) {
+func (f *fakeNotify) UnreadCountForOrg(_ context.Context, org, account uuid.UUID) (int64, error) {
+	f.gotOrg, f.gotAcct = org, account
 	return f.unread, f.err
 }
-func (f *fakeNotify) MarkRead(_ context.Context, _, id uuid.UUID) (notify.Notification, bool, error) {
-	f.gotAck = id
+func (f *fakeNotify) MarkReadForOrg(_ context.Context, org, account, id uuid.UUID) (notify.Notification, bool, error) {
+	f.gotOrg, f.gotAcct, f.gotAck = org, account, id
 	return notify.Notification{}, f.changed, f.err
 }
 
@@ -121,5 +127,81 @@ func TestAckNotification_ErrorFailsClosed(t *testing.T) {
 	}
 	if _, ok := resp.(gateway.AckNotificationdefaultJSONResponse); !ok {
 		t.Fatalf("want default (fail-closed) response, got %T", resp)
+	}
+}
+
+// TestListNotifications_ForeignAccountIsUniform404 proves a cross-account list/count
+// (the scoped service returns notify.ErrAccountNotFound for a foreign or org-less
+// caller) surfaces as a uniform 404, never a 500 and never a 200 disclosure of
+// another tenant's feed (issue #113, tenant-integrity never-cut, no existence
+// oracle).
+func TestListNotifications_ForeignAccountIsUniform404(t *testing.T) {
+	fn := &fakeNotify{err: notify.ErrAccountNotFound}
+	s := &gatewayServer{notify: fn}
+	resp, err := s.ListNotifications(context.Background(), gateway.ListNotificationsRequestObject{
+		Params: gateway.ListNotificationsParams{MarketplaceAccountId: uuid.New()},
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	def, ok := resp.(gateway.ListNotificationsdefaultJSONResponse)
+	if !ok {
+		t.Fatalf("want default (not-found) response, got %T", resp)
+	}
+	if def.StatusCode != 404 {
+		t.Fatalf("cross-account list status = %d, want 404 (uniform not-found)", def.StatusCode)
+	}
+}
+
+// TestAckNotification_ForeignAccountIsUniform404 proves a cross-account ack (foreign
+// or org-less caller → notify.ErrAccountNotFound) is rejected with a uniform 404 and
+// NO state change is ever attempted under another tenant — never "already read", so
+// no existence oracle (issue #113).
+func TestAckNotification_ForeignAccountIsUniform404(t *testing.T) {
+	fn := &fakeNotify{err: notify.ErrAccountNotFound}
+	s := &gatewayServer{notify: fn}
+	resp, err := s.AckNotification(context.Background(), gateway.AckNotificationRequestObject{
+		Body: &gateway.NotificationAckRequest{MarketplaceAccountId: uuid.New(), NotificationId: uuid.New()},
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	def, ok := resp.(gateway.AckNotificationdefaultJSONResponse)
+	if !ok {
+		t.Fatalf("want default (not-found) response, got %T", resp)
+	}
+	if def.StatusCode != 404 {
+		t.Fatalf("cross-account ack status = %d, want 404 (uniform not-found)", def.StatusCode)
+	}
+}
+
+// TestNotifyHandlers_ScopeFromPrincipalNotBody proves the handlers pass the
+// authenticated principal's org (uuid.Nil here, since no principal is injected in
+// this unit context) to the scoped service alongside the caller-supplied account
+// selector — the account is validated against the org-resolved account, never
+// trusted as authorization (issue #113).
+func TestNotifyHandlers_ScopeFromPrincipalNotBody(t *testing.T) {
+	acct := uuid.New()
+	fn := &fakeNotify{}
+	s := &gatewayServer{notify: fn}
+	if _, err := s.ListNotifications(context.Background(), gateway.ListNotificationsRequestObject{
+		Params: gateway.ListNotificationsParams{MarketplaceAccountId: acct},
+	}); err != nil {
+		t.Fatalf("list handler error: %v", err)
+	}
+	if fn.gotOrg != uuid.Nil {
+		t.Fatalf("list org = %v, want uuid.Nil (no principal → org-less, fail closed)", fn.gotOrg)
+	}
+	if fn.gotAcct != acct {
+		t.Fatalf("list account selector = %v, want %v", fn.gotAcct, acct)
+	}
+	id := uuid.New()
+	if _, err := s.AckNotification(context.Background(), gateway.AckNotificationRequestObject{
+		Body: &gateway.NotificationAckRequest{MarketplaceAccountId: acct, NotificationId: id},
+	}); err != nil {
+		t.Fatalf("ack handler error: %v", err)
+	}
+	if fn.gotOrg != uuid.Nil || fn.gotAcct != acct || fn.gotAck != id {
+		t.Fatalf("ack scope = (org %v, acct %v, id %v), want (Nil, %v, %v)", fn.gotOrg, fn.gotAcct, fn.gotAck, acct, id)
 	}
 }
