@@ -37,6 +37,7 @@ jobs:
       py: ${{ steps.filter.outputs.py }}
       ts: ${{ steps.filter.outputs.ts }}
       deploy: ${{ steps.filter.outputs.deploy }}
+      ledger: ${{ steps.filter.outputs.ledger }}
       workflow: ${{ steps.filter.outputs.workflow }}
     steps:
       - uses: actions/checkout@v7
@@ -91,6 +92,11 @@ jobs:
               - 'runbooks/**'
               - 'tools/obs/**'
               - 'tools/integration/**'
+              - 'Taskfile.yml'
+              - '.github/workflows/**'
+            ledger:
+              - 'docs/implementation/dk-p0-progress.md'
+              - 'tools/ledger/**'
               - 'Taskfile.yml'
               - '.github/workflows/**'
             workflow:
@@ -322,6 +328,37 @@ jobs:
       # compose-based integration suite itself still runs push-only.
       - name: verify integration scripts preserve deploy/.env
         run: bash tools/integration/env_preservation_test.sh
+
+  ledger-integrity:
+    name: ledger integrity (verification-gate)
+    needs: detect
+    # Runs whenever the authoritative progress ledger, the validator + its
+    # fixtures/tests, its Taskfile wiring, or the workflow changes (issue #203).
+    # Before #203 a ledger-only or validator-only PR completed with only `detect`
+    # and NO ledger-integrity check, so a malformed/weakened ledger could merge
+    # green. This job is the remote enforcement point for the never-cut
+    # ledger-integrity rule (issue #19): a step may be `passed` — and satisfy a
+    # dependency gate — only after every MANDATORY verification has a successful
+    # evidence record.
+    if: ${{ needs.detect.outputs.ledger == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      # Regression suite FIRST: the RED fixture (S2 `passed` + pending-mandatory)
+      # MUST be rejected and the GREEN fixture MUST be accepted, proving the
+      # validator itself still fails closed. The validator is stdlib-only, so no
+      # dependency install is needed. NO `|| true` — either command's non-zero
+      # exit fails the job (fail-closed).
+      - name: ledger validator regression suite (negative + positive fixtures)
+        run: bash tools/ledger/validate_ledger_test.sh
+      # Then validate the REAL checked-out ledger. A `passed` step whose exact
+      # Verify block is still a pending mandatory gate — or any unclassified
+      # deferred bullet — makes this exit non-zero and fails the merge.
+      - name: validate the real progress ledger
+        run: python3 tools/ledger/validate_ledger.py --file docs/implementation/dk-p0-progress.md
 
   ts:
     name: ts
