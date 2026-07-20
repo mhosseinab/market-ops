@@ -11,8 +11,8 @@ import { SectionError } from "../components/SectionError";
 import { ViewState } from "../components/ViewState";
 import { classifyDisposition, type Disposition } from "../data/disposition";
 import { formatCount } from "../data/format";
-import { offerRowKey, offersByTargetId } from "../data/offers";
 import { queryKeys, useBulkConfirm, useObservationTargets, useObservedOffers } from "../data/hooks";
+import { offerRowKey, offersByTargetId } from "../data/offers";
 import type {
   BulkApprovalConfirmResult,
   MarginReadiness,
@@ -154,7 +154,13 @@ export function BulkApproval() {
   );
   const readinessByTargetId = useMemo(() => {
     const map = new Map<string, (typeof readinessQueries)[number]>();
-    pageTargets.forEach((tg, i) => map.set(tg.id, readinessQueries[i]));
+    for (let i = 0; i < pageTargets.length; i++) {
+      const tg = pageTargets[i];
+      const q = readinessQueries[i];
+      if (tg && q) {
+        map.set(tg.id, q);
+      }
+    }
     return map;
   }, [pageTargets, readinessQueries]);
 

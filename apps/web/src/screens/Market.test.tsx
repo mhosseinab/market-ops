@@ -55,7 +55,12 @@ describe("Market (freshness / quality / conflicts)", () => {
   it("keeps BOTH offer identities on one target visible and attributable (OBS-004)", async () => {
     // Two offer identities on the SAME target: a Verified one and a Conflicted
     // sibling. The conflicted sibling must NOT disappear behind the verified one.
-    const verified = { ...offer, id: "o-v", offerIdentity: "8842213:seller-1", quality: "verified" as const };
+    const verified = {
+      ...offer,
+      id: "o-v",
+      offerIdentity: "8842213:seller-1",
+      quality: "verified" as const,
+    };
     const conflicted = {
       ...offer,
       id: "o-c",
@@ -80,7 +85,12 @@ describe("Market (freshness / quality / conflicts)", () => {
   });
 
   it("is order-independent — reordering the offers does not change what is shown", async () => {
-    const a = { ...offer, id: "o-a", offerIdentity: "8842213:seller-1", quality: "verified" as const };
+    const a = {
+      ...offer,
+      id: "o-a",
+      offerIdentity: "8842213:seller-1",
+      quality: "verified" as const,
+    };
     const b = { ...offer, id: "o-b", offerIdentity: "8842213:seller-2", quality: "stale" as const };
     server.use(
       http.get(`${BASE}/observation/observed-offers`, () => HttpResponse.json({ items: [b, a] })),
@@ -88,10 +98,7 @@ describe("Market (freshness / quality / conflicts)", () => {
     renderRoute("/market");
     const rows = await screen.findAllByText(/8842213:seller-/);
     // Both offer identities present regardless of the arrival order.
-    expect(rows.map((n) => n.textContent).sort()).toEqual([
-      "8842213:seller-1",
-      "8842213:seller-2",
-    ]);
+    expect(rows.map((n) => n.textContent).sort()).toEqual(["8842213:seller-1", "8842213:seller-2"]);
   });
 
   it("surfaces the empty state when there are no watch targets", async () => {

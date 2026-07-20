@@ -30,7 +30,7 @@ describe("offersByTargetId (OBS-004: preserve every offer identity, order-indepe
     const reversed = offersByTargetId([c, b, a]);
     const norm = (m: Map<string, ObservedOffer[]>) =>
       [...m.entries()]
-        .map(([k, v]) => [k, v.map((o) => o.id)])
+        .map(([k, v]): [string, string[]] => [k, v.map((o) => o.id)])
         .sort((x, y) => (x[0] < y[0] ? -1 : 1));
     expect(norm(forward)).toEqual(norm(reversed));
     expect(forward.get("t-1")?.map((o) => o.id)).toEqual(["o-a", "o-b"]);

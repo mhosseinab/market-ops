@@ -210,7 +210,11 @@ export function Market() {
         ) : null}
 
         <Section titleKey="market.watch.title">
-          <DataTable columns={columns} rows={rows} rowKey={(r) => offerRowKey(r.target.id, r.offer)} />
+          <DataTable
+            columns={columns}
+            rows={rows}
+            rowKey={(r) => offerRowKey(r.target.id, r.offer)}
+          />
         </Section>
       </ViewState>
     </div>

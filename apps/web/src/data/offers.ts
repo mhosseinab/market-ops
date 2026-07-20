@@ -9,9 +9,7 @@ import type { ObservedOffer } from "./types";
 // offer and sorts each target's offers by their OWN stable identity — offer
 // identity then id — so the rendered/classified result is ORDER-INDEPENDENT:
 // reordering `updated_at` never changes what is shown or how it is classified.
-export function offersByTargetId(
-  offers: readonly ObservedOffer[],
-): Map<string, ObservedOffer[]> {
+export function offersByTargetId(offers: readonly ObservedOffer[]): Map<string, ObservedOffer[]> {
   const map = new Map<string, ObservedOffer[]>();
   for (const o of offers) {
     const list = map.get(o.targetId);
@@ -24,8 +22,7 @@ export function offersByTargetId(
 
 // Deterministic, timestamp-independent order for a target's offers.
 function compareOfferIdentity(a: ObservedOffer, b: ObservedOffer): number {
-  if (a.offerIdentity !== b.offerIdentity)
-    return a.offerIdentity < b.offerIdentity ? -1 : 1;
+  if (a.offerIdentity !== b.offerIdentity) return a.offerIdentity < b.offerIdentity ? -1 : 1;
   if (a.id !== b.id) return a.id < b.id ? -1 : 1;
   return 0;
 }
