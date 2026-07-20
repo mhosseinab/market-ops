@@ -8,9 +8,17 @@ import { useBriefing, utcBusinessDay } from "../hooks";
 import type { BriefingEvent } from "../types";
 
 // Pre-loaded daily briefing (CHAT-010): a READ whose events carry the SAME ids +
-// order as the Today feed. §16 briefing-failure: on error show the dated
-// last-briefing failure state — Today stays current. Ranks/counts render in the
-// locale's digit family.
+// order as the Today feed. §16 briefing-failure: on error show a failure state —
+// Today stays current. Ranks/counts render in the locale's digit family.
+//
+// Provenance (evidence-quality never-cut, #119): a FAILED fetch must NEVER present
+// the requested business day as a "last briefing" date. Error ≠ absence (the #81 /
+// #295 pattern): a request date is not observed history. No authoritative prior
+// briefing is available on this surface (the /briefing read is single-day, with no
+// latest-success metadata or persisted client cache), so the failure state is an
+// explicit unknown/unavailable message carrying NO date. Showing a REAL prior date
+// would require a new briefing-read contract field/endpoint (escalated — the
+// contracts slot is held by #115); it is deliberately NOT fabricated here.
 
 const SEVERITY_KEY: Record<string, MessageKey> = {
   info: "event.severity.info",
@@ -48,14 +56,14 @@ export function BriefingPanel() {
   const query = useBriefing(businessDay);
 
   if (query.isError) {
-    // §16 briefing failure: dated last-briefing + failure state; Today unaffected.
+    // §16 briefing failure (#119): explicit unknown/unavailable provenance — NO
+    // date. The requested day is never synthesized as a stored briefing date;
+    // Today stays current.
     return (
       <section className="briefing briefing--failed" data-testid="briefing-failure">
         <p className="briefing__title">{t("chat.briefing.failure.title")}</p>
-        <p className="briefing__failure-body">
-          {t("chat.briefing.failure.body", {
-            date: formatInstant(`${businessDay}T00:00:00Z`, locale),
-          })}
+        <p className="briefing__failure-body" data-testid="briefing-failure-unknown">
+          {t("chat.briefing.failure.unknownLast")}
         </p>
       </section>
     );
@@ -67,7 +75,7 @@ export function BriefingPanel() {
       <ViewState pending={query.isPending} error={false}>
         {query.data && query.data.events.length > 0 ? (
           <>
-            <p className="briefing__generatedAt">
+            <p className="briefing__generatedAt" data-testid="briefing-generatedAt">
               {t("chat.briefing.generatedAt", {
                 time: formatInstant(query.data.generatedAt, locale),
               })}
