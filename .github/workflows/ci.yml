@@ -137,9 +137,12 @@ jobs:
         with:
           enable-cache: true
       - run: pnpm install --frozen-lockfile
+      # Hermetic regression test for the drift gate's state detection (issue #3):
+      # proves it catches unstaged, staged/cached, AND untracked changes.
+      - run: task contracts:drift:test
       # Regenerate every gen/ artifact from its contract source, then fail if the
-      # committed tree drifted (task contracts:drift = generate + git diff
-      # --exit-code -- contracts gen).
+      # committed tree drifted. drift-check.sh checks unstaged + staged + untracked
+      # changes under contracts/ and gen/ (task contracts:drift = generate + detect).
       - run: task contracts:drift
 
   go:
