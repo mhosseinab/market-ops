@@ -682,6 +682,12 @@ export const faIR: Catalog = {
   "bulk.reason.partial": "بهای جزئی؛ فقط تحلیل",
   "bulk.reason.jitRefresh": "نیازمند به‌روزرسانی لحظه‌ای",
   "bulk.reason.ready": "آمادهٔ اجرا",
+  "bulk.pagination.label": "صفحه‌بندی",
+  "bulk.pagination.prev": "قبلی",
+  "bulk.pagination.next": "بعدی",
+  "bulk.readiness.error.title": "آمادگی حاشیهٔ برخی ردیف‌ها بارگذاری نشد",
+  "bulk.readiness.error.body":
+    "آمادگی حاشیهٔ برخی ردیف‌های این صفحه بارگذاری نشد. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
 
   "settings.connection.title": "اتصال دیجی‌کالا",
   "settings.connection.manage": "مدیریت اتصال ←",

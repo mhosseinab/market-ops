@@ -1,11 +1,35 @@
 import { faIR } from "@market-ops/locale";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
-import { bulkValid, readinessComplete } from "../test/msw/fixtures";
+import type { ObservationTarget, ObservedOffer } from "../data/types";
+import { bulkValid, offer, readinessComplete, target } from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
+import { BULK_READINESS_PAGE_SIZE } from "./BulkApproval";
+
+/** N observation targets with distinct ids and native identifiers. */
+function makeTargets(n: number): ObservationTarget[] {
+  return Array.from({ length: n }, (_, i) => ({
+    ...target,
+    id: `t-${i}`,
+    variantId: `00000000-0000-0000-0000-${String(i).padStart(12, "0")}`,
+    nativeVariantId: 6000000 + i,
+    nativeProductId: 7000000 + i,
+  }));
+}
+
+/** One Verified offer per target so quality never blocks the classification. */
+function offersFor(targets: ObservationTarget[]): ObservedOffer[] {
+  return targets.map((tg, i) => ({
+    ...offer,
+    id: `o-${i}`,
+    targetId: tg.id,
+    nativeVariantId: tg.nativeVariantId,
+    offerIdentity: `${tg.nativeVariantId}:seller-1`,
+  }));
+}
 
 afterEach(() => {
   document.documentElement.removeAttribute("dir");
@@ -74,5 +98,73 @@ describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set l
     expect(screen.getByTestId("bulk-footnote")).toHaveTextContent(faIR["bulk.footnote"]);
     // No <form> wraps the surface, so Enter cannot submit-confirm a bulk set.
     expect(document.querySelector("form")).toBeNull();
+  });
+
+  it("bounds the readiness fan-out to one page regardless of target count (§17.2, #245)", async () => {
+    const targets = makeTargets(BULK_READINESS_PAGE_SIZE + 6);
+    let readinessCalls = 0;
+    server.use(
+      http.get(`${BASE}/observation/targets`, () => HttpResponse.json({ items: targets })),
+      http.get(`${BASE}/observation/observed-offers`, () =>
+        HttpResponse.json({ items: offersFor(targets) }),
+      ),
+      http.get(`${BASE}/cost/readiness`, ({ request }) => {
+        readinessCalls += 1;
+        const variantId = new URL(request.url).searchParams.get("variantId") ?? "";
+        return HttpResponse.json({ ...readinessComplete, variantId });
+      }),
+    );
+    renderRoute("/bulk");
+
+    // The toolbar renders once targets resolve; readiness then fans out — but only
+    // for the current page, never all 31 targets.
+    await screen.findByTestId("bulk-toolbar");
+    await waitFor(() => expect(readinessCalls).toBeGreaterThan(0));
+    // Let any in-flight readiness settle, then assert the hard bound holds.
+    await waitFor(() => expect(screen.getByTestId("bulk-page-indicator")).toBeInTheDocument());
+    expect(readinessCalls).toBeLessThanOrEqual(BULK_READINESS_PAGE_SIZE);
+    expect(readinessCalls).toBeLessThan(targets.length);
+    // The next page is reachable (more targets exist beyond this page).
+    expect(screen.getByTestId("bulk-next-page")).not.toBeDisabled();
+    expect(screen.getByTestId("bulk-prev-page")).toBeDisabled();
+  });
+
+  it("degrades on partial readiness failure: keeps rows, scoped retry, no fabricated verdict (#81/#245)", async () => {
+    const targets = makeTargets(2);
+    const [good, bad] = [targets[1], targets[0]] as [ObservationTarget, ObservationTarget];
+    server.use(
+      http.get(`${BASE}/observation/targets`, () => HttpResponse.json({ items: targets })),
+      http.get(`${BASE}/observation/observed-offers`, () =>
+        HttpResponse.json({ items: offersFor(targets) }),
+      ),
+      http.get(`${BASE}/cost/readiness`, ({ request }) => {
+        const variantId = new URL(request.url).searchParams.get("variantId") ?? "";
+        // The FIRST target's readiness fails; the SECOND resolves Complete.
+        if (variantId === bad.variantId) return new HttpResponse(null, { status: 500 });
+        return HttpResponse.json({ ...readinessComplete, variantId });
+      }),
+    );
+    renderRoute("/bulk");
+
+    // The scoped section error appears with an actionable retry.
+    const sectionError = await screen.findByTestId("bulk-readiness-error");
+    expect(sectionError).toHaveTextContent(faIR["bulk.readiness.error.title"]);
+    expect(sectionError.querySelector("button")).not.toBeNull();
+
+    // BOTH rows still render — the failed row is not dropped.
+    expect(screen.getByText(String(good.nativeVariantId))).toBeInTheDocument();
+    expect(screen.getByText(String(bad.nativeVariantId))).toBeInTheDocument();
+
+    // The successful row classifies as Executable (scoped to the table — the
+    // toolbar stat card shares the same glossary word).
+    const table = document.querySelector(".data-table") as HTMLElement;
+    expect(within(table).getByText(faIR["bulk.status.executable"])).toBeInTheDocument();
+
+    // The FAILED row is NOT fabricated into a "missing cost" blocked verdict —
+    // error is not absence. No missing-cost reason is surfaced IN THE TABLE
+    // (scoped: the "Missing" readiness filter chip shares the glossary phrase).
+    expect(within(table).queryByText(faIR["bulk.reason.missingCost"])).toBeNull();
+    // The failed row carries no include control (an unknown verdict is never executable).
+    expect(screen.queryByTestId(`bulk-include-${bad.nativeVariantId}`)).toBeNull();
   });
 });

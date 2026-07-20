@@ -712,6 +712,11 @@ export const MESSAGE_KEYS = [
   "bulk.reason.partial",
   "bulk.reason.jitRefresh",
   "bulk.reason.ready",
+  "bulk.pagination.label",
+  "bulk.pagination.prev",
+  "bulk.pagination.next",
+  "bulk.readiness.error.title",
+  "bulk.readiness.error.body",
 
   // Settings (admin levels §8.3)
   "settings.connection.title",
