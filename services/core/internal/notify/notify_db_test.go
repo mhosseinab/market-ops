@@ -72,6 +72,24 @@ func (r fixedResolver) Resolve(_ context.Context, _ uuid.UUID) (notify.Target, e
 	return r.target, nil
 }
 
+// digestClockAfterLatest returns a fixed clock pinned to noon UTC on the day AFTER
+// the account's latest notification created_at. The digest finalizes only a CLOSED
+// business day (issue #114), so a test that seeds "today" rows must run the pass on
+// the following UTC day for those rows' window [day, day+24h) to be complete.
+func digestClockAfterLatest(t *testing.T, pool *pgxpool.Pool, account uuid.UUID) func() time.Time {
+	t.Helper()
+	var latest time.Time
+	if err := pool.QueryRow(context.Background(),
+		`SELECT max(created_at) FROM notifications WHERE marketplace_account_id = $1`,
+		account).Scan(&latest); err != nil {
+		t.Fatalf("read latest created_at: %v", err)
+	}
+	l := latest.UTC()
+	day := time.Date(l.Year(), l.Month(), l.Day(), 0, 0, 0, 0, time.UTC)
+	next := day.Add(36 * time.Hour) // noon on the following (current) UTC day
+	return func() time.Time { return next }
+}
+
 // TestDeliver_DedupCreatesNoDuplicateEvent is the NOT-001 never-cut negative
 // (written first): delivering the SAME (account, dedup_key) twice creates exactly
 // ONE notification row. The second delivery returns Delivered=false and the SAME
@@ -262,7 +280,7 @@ func TestSafetyFailureBypassesDigest(t *testing.T) {
 	mailer := &captureMailer{}
 	digest := notify.NewDigestService(pool, mailer, fixedResolver{notify.Target{
 		Email: "owner@example.com", Locale: "en", BriefingURL: "https://app/briefing",
-	}})
+	}}).WithClock(digestClockAfterLatest(t, pool, account))
 	sent, err := digest.GenerateForAccount(ctx, account)
 	if err != nil {
 		t.Fatalf("generate digest: %v", err)
@@ -306,7 +324,7 @@ func TestDigestSharesEventIDsWithInApp(t *testing.T) {
 	mailer := &captureMailer{}
 	digest := notify.NewDigestService(pool, mailer, fixedResolver{notify.Target{
 		Email: "owner@example.com", Locale: "fa-IR", BriefingURL: "https://app/briefing",
-	}})
+	}}).WithClock(digestClockAfterLatest(t, pool, account))
 	sent, err := digest.GenerateForAccount(ctx, account)
 	if err != nil {
 		t.Fatalf("generate: %v", err)
@@ -330,7 +348,7 @@ func TestDigestSharesEventIDsWithInApp(t *testing.T) {
 	// The persisted membership snapshot carries the same shared ids.
 	header, err := q.GetDigestByAccountDay(ctx, db.GetDigestByAccountDayParams{
 		MarketplaceAccountID: account,
-		BusinessDay:          pgDate(digest.BusinessDay()),
+		BusinessDay:          pgDate(digest.FinalizedBusinessDay()),
 	})
 	if err != nil {
 		t.Fatalf("get digest: %v", err)
@@ -402,12 +420,13 @@ func TestDigest_IsolatesInvalidRow(t *testing.T) {
 	mailer := &captureMailer{}
 	digest := notify.NewDigestService(pool, mailer, fixedResolver{notify.Target{
 		Email: "owner@example.com", Locale: "en", BriefingURL: "https://app/briefing",
-	}}).WithIsolatedObserver(func(_ context.Context, acct, _ uuid.UUID, _, _ string, reason notify.ValidationReason) {
-		if acct == account {
-			isolatedCount++
-			isolatedReason = reason
-		}
-	})
+	}}).WithClock(digestClockAfterLatest(t, pool, account)).
+		WithIsolatedObserver(func(_ context.Context, acct, _ uuid.UUID, _, _ string, reason notify.ValidationReason) {
+			if acct == account {
+				isolatedCount++
+				isolatedReason = reason
+			}
+		})
 
 	sent, err := digest.GenerateForAccount(ctx, account)
 	if err != nil {
