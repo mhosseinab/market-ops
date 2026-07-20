@@ -294,4 +294,17 @@ func TestSystemDuplicateWrite_ConcurrentDoubleConfirmExecute(t *testing.T) {
 	if got := atomic.LoadInt32(writes); got != 1 {
 		t.Fatalf("concurrent double-confirm: mockdk saw %d external writes; want exactly 1 (EXE-002)", got)
 	}
+	// Third, independent measurement (matching the S18 service-level sibling,
+	// internal/execution/service_db_test.go): the persisted row count. This
+	// closes the residual gap between "what the API reported" (DidWrite) / "what
+	// mockdk observed" (write counter) and "what is actually persisted" —
+	// reinforcing the EXE-002 exactly-one-write invariant at the wire boundary.
+	var rows int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM action_executions WHERE action_id = $1`, card.ActionID).Scan(&rows); err != nil {
+		t.Fatalf("count action_executions rows: %v", err)
+	}
+	if rows != 1 {
+		t.Fatalf("concurrent double-confirm: action_executions rows = %d; want exactly 1 (EXE-002)", rows)
+	}
 }
