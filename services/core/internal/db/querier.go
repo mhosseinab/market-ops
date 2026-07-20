@@ -123,6 +123,13 @@ type Querier interface {
 	// The per-account readiness distribution backing the ≥70%-Complete beta gate
 	// (§20.2 / §21). The caller computes the Complete ratio from these counts.
 	CountMarginReadinessStates(ctx context.Context, marketplaceAccountID uuid.UUID) ([]CountMarginReadinessStatesRow, error)
+	// Count the material (warning|critical) market events for the window's account and
+	// variant whose first detection falls inside the outcome window (§15.3 confidence:
+	// 0 ⇒ High, 1 ⇒ Medium, >=2 ⇒ Low). Derived from the existing append-only
+	// market_events, bound through the window's card → recommendation → variant. When
+	// the window has no bound card/recommendation (no variant to attribute to), this
+	// returns 0.
+	CountMaterialConcurrentChanges(ctx context.Context, actionID uuid.UUID) (int64, error)
 	CountOwnedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountProducts(ctx context.Context, marketplaceAccountID uuid.UUID) (int64, error)
 	CountRecommendationInvalidationsForIdentity(ctx context.Context, identityID uuid.UUID) (int64, error)
@@ -399,6 +406,17 @@ type Querier interface {
 	// so possession of a UUID never grants cross-organization access (S8-AUTHZ-001).
 	GetOrgMarketplaceAccountID(ctx context.Context, arg GetOrgMarketplaceAccountIDParams) (uuid.UUID, error)
 	GetOrganization(ctx context.Context, id uuid.UUID) (Organization, error)
+	// The authoritative post-action outcome determination bound to an action's window
+	// (issue #107 / §15.3). It is scoped THREE ways so the closer never uses evidence
+	// that does not belong to this action, account, and measured window:
+	//   * e.action_id matches the window's action;
+	//   * when the window has a bound card, the evidence account MUST equal the card's
+	//     marketplace account (a foreign-account determination matches no row);
+	//   * the measured [window_start, window_end) span MUST fall inside the outcome
+	//     window's [opened_at, closes_at).
+	// The NEWEST determination wins (append-only re-measurement). No row ⇒ the pipeline
+	// has not measured yet ⇒ the closer leaves the window unclosed (NEVER NotMeasurable).
+	GetOutcomeEvidenceForAction(ctx context.Context, actionID uuid.UUID) (OutcomeEvidence, error)
 	GetOutcomeResult(ctx context.Context, windowID uuid.UUID) (OutcomeResult, error)
 	GetOutcomeWindowByAction(ctx context.Context, actionID uuid.UUID) (OutcomeWindow, error)
 	// Tenant-scoped outcome-window fetch (issue #102): outcome_windows carries no
