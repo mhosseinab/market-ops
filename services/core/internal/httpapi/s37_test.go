@@ -95,7 +95,7 @@ type fakeGuardrail struct {
 func (f *fakeGuardrail) GetForOrg(context.Context, uuid.UUID, uuid.UUID) (guardrail.ConfigView, error) {
 	return f.view, f.err
 }
-func (f *fakeGuardrail) SetForOrg(context.Context, uuid.UUID, uuid.UUID, audit.Actor, guardrail.Settings) (guardrail.ConfigView, error) {
+func (f *fakeGuardrail) SetForOrg(context.Context, uuid.UUID, uuid.UUID, audit.Actor, guardrail.Settings, int64) (guardrail.ConfigView, error) {
 	return f.view, f.err
 }
 

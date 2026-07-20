@@ -62,7 +62,7 @@ func seedGuardrails(t *testing.T, pool *pgxpool.Pool, account uuid.UUID, movemen
 			CooldownSeconds:   3600,
 			Strategy:          policy.StrategyMatch,
 			StrategyEnabled:   true,
-		}); err != nil {
+		}, 0); err != nil {
 		t.Fatalf("seed guardrails: %v", err)
 	}
 }
@@ -126,7 +126,9 @@ func TestTenantScopingS37_CrossAccountGuardrailsAreNotFound(t *testing.T) {
 	if rec := getJSON(t, srvA, tokA, "/guardrails?marketplaceAccountId="+a, nil); rec.Code != http.StatusOK {
 		t.Fatalf("account A's own GET /guardrails: status=%d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	ownWrite := `{"marketplaceAccountId":"` + a + `","settings":{"contributionFloor":{"mantissa":"1000","currency":"USD","exponent":-2},"movementCapBasisPoints":300,"cooldownSeconds":3600,"strategy":"hold","strategyEnabled":false}}`
+	// expectedVersion=1: the seed was A's first write (version 1). This tightens
+	// the cap (500 -> 300), holds cooldown/floor, so stricter-only passes.
+	ownWrite := `{"marketplaceAccountId":"` + a + `","expectedVersion":1,"settings":{"contributionFloor":{"mantissa":"1000","currency":"USD","exponent":-2},"movementCapBasisPoints":300,"cooldownSeconds":3600,"strategy":"hold","strategyEnabled":false}}`
 	if rec := postJSON(t, srvA, tokA, "/guardrails", ownWrite); rec.Code != http.StatusOK {
 		t.Fatalf("account A's own POST /guardrails: status=%d, want 200; body=%s", rec.Code, rec.Body.String())
 	}

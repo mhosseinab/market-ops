@@ -29,7 +29,7 @@ type recordingGuardrail struct{ setCalls int }
 func (f *recordingGuardrail) GetForOrg(context.Context, uuid.UUID, uuid.UUID) (guardrail.ConfigView, error) {
 	return guardrail.ConfigView{}, nil
 }
-func (f *recordingGuardrail) SetForOrg(context.Context, uuid.UUID, uuid.UUID, audit.Actor, guardrail.Settings) (guardrail.ConfigView, error) {
+func (f *recordingGuardrail) SetForOrg(context.Context, uuid.UUID, uuid.UUID, audit.Actor, guardrail.Settings, int64) (guardrail.ConfigView, error) {
 	f.setCalls++
 	return guardrail.ConfigView{}, nil
 }

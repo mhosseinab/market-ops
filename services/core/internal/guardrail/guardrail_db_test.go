@@ -86,7 +86,7 @@ func TestGuardrailSetAppendsAuditAtomically(t *testing.T) {
 		Strategy:          policy.StrategyMatch,
 		StrategyEnabled:   true,
 	}
-	view, err := svc.Set(context.Background(), account, actor, settings)
+	view, err := svc.Set(context.Background(), account, actor, settings, 0)
 	if err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestGuardrailSetRejectsInvalidStrategy(t *testing.T) {
 	_, err := svc.Set(context.Background(), account, actor, guardrail.Settings{
 		ContributionFloor: mustMoney(t, 100, "USD", -2),
 		Strategy:          "not_a_real_strategy",
-	})
+	}, 0)
 	if err != guardrail.ErrInvalidStrategy {
 		t.Fatalf("err = %v, want ErrInvalidStrategy", err)
 	}

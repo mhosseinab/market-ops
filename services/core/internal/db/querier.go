@@ -1018,6 +1018,13 @@ type Querier interface {
 	// yields zero source rows: nothing is inserted, no conflict fires, and RETURNING
 	// is empty (pgx.ErrNoRows) — the same fail-closed result as an unknown account.
 	UpsertConnectorConnection(ctx context.Context, arg UpsertConnectorConnectionParams) (ConnectorConnection, error)
+	// Optimistic-concurrency guarded upsert (issue #101). On a fresh INSERT the row
+	// starts at version 1. On an UPDATE the version-guarded WHERE commits ONLY if the
+	// caller's expected_version is still current, bumping it by one; a stale write
+	// matches no row, so RETURNING yields nothing (pgx.ErrNoRows) and the service maps
+	// that to a SAFE conflict — never a lost update. The create race is caught by the
+	// same guard: the second concurrent INSERT conflicts and its DO UPDATE WHERE
+	// version = expected(0) no longer matches the just-created version-1 row.
 	UpsertGuardrailSettings(ctx context.Context, arg UpsertGuardrailSettingsParams) (GuardrailSetting, error)
 	UpsertListing(ctx context.Context, arg UpsertListingParams) (UpsertListingRow, error)
 	// Recompute the derived readiness projection (CST-003). Upsert: readiness is a

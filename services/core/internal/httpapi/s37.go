@@ -39,7 +39,7 @@ import (
 // SetForOrg, a money/policy write — no mutation and no audit row.
 type GuardrailService interface {
 	GetForOrg(ctx context.Context, organizationID, account uuid.UUID) (guardrail.ConfigView, error)
-	SetForOrg(ctx context.Context, organizationID, account uuid.UUID, actor audit.Actor, settings guardrail.Settings) (guardrail.ConfigView, error)
+	SetForOrg(ctx context.Context, organizationID, account uuid.UUID, actor audit.Actor, settings guardrail.Settings, expectedVersion int64) (guardrail.ConfigView, error)
 }
 
 // WatchlistService backs the /watchlist routes (EXT-007, S37).
@@ -301,21 +301,38 @@ func (s *gatewayServer) SetGuardrails(
 		Strategy:          policy.Strategy(req.Body.Settings.Strategy),
 		StrategyEnabled:   req.Body.Settings.StrategyEnabled,
 	}
+	// Optimistic concurrency (issue #101): the caller echoes the version it last
+	// read (GuardrailConfigView.version). Absent ⇒ 0 ⇒ "first write" — which fails
+	// closed for an already-configured account (its version is ≥ 1), forcing a
+	// read-before-write. Never inferred from anything but the explicit field.
+	var expectedVersion int64
+	if req.Body.ExpectedVersion != nil {
+		expectedVersion = *req.Body.ExpectedVersion
+	}
 	// Tenant scoping (issue #237): SetForOrg resolves the caller's OWN account from
 	// the authenticated org and enforces ownership BEFORE any state change or audit
 	// append. A foreign or org-less caller — including one supplying another tenant's
 	// account id in the body — is a uniform 404 with NO guardrail mutation and NO
 	// audit row for the foreign account (a money/policy write is the highest-severity
 	// tenant-integrity surface, §4.6).
-	view, err := s.guardrail.SetForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, actorFromPrincipal(ctx, "screens"), settings)
+	view, err := s.guardrail.SetForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, actorFromPrincipal(ctx, "screens"), settings, expectedVersion)
 	if err != nil {
-		if errors.Is(err, guardrail.ErrAccountNotFound) {
+		switch {
+		case errors.Is(err, guardrail.ErrAccountNotFound):
 			return gateway.SetGuardrailsdefaultJSONResponse{StatusCode: 404, Body: guardrailErr(err)}, nil
-		}
-		if errors.Is(err, guardrail.ErrInvalidStrategy) {
+		case errors.Is(err, guardrail.ErrInvalidStrategy):
 			return gateway.SetGuardrailsdefaultJSONResponse{StatusCode: 400, Body: guardrailErr(err)}, nil
+		case errors.Is(err, guardrail.ErrNotStricter):
+			// A loosening is a legitimate request the stricter-only gate (PRC-004 /
+			// §8.3) declined — a structured 400, nothing persisted (fail closed).
+			return gateway.SetGuardrailsdefaultJSONResponse{StatusCode: 400, Body: guardrailNotStricterErr(err)}, nil
+		case errors.Is(err, guardrail.ErrVersionConflict):
+			// A stale-version write: a SAFE 409 conflict, never a lost update. The
+			// caller must reload the current values and retry (issue #101).
+			return gateway.SetGuardrailsdefaultJSONResponse{StatusCode: 409, Body: guardrailConflictErr(err)}, nil
+		default:
+			return gateway.SetGuardrailsdefaultJSONResponse{StatusCode: 500, Body: guardrailErr(err)}, nil
 		}
-		return gateway.SetGuardrailsdefaultJSONResponse{StatusCode: 500, Body: guardrailErr(err)}, nil
 	}
 	return gateway.SetGuardrails200JSONResponse(toGuardrailConfigView(view)), nil
 }
@@ -694,6 +711,7 @@ func toGuardrailConfigView(v guardrail.ConfigView) gateway.GuardrailConfigView {
 			Strategy:               gateway.PolicyStrategy(v.Settings.Strategy),
 			StrategyEnabled:        v.Settings.StrategyEnabled,
 		},
+		Version:   v.Version,
 		UpdatedAt: v.UpdatedAt,
 	}
 	if v.UpdatedBy != "" {
@@ -735,6 +753,14 @@ func ptrMoneyAmount(m money.Money) *gateway.MoneyAmount {
 
 func guardrailErr(err error) gateway.ErrorEnvelope {
 	return gateway.ErrorEnvelope{Code: "GUARDRAIL_ERROR", Message: err.Error()}
+}
+
+func guardrailNotStricterErr(err error) gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "GUARDRAIL_NOT_STRICTER", Message: err.Error()}
+}
+
+func guardrailConflictErr(err error) gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "GUARDRAIL_VERSION_CONFLICT", Message: err.Error()}
 }
 
 func guardrailUnavailableErr() gateway.ErrorEnvelope {

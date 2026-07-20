@@ -37,7 +37,7 @@ func TestGuardrailSetRollsBackMutationWhenAuditAppendFails(t *testing.T) {
 		Strategy:          policy.StrategyMatch,
 		StrategyEnabled:   true,
 	}
-	if _, err := svc.Set(context.Background(), account, actor, settings); err == nil {
+	if _, err := svc.Set(context.Background(), account, actor, settings, 0); err == nil {
 		t.Fatal("expected Set to fail when the audit append errors mid-transaction, got nil")
 	}
 
