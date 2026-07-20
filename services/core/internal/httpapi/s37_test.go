@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,8 +16,31 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
 	"github.com/mhosseinab/market-ops/services/core/internal/observation"
+	"github.com/mhosseinab/market-ops/services/core/internal/policy"
 	"github.com/mhosseinab/market-ops/services/core/internal/watchlist"
 )
+
+// TestEditApprovalCardPrice_CrossUnitRejectionMapsTo409 is the issue #306
+// regression: the six-stage policy re-check refuses a cross-unit/cross-currency
+// edited price and surfaces policy.ErrReferenceUnitMismatch. That is a DECLINED
+// edit — the same declined-edit class as ErrEditedPriceRejected — never a server
+// fault. The transport MUST map it to a structured 409, never fall through to
+// 500. Fail-closed is unchanged: the recheck mints no card/parameter version, so
+// a cross-unit price never reaches a control-bearing state.
+func TestEditApprovalCardPriceCrossUnitRejectionMapsTo409(t *testing.T) {
+	fake := &fakeApproval{editErr: policy.ErrReferenceUnitMismatch}
+	srv := NewServer(":0", BuildInfo{}, testLogger(), WithApproval(fake))
+
+	body := fmt.Sprintf(`{"cardId":%q,"newPrice":{"mantissa":"1010","currency":"USD","exponent":0}}`, uuid.New())
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/approvals/card/edit-price", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("cross-unit edited price: status = %d, want 409 (declined edit, not a 500), body=%s", rec.Code, rec.Body.String())
+	}
+}
 
 // validRecommendationRow is a minimal, well-formed db.Recommendation with
 // valid required money fields — the base every corrupt-JSON test below

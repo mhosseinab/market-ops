@@ -103,7 +103,11 @@ func (s *gatewayServer) EditApprovalCardPrice(
 		// The edited price failed the six-stage policy re-check (issue #134): a
 		// structured 409, never a 500 — the edit is a legitimate request the policy
 		// chain declined, and no new version was minted (fail closed, §4.6).
-		if errors.Is(err, recommendation.ErrEditedPriceRejected) {
+		// A cross-unit/cross-currency edited price makes the re-check surface the raw
+		// policy.ErrReferenceUnitMismatch sentinel (issue #306): it is the SAME
+		// declined-edit class — the chain refused the value — so it maps to the same
+		// structured 409, never falling through to a 500 server fault.
+		if errors.Is(err, recommendation.ErrEditedPriceRejected) || errors.Is(err, policy.ErrReferenceUnitMismatch) {
 			return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 409, Body: approvalErr(err)}, nil
 		}
 		return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
