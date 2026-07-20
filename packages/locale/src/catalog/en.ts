@@ -608,6 +608,10 @@ export const en: Catalog = {
   "market.conflict.evidenceUnavailable":
     "Route evidence is no longer available to compare; the block stands.",
   "market.conflict.toOperations": "Diagnose in Operations →",
+  "market.conflict.loading": "Checking for conflicted observations…",
+  "market.conflict.errorTitle": "Conflict evidence unavailable",
+  "market.conflict.error":
+    "Conflict evidence could not be loaded; any blocked observations stay blocked. Retry or diagnose in Operations.",
 
   "actions.filter.pending": "Pending reconciliation",
   "actions.filter.failed": "Failed",

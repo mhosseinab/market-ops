@@ -93,6 +93,29 @@ describe("Market (freshness / quality / conflicts)", () => {
     expect(screen.getByTestId("conflict-to-operations")).toBeInTheDocument();
   });
 
+  it("fails CLOSED when /market/conflicts errors while offers load — explicit affordance, not an absent banner", async () => {
+    // A failed conflicts read must NOT collapse to an empty/absent banner (§4.6
+    // screens-only-fallback, STATE_MATRIX Market/Conflicted): the error is surfaced as
+    // an EXPLICIT affordance and the Operations deep link is retained, because any
+    // blocked observation stays blocked whether or not its evidence loaded.
+    server.use(
+      http.get(`${BASE}/market/conflicts`, () =>
+        HttpResponse.json({ error: "boom" }, { status: 500 }),
+      ),
+    );
+    renderRoute("/market");
+    // The watch table (offers succeeded) still renders — only the conflict read failed.
+    await screen.findByText(faIR["market.watch.title"]);
+    // The explicit error affordance is shown (NOT silently absent).
+    const errorLine = await screen.findByTestId("conflict-surface-error");
+    expect(errorLine).toHaveTextContent(faIR["market.conflict.error"]);
+    // The action stays blocked-safe: the Operations deep link is retained.
+    const toOps = screen.getByTestId("conflict-to-operations");
+    expect(toOps).toHaveAttribute("href", expect.stringContaining("/operations"));
+    // A retry affordance is offered.
+    expect(screen.getByTestId("conflict-retry")).toBeInTheDocument();
+  });
+
   it("issues a budgeted refresh request without recomputing anything", async () => {
     let refreshed = false;
     server.use(

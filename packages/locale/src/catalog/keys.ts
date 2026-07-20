@@ -635,6 +635,9 @@ export const MESSAGE_KEYS = [
   "market.conflict.evidenceCaptured",
   "market.conflict.evidenceUnavailable",
   "market.conflict.toOperations",
+  "market.conflict.loading",
+  "market.conflict.errorTitle",
+  "market.conflict.error",
 
   // Actions / audit / reconciliation / outcome
   "actions.filter.pending",

@@ -241,7 +241,46 @@ export function Market() {
           </Section>
         </div>
 
-        {conflicts.length > 0 ? (
+        {/* The conflict surface fails CLOSED (§4.6 screens-only-fallback, STATE_MATRIX
+            Market/Conflicted): a failed or pending /market/conflicts read is an
+            EXPLICIT affordance, never collapsed to an absent banner. On error we still
+            route to Operations, because any blocked observation stays blocked whether or
+            not its evidence loaded; while pending we show a loading line. Only a genuine
+            empty (loaded, zero conflicts) renders nothing. */}
+        {conflictsQuery.isError ? (
+          <Banner
+            tone="conflict"
+            title={t("market.conflict.errorTitle")}
+            body={<span data-testid="conflict-surface-error">{t("market.conflict.error")}</span>}
+            actions={
+              <>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--secondary"
+                  data-testid="conflict-retry"
+                  onClick={() => void conflictsQuery.refetch()}
+                >
+                  {t("mutationError.retry")}
+                </button>
+                <AppLink to="/operations" className="btn btn--sm" testId="conflict-to-operations">
+                  {t("market.conflict.toOperations")}
+                </AppLink>
+              </>
+            }
+          />
+        ) : conflictsQuery.isPending ? (
+          <Banner
+            tone="info"
+            title={
+              <span data-testid="conflict-surface-loading">{t("market.conflict.loading")}</span>
+            }
+            actions={
+              <AppLink to="/operations" className="btn btn--sm" testId="conflict-to-operations">
+                {t("market.conflict.toOperations")}
+              </AppLink>
+            }
+          />
+        ) : conflicts.length > 0 ? (
           <Banner
             tone="conflict"
             title={t("market.conflict.title", {
