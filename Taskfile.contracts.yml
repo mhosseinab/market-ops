@@ -66,6 +66,16 @@ tasks:
 
   drift:
     desc: Regenerate gen/ and fail if it drifts from its contract source.
+    dir: '{{.ROOT_DIR}}'
     cmds:
       - task: generate
-      - git diff --exit-code -- contracts gen
+      # Fail on ANY drift under contracts/ or gen/ — unstaged, staged/cached, OR
+      # untracked. `git diff` alone misses staged and untracked files (issue #3);
+      # drift-check.sh checks all three states with an actionable per-state message.
+      - bash contracts/tools/drift-check.sh
+
+  drift:test:
+    desc: Hermetic regression test for the drift gate's state detection (issue #3).
+    dir: '{{.ROOT_DIR}}'
+    cmds:
+      - bash contracts/tools/drift-check_test.sh

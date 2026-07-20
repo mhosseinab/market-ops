@@ -270,6 +270,7 @@ tasks:
   ci:local:
     desc: Everything CI runs, in order — the pre-merge gate.
     cmds:
+      - task: contracts:drift:test
       - task: contracts:drift
       - task: lint:all
       - task: test:all
