@@ -518,6 +518,79 @@ func TestDurableConsumerStableStreamDoesNotStarveSiblings(t *testing.T) {
 	}
 }
 
+// TestDurableConsumerFairPagingAcrossSellers proves the drain pages FAIRLY across
+// seller streams within a target (issue #212 REOPEN residual). A single earlier-
+// sorting seller with a large unconsumed backlog must NOT monopolise a global drain
+// page and starve later sellers: every seller stream must advance within a bounded
+// number of passes. Seed one high-backlog earlier seller (immaterial same-value tail,
+// far larger than page * passes) plus several later sellers each carrying a distinct
+// material movement, then run only a FEW passes. Under a single global LIMIT the page
+// is filled entirely by the earliest seller's backlog and the later sellers' material
+// movements are never reached; under fair per-stream paging every later seller's
+// movement is detected and every stream's cursor advances.
+func TestDurableConsumerFairPagingAcrossSellers(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, _, target, nv := seedTarget(t, pool, q)
+	svc := event.NewService(pool)
+	competitorThreshold(t, svc, account, 1000) // 10% — each movement below is material
+
+	base := time.Now().UTC().Add(-50 * time.Minute)
+	// Earliest-sorting seller with a big same-value backlog: 20 immaterial rows, far
+	// more than page(2) * passes(3) can drain, so under a global LIMIT it perpetually
+	// fills the page and no later seller is ever reached within the bounded passes.
+	for i := 0; i < 20; i++ {
+		appendObsSellerOffer(t, q, account, target, nv, "seller-0", "OFFER-0", "1000000", base.Add(time.Duration(i)*time.Minute))
+	}
+	// Later-sorting sellers, each with one distinct material movement that MUST be
+	// detected within the bounded passes despite the earlier seller's backlog.
+	liveSellers := []string{"seller-1", "seller-2", "seller-3", "seller-4"}
+	for i, s := range liveSellers {
+		off := "OFFER-" + s
+		appendObsSellerOffer(t, q, account, target, nv, s, off, "2000000", base.Add(time.Duration(i)*time.Minute))
+		appendObsSellerOffer(t, q, account, target, nv, s, off, "2600000", base.Add(time.Duration(20+i)*time.Minute))
+	}
+
+	// Page of two per stream: with fair paging every stream advances each pass, so a
+	// few bounded passes suffice; with a global page the earliest seller starves them.
+	src := event.NewObservationSource(pool).WithPageLimit(2)
+	prod := event.NewProducer(svc, src, nil)
+	var producedTotal int
+	for i := 0; i < 3; i++ {
+		m, err := prod.RunOnce(ctx)
+		if err != nil {
+			t.Fatalf("pass %d: %v", i, err)
+		}
+		producedTotal += m.Produced
+	}
+
+	if producedTotal < len(liveSellers) {
+		t.Fatalf("every later seller's material movement must be detected within bounded passes (no seller starved by the global page); want >= %d produced, got %d",
+			len(liveSellers), producedTotal)
+	}
+	// Every later seller's stream must have advanced (its durable cursor exists).
+	for _, s := range liveSellers {
+		var cursors int
+		if err := pool.QueryRow(ctx,
+			`SELECT count(*) FROM observation_consumer_cursors WHERE target_id=$1 AND native_seller_id=$2`, target, s).Scan(&cursors); err != nil {
+			t.Fatalf("count cursor %s: %v", s, err)
+		}
+		if cursors == 0 {
+			t.Fatalf("seller %s stream never advanced within bounded passes — starved by the global drain page", s)
+		}
+	}
+	// One distinct event per later seller (dedup scope carries the offer identity).
+	var moved int
+	if err := pool.QueryRow(ctx,
+		`SELECT count(*) FROM market_events WHERE target_id=$1 AND state IN ('open','updated') AND evidence_detail->>'curr_value'='2600000'`,
+		target).Scan(&moved); err != nil {
+		t.Fatalf("count moved events: %v", err)
+	}
+	if moved != len(liveSellers) {
+		t.Fatalf("each later seller's 2000000->2600000 movement must open exactly one event; want %d, got %d", len(liveSellers), moved)
+	}
+}
+
 // TestDurableConsumerCrossAccountIsolation proves cursor state and event/input
 // idempotency are tenant-scoped (issue #212): observations from account A cannot
 // advance, suppress, or generate events for account B.
