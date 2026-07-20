@@ -1157,7 +1157,7 @@ export interface paths {
         };
         /**
          * List cross-route conflicted Observed Offers (Market conflict banner, PD-3 item 8).
-         * @description Returns the account's Observed Offers currently in the `conflicted` quality state (§16 "routes disagree → Conflicted; block") — the values the Market screen's conflict banner surfaces. The underlying price of record is left intact (never zeroed, never silently overwritten); only the quality state blocks recommend/execute (§10.3 matrix). This is a read, same L1 read.observations posture as the other observation reads.
+         * @description Returns the account's Observed Offers currently in the `conflicted` quality state (§16 "routes disagree → Conflicted; block") — the values the Market screen's conflict banner surfaces. The underlying price of record is left intact (never zeroed, never silently overwritten); only the quality state blocks recommend/execute (§10.3 matrix). This is a read, same L1 read.observations posture as the other observation reads. Each returned offer carries `conflictEvidence` (issue #94): the per-route disagreeing values/units, availability, and capture/freshness times so the operator can inspect WHY the offer is blocked, or an explicit `unavailable` state when that comparison evidence can no longer be inspected.
          */
         get: operations["listMarketConflicts"];
         put?: never;
@@ -1581,11 +1581,42 @@ export interface components {
             freshnessDeadline: string;
             /** @description The routes corroborating the current value (provenance, OBS-008). */
             routes: components["schemas"]["ObservationRoute"][];
+            /** @description Per-route disagreeing evidence for a `conflicted` offer (issue #94, §16 / §10.3). Populated ONLY by the /market/conflicts read and only for `conflicted` offers; null on every other observed-offer read. When the comparison evidence can no longer be inspected the object's `state` is `unavailable` — an EXPLICIT fail-closed error, never a fabricated complete panel. The offer stays blocked regardless of this view. */
+            conflictEvidence?: components["schemas"]["ConflictEvidence"] | null;
             /**
              * Format: date-time
              * @description Offer-disappearance close time (§16); null while live.
              */
             endedAt?: string | null;
+        };
+        /** @description Cross-route disagreeing evidence behind a `conflicted` Observed Offer (issue #94, §16 / §10.3). Surfaces the LATEST still-in-window observation PER ROUTE (raw value/unit, availability, capture time, freshness deadline) so the operator can inspect WHY the offer is blocked. Data is exposed VERBATIM from the append-only in-window evidence — never recomputed and never inferred. The action stays fail-closed blocked regardless of this view. */
+        ConflictEvidence: {
+            /**
+             * @description `available`: at least two disagreeing in-window routes were found and are listed in `routes`. `unavailable`: the comparison evidence is missing/incomplete (fewer than two routes are still in window) — an EXPLICIT read-model error, NOT a complete panel. The client renders the error state and NEVER infers the missing route evidence.
+             * @enum {string}
+             */
+            state: "available" | "unavailable";
+            /** @description The disagreeing routes' latest in-window evidence; empty when `state` is `unavailable`. */
+            routes: components["schemas"]["ConflictRouteEvidence"][];
+        };
+        /** @description One route's latest in-window observation behind a conflict (issue #94): route provenance plus the raw price value/unit (money quarantine §9.1, never promoted to Money), availability, and capture/freshness times. Exposed verbatim from the existing per-route in-window query — no recompute. */
+        ConflictRouteEvidence: {
+            route: components["schemas"]["ObservationRoute"];
+            /** @description The parsed numeric token as raw source text (never a number type). */
+            value: string;
+            /** @description The source unit token as captured; not interpreted as ISO-4217. */
+            unit: string;
+            availabilityStatus: components["schemas"]["AvailabilityStatus"];
+            /**
+             * Format: date-time
+             * @description Capture time of this route's latest in-window observation (UTC).
+             */
+            capturedAt: string;
+            /**
+             * Format: date-time
+             * @description When this route's value expires (OBS-004).
+             */
+            freshnessDeadline: string;
         };
         /** @description The account's current Observed Offers. */
         ObservedOfferList: {

@@ -13,6 +13,7 @@ from ..models.quality_state import QualityState
 from ..types import UNSET, Unset
 
 if TYPE_CHECKING:
+    from ..models.conflict_evidence import ConflictEvidence
     from ..models.raw_amount import RawAmount
 
 
@@ -48,6 +49,11 @@ class ObservedOffer:
             routes (list[ObservationRoute]): The routes corroborating the current value (provenance, OBS-008).
             native_seller_id (str | Unset):
             stock_signal (int | None | Unset): Optional observed stock signal; null when DK omits it.
+            conflict_evidence (ConflictEvidence | None | Unset): Per-route disagreeing evidence for a `conflicted` offer
+                (issue #94, §16 / §10.3). Populated ONLY by the /market/conflicts read and only for `conflicted` offers; null on
+                every other observed-offer read. When the comparison evidence can no longer be inspected the object's `state` is
+                `unavailable` — an EXPLICIT fail-closed error, never a fabricated complete panel. The offer stays blocked
+                regardless of this view.
             ended_at (datetime.datetime | None | Unset): Offer-disappearance close time (§16); null while live.
     """
 
@@ -65,9 +71,12 @@ class ObservedOffer:
     routes: list[ObservationRoute]
     native_seller_id: str | Unset = UNSET
     stock_signal: int | None | Unset = UNSET
+    conflict_evidence: ConflictEvidence | None | Unset = UNSET
     ended_at: datetime.datetime | None | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
+        from ..models.conflict_evidence import ConflictEvidence
+
         id = str(self.id)
 
         target_id = str(self.target_id)
@@ -103,6 +112,14 @@ class ObservedOffer:
         else:
             stock_signal = self.stock_signal
 
+        conflict_evidence: dict[str, Any] | None | Unset
+        if isinstance(self.conflict_evidence, Unset):
+            conflict_evidence = UNSET
+        elif isinstance(self.conflict_evidence, ConflictEvidence):
+            conflict_evidence = self.conflict_evidence.to_dict()
+        else:
+            conflict_evidence = self.conflict_evidence
+
         ended_at: None | str | Unset
         if isinstance(self.ended_at, Unset):
             ended_at = UNSET
@@ -133,6 +150,8 @@ class ObservedOffer:
             field_dict["nativeSellerId"] = native_seller_id
         if stock_signal is not UNSET:
             field_dict["stockSignal"] = stock_signal
+        if conflict_evidence is not UNSET:
+            field_dict["conflictEvidence"] = conflict_evidence
         if ended_at is not UNSET:
             field_dict["endedAt"] = ended_at
 
@@ -140,6 +159,7 @@ class ObservedOffer:
 
     @classmethod
     def from_dict(cls: type[T], src_dict: Mapping[str, Any]) -> T:
+        from ..models.conflict_evidence import ConflictEvidence
         from ..models.raw_amount import RawAmount
 
         d = dict(src_dict)
@@ -183,6 +203,23 @@ class ObservedOffer:
 
         stock_signal = _parse_stock_signal(d.pop("stockSignal", UNSET))
 
+        def _parse_conflict_evidence(data: object) -> ConflictEvidence | None | Unset:
+            if data is None:
+                return data
+            if isinstance(data, Unset):
+                return data
+            try:
+                if not isinstance(data, dict):
+                    raise TypeError()
+                conflict_evidence_type_1 = ConflictEvidence.from_dict(data)
+
+                return conflict_evidence_type_1
+            except (TypeError, ValueError, AttributeError, KeyError):
+                pass
+            return cast(ConflictEvidence | None | Unset, data)
+
+        conflict_evidence = _parse_conflict_evidence(d.pop("conflictEvidence", UNSET))
+
         def _parse_ended_at(data: object) -> datetime.datetime | None | Unset:
             if data is None:
                 return data
@@ -215,6 +252,7 @@ class ObservedOffer:
             routes=routes,
             native_seller_id=native_seller_id,
             stock_signal=stock_signal,
+            conflict_evidence=conflict_evidence,
             ended_at=ended_at,
         )
 

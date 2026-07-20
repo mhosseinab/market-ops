@@ -66,7 +66,10 @@ def sync_detailed(
     disagree → Conflicted; block\") — the values the Market screen's conflict banner surfaces. The
     underlying price of record is left intact (never zeroed, never silently overwritten); only the
     quality state blocks recommend/execute (§10.3 matrix). This is a read, same L1 read.observations
-    posture as the other observation reads.
+    posture as the other observation reads. Each returned offer carries `conflictEvidence` (issue #94):
+    the per-route disagreeing values/units, availability, and capture/freshness times so the operator
+    can inspect WHY the offer is blocked, or an explicit `unavailable` state when that comparison
+    evidence can no longer be inspected.
 
     Args:
         marketplace_account_id (UUID):
@@ -101,7 +104,10 @@ def sync(
     disagree → Conflicted; block\") — the values the Market screen's conflict banner surfaces. The
     underlying price of record is left intact (never zeroed, never silently overwritten); only the
     quality state blocks recommend/execute (§10.3 matrix). This is a read, same L1 read.observations
-    posture as the other observation reads.
+    posture as the other observation reads. Each returned offer carries `conflictEvidence` (issue #94):
+    the per-route disagreeing values/units, availability, and capture/freshness times so the operator
+    can inspect WHY the offer is blocked, or an explicit `unavailable` state when that comparison
+    evidence can no longer be inspected.
 
     Args:
         marketplace_account_id (UUID):
@@ -131,7 +137,10 @@ async def asyncio_detailed(
     disagree → Conflicted; block\") — the values the Market screen's conflict banner surfaces. The
     underlying price of record is left intact (never zeroed, never silently overwritten); only the
     quality state blocks recommend/execute (§10.3 matrix). This is a read, same L1 read.observations
-    posture as the other observation reads.
+    posture as the other observation reads. Each returned offer carries `conflictEvidence` (issue #94):
+    the per-route disagreeing values/units, availability, and capture/freshness times so the operator
+    can inspect WHY the offer is blocked, or an explicit `unavailable` state when that comparison
+    evidence can no longer be inspected.
 
     Args:
         marketplace_account_id (UUID):
@@ -164,7 +173,10 @@ async def asyncio(
     disagree → Conflicted; block\") — the values the Market screen's conflict banner surfaces. The
     underlying price of record is left intact (never zeroed, never silently overwritten); only the
     quality state blocks recommend/execute (§10.3 matrix). This is a read, same L1 read.observations
-    posture as the other observation reads.
+    posture as the other observation reads. Each returned offer carries `conflictEvidence` (issue #94):
+    the per-route disagreeing values/units, availability, and capture/freshness times so the operator
+    can inspect WHY the offer is blocked, or an explicit `unavailable` state when that comparison
+    evidence can no longer be inspected.
 
     Args:
         marketplace_account_id (UUID):

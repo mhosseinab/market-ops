@@ -48,6 +48,7 @@ export const queryKeys = {
     ["product-diagnostics", accountId, variantId] as const,
   targets: (accountId: string) => ["observation-targets", accountId] as const,
   offers: (accountId: string) => ["observed-offers", accountId] as const,
+  marketConflicts: (accountId: string) => ["market-conflicts", accountId] as const,
   observations: (targetId: string) => ["observations", targetId] as const,
   readiness: (variantId: string) => ["margin-readiness", variantId] as const,
   costProfiles: (variantId: string) => ["cost-profiles", variantId] as const,
@@ -152,6 +153,24 @@ export function useObservedOffers() {
     queryFn: async () =>
       unwrap(
         await gateway.GET("/observation/observed-offers", {
+          params: { query: { marketplaceAccountId } },
+        }),
+      ),
+  });
+}
+
+// useMarketConflicts fetches the account's cross-route conflicted Observed Offers
+// WITH their per-route disagreeing evidence (issue #94). The banner renders the
+// per-route values/times from `conflictEvidence`; a missing comparison surfaces the
+// explicit `unavailable` state (never inferred client-side). Tenant scoping is
+// server-side (issue #237): a foreign account is a uniform not-found.
+export function useMarketConflicts() {
+  const { marketplaceAccountId } = useAccount();
+  return useQuery({
+    queryKey: queryKeys.marketConflicts(marketplaceAccountId),
+    queryFn: async () =>
+      unwrap(
+        await gateway.GET("/market/conflicts", {
           params: { query: { marketplaceAccountId } },
         }),
       ),

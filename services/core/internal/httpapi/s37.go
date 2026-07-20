@@ -397,18 +397,50 @@ func (s *gatewayServer) ListMarketConflicts(
 	// Tenant scoping (issue #237): the account is resolved from the authenticated
 	// org; a foreign or org-less caller is a uniform 404, never another tenant's
 	// Market conflict view.
-	rows, err := s.observation.ListConflictedObservedOffersForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId)
+	views, err := s.observation.ListMarketConflictsForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId)
 	if err != nil {
 		if errors.Is(err, observation.ErrAccountNotFound) {
 			return gateway.ListMarketConflictsdefaultJSONResponse{StatusCode: 404, Body: observationErr(err)}, nil
 		}
 		return gateway.ListMarketConflictsdefaultJSONResponse{StatusCode: 500, Body: observationErr(err)}, nil
 	}
-	out := make([]gateway.ObservedOffer, 0, len(rows))
-	for _, o := range rows {
-		out = append(out, toGatewayObservedOffer(o))
+	out := make([]gateway.ObservedOffer, 0, len(views))
+	for _, v := range views {
+		offer := toGatewayObservedOffer(v.Offer)
+		// Per-route disagreeing evidence (issue #94): surfaced VERBATIM from the
+		// existing in-window query. A missing/incomplete comparison is the EXPLICIT
+		// fail-closed `unavailable` state, never a fabricated complete panel; the
+		// offer's `conflicted` quality (already on the offer) keeps the action blocked.
+		ev := toGatewayConflictEvidence(v.Evidence)
+		offer.ConflictEvidence = &ev
+		out = append(out, offer)
 	}
 	return gateway.ListMarketConflicts200JSONResponse(gateway.ObservedOfferList{Items: out}), nil
+}
+
+// toGatewayConflictEvidence maps the per-route disagreeing evidence onto the wire
+// read model (issue #94). When the evidence is not inspectable it becomes the
+// EXPLICIT `unavailable` state with an empty route list — the client renders the
+// error, never infers the missing routes.
+func toGatewayConflictEvidence(e observation.ConflictEvidence) gateway.ConflictEvidence {
+	if !e.Available {
+		return gateway.ConflictEvidence{
+			State:  gateway.ConflictEvidenceStateUnavailable,
+			Routes: []gateway.ConflictRouteEvidence{},
+		}
+	}
+	routes := make([]gateway.ConflictRouteEvidence, 0, len(e.Routes))
+	for _, r := range e.Routes {
+		routes = append(routes, gateway.ConflictRouteEvidence{
+			Route:              gateway.ObservationRoute(r.Route),
+			Value:              r.Value,
+			Unit:               r.Unit,
+			AvailabilityStatus: gateway.AvailabilityStatus(r.AvailabilityStatus),
+			CapturedAt:         r.CapturedAt,
+			FreshnessDeadline:  r.FreshnessDeadline,
+		})
+	}
+	return gateway.ConflictEvidence{State: gateway.ConflictEvidenceStateAvailable, Routes: routes}
 }
 
 // ListWatchlist returns the account's EXT-007 priority watchlist. A read.

@@ -630,7 +630,10 @@ export const MESSAGE_KEYS = [
   "market.col.price",
   "market.conflict.title",
   "market.conflict.body",
-  "market.conflict.valuesUnavailable",
+  "market.conflict.evidenceRoute",
+  "market.conflict.evidenceValue",
+  "market.conflict.evidenceCaptured",
+  "market.conflict.evidenceUnavailable",
   "market.conflict.toOperations",
 
   // Actions / audit / reconciliation / outcome

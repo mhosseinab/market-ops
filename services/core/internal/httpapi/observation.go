@@ -41,6 +41,13 @@ type ObservationService interface {
 	// rejects a foreign or org-less caller with a uniform not-found
 	// (observation.ErrAccountNotFound) — never another tenant's conflict view.
 	ListConflictedObservedOffersForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]db.ObservedOffer, error)
+	// ListMarketConflictsForOrg backs GET /market/conflicts with per-route
+	// disagreeing evidence (issue #94). Same tenant scoping as above (issue
+	// #237): the account is resolved from the authenticated organization and a
+	// foreign or org-less caller is a uniform not-found. Each returned view carries
+	// the offer plus the per-route in-window evidence exposed verbatim from the
+	// existing query, or the fail-closed unavailable state when it is missing.
+	ListMarketConflictsForOrg(ctx context.Context, organizationID, account uuid.UUID) ([]observation.ConflictView, error)
 }
 
 // ListObservationTargets returns the account's active observation targets.
