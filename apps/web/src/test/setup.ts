@@ -1,6 +1,15 @@
 import "@testing-library/jest-dom/vitest";
+import { configure } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import { server } from "./msw/server";
+
+// Testing Library's async utilities (`findBy*`, `waitFor`) default to a 1000ms
+// timeout. Under the parallel-project vitest run on a contended CI host, a real
+// re-render can legitimately land after that window, red-ing the `ci` gate on a
+// correct assertion (issue #332). Raise the default to 5000ms suite-wide so every
+// async assertion tolerates CPU contention. This preserves WHAT is asserted — it
+// only extends how long a still-true assertion may take to become observable.
+configure({ asyncUtilTimeout: 5000 });
 
 // jsdom does not implement scrollTo; the router calls it during scroll
 // restoration. No-op it so test output stays clean.

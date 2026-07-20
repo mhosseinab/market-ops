@@ -34,7 +34,7 @@ describe("Product detail", () => {
 
     // Owned offer renders raw price evidence when the capability is Supported —
     // never the unconditional "unavailable" text.
-    expect(await screen.findByText("14,000,000")).toBeInTheDocument();
+    expect(await screen.findByText("14,000,000", undefined, { timeout: 5000 })).toBeInTheDocument();
     expect(screen.queryByText(faIR["product.ownedOffer.unavailable"])).toBeNull();
     expect(screen.queryByText(faIR["product.ownedOffer.reason.capabilityNotSupported"])).toBeNull();
     // Mapping state badge (Confirmed) from the canonical row.
@@ -69,7 +69,9 @@ describe("Product detail", () => {
 
     // The gated reason renders; the owned price is NOT shown (Unknown never enables).
     expect(
-      await screen.findByText(faIR["product.ownedOffer.reason.capabilityNotSupported"]),
+      await screen.findByText(faIR["product.ownedOffer.reason.capabilityNotSupported"], undefined, {
+        timeout: 5000,
+      }),
     ).toBeInTheDocument();
     expect(screen.queryByText("14,000,000")).toBeNull();
     // The capability badge surfaces the Unknown state.
@@ -86,11 +88,13 @@ describe("Product detail — secondary query failures never become business abse
       renderRoute(`/product?variantId=${VARIANT_ID}`);
 
       // The canonical product still loads (owned price present).
-      await screen.findByText("14,000,000");
+      await screen.findByText("14,000,000", undefined, { timeout: 5000 });
 
       // The readiness section shows a scoped, actionable error + retry — never the
       // legitimate "Not available" absence.
-      const err = await screen.findByTestId("product-readiness-error");
+      const err = await screen.findByTestId("product-readiness-error", undefined, {
+        timeout: 5000,
+      });
       expect(within(err).getByRole("button", { name: faIR["action.retry"] })).toBeInTheDocument();
       const readinessPanel = panelByHeading(faIR["product.section.readiness"]);
       expect(within(readinessPanel).queryByText(faIR["common.notAvailable"])).toBeNull();
@@ -105,8 +109,8 @@ describe("Product detail — secondary query failures never become business abse
       server.use(http.get(`${BASE}/cost/profiles`, () => new HttpResponse(null, { status })));
       renderRoute(`/product?variantId=${VARIANT_ID}`);
 
-      await screen.findByText("14,000,000");
-      const err = await screen.findByTestId("product-cost-error");
+      await screen.findByText("14,000,000", undefined, { timeout: 5000 });
+      const err = await screen.findByTestId("product-cost-error", undefined, { timeout: 5000 });
       expect(within(err).getByRole("button", { name: faIR["action.retry"] })).toBeInTheDocument();
       // "Not recorded" is a SUCCESSFUL-empty disposition; a failed request never shows it.
       expect(screen.queryByText(faIR["product.cost.notRecorded"])).toBeNull();
@@ -120,8 +124,10 @@ describe("Product detail — secondary query failures never become business abse
       );
       renderRoute(`/product?variantId=${VARIANT_ID}`);
 
-      await screen.findByText("14,000,000");
-      const err = await screen.findByTestId("product-diagnostics-error");
+      await screen.findByText("14,000,000", undefined, { timeout: 5000 });
+      const err = await screen.findByTestId("product-diagnostics-error", undefined, {
+        timeout: 5000,
+      });
       expect(within(err).getByRole("button", { name: faIR["action.retry"] })).toBeInTheDocument();
       const diagPanel = panelByHeading(faIR["product.section.diagnostics"]);
       expect(within(diagPanel).queryByText(faIR["common.notAvailable"])).toBeNull();
@@ -133,7 +139,9 @@ describe("Product detail — secondary query failures never become business abse
 
       // The market snapshot is sourced from the product row; on its failure the
       // ViewState error takes the whole screen — never an empty market snapshot.
-      expect(await screen.findByText(faIR["state.error.title"])).toBeInTheDocument();
+      expect(
+        await screen.findByText(faIR["state.error.title"], undefined, { timeout: 5000 }),
+      ).toBeInTheDocument();
       expect(screen.queryByText(faIR["product.marketPrice"])).toBeNull();
     });
   }
@@ -143,9 +151,10 @@ describe("Product detail — secondary query failures never become business abse
     renderRoute(`/product?variantId=${VARIANT_ID}`);
 
     // A completed empty response is a legitimate absence: "Not recorded" per component.
-    expect((await screen.findAllByText(faIR["product.cost.notRecorded"])).length).toBeGreaterThan(
-      0,
-    );
+    expect(
+      (await screen.findAllByText(faIR["product.cost.notRecorded"], undefined, { timeout: 5000 }))
+        .length,
+    ).toBeGreaterThan(0);
     expect(screen.queryByTestId("product-cost-error")).toBeNull();
   });
 
@@ -162,7 +171,7 @@ describe("Product detail — secondary query failures never become business abse
     );
     renderRoute(`/product?variantId=${VARIANT_ID}`);
 
-    await screen.findByText("14,000,000");
+    await screen.findByText("14,000,000", undefined, { timeout: 5000 });
     const diagPanel = panelByHeading(faIR["product.section.diagnostics"]);
     expect(within(diagPanel).getByText(faIR["common.notAvailable"])).toBeInTheDocument();
     expect(screen.queryByTestId("product-diagnostics-error")).toBeNull();
@@ -176,7 +185,7 @@ describe("Product detail — secondary query failures never become business abse
     );
     renderRoute(`/product?variantId=${VARIANT_ID}`);
 
-    await screen.findByText("14,000,000");
+    await screen.findByText("14,000,000", undefined, { timeout: 5000 });
     const snapshotPanel = panelByHeading(faIR["product.section.snapshot"]);
     expect(within(snapshotPanel).getByText(faIR["common.notAvailable"])).toBeInTheDocument();
   });
