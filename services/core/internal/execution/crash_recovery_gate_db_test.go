@@ -5,8 +5,6 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
@@ -51,9 +49,33 @@ func TestExecute_ResumeFromExecuting_GateFails_NoWrite(t *testing.T) {
 	if got := atomic.LoadInt32(writes); got != 0 {
 		t.Fatalf("external writes = %d; want 0 (a blocked resume must never write)", got)
 	}
-	// No execution record: nothing was ever claimed, so the marketplace was untouched.
-	if _, err := q.GetActionExecutionByAction(ctx, card.ActionID); err != pgx.ErrNoRows {
-		t.Fatalf("GetActionExecutionByAction err = %v; want ErrNoRows (no claim, no write)", err)
+	// A gate-blocked, NO-WRITE execution marker MUST exist so the parked card is
+	// DRAINABLE and VISIBLE (issue #105 fix cycle 1). Its absence was the safety hole:
+	// a PendingReconciliation card with no action_executions row is an
+	// operations-invisible zombie no reconciliation drain path can reach.
+	exec, err := q.GetActionExecutionByAction(ctx, card.ActionID)
+	if err != nil {
+		t.Fatalf("GetActionExecutionByAction err = %v; want a gate-blocked marker row", err)
+	}
+	if !exec.GateBlocked {
+		t.Fatalf("execution marker gate_blocked = false; want true (no-write recovery marker)")
+	}
+	if exec.ExternalState != string(StatePendingReconciliation) {
+		t.Fatalf("execution marker external_state = %q; want pending_reconciliation", exec.ExternalState)
+	}
+	// The marker surfaces in the OPS-002 operations queue / backlog gauge enumeration.
+	pending, err := svc.ListPendingReconciliation(ctx, card.MarketplaceAccountID, 10)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	var found bool
+	for _, p := range pending {
+		if p.ActionID == card.ActionID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("gate-blocked park not visible in ListPendingReconciliation (operations-invisible zombie)")
 	}
 	after, _ := q.GetApprovalCard(ctx, card.ID)
 	if after.State != string(approval.StatePendingReconciliation) {

@@ -533,6 +533,20 @@ type Querier interface {
 	// Appends one notification (with its SHARED event id) to a digest's membership
 	// snapshot. APPEND-ONLY.
 	InsertDigestItem(ctx context.Context, arg InsertDigestItemParams) (NotificationDigestItem, error)
+	// Record the issue #105 gate-blocked recovery marker for a card a crash left in
+	// Executing whose EXE-001 gate FAILED on resume (no external write happened). It is
+	// written in the SAME transaction as the Executing→PendingReconciliation advance so
+	// the parked card is VISIBLE to the OPS-002 queue (ListPendingReconciliationByAccount)
+	// and the pending_reconciliation backlog gauge (AggregatePendingReconciliation), and
+	// DRAINABLE by ReconcilePending — never an operations-invisible zombie.
+	//
+	// external_state = 'pending_reconciliation' and gate_blocked = true: the marker had
+	// NO write, so reconciliation may resolve it ONLY to Failed, never Accepted (EXE-003:
+	// never infer a success from a write that never happened). It claims the card's stable
+	// idempotency_key, so ON CONFLICT DO NOTHING makes concurrent resumes idempotent AND
+	// permanently forecloses any later claimAndWrite on that key (at-most-one-write,
+	// EXE-002): the marker can never be consumed as a green light for an external write.
+	InsertGateBlockedExecution(ctx context.Context, arg InsertGateBlockedExecutionParams) (ActionExecution, error)
 	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
 	// INSERT; there is deliberately no UPDATE/DELETE query.
 	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)

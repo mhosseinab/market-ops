@@ -3,6 +3,7 @@ package reconcile_test
 import (
 	"context"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -157,6 +158,143 @@ func TestReconcilePending_ResolvesToTerminalAndOpensWindow(t *testing.T) {
 	// A second reconcile of the now-terminal action is refused (not pending).
 	if err := rc.ReconcilePending(ctx, card.ActionID, reconcile.ResolveAccepted, "again"); err != reconcile.ErrNotPending {
 		t.Fatalf("re-reconcile: want ErrNotPending, got %v", err)
+	}
+}
+
+// countingWriter fails the test if the marketplace is ever written to and counts
+// the attempts, so a gate-blocked park + its drain can assert ZERO external writes.
+type countingWriter struct{ n *int32 }
+
+func (w countingWriter) WritePrice(_ context.Context, _ execution.WriteRequest) execution.WriteResult {
+	atomic.AddInt32(w.n, 1)
+	return execution.WriteResult{Outcome: execution.OutcomeUnknown}
+}
+
+// gateFailResolver resolves writes ENABLED but the EXE-001 gate FAILING (permission
+// revoked after approval), so a resume-from-Executing card blocks without writing.
+type gateFailResolver struct {
+	account, variant uuid.UUID
+	native           int64
+}
+
+func (f gateFailResolver) Resolve(_ context.Context, card db.ApprovalCard) (execution.RevalidationContext, error) {
+	b := approval.Binding{ActionID: card.ActionID, ParameterVersion: card.ParameterVersion, ContextVersion: card.ContextVersion, PolicyVersion: card.PolicyVersion, CostProfileVersion: card.CostProfileVersion, Expiry: card.ExpiresAt}
+	return execution.RevalidationContext{
+		Inputs: execution.RevalidationInputs{
+			Bound: b, Current: b, Now: time.Now(),
+			IdentityConfirmed: true, CurrentPriceMatches: true, BoundaryKnown: true,
+			PermissionGranted: false, JITFresh: true,
+		},
+		Enablement:      execution.WriteEnablement{CapabilitySupported: true, RegionWriteVerified: true},
+		AccountID:       f.account,
+		VariantID:       f.variant,
+		VariantNativeID: f.native,
+	}, nil
+}
+
+// TestReconcile_GateBlockedResumePark_DrainsToFailed is the issue #105 fix-cycle-1
+// safety regression: a card a crash left in Executing whose EXE-001 gate FAILS on
+// resume parks in PendingReconciliation with a gate-blocked, NO-WRITE
+// action_executions marker. That marker makes the park VISIBLE (OPS-002 queue +
+// backlog gauge) and DRAINABLE, and — because no write happened — it can resolve
+// ONLY to Failed via authoritative read-back, never Accepted (EXE-003). The whole
+// lifecycle performs ZERO external writes.
+func TestReconcile_GateBlockedResumePark_DrainsToFailed(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	card, variant := seedApprovedCard(t, pool, q)
+
+	// Simulate a crash that stranded the card mid-write in Executing.
+	rec := recommendation.NewService(pool)
+	for _, s := range []struct{ from, to approval.State }{
+		{approval.StateApproved, approval.StateRevalidating},
+		{approval.StateRevalidating, approval.StateExecuting},
+	} {
+		if _, err := rec.Advance(ctx, card.ID, s.from, s.to, "simulate crash mid-write"); err != nil {
+			t.Fatalf("advance %s→%s: %v", s.from, s.to, err)
+		}
+	}
+
+	var writes int32
+	exec := execution.NewService(pool, rec, countingWriter{n: &writes},
+		gateFailResolver{account: card.MarketplaceAccountID, variant: variant, native: 1})
+
+	res, err := exec.Execute(ctx, card.ID, audit.Actor{ID: "owner-1"})
+	if err != nil {
+		t.Fatalf("resume execute (gate fail): %v", err)
+	}
+	if res.DidWrite || !res.Blocked || res.ExternalState != execution.StatePendingReconciliation {
+		t.Fatalf("resume: didWrite=%v blocked=%v state=%q; want blocked+pending, no write", res.DidWrite, res.Blocked, res.ExternalState)
+	}
+	if got := atomic.LoadInt32(&writes); got != 0 {
+		t.Fatalf("external writes after blocked resume = %d; want 0", got)
+	}
+
+	// The parked action is VISIBLE: a gate-blocked marker enumerated by the OPS-002
+	// queue and the backlog gauge.
+	rowExec, err := q.GetActionExecutionByAction(ctx, card.ActionID)
+	if err != nil {
+		t.Fatalf("get execution marker: %v", err)
+	}
+	if !rowExec.GateBlocked || rowExec.ExternalState != string(execution.StatePendingReconciliation) {
+		t.Fatalf("marker gate_blocked=%v state=%q; want true + pending_reconciliation", rowExec.GateBlocked, rowExec.ExternalState)
+	}
+	pending, err := q.ListPendingReconciliationByAccount(ctx, db.ListPendingReconciliationByAccountParams{
+		MarketplaceAccountID: card.MarketplaceAccountID, Limit: 10,
+	})
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	var visible bool
+	for _, p := range pending {
+		if p.ActionID == card.ActionID {
+			visible = true
+		}
+	}
+	if !visible {
+		t.Fatalf("parked action not visible in OPS-002 pending-reconciliation queue")
+	}
+	agg, err := q.AggregatePendingReconciliation(ctx)
+	if err != nil {
+		t.Fatalf("aggregate pending: %v", err)
+	}
+	var counted bool
+	for _, a := range agg {
+		if a.AccountID == card.MarketplaceAccountID && a.PendingCount >= 1 {
+			counted = true
+		}
+	}
+	if !counted {
+		t.Fatalf("parked action not counted by pending-reconciliation backlog gauge")
+	}
+
+	// A no-write marker may NEVER resolve to Accepted: reconciliation cannot infer a
+	// success from a write that never happened. It stays visibly pending (fail closed).
+	rc := reconcile.NewService(pool, rec, rec)
+	if err := rc.ReconcilePending(ctx, card.ActionID, reconcile.ResolveAccepted, "read-back"); err != reconcile.ErrGateBlockedNoWrite {
+		t.Fatalf("reconcile Accepted on gate-blocked marker: err=%v; want ErrGateBlockedNoWrite", err)
+	}
+	if mid, _ := q.GetApprovalCard(ctx, card.ID); mid.State != string(approval.StatePendingReconciliation) {
+		t.Fatalf("card state after refused Accepted = %q; want still pending_reconciliation", mid.State)
+	}
+
+	// Authoritative read-back resolves it to the ONLY terminal it can reach: Failed.
+	if err := rc.ReconcilePending(ctx, card.ActionID, reconcile.ResolveFailed, "read-back: our price never landed"); err != nil {
+		t.Fatalf("reconcile Failed: %v", err)
+	}
+	after, _ := q.GetApprovalCard(ctx, card.ID)
+	if after.State != string(approval.StateFailed) {
+		t.Fatalf("card state = %q; want failed after drain", after.State)
+	}
+	resolved, _ := q.GetActionExecutionByAction(ctx, card.ActionID)
+	if resolved.ExternalState != string(execution.StateFailed) {
+		t.Fatalf("execution state = %q; want failed after drain", resolved.ExternalState)
+	}
+	if _, err := q.GetOutcomeWindowByAction(ctx, card.ActionID); err != nil {
+		t.Fatalf("outcome window not opened on drain: %v", err)
+	}
+	if got := atomic.LoadInt32(&writes); got != 0 {
+		t.Fatalf("external writes across park+drain = %d; want 0 throughout", got)
 	}
 }
 

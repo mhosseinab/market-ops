@@ -68,7 +68,7 @@ INSERT INTO action_executions (
     card_id, action_id, idempotency_key, mode, external_state, request_payload
 ) VALUES ($1, $2, $3, $4, $5, $6)
 ON CONFLICT (idempotency_key) DO NOTHING
-RETURNING id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at
+RETURNING id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at, gate_blocked
 `
 
 type ClaimActionExecutionParams struct {
@@ -116,12 +116,13 @@ func (q *Queries) ClaimActionExecution(ctx context.Context, arg ClaimActionExecu
 		&i.ReconciledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.GateBlocked,
 	)
 	return i, err
 }
 
 const getActionExecution = `-- name: GetActionExecution :one
-SELECT id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at FROM action_executions WHERE id = $1
+SELECT id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at, gate_blocked FROM action_executions WHERE id = $1
 `
 
 func (q *Queries) GetActionExecution(ctx context.Context, id uuid.UUID) (ActionExecution, error) {
@@ -140,12 +141,13 @@ func (q *Queries) GetActionExecution(ctx context.Context, id uuid.UUID) (ActionE
 		&i.ReconciledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.GateBlocked,
 	)
 	return i, err
 }
 
 const getActionExecutionByAction = `-- name: GetActionExecutionByAction :one
-SELECT id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at FROM action_executions WHERE action_id = $1
+SELECT id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at, gate_blocked FROM action_executions WHERE action_id = $1
 `
 
 func (q *Queries) GetActionExecutionByAction(ctx context.Context, actionID uuid.UUID) (ActionExecution, error) {
@@ -164,12 +166,13 @@ func (q *Queries) GetActionExecutionByAction(ctx context.Context, actionID uuid.
 		&i.ReconciledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.GateBlocked,
 	)
 	return i, err
 }
 
 const getActionExecutionByActionForAccount = `-- name: GetActionExecutionByActionForAccount :one
-SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at
+SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at, ae.gate_blocked
 FROM action_executions ae
 JOIN approval_cards ac ON ac.id = ae.card_id
 WHERE ae.action_id = $1 AND ac.marketplace_account_id = $2
@@ -200,12 +203,13 @@ func (q *Queries) GetActionExecutionByActionForAccount(ctx context.Context, arg 
 		&i.ReconciledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.GateBlocked,
 	)
 	return i, err
 }
 
 const getActionExecutionByKey = `-- name: GetActionExecutionByKey :one
-SELECT id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at FROM action_executions WHERE idempotency_key = $1
+SELECT id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at, gate_blocked FROM action_executions WHERE idempotency_key = $1
 `
 
 func (q *Queries) GetActionExecutionByKey(ctx context.Context, idempotencyKey string) (ActionExecution, error) {
@@ -224,6 +228,7 @@ func (q *Queries) GetActionExecutionByKey(ctx context.Context, idempotencyKey st
 		&i.ReconciledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.GateBlocked,
 	)
 	return i, err
 }
@@ -360,6 +365,60 @@ func (q *Queries) GetWriteVerification(ctx context.Context, marketplaceAccountID
 	return i, err
 }
 
+const insertGateBlockedExecution = `-- name: InsertGateBlockedExecution :one
+INSERT INTO action_executions (
+    card_id, action_id, idempotency_key, mode, external_state, gate_blocked, request_payload
+) VALUES ($1, $2, $3, 'write', 'pending_reconciliation', true, $4)
+ON CONFLICT (idempotency_key) DO NOTHING
+RETURNING id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at, gate_blocked
+`
+
+type InsertGateBlockedExecutionParams struct {
+	CardID         uuid.UUID
+	ActionID       uuid.UUID
+	IdempotencyKey string
+	RequestPayload []byte
+}
+
+// Record the issue #105 gate-blocked recovery marker for a card a crash left in
+// Executing whose EXE-001 gate FAILED on resume (no external write happened). It is
+// written in the SAME transaction as the Executing→PendingReconciliation advance so
+// the parked card is VISIBLE to the OPS-002 queue (ListPendingReconciliationByAccount)
+// and the pending_reconciliation backlog gauge (AggregatePendingReconciliation), and
+// DRAINABLE by ReconcilePending — never an operations-invisible zombie.
+//
+// external_state = 'pending_reconciliation' and gate_blocked = true: the marker had
+// NO write, so reconciliation may resolve it ONLY to Failed, never Accepted (EXE-003:
+// never infer a success from a write that never happened). It claims the card's stable
+// idempotency_key, so ON CONFLICT DO NOTHING makes concurrent resumes idempotent AND
+// permanently forecloses any later claimAndWrite on that key (at-most-one-write,
+// EXE-002): the marker can never be consumed as a green light for an external write.
+func (q *Queries) InsertGateBlockedExecution(ctx context.Context, arg InsertGateBlockedExecutionParams) (ActionExecution, error) {
+	row := q.db.QueryRow(ctx, insertGateBlockedExecution,
+		arg.CardID,
+		arg.ActionID,
+		arg.IdempotencyKey,
+		arg.RequestPayload,
+	)
+	var i ActionExecution
+	err := row.Scan(
+		&i.ID,
+		&i.CardID,
+		&i.ActionID,
+		&i.IdempotencyKey,
+		&i.Mode,
+		&i.ExternalState,
+		&i.ExternalRef,
+		&i.RequestPayload,
+		&i.ResponsePayload,
+		&i.ReconciledAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.GateBlocked,
+	)
+	return i, err
+}
+
 const insertRecommendOnlyAction = `-- name: InsertRecommendOnlyAction :one
 INSERT INTO recommend_only_actions (
     card_id, action_id, marketplace_account_id, variant_id,
@@ -431,7 +490,7 @@ func (q *Queries) IsWriteVerified(ctx context.Context, marketplaceAccountID uuid
 }
 
 const listActionExecutionsByAccount = `-- name: ListActionExecutionsByAccount :many
-SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at
+SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at, ae.gate_blocked
 FROM action_executions ae
 JOIN approval_cards ac ON ac.id = ae.card_id
 WHERE ac.marketplace_account_id = $1
@@ -470,6 +529,7 @@ func (q *Queries) ListActionExecutionsByAccount(ctx context.Context, arg ListAct
 			&i.ReconciledAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.GateBlocked,
 		); err != nil {
 			return nil, err
 		}
@@ -570,7 +630,7 @@ func (q *Queries) ListAwaitingRecommendOnlyForVariant(ctx context.Context, varia
 }
 
 const listPendingReconciliationByAccount = `-- name: ListPendingReconciliationByAccount :many
-SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at
+SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at, ae.gate_blocked
 FROM action_executions ae
 JOIN approval_cards ac ON ac.id = ae.card_id
 WHERE ac.marketplace_account_id = $1 AND ae.external_state = 'pending_reconciliation'
@@ -609,6 +669,7 @@ func (q *Queries) ListPendingReconciliationByAccount(ctx context.Context, arg Li
 			&i.ReconciledAt,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.GateBlocked,
 		); err != nil {
 			return nil, err
 		}
@@ -677,7 +738,7 @@ SET external_state = $2,
     reconciled_at = now(),
     updated_at = now()
 WHERE id = $1 AND external_state = 'pending_reconciliation'
-RETURNING id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at
+RETURNING id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at, gate_blocked
 `
 
 type ReconcileActionExecutionParams struct {
@@ -706,6 +767,7 @@ func (q *Queries) ReconcileActionExecution(ctx context.Context, arg ReconcileAct
 		&i.ReconciledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.GateBlocked,
 	)
 	return i, err
 }
@@ -718,7 +780,7 @@ SET external_state = $2,
     reconciled_at = CASE WHEN $2 <> 'pending_reconciliation' THEN now() ELSE reconciled_at END,
     updated_at = now()
 WHERE id = $1 AND external_state = 'pending_reconciliation'
-RETURNING id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at
+RETURNING id, card_id, action_id, idempotency_key, mode, external_state, external_ref, request_payload, response_payload, reconciled_at, created_at, updated_at, gate_blocked
 `
 
 type RecordExecutionResultParams struct {
@@ -752,6 +814,7 @@ func (q *Queries) RecordExecutionResult(ctx context.Context, arg RecordExecution
 		&i.ReconciledAt,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.GateBlocked,
 	)
 	return i, err
 }

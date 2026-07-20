@@ -43,6 +43,15 @@ var ErrNotPending = errors.New("reconcile: action is not pending reconciliation"
 // destroying the pending state on inference — a never-cut violation.
 var ErrUnknownResolution = errors.New("reconcile: unknown resolution; pending reconciliation preserved")
 
+// ErrGateBlockedNoWrite — reconciliation was asked to resolve a gate-blocked
+// recovery marker (issue #105) to Accepted, but that marker records NO external
+// write: the EXE-001 gate failed on resume-from-Executing, so the durable claim was
+// never taken and the marketplace was never touched. A success can NEVER be inferred
+// from a write that did not happen (EXE-003), so a gate_blocked record may resolve
+// ONLY to Failed. The action is LEFT visibly Pending Reconciliation (fail closed, no
+// state change) until an authoritative read-back resolves it to Failed.
+var ErrGateBlockedNoWrite = errors.New("reconcile: gate-blocked no-write action cannot resolve to accepted; only failed")
+
 // CardStore is the §8.4 card-state seam (satisfied by *recommendation.Service).
 // AdvanceTx lets the state transition commit atomically with its AUD-001 audit row.
 type CardStore interface {
@@ -134,6 +143,14 @@ func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, reso
 	}
 	if execution.ExternalState(exec.ExternalState) != execution.StatePendingReconciliation {
 		return ErrNotPending
+	}
+	// A gate-blocked recovery marker (issue #105) performed NO external write, so it
+	// can ONLY resolve to Failed. Refuse an Accepted resolution BEFORE any state
+	// change (fail closed): reconciliation never infers a success from a write that
+	// never happened (EXE-003). The action stays visibly pending until read-back
+	// resolves it to Failed.
+	if exec.GateBlocked && resolution == ResolveAccepted {
+		return ErrGateBlockedNoWrite
 	}
 
 	card, err := s.cards.GetCard(ctx, exec.CardID)

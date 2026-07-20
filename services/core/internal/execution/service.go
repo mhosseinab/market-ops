@@ -170,6 +170,40 @@ func (s *Service) safetyFailureHook(account, actionID, cardID uuid.UUID, gate Ga
 	}
 }
 
+// gateBlockedExecutionHook builds the in-transaction insert of the issue #105
+// gate-blocked recovery marker — a no-write action_executions row — for a card a
+// crash left in Executing whose EXE-001 gate FAILED on resume. It is passed to
+// advanceWithAudit so the marker commits ATOMICALLY with the Executing →
+// PendingReconciliation advance + its audit: either the parked card becomes VISIBLE
+// (OPS-002 queue + pending_reconciliation backlog gauge) and DRAINABLE
+// (ReconcilePending), or nothing commits. The record carries wrote:false and
+// gate_blocked=true, so an authoritative read-back may resolve it ONLY to Failed
+// (EXE-003: never infer a success from a write that never happened). It claims the
+// card's stable idempotency key with ON CONFLICT DO NOTHING, so a concurrent resume
+// is idempotent (no error, the single record stands) AND any later claimAndWrite on
+// that key is permanently foreclosed — the marker is never a live write claim
+// (EXE-002 at-most-one-write).
+func (s *Service) gateBlockedExecutionHook(card db.ApprovalCard, gate Gate) func(context.Context, pgx.Tx) error {
+	return func(ctx context.Context, tx pgx.Tx) error {
+		payload, err := json.Marshal(map[string]any{"gate_blocked": true, "gate": gate, "wrote": false})
+		if err != nil {
+			return err
+		}
+		_, err = db.New(tx).InsertGateBlockedExecution(ctx, db.InsertGateBlockedExecutionParams{
+			CardID:         card.ID,
+			ActionID:       card.ActionID,
+			IdempotencyKey: card.IdempotencyKey,
+			RequestPayload: payload,
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
+			// ON CONFLICT DO NOTHING: a concurrent resume already recorded the single
+			// marker. Idempotent — not an error.
+			return nil
+		}
+		return err
+	}
+}
+
 // Mode is the execution mode of a completed Execute call.
 type Mode string
 
@@ -380,12 +414,31 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 	// permission was revoked, the cited evidence went stale, or the live price moved,
 	// i.e. "loss of approval-control versioning across a retry". On a gate failure fail
 	// closed to the legal §8.4 Executing → PendingReconciliation edge (there is NO
-	// Executing → Invalidated edge; §8.4 table) and write NOTHING — the parked action is
-	// drained by reconciliation, never inferred.
+	// Executing → Invalidated edge; §8.4 table) and write NOTHING.
+	//
+	// The park must be DRAINABLE and VISIBLE, not a zombie: in the SAME transaction
+	// as the Executing → PendingReconciliation advance we insert a gate-blocked,
+	// no-write action_executions marker (gateBlockedExecutionHook). Every drain path
+	// keys off that row — ReconcilePending (GetActionExecutionByAction), the OPS-002
+	// operations queue (ListPendingReconciliationByAccount), and the
+	// pending_reconciliation backlog gauge (AggregatePendingReconciliation) — so the
+	// parked card is now enumerable and resolvable. The marker records wrote:false and
+	// gate_blocked=true, so reconciliation may resolve it ONLY to Failed via
+	// authoritative read-back (EXE-003: never infer a success from a write that never
+	// happened). It claims the card's stable idempotency key (ON CONFLICT DO NOTHING),
+	// so it is idempotent under concurrent resumes AND permanently forecloses any later
+	// claimAndWrite on that key — the marker can never be consumed as a green light for
+	// an external write (EXE-002 at-most-one-write).
 	if entryState == approval.StateExecuting {
 		gate := EvaluateGates(rc.Inputs)
 		if !gate.OK {
 			s.tel.gateBlocked(ctx, card, gate.Failed, ModeWrite)
+			// Tolerate ErrRejectedTransition for symmetry with replayWrite /
+			// commitWriteResult: two concurrent resumes both fail the gate and race on
+			// the FROM-guarded Executing → PendingReconciliation advance; the loser's
+			// whole transaction (marker + audit + advance) rolls back and it returns the
+			// same clean Blocked result — no write occurs on either path, and the single
+			// winner's marker stands.
 			if _, err := s.advanceWithAudit(ctx, card, approval.StateExecuting, approval.StatePendingReconciliation,
 				"gate_blocked_on_recovery:"+string(gate.Failed), audit.Event{
 					ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
@@ -395,7 +448,7 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 						"gate": gate.Failed, "reason": gate.Reason, "wrote": false,
 					}, true, entryState),
 					TerminalState: string(approval.StatePendingReconciliation),
-				}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil {
+				}, s.gateBlockedExecutionHook(card, gate.Failed), s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil && !errors.Is(err, recommendation.ErrRejectedTransition) {
 				return ExecuteResult{}, err
 			}
 			return ExecuteResult{
