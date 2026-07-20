@@ -27,6 +27,18 @@ const instrumentationName = "github.com/mhosseinab/market-ops/services/core/inte
 // §20.1 trip wire "per account/connector" without a schema change when more land.
 const connectorLabel = "dk_seller"
 
+// SeedSuffixBound caps how many newest sync-run rows per account the restart
+// re-derivation reads (issue #211). The walk stops at the first 'completed' run, so
+// only a bounded newest suffix per account is ever needed; driving the read from
+// marketplace_accounts with a per-account LIMIT keeps startup work proportional to
+// (#accounts x SeedSuffixBound), not to lifetime catalog_sync_runs history. It is set
+// far above the §20.1 trip threshold so an account whose entire suffix is failures is
+// already tripping long before the bound is reached. Exported so the black-box DB
+// test shares the exact bound. When a suffix is exhausted without a 'completed' run
+// the seam fails closed (see seedFromOutcomes): it seeds this bound-sized lower bound
+// — which itself trips the wire — never a truncated value presented as authoritative.
+const SeedSuffixBound = 256
+
 // SyncDisposition is the bounded outcome vocabulary of ONE terminal catalog-sync
 // attempt, measured at the authoritative sync lifecycle boundary (catalog Syncer)
 // rather than inferred from the credential-management HTTP routes. Every value
@@ -73,9 +85,10 @@ type SyncRunOutcome struct {
 // ordered run state (seed / deriveStreaks) so a restart never silently zeroes a
 // real failing streak.
 type SyncTelemetry struct {
-	logger  *slog.Logger
-	streaks metric.Int64Gauge
-	results metric.Int64Counter
+	logger             *slog.Logger
+	streaks            metric.Int64Gauge
+	results            metric.Int64Counter
+	seedBoundExhausted metric.Int64Counter
 
 	mu     sync.Mutex
 	streak map[uuid.UUID]int64
@@ -117,12 +130,20 @@ func newSyncTelemetry(logger *slog.Logger) *SyncTelemetry {
 	if err != nil {
 		results, _ = noopSyncMeter.Int64Counter("connector.sync_results")
 	}
+	seedBoundExhausted, err := m.Int64Counter(
+		"connector.sync_streak_seed_bound_exhausted",
+		metric.WithDescription("restart streak re-derivation consumed an account's full bounded suffix without a completed run; a fail-closed lower-bound streak was seeded (issue #211)"),
+	)
+	if err != nil {
+		seedBoundExhausted, _ = noopSyncMeter.Int64Counter("connector.sync_streak_seed_bound_exhausted")
+	}
 	return &SyncTelemetry{
-		logger:      logger.With("component", "catalog_sync"),
-		streaks:     gauge,
-		results:     results,
-		streak:      make(map[uuid.UUID]int64),
-		countedRuns: make(map[uuid.UUID]struct{}),
+		logger:             logger.With("component", "catalog_sync"),
+		streaks:            gauge,
+		results:            results,
+		seedBoundExhausted: seedBoundExhausted,
+		streak:             make(map[uuid.UUID]int64),
+		countedRuns:        make(map[uuid.UUID]struct{}),
 	}
 }
 
@@ -228,7 +249,7 @@ func (t *SyncTelemetry) seed(streaks map[uuid.UUID]int64, countedRuns map[uuid.U
 // restart continues a real §20.1 failing streak instead of silently zeroing it.
 // Read-only: it never mutates a run row.
 func (t *SyncTelemetry) SeedFromDurableState(ctx context.Context, pool *pgxpool.Pool) error {
-	rows, err := db.New(pool).ListRecentCatalogSyncOutcomes(ctx)
+	rows, err := db.New(pool).ListRecentCatalogSyncOutcomes(ctx, int32(SeedSuffixBound))
 	if err != nil {
 		return fmt.Errorf("catalog: seed sync-failure streaks: %w", err)
 	}
@@ -241,8 +262,48 @@ func (t *SyncTelemetry) SeedFromDurableState(ctx context.Context, pool *pgxpool.
 			HasError: r.Error != "",
 		}
 	}
-	t.seed(deriveStreaks(outcomes))
+	t.seedFromOutcomes(ctx, outcomes, SeedSuffixBound)
 	return nil
+}
+
+// seedFromOutcomes derives per-account streaks from a bounded newest suffix of
+// durable sync-run state and seeds the tracker, splitting the bound-exhaustion
+// observability from the DB read so it is unit-testable without Postgres (issue
+// #211). Rows arrive newest-first per account and number at most `bound` per account.
+//
+// An account is EXHAUSTED when its walk consumed the full bounded suffix
+// (rowsPerAccount >= bound) without hitting a 'completed' run (resolved is false): the
+// re-derived streak is then only a LOWER BOUND, not an authoritative value. For each
+// such account the seam emits the connector.sync_streak_seed_bound_exhausted counter
+// and a WARN with BOUNDED technical identifiers only (no free text / locale copy),
+// then still seeds the lower-bound streak. That lower bound (SeedSuffixBound) is far
+// above the §20.1 trip threshold, so the wire fires — a truncated suffix is never
+// silently presented as a resolved short streak (fail-closed, no silent truncation).
+func (t *SyncTelemetry) seedFromOutcomes(ctx context.Context, outcomes []SyncRunOutcome, bound int) {
+	rowsPerAccount := make(map[uuid.UUID]int)
+	for _, o := range outcomes {
+		rowsPerAccount[o.Account]++
+	}
+	streaks, counted, resolved := deriveStreaks(outcomes)
+
+	for acct, streak := range streaks {
+		if resolved[acct] || rowsPerAccount[acct] < bound {
+			continue
+		}
+		t.seedBoundExhausted.Add(ctx, 1, metric.WithAttributes(
+			attribute.String("account_id", acct.String()),
+			attribute.String("connector", connectorLabel),
+		))
+		t.logger.WarnContext(ctx,
+			"sync-streak seed exhausted the bounded suffix without a completed run; seeded a fail-closed lower bound",
+			"account_id", acct.String(),
+			"connector", connectorLabel,
+			"bound", bound,
+			"seeded_streak_lower_bound", streak,
+		)
+	}
+
+	t.seed(streaks, counted)
 }
 
 // statusRe extracts the HTTP status the connector reports on a non-200 fetch
@@ -286,7 +347,14 @@ func classifySyncFailure(err error) SyncDisposition {
 // failure increment, so seed can re-populate the live per-run idempotency guard —
 // a run still being retried after a restart must not be counted again on top of the
 // seeded streak (issue #146, blocker 1).
-func deriveStreaks(rows []SyncRunOutcome) (map[uuid.UUID]int64, map[uuid.UUID]struct{}) {
+//
+// It also returns the `resolved` set: an account is resolved when the walk hit a
+// 'completed' run (the streak is authoritative — it ended at a real success). An
+// account absent from `resolved` ran off the end of its (bounded, issue #211) input
+// without a success, so its streak is only a LOWER BOUND; the caller
+// (seedFromOutcomes) meters that and fails closed rather than presenting a truncated
+// streak as authoritative.
+func deriveStreaks(rows []SyncRunOutcome) (map[uuid.UUID]int64, map[uuid.UUID]struct{}, map[uuid.UUID]bool) {
 	out := make(map[uuid.UUID]int64)
 	counted := make(map[uuid.UUID]struct{})
 	done := make(map[uuid.UUID]bool)
@@ -305,5 +373,5 @@ func deriveStreaks(rows []SyncRunOutcome) (map[uuid.UUID]int64, map[uuid.UUID]st
 			// clean 'running' (in-flight, no error): neutral, keep scanning older runs.
 		}
 	}
-	return out, counted
+	return out, counted, done
 }

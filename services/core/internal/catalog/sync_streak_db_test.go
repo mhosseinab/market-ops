@@ -147,6 +147,90 @@ func TestSyncStreak_MultiRetrySingleRun_LiveEqualsDurable(t *testing.T) {
 	}
 }
 
+// TestSyncStreak_SuffixBounded_LargeTailDoesNotIncreaseRows proves the issue #211
+// bound: startup re-derivation reads only a bounded newest suffix per account, so a
+// growing lifetime catalog_sync_runs history never inflates the seed read nor changes
+// the derived streak. Recent runs (3 failures over a completed run => streak 3) are
+// established first; then a large OLDER tail (> SeedSuffixBound rows) is appended.
+// ListRecentCatalogSyncOutcomes(ctx, SeedSuffixBound) must return <= SeedSuffixBound
+// rows for the account, and the re-derived streak must stay 3 as the tail grows.
+// Skips without DATABASE_URL (defers the row-count assertion to CI postgres).
+func TestSyncStreak_SuffixBounded_LargeTailDoesNotIncreaseRows(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	_, account := seedOrgAccount(t, q)
+
+	bound := catalog.SeedSuffixBound
+
+	// Recent history with explicit started_at so ordering is deterministic: an oldest
+	// 'completed' run, then three newer 'failed' runs => newest-first walk yields 3.
+	insertRun := func(status string, offsetSeconds int) {
+		t.Helper()
+		if _, err := pool.Exec(ctx,
+			`INSERT INTO catalog_sync_runs (marketplace_account_id, kind, status, next_page, error, started_at)
+			 VALUES ($1, 'incremental', $2, 1, $3, now() + ($4 || ' seconds')::interval)`,
+			account, status, "seed test", offsetSeconds,
+		); err != nil {
+			t.Fatalf("insert recent run: %v", err)
+		}
+	}
+	insertRun("completed", 1)
+	insertRun("failed", 2)
+	insertRun("failed", 3)
+	insertRun("failed", 4)
+
+	deriveViaSeed := func() int64 {
+		t.Helper()
+		tel := catalog.NewSyncTelemetry(nil)
+		if err := tel.SeedFromDurableState(ctx, pool); err != nil {
+			t.Fatalf("seed from durable state: %v", err)
+		}
+		return tel.StreakFor(account)
+	}
+	rowsForAccount := func() int {
+		t.Helper()
+		rows, err := q.ListRecentCatalogSyncOutcomes(ctx, int32(bound))
+		if err != nil {
+			t.Fatalf("list recent outcomes: %v", err)
+		}
+		n := 0
+		for _, r := range rows {
+			if r.MarketplaceAccountID == account {
+				n++
+			}
+		}
+		return n
+	}
+
+	if got := deriveViaSeed(); got != 3 {
+		t.Fatalf("pre-tail: derived streak should be 3, got %d", got)
+	}
+	baselineRows := rowsForAccount()
+
+	// Append a large OLDER tail (older started_at) exceeding the bound. Because it is
+	// older than the 'completed' run it never affects the streak; because it exceeds
+	// the bound it proves the read is suffix-bounded, not history-proportional.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO catalog_sync_runs (marketplace_account_id, kind, status, next_page, error, started_at)
+		 SELECT $1, 'incremental', 'failed', 1, 'old tail', now() - (g || ' hours')::interval
+		 FROM generate_series(1, $2) g`,
+		account, bound+50,
+	); err != nil {
+		t.Fatalf("insert old tail: %v", err)
+	}
+
+	afterRows := rowsForAccount()
+	if afterRows > bound {
+		t.Fatalf("suffix read must be bounded: got %d rows for account, want <= %d", afterRows, bound)
+	}
+	if afterRows != baselineRows {
+		t.Fatalf("older tail must not enlarge the bounded read: baseline=%d after=%d", baselineRows, afterRows)
+	}
+	if got := deriveViaSeed(); got != 3 {
+		t.Fatalf("post-tail: derived streak must stay 3 as history grows, got %d", got)
+	}
+}
+
 // failingSource always errors on fetch, driving a sync-attempt failure.
 type failingSource struct{}
 

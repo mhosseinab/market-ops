@@ -641,9 +641,16 @@ func (q *Queries) ListCatalogProducts(ctx context.Context, arg ListCatalogProduc
 }
 
 const listRecentCatalogSyncOutcomes = `-- name: ListRecentCatalogSyncOutcomes :many
-SELECT id, marketplace_account_id, status, error
-FROM catalog_sync_runs
-ORDER BY marketplace_account_id, started_at DESC
+SELECT o.id, o.marketplace_account_id, o.status, o.error
+FROM marketplace_accounts a
+CROSS JOIN LATERAL (
+    SELECT r.id, r.marketplace_account_id, r.status, r.error, r.started_at
+    FROM catalog_sync_runs r
+    WHERE r.marketplace_account_id = a.id
+    ORDER BY r.started_at DESC, r.id DESC
+    LIMIT $1::int
+) o
+ORDER BY o.marketplace_account_id, o.started_at DESC, o.id DESC
 `
 
 type ListRecentCatalogSyncOutcomesRow struct {
@@ -654,13 +661,24 @@ type ListRecentCatalogSyncOutcomesRow struct {
 }
 
 // READ-ONLY durable ordered sync-run state for restart re-derivation of the §20.1
-// connector-sync failure streak (issue #146). Newest-first per account; the
-// telemetry seam (catalog.deriveStreaks) counts the leading consecutive non-success
-// runs since the last completed run. The run id is carried so the seam can re-seed
-// its per-run idempotency guard: a run still being retried after a restart is never
-// double-counted on the live path. Pure SELECT: never mutates a run row.
-func (q *Queries) ListRecentCatalogSyncOutcomes(ctx context.Context) ([]ListRecentCatalogSyncOutcomesRow, error) {
-	rows, err := q.db.Query(ctx, listRecentCatalogSyncOutcomes)
+// connector-sync failure streak (issue #146, bounded per issue #211). Newest-first
+// per account; the telemetry seam (catalog.deriveStreaks) counts the leading
+// consecutive non-success runs since the last completed run. The run id is carried so
+// the seam can re-seed its per-run idempotency guard: a run still being retried after
+// a restart is never double-counted on the live path.
+//
+// Only a BOUNDED newest suffix per account is needed to re-derive the streak: the
+// walk stops at the first 'completed' run, so rows older than the last success are
+// discarded anyway. Driving the read from marketplace_accounts with a per-account
+// CROSS JOIN LATERAL + LIMIT makes the work proportional to (#accounts x bound), not
+// to lifetime catalog_sync_runs history — served by
+// idx_catalog_sync_runs_account_started (marketplace_account_id, started_at DESC)
+// from migration 0004. When an account's suffix is exhausted without hitting a
+// 'completed' run the seam fails closed (seeds a lower bound that still trips), so
+// truncation is never presented as an authoritative resolved streak.
+// Pure SELECT: never mutates a run row.
+func (q *Queries) ListRecentCatalogSyncOutcomes(ctx context.Context, bound int32) ([]ListRecentCatalogSyncOutcomesRow, error) {
+	rows, err := q.db.Query(ctx, listRecentCatalogSyncOutcomes, bound)
 	if err != nil {
 		return nil, err
 	}

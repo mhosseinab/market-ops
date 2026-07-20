@@ -701,12 +701,23 @@ type Querier interface {
 	// approval_cards row (action_executions carries no account column of its own).
 	ListPendingReconciliationByAccount(ctx context.Context, arg ListPendingReconciliationByAccountParams) ([]ActionExecution, error)
 	// READ-ONLY durable ordered sync-run state for restart re-derivation of the §20.1
-	// connector-sync failure streak (issue #146). Newest-first per account; the
-	// telemetry seam (catalog.deriveStreaks) counts the leading consecutive non-success
-	// runs since the last completed run. The run id is carried so the seam can re-seed
-	// its per-run idempotency guard: a run still being retried after a restart is never
-	// double-counted on the live path. Pure SELECT: never mutates a run row.
-	ListRecentCatalogSyncOutcomes(ctx context.Context) ([]ListRecentCatalogSyncOutcomesRow, error)
+	// connector-sync failure streak (issue #146, bounded per issue #211). Newest-first
+	// per account; the telemetry seam (catalog.deriveStreaks) counts the leading
+	// consecutive non-success runs since the last completed run. The run id is carried so
+	// the seam can re-seed its per-run idempotency guard: a run still being retried after
+	// a restart is never double-counted on the live path.
+	//
+	// Only a BOUNDED newest suffix per account is needed to re-derive the streak: the
+	// walk stops at the first 'completed' run, so rows older than the last success are
+	// discarded anyway. Driving the read from marketplace_accounts with a per-account
+	// CROSS JOIN LATERAL + LIMIT makes the work proportional to (#accounts x bound), not
+	// to lifetime catalog_sync_runs history — served by
+	// idx_catalog_sync_runs_account_started (marketplace_account_id, started_at DESC)
+	// from migration 0004. When an account's suffix is exhausted without hitting a
+	// 'completed' run the seam fails closed (seeds a lower bound that still trips), so
+	// truncation is never presented as an authoritative resolved streak.
+	// Pure SELECT: never mutates a run row.
+	ListRecentCatalogSyncOutcomes(ctx context.Context, bound int32) ([]ListRecentCatalogSyncOutcomesRow, error)
 	// Every recommend-only action for an account (issue #106 unified action
 	// projection), newest first. recommend_only_actions carries its own account
 	// column, so no join is needed. A pure SELECT.
