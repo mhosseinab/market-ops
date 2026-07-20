@@ -273,28 +273,13 @@ func TestSystemDuplicateWrite_ConcurrentDoubleConfirmExecute(t *testing.T) {
 				didWriteCount++
 			}
 		case http.StatusConflict:
-			// Lost the §8.4 FROM-guarded race on the Approved gate check itself
-			// (execution.ErrNotApproved) — no state mutated, no write attempted.
-			// Legitimate, not a bug (matches S18's
+			// Lost the §8.4 FROM-guarded race — no state mutated, no write attempted.
+			// Two race-losses both surface here as 409 (issue #138, now resolved):
+			//   - execution.ErrNotApproved: lost on the Approved gate check itself.
+			//   - recommendation.ErrRejectedTransition: read the card as Approved but
+			//     lost the FROM-guarded Approved→Revalidating advance.
+			// Both are legitimate client-side conflicts, not bugs (matches S18's
 			// TestExecute_ConcurrentExecuteSingleWrite tolerance).
-		case http.StatusInternalServerError:
-			// A loser that reads the card as Approved but loses the FROM-guarded
-			// Approved→Revalidating advance surfaces
-			// recommendation.ErrRejectedTransition, which ExecuteAction's error
-			// switch (execution.go) does not map to 409 alongside
-			// execution.ErrNotApproved — it falls to the default 500 branch. The
-			// SAFETY invariant still holds (no state mutated, no write attempted;
-			// asserted below via the write counter), so this is tolerated here as
-			// a genuine race-loss, but it is a real gap: the loser's HTTP status
-			// is imprecise for a client retry decision.
-			// CARRY-FORWARD (non-blocking, go_domain_executor): map
-			// recommendation.ErrRejectedTransition to 409 in ExecuteAction,
-			// consistent with execution.ErrNotApproved.
-			var body struct{ Message string }
-			_ = json.Unmarshal(rec.Body.Bytes(), &body)
-			if !strings.Contains(body.Message, "approval state transition rejected") {
-				t.Fatalf("execute #%d: unexpected 500, body=%s", i, rec.Body.String())
-			}
 		default:
 			t.Fatalf("execute #%d: unexpected status = %d, body=%s", i, rec.Code, rec.Body.String())
 		}

@@ -12,6 +12,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/execution"
 	"github.com/mhosseinab/market-ops/services/core/internal/outcome"
+	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
 // ExecutionService is the execution/reconciliation seam the gateway depends on
@@ -70,6 +71,13 @@ func (s *gatewayServer) ExecuteAction(
 		case errors.Is(err, pgx.ErrNoRows):
 			return gateway.ExecuteActiondefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
 		case errors.Is(err, execution.ErrNotApproved):
+			return gateway.ExecuteActiondefaultJSONResponse{StatusCode: 409, Body: executionErr(err)}, nil
+		case errors.Is(err, recommendation.ErrRejectedTransition):
+			// A client-caused invalid §8.4 transition: the card left the FROM-guarded
+			// Approved state before this advance (e.g. a concurrent caller won the
+			// Approved→Revalidating race). No state was mutated and no write was
+			// attempted, so this is a Conflict the client should refresh/retry — not a
+			// server fault (issue #138). 409, consistent with ErrNotApproved.
 			return gateway.ExecuteActiondefaultJSONResponse{StatusCode: 409, Body: executionErr(err)}, nil
 		default:
 			return gateway.ExecuteActiondefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
