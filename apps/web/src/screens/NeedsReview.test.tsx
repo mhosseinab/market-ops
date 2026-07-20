@@ -146,6 +146,48 @@ describe("Needs Review queue (journey 4)", () => {
     expect(bodies).toHaveLength(0);
   });
 
+  it("scopes the note draft to the selected identity — switching A→B never carries A's note (#83)", async () => {
+    withTwoCandidates();
+    let body: { identityId: string; note?: string } | null = null;
+    server.use(
+      http.post(`${BASE}/identity/confirm`, async ({ request }) => {
+        body = (await request.json()) as typeof body;
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    renderNeedsReview();
+
+    // Select A and type a note bound to A's evidence.
+    fireEvent.click(await screen.findByText(candidateA.supplierCode));
+    const aside = document.querySelector(".split__aside") as HTMLElement;
+    fireEvent.change(within(aside).getByRole("textbox"), {
+      target: { value: "evidence for A" },
+    });
+
+    // Switch selection to B WITHOUT submitting A's decision.
+    fireEvent.click(screen.getByText(candidateB.supplierCode));
+
+    // B's evidence panel must show B's own (empty) draft, never A's text.
+    await waitFor(() =>
+      expect(within(aside).getByText(String(candidateB.nativeVariantId))).toBeInTheDocument(),
+    );
+    expect((within(aside).getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
+
+    // Submitting B's confirm targets B with B's content only — no A leakage.
+    fireEvent.click(rowButton(candidateB.supplierCode, faIR["needsReview.confirm"]));
+    await waitFor(() => expect(body).not.toBeNull());
+    expect(body).toEqual({ identityId: candidateB.identityId });
+
+    // Returning to A restores A's still-unsubmitted draft (per-id scoping).
+    fireEvent.click(screen.getByText(candidateA.supplierCode));
+    await waitFor(() =>
+      expect(within(aside).getByText(String(candidateA.nativeVariantId))).toBeInTheDocument(),
+    );
+    expect((within(aside).getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "evidence for A",
+    );
+  });
+
   it("submits the decision with the VISIBLE evidence panel's identity + its note", async () => {
     withTwoCandidates();
     let body: { identityId: string; note?: string } | null = null;
