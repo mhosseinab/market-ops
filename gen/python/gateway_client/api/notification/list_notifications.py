@@ -7,18 +7,24 @@ import httpx
 from ...client import AuthenticatedClient, Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.notification_feed import NotificationFeed
-from ...types import UNSET, Response
+from ...types import UNSET, Response, Unset
 
 
 def _get_kwargs(
     *,
     marketplace_account_id: UUID,
+    limit: int | Unset = 50,
+    cursor: str | Unset = UNSET,
 ) -> dict[str, Any]:
 
     params: dict[str, Any] = {}
 
     json_marketplace_account_id = str(marketplace_account_id)
     params["marketplaceAccountId"] = json_marketplace_account_id
+
+    params["limit"] = limit
+
+    params["cursor"] = cursor
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -59,16 +65,25 @@ def sync_detailed(
     *,
     client: AuthenticatedClient | Client,
     marketplace_account_id: UUID,
+    limit: int | Unset = 50,
+    cursor: str | Unset = UNSET,
 ) -> Response[ErrorEnvelope | NotificationFeed]:
     """List the in-app notifications for an account (NOT-001).
 
-     Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001). Each item carries
-    the SHARED product event id — the same id the daily email digest references, so a notification is
-    one event on two surfaces, never two. Items reference locale catalog KEYS with named slots
-    (LOC-002); the surface renders copy, the core stores none. This is a read.
+     Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001, §17 bounded reads).
+    Each item carries the SHARED product event id — the same id the daily email digest references, so a
+    notification is one event on two surfaces, never two. Items reference locale catalog KEYS with named
+    slots (LOC-002); the surface renders copy, the core stores none. This is a read. The feed is BOUNDED
+    and keyset-paginated over `(createdAt, id)` newest-first: pass `limit` for the page size (server
+    default when omitted, clamped to a hard maximum) and the opaque `cursor` from a prior response's
+    `nextCursor` to fetch the next page. Ties on `createdAt` break by `id` so every notification is
+    returned EXACTLY ONCE across pages; a newer insert appears only on a refreshed first page, never
+    duplicated mid-scroll.
 
     Args:
         marketplace_account_id (UUID):
+        limit (int | Unset):  Default: 50.
+        cursor (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -80,6 +95,8 @@ def sync_detailed(
 
     kwargs = _get_kwargs(
         marketplace_account_id=marketplace_account_id,
+        limit=limit,
+        cursor=cursor,
     )
 
     response = client.get_httpx_client().request(
@@ -93,16 +110,25 @@ def sync(
     *,
     client: AuthenticatedClient | Client,
     marketplace_account_id: UUID,
+    limit: int | Unset = 50,
+    cursor: str | Unset = UNSET,
 ) -> ErrorEnvelope | NotificationFeed | None:
     """List the in-app notifications for an account (NOT-001).
 
-     Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001). Each item carries
-    the SHARED product event id — the same id the daily email digest references, so a notification is
-    one event on two surfaces, never two. Items reference locale catalog KEYS with named slots
-    (LOC-002); the surface renders copy, the core stores none. This is a read.
+     Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001, §17 bounded reads).
+    Each item carries the SHARED product event id — the same id the daily email digest references, so a
+    notification is one event on two surfaces, never two. Items reference locale catalog KEYS with named
+    slots (LOC-002); the surface renders copy, the core stores none. This is a read. The feed is BOUNDED
+    and keyset-paginated over `(createdAt, id)` newest-first: pass `limit` for the page size (server
+    default when omitted, clamped to a hard maximum) and the opaque `cursor` from a prior response's
+    `nextCursor` to fetch the next page. Ties on `createdAt` break by `id` so every notification is
+    returned EXACTLY ONCE across pages; a newer insert appears only on a refreshed first page, never
+    duplicated mid-scroll.
 
     Args:
         marketplace_account_id (UUID):
+        limit (int | Unset):  Default: 50.
+        cursor (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -115,6 +141,8 @@ def sync(
     return sync_detailed(
         client=client,
         marketplace_account_id=marketplace_account_id,
+        limit=limit,
+        cursor=cursor,
     ).parsed
 
 
@@ -122,16 +150,25 @@ async def asyncio_detailed(
     *,
     client: AuthenticatedClient | Client,
     marketplace_account_id: UUID,
+    limit: int | Unset = 50,
+    cursor: str | Unset = UNSET,
 ) -> Response[ErrorEnvelope | NotificationFeed]:
     """List the in-app notifications for an account (NOT-001).
 
-     Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001). Each item carries
-    the SHARED product event id — the same id the daily email digest references, so a notification is
-    one event on two surfaces, never two. Items reference locale catalog KEYS with named slots
-    (LOC-002); the surface renders copy, the core stores none. This is a read.
+     Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001, §17 bounded reads).
+    Each item carries the SHARED product event id — the same id the daily email digest references, so a
+    notification is one event on two surfaces, never two. Items reference locale catalog KEYS with named
+    slots (LOC-002); the surface renders copy, the core stores none. This is a read. The feed is BOUNDED
+    and keyset-paginated over `(createdAt, id)` newest-first: pass `limit` for the page size (server
+    default when omitted, clamped to a hard maximum) and the opaque `cursor` from a prior response's
+    `nextCursor` to fetch the next page. Ties on `createdAt` break by `id` so every notification is
+    returned EXACTLY ONCE across pages; a newer insert appears only on a refreshed first page, never
+    duplicated mid-scroll.
 
     Args:
         marketplace_account_id (UUID):
+        limit (int | Unset):  Default: 50.
+        cursor (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -143,6 +180,8 @@ async def asyncio_detailed(
 
     kwargs = _get_kwargs(
         marketplace_account_id=marketplace_account_id,
+        limit=limit,
+        cursor=cursor,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -154,16 +193,25 @@ async def asyncio(
     *,
     client: AuthenticatedClient | Client,
     marketplace_account_id: UUID,
+    limit: int | Unset = 50,
+    cursor: str | Unset = UNSET,
 ) -> ErrorEnvelope | NotificationFeed | None:
     """List the in-app notifications for an account (NOT-001).
 
-     Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001). Each item carries
-    the SHARED product event id — the same id the daily email digest references, so a notification is
-    one event on two surfaces, never two. Items reference locale catalog KEYS with named slots
-    (LOC-002); the surface renders copy, the core stores none. This is a read.
+     Returns the account's in-app notification feed, newest first (PRD §7.5 NOT-001, §17 bounded reads).
+    Each item carries the SHARED product event id — the same id the daily email digest references, so a
+    notification is one event on two surfaces, never two. Items reference locale catalog KEYS with named
+    slots (LOC-002); the surface renders copy, the core stores none. This is a read. The feed is BOUNDED
+    and keyset-paginated over `(createdAt, id)` newest-first: pass `limit` for the page size (server
+    default when omitted, clamped to a hard maximum) and the opaque `cursor` from a prior response's
+    `nextCursor` to fetch the next page. Ties on `createdAt` break by `id` so every notification is
+    returned EXACTLY ONCE across pages; a newer insert appears only on a refreshed first page, never
+    duplicated mid-scroll.
 
     Args:
         marketplace_account_id (UUID):
+        limit (int | Unset):  Default: 50.
+        cursor (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -177,5 +225,7 @@ async def asyncio(
         await asyncio_detailed(
             client=client,
             marketplace_account_id=marketplace_account_id,
+            limit=limit,
+            cursor=cursor,
         )
     ).parsed

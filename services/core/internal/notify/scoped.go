@@ -79,6 +79,25 @@ func (s *Store) UnreadCountForOrg(ctx context.Context, organizationID, requested
 // two can never describe different database states, and any component failure returns
 // NO partial feed (fail closed).
 func (s *Store) FeedForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID) (Feed, error) {
+	return s.FeedPageForOrg(ctx, organizationID, requestedAccount, PageRequest{})
+}
+
+// FeedPageForOrg returns ONE bounded, keyset-paginated page of the caller's OWN
+// account feed AND its account-wide unread badge from a single snapshot (issues
+// #113 + #129 + #128). Tenant scoping is preserved EXACTLY: the account is resolved
+// FROM the authenticated organization and the requested account MUST equal it — a
+// foreign or org-less caller yields ErrAccountNotFound (uniform not-found, no
+// existence oracle), never another tenant's feed.
+//
+// The page is server-bounded: the limit is clamped to [1, MaxPageLimit] (default
+// when omitted), so a long-lived append-only feed never materializes in one
+// response. The cursor is decoded and its account binding is verified AFTER the own
+// account is resolved: a malformed, tampered, unknown-version, OR foreign-account
+// cursor fails safely with ErrInvalidCursor (a canonical 400 at the edge). The
+// cursor is only a POSITION; the account predicate on the query remains the
+// authorization, so a foreign cursor can never read another account's rows even if
+// its binding check were bypassed (defense in depth).
+func (s *Store) FeedPageForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID, req PageRequest) (Feed, error) {
 	account, err := s.accountForOrg(ctx, organizationID)
 	if err != nil {
 		return Feed{}, err
@@ -86,7 +105,21 @@ func (s *Store) FeedForOrg(ctx context.Context, organizationID, requestedAccount
 	if requestedAccount != account {
 		return Feed{}, ErrAccountNotFound
 	}
-	return s.snapshotFeed(ctx, account)
+	bound := pageBound{limit: ClampLimit(req.Limit)}
+	if req.Cursor != nil {
+		cur, err := decodeCursor(*req.Cursor)
+		if err != nil {
+			return Feed{}, err
+		}
+		// A cursor minted for a DIFFERENT account is foreign — reject it rather than
+		// silently seek this account's feed to that position (fail safe; the query is
+		// account-scoped regardless).
+		if cur.Account != account {
+			return Feed{}, ErrInvalidCursor
+		}
+		bound.cursor = &cur
+	}
+	return s.snapshotFeed(ctx, account, bound)
 }
 
 // MarkReadForOrg acknowledges one notification under the caller's OWN account (issue

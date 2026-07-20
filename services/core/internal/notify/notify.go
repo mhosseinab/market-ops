@@ -361,21 +361,62 @@ func equalParams(a, b map[string]string) bool {
 	return true
 }
 
-// List returns the account's in-app notification feed, newest first.
+// List returns the account's newest in-app notifications, bounded to the default
+// page size (issue #128, §17). It is the first (newest) keyset page; older rows are
+// reached by paging with a cursor via FeedPageForOrg. The feed is append-only and
+// unbounded over time, so this never materializes the full history.
 func (s *Store) List(ctx context.Context, account uuid.UUID) ([]Notification, error) {
-	rows, err := db.New(s.pool).ListNotifications(ctx, account)
+	items, _, _, err := s.listPage(ctx, db.New(s.pool), account, pageBound{limit: DefaultPageLimit})
+	return items, err
+}
+
+// pageBound is a RESOLVED bounded-read request: a clamped limit (always in
+// [1, MaxPageLimit]) and an optional decoded, account-validated cursor. It is
+// produced from a caller PageRequest inside the store, so the transport never hands
+// the query an unbounded limit or an unvalidated cursor.
+type pageBound struct {
+	limit  int32
+	cursor *Cursor
+}
+
+// listPage runs ONE bounded keyset page over q (a *db.Queries bound to either the
+// pool or a snapshot tx). It fetches limit+1 rows: the extra row proves more history
+// exists (hasMore) and is trimmed off the returned page; nextCursor is the opaque
+// token for the last RETURNED row (nil when hasMore is false). Deterministic
+// newest-first over (created_at DESC, id DESC); the account predicate is the
+// authorization. SELECT-only — the append-only store is never written here.
+func (s *Store) listPage(ctx context.Context, q *db.Queries, account uuid.UUID, bound pageBound) ([]Notification, *string, bool, error) {
+	params := db.ListNotificationsPageParams{
+		MarketplaceAccountID: account,
+		PageLimit:            bound.limit + 1,
+	}
+	if bound.cursor != nil {
+		params.CursorCreatedAt = pgtype.Timestamptz{Time: bound.cursor.CreatedAt, Valid: true}
+		params.CursorID = pgtype.UUID{Bytes: bound.cursor.ID, Valid: true}
+	}
+	rows, err := q.ListNotificationsPage(ctx, params)
 	if err != nil {
-		return nil, err
+		return nil, nil, false, err
+	}
+	hasMore := int32(len(rows)) > bound.limit
+	if hasMore {
+		rows = rows[:bound.limit]
 	}
 	out := make([]Notification, 0, len(rows))
 	for _, r := range rows {
 		n, err := toNotification(r)
 		if err != nil {
-			return nil, err
+			return nil, nil, false, err
 		}
 		out = append(out, n)
 	}
-	return out, nil
+	var nextCursor *string
+	if hasMore && len(out) > 0 {
+		last := out[len(out)-1]
+		tok := encodeCursor(account, last.CreatedAt, last.ID)
+		nextCursor = &tok
+	}
+	return out, nextCursor, hasMore, nil
 }
 
 // UnreadCount returns the number of unread notifications for the account (badge).
@@ -392,6 +433,11 @@ func (s *Store) UnreadCount(ctx context.Context, account uuid.UUID) (int64, erro
 type Feed struct {
 	Items       []Notification
 	UnreadCount int64
+	// NextCursor is the opaque continuation token for the next (older) page, or nil
+	// on the last page. HasMore reports whether older notifications exist beyond the
+	// returned page (issue #128, §17 bounded reads).
+	NextCursor *string
+	HasMore    bool
 }
 
 // snapshotFeed reads the account feed page AND its account-wide unread badge from
@@ -402,7 +448,7 @@ type Feed struct {
 // write (it reuses the existing ListNotifications/CountUnreadNotifications selects),
 // preserving the append-only guarantee. Any failure of either component returns a
 // ZERO Feed and the error — NEVER a partial combined response (fail closed, atomic).
-func (s *Store) snapshotFeed(ctx context.Context, account uuid.UUID) (Feed, error) {
+func (s *Store) snapshotFeed(ctx context.Context, account uuid.UUID, bound pageBound) (Feed, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{
 		IsoLevel:   pgx.RepeatableRead,
 		AccessMode: pgx.ReadOnly,
@@ -413,17 +459,9 @@ func (s *Store) snapshotFeed(ctx context.Context, account uuid.UUID) (Feed, erro
 	defer func() { _ = tx.Rollback(ctx) }()
 	q := db.New(tx)
 
-	rows, err := q.ListNotifications(ctx, account)
+	items, nextCursor, hasMore, err := s.listPage(ctx, q, account, bound)
 	if err != nil {
 		return Feed{}, err
-	}
-	items := make([]Notification, 0, len(rows))
-	for _, r := range rows {
-		n, err := toNotification(r)
-		if err != nil {
-			return Feed{}, err
-		}
-		items = append(items, n)
 	}
 
 	unread, err := q.CountUnreadNotifications(ctx, account)
@@ -434,7 +472,7 @@ func (s *Store) snapshotFeed(ctx context.Context, account uuid.UUID) (Feed, erro
 	if err := tx.Commit(ctx); err != nil {
 		return Feed{}, err
 	}
-	return Feed{Items: items, UnreadCount: unread}, nil
+	return Feed{Items: items, UnreadCount: unread, NextCursor: nextCursor, HasMore: hasMore}, nil
 }
 
 // MarkRead marks one notification read via the FROM-guarded projection. It is

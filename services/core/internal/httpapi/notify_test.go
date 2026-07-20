@@ -16,22 +16,25 @@ import (
 // account it was called with so the tenant-scoping tests (issue #113) can prove the
 // handler resolves scope from the authenticated principal, not from a body/param.
 type fakeNotify struct {
-	items   []notify.Notification
-	unread  int64
-	changed bool
-	err     error
-	gotOrg  uuid.UUID
-	gotAcct uuid.UUID
-	gotAck  uuid.UUID
+	items      []notify.Notification
+	unread     int64
+	hasMore    bool
+	nextCursor *string
+	changed    bool
+	err        error
+	gotOrg     uuid.UUID
+	gotAcct    uuid.UUID
+	gotAck     uuid.UUID
+	gotReq     notify.PageRequest
 }
 
-func (f *fakeNotify) FeedForOrg(_ context.Context, org, account uuid.UUID) (notify.Feed, error) {
-	f.gotOrg, f.gotAcct = org, account
+func (f *fakeNotify) FeedPageForOrg(_ context.Context, org, account uuid.UUID, req notify.PageRequest) (notify.Feed, error) {
+	f.gotOrg, f.gotAcct, f.gotReq = org, account, req
 	if f.err != nil {
 		// Fail closed: no partial feed accompanies an error (issue #129).
 		return notify.Feed{}, f.err
 	}
-	return notify.Feed{Items: f.items, UnreadCount: f.unread}, nil
+	return notify.Feed{Items: f.items, UnreadCount: f.unread, HasMore: f.hasMore, NextCursor: f.nextCursor}, nil
 }
 func (f *fakeNotify) MarkReadForOrg(_ context.Context, org, account, id uuid.UUID) (notify.Notification, bool, error) {
 	f.gotOrg, f.gotAcct, f.gotAck = org, account, id
@@ -112,6 +115,81 @@ func TestListNotifications_SnapshotErrorFailsClosed(t *testing.T) {
 	}
 	if def.StatusCode != 500 {
 		t.Fatalf("snapshot failure status = %d, want 500", def.StatusCode)
+	}
+}
+
+// TestListNotifications_CarriesPaginationAndForwardsParams proves the handler
+// forwards the optional limit + cursor to the bounded service and maps the keyset
+// continuation (hasMore/nextCursor) onto the wire feed (issue #128).
+func TestListNotifications_CarriesPaginationAndForwardsParams(t *testing.T) {
+	next := "opaque-token"
+	limit := int32(25)
+	cursor := "prev-token"
+	fn := &fakeNotify{unread: 3, hasMore: true, nextCursor: &next}
+	s := &gatewayServer{notify: fn}
+	resp, err := s.ListNotifications(context.Background(), gateway.ListNotificationsRequestObject{
+		Params: gateway.ListNotificationsParams{MarketplaceAccountId: uuid.New(), Limit: &limit, Cursor: &cursor},
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	feed, ok := resp.(gateway.ListNotifications200JSONResponse)
+	if !ok {
+		t.Fatalf("want 200 feed, got %T", resp)
+	}
+	if !feed.HasMore || feed.NextCursor == nil || *feed.NextCursor != next {
+		t.Fatalf("keyset continuation not mapped: hasMore=%v nextCursor=%v", feed.HasMore, feed.NextCursor)
+	}
+	if fn.gotReq.Limit == nil || *fn.gotReq.Limit != limit {
+		t.Fatalf("limit not forwarded: %v", fn.gotReq.Limit)
+	}
+	if fn.gotReq.Cursor == nil || *fn.gotReq.Cursor != cursor {
+		t.Fatalf("cursor not forwarded: %v", fn.gotReq.Cursor)
+	}
+}
+
+// TestListNotifications_LastPageHasNoCursor proves a terminal page reports hasMore
+// false and a null nextCursor (issue #128).
+func TestListNotifications_LastPageHasNoCursor(t *testing.T) {
+	fn := &fakeNotify{hasMore: false, nextCursor: nil}
+	s := &gatewayServer{notify: fn}
+	resp, err := s.ListNotifications(context.Background(), gateway.ListNotificationsRequestObject{
+		Params: gateway.ListNotificationsParams{MarketplaceAccountId: uuid.New()},
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	feed, ok := resp.(gateway.ListNotifications200JSONResponse)
+	if !ok {
+		t.Fatalf("want 200 feed, got %T", resp)
+	}
+	if feed.HasMore || feed.NextCursor != nil {
+		t.Fatalf("last page must have hasMore=false, nil nextCursor; got %v %v", feed.HasMore, feed.NextCursor)
+	}
+}
+
+// TestListNotifications_InvalidCursorIsCanonical400 proves a malformed/tampered/
+// foreign cursor (notify.ErrInvalidCursor) fails safely as a 400 — never a silent
+// first-page fallback and never a 500 (issue #128).
+func TestListNotifications_InvalidCursorIsCanonical400(t *testing.T) {
+	fn := &fakeNotify{err: notify.ErrInvalidCursor}
+	s := &gatewayServer{notify: fn}
+	bad := "tampered"
+	resp, err := s.ListNotifications(context.Background(), gateway.ListNotificationsRequestObject{
+		Params: gateway.ListNotificationsParams{MarketplaceAccountId: uuid.New(), Cursor: &bad},
+	})
+	if err != nil {
+		t.Fatalf("handler error: %v", err)
+	}
+	if _, ok := resp.(gateway.ListNotifications200JSONResponse); ok {
+		t.Fatal("invalid cursor must not yield a 200 first-page fallback")
+	}
+	def, ok := resp.(gateway.ListNotificationsdefaultJSONResponse)
+	if !ok {
+		t.Fatalf("want default (fail-safe) response, got %T", resp)
+	}
+	if def.StatusCode != 400 {
+		t.Fatalf("invalid cursor status = %d, want 400", def.StatusCode)
 	}
 }
 

@@ -738,8 +738,18 @@ type Querier interface {
 	// variant/product so the row carries SKU (supplier_code), variant + product title,
 	// and the native-id evidence a reviewer needs to confirm/reject/defer.
 	ListNeedsReviewQueue(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListNeedsReviewQueueRow, error)
-	// The in-app notification feed for an account, newest first.
-	ListNotifications(ctx context.Context, marketplaceAccountID uuid.UUID) ([]Notification, error)
+	// The in-app notification feed for an account, newest first, BOUNDED by a keyset
+	// cursor (§17 bounded reads). Deterministic order is (created_at DESC, id DESC);
+	// the row-value comparison (created_at, id) < (cursor_created_at, cursor_id) reads
+	// STRICTLY OLDER rows than the cursor position, so ties on created_at are broken by
+	// id and every row is returned EXACTLY ONCE across pages (no duplicate, no skip). A
+	// NULL cursor (cursor_created_at IS NULL) is the first (newest) page. The caller
+	// passes page_limit = requested_limit + 1 and treats the extra row as the hasMore
+	// signal (then trims it). SELECT-only: the notifications store stays append-only.
+	// Backed by idx_notifications_account_created_id (marketplace_account_id,
+	// created_at DESC, id DESC) so the plan is an index range scan, never a full history
+	// scan. account-scoped WHERE is the authorization; the cursor is only a position.
+	ListNotificationsPage(ctx context.Context, arg ListNotificationsPageParams) ([]Notification, error)
 	// Every durable stream cursor for a target, so the producer can seed each stream's
 	// pairing anchor ("before") from the last consumed observation's raw value.
 	ListObservationCursorsByTarget(ctx context.Context, targetID uuid.UUID) ([]ObservationConsumerCursor, error)

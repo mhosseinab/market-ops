@@ -359,15 +359,42 @@ func (q *Queries) ListDigestItems(ctx context.Context, digestID uuid.UUID) ([]No
 	return items, nil
 }
 
-const listNotifications = `-- name: ListNotifications :many
+const listNotificationsPage = `-- name: ListNotificationsPage :many
 SELECT id, marketplace_account_id, event_id, dedup_key, category, severity, bypass_digest, title_key, body_key, body_params, created_at, read_at FROM notifications
 WHERE marketplace_account_id = $1
-ORDER BY created_at DESC, id
+  AND (
+    $2::timestamptz IS NULL
+    OR (created_at, id) < ($2::timestamptz, $3::uuid)
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT $4
 `
 
-// The in-app notification feed for an account, newest first.
-func (q *Queries) ListNotifications(ctx context.Context, marketplaceAccountID uuid.UUID) ([]Notification, error) {
-	rows, err := q.db.Query(ctx, listNotifications, marketplaceAccountID)
+type ListNotificationsPageParams struct {
+	MarketplaceAccountID uuid.UUID
+	CursorCreatedAt      pgtype.Timestamptz
+	CursorID             pgtype.UUID
+	PageLimit            int32
+}
+
+// The in-app notification feed for an account, newest first, BOUNDED by a keyset
+// cursor (§17 bounded reads). Deterministic order is (created_at DESC, id DESC);
+// the row-value comparison (created_at, id) < (cursor_created_at, cursor_id) reads
+// STRICTLY OLDER rows than the cursor position, so ties on created_at are broken by
+// id and every row is returned EXACTLY ONCE across pages (no duplicate, no skip). A
+// NULL cursor (cursor_created_at IS NULL) is the first (newest) page. The caller
+// passes page_limit = requested_limit + 1 and treats the extra row as the hasMore
+// signal (then trims it). SELECT-only: the notifications store stays append-only.
+// Backed by idx_notifications_account_created_id (marketplace_account_id,
+// created_at DESC, id DESC) so the plan is an index range scan, never a full history
+// scan. account-scoped WHERE is the authorization; the cursor is only a position.
+func (q *Queries) ListNotificationsPage(ctx context.Context, arg ListNotificationsPageParams) ([]Notification, error) {
+	rows, err := q.db.Query(ctx, listNotificationsPage,
+		arg.MarketplaceAccountID,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
