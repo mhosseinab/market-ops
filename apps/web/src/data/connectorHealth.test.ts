@@ -88,4 +88,59 @@ describe("deriveConnectorHealth (issue #18, fail closed)", () => {
       ),
     ).toBe("degraded");
   });
+
+  // ── REOPEN residual (issue #18): completeness + uniqueness before health ──
+  // An INCOMPLETE or DUPLICATE capability set must never reduce to the positive
+  // health. "Unknown never enables" (§15.2): a set that is not exactly the nine
+  // §15.2 capabilities, each present once and each attested, fails closed.
+
+  it("incomplete capability set (missing capabilities) is never supported — fails closed", () => {
+    // Only three of the nine §15.2 capabilities present, every one supported.
+    const incomplete: ConnectorStatus = {
+      marketplaceAccountId: ACCOUNT,
+      connectionState: "connected",
+      capabilities: [
+        { capability: "catalog_read", status: "supported" },
+        { capability: "owned_offer_read", status: "supported" },
+        { capability: "price_write", status: "supported" },
+      ],
+    };
+    const health = deriveConnectorHealth(incomplete);
+    expect(health).not.toBe("supported");
+    expect(health).toBe("probing");
+  });
+
+  it("duplicated capability is never supported — malformed set fails closed", () => {
+    // All nine present and supported, PLUS a duplicate entry (ten total).
+    const duplicated: ConnectorStatus = {
+      marketplaceAccountId: ACCOUNT,
+      connectionState: "connected",
+      capabilities: [
+        ...CAP_NAMES.map((capability) => ({ capability, status: "supported" as const })),
+        { capability: "price_write", status: "supported" },
+      ],
+    };
+    const health = deriveConnectorHealth(duplicated);
+    expect(health).not.toBe("supported");
+    expect(health).toBe("unknown");
+  });
+
+  it("any Unknown capability in an otherwise-complete set is never supported", () => {
+    // Complete, unique set but one capability still Unknown → not yet probed.
+    const withUnknown = status("connected", "supported", { boundary_read: "unknown" });
+    expect(deriveConnectorHealth(withUnknown)).not.toBe("supported");
+    expect(deriveConnectorHealth(withUnknown)).toBe("probing");
+  });
+
+  it("a genuine degradation still surfaces even when the set is also incomplete (worst wins)", () => {
+    const incompleteAndDegraded: ConnectorStatus = {
+      marketplaceAccountId: ACCOUNT,
+      connectionState: "connected",
+      capabilities: [
+        { capability: "catalog_read", status: "supported" },
+        { capability: "price_write", status: "degraded" },
+      ],
+    };
+    expect(deriveConnectorHealth(incompleteAndDegraded)).toBe("degraded");
+  });
 });
