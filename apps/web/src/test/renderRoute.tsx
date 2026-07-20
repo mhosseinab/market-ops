@@ -1,4 +1,4 @@
-import { DEFAULT_LOCALE } from "@market-ops/locale";
+import { DEFAULT_LOCALE, type LocaleId } from "@market-ops/locale";
 import { QueryClient } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import { act, render } from "@testing-library/react";
@@ -11,7 +11,7 @@ import { ACCOUNT_ID } from "./msw/fixtures";
 // screen test exercises routing + data hooks + MSW exactly as production does.
 // The returned `navigate` pushes a raw path onto the same history, so a test can
 // exercise a mid-session route change (e.g. the chat context binding, CHAT-007).
-export function renderRoute(path: string, options?: { accountId?: string }) {
+export function renderRoute(path: string, options?: { accountId?: string; locale?: LocaleId }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -19,7 +19,7 @@ export function renderRoute(path: string, options?: { accountId?: string }) {
   const router = createAppRouter(history);
   const result = render(
     <Providers
-      initialLocale={DEFAULT_LOCALE}
+      initialLocale={options?.locale ?? DEFAULT_LOCALE}
       queryClient={queryClient}
       marketplaceAccountId={options?.accountId ?? ACCOUNT_ID}
     >

@@ -25,7 +25,7 @@ function rawSse(chunks: readonly string[]): Response {
 
 async function streamOf(chunks: readonly string[]): Promise<AsyncGenerator<ChatStreamEvent>> {
   server.use(http.post(`${BASE}/chat`, () => rawSse(chunks)));
-  const outcome = await postChatTurn({ message: "hi", marketplaceAccountId: "acct" });
+  const outcome = await postChatTurn({ message: "hi", marketplaceAccountId: "acct", locale: "en" });
   if (outcome.kind !== "stream") throw new Error("expected stream");
   return outcome.events;
 }
@@ -47,7 +47,11 @@ describe("postChatTurn / SSE transport", () => {
         ]),
       ),
     );
-    const outcome = await postChatTurn({ message: "hi", marketplaceAccountId: "acct" });
+    const outcome = await postChatTurn({
+      message: "hi",
+      marketplaceAccountId: "acct",
+      locale: "en",
+    });
     expect(outcome.kind).toBe("stream");
     if (outcome.kind !== "stream") return;
     const events = await collect(outcome.events);
@@ -133,7 +137,11 @@ describe("postChatTurn / SSE transport", () => {
         ),
       ),
     );
-    const outcome = await postChatTurn({ message: "hi", marketplaceAccountId: "acct" });
+    const outcome = await postChatTurn({
+      message: "hi",
+      marketplaceAccountId: "acct",
+      locale: "en",
+    });
     expect(outcome.kind).toBe("unavailable");
     if (outcome.kind !== "unavailable") return;
     expect(outcome.unavailable.reason).toBe("kill_switch_global");

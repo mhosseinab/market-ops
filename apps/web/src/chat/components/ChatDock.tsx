@@ -2,7 +2,7 @@ import { AssistantRuntimeProvider, ComposerPrimitive, ThreadPrimitive } from "@a
 import type { MessageKey } from "@market-ops/locale";
 import { useRouterState } from "@tanstack/react-router";
 import { useAppState } from "../../app/appState";
-import { useT } from "../../app/i18n";
+import { useLocale, useT } from "../../app/i18n";
 import { Banner } from "../../components/Banner";
 import { CONTEXT_LABEL_KEY, deriveChatContext } from "../context";
 import { ChatDockActionsContext } from "../dockActions";
@@ -63,11 +63,14 @@ function UnavailableBanner({ unavailable }: { unavailable: ChatUnavailable }) {
 
 export function ChatDock() {
   const t = useT();
+  const { locale } = useLocale();
   const { chatOpen, toggleChat } = useAppState();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const rawSearch = useRouterState({ select: (s) => s.location.search });
   const context = deriveChatContext(pathname, rawSearch as Record<string, string>);
-  const { runtime, unavailable, actions, activeContext } = useChatDock(context);
+  // The ACTIVE locale is sent with every turn (LOC-001, issue #120): it is DATA, the
+  // ONLY authoritative locale signal on the wire, never inferred from the message.
+  const { runtime, unavailable, actions, activeContext } = useChatDock(context, locale);
 
   if (!chatOpen) return null;
 

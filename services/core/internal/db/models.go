@@ -220,6 +220,14 @@ type ConversationContextBinding struct {
 	CreatedAt      time.Time
 }
 
+type ConversationLocaleBinding struct {
+	ID             uuid.UUID
+	ConversationID uuid.UUID
+	Version        int32
+	Locale         string
+	CreatedAt      time.Time
+}
+
 type ConversationMessage struct {
 	ID             uuid.UUID
 	ConversationID uuid.UUID

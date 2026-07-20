@@ -101,7 +101,7 @@ func startRealChatServer(t *testing.T, fa *fakeAuth, logger *slog.Logger, opts .
 // chatRequest builds an authenticated POST /chat request bound to ctx.
 func chatRequest(t *testing.T, ctx context.Context, url string) *http.Request {
 	t.Helper()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/chat", strings.NewReader(`{"message":"what changed?"}`))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url+"/chat", strings.NewReader(`{"message":"what changed?","locale":"en"}`))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}

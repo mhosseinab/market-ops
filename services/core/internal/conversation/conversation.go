@@ -67,6 +67,12 @@ type Conversation struct {
 	// yet. The gateway echoes it (kind/entity/version) so the client renders the
 	// chip the server persisted, never one it merely claimed.
 	Context *ContextBinding
+	// Locale is the conversation's AUTHORITATIVE bound locale after this turn
+	// (LOC-001, issue #120), or nil when the conversation declares no locale (a
+	// legacy/no-store path). The gateway echoes it (tag/version) so the client sees
+	// the locale the server persisted, and hands it to the LLM plane as read-only
+	// business data — never inferred from the message text or digit shape.
+	Locale *LocaleBinding
 }
 
 // Message is one persisted turn. Envelope holds the assistant's typed response
@@ -93,6 +99,11 @@ type OpenParams struct {
 	// conversation's current binding before the user turn is appended; a stale or
 	// silently-relabeling binding is rejected and NOTHING is written.
 	Context *RequestedContext
+	// Locale is the turn's DECLARED active locale (LOC-001, issue #120). It is
+	// validated and versioned against the conversation's current locale binding
+	// before the user turn is appended; a stale or silently-relabeling locale is
+	// rejected and NOTHING is written. Never inferred from the message.
+	Locale *RequestedLocale
 }
 
 // Store is the append-only conversation durability store over a pgx pool.
@@ -160,6 +171,15 @@ func (s *Store) BeginTurn(ctx context.Context, p OpenParams, userBody string) (C
 		return Conversation{}, err
 	}
 
+	// Resolve the deterministic LOCALE binding under the SAME transaction and BEFORE
+	// appending the user turn, so a stale or silently-relabeling locale is rejected
+	// and NOTHING is written (LOC-001, §4.6). Locale is a separate axis from the
+	// context entity; it never inferred from the message text or digit shape.
+	boundLocale, err := s.resolveTurnLocale(ctx, q, row.ID, p.Locale)
+	if err != nil {
+		return Conversation{}, err
+	}
+
 	if _, err = q.AppendConversationMessage(ctx, db.AppendConversationMessageParams{
 		ConversationID: row.ID,
 		Author:         AuthorUser,
@@ -185,6 +205,7 @@ func (s *Store) BeginTurn(ctx context.Context, p OpenParams, userBody string) (C
 	}
 	out := toConversation(touched)
 	out.Context = boundContext
+	out.Locale = boundLocale
 	return out, nil
 }
 
@@ -230,6 +251,53 @@ func (s *Store) resolveTurnContext(
 
 	if current == nil && req == nil {
 		// No binding and none declared: the conversation has no context.
+		return nil, nil
+	}
+	bound := res.binding
+	return &bound, nil
+}
+
+// resolveTurnLocale resolves and (when a transition or first binding occurs)
+// APPENDS the conversation's locale binding for a turn (LOC-001, issue #120). It
+// loads the conversation's current locale (none for a fresh conversation), applies
+// the pure resolveLocale decision, and on an append inserts a NEW version row —
+// never updating a prior binding (append-only, §4.6). A stale or
+// silently-relabeling locale returns ErrLocaleVersionStale /
+// ErrLocaleTransitionRequired and writes nothing. Returns the binding in effect
+// after the turn, or nil when the conversation has (and declares) no locale.
+func (s *Store) resolveTurnLocale(
+	ctx context.Context, q *db.Queries, conversationID uuid.UUID, req *RequestedLocale,
+) (*LocaleBinding, error) {
+	var current *LocaleBinding
+	row, err := q.GetCurrentLocaleBinding(ctx, conversationID)
+	switch {
+	case err == nil:
+		current = &LocaleBinding{Locale: row.Locale, Version: row.Version}
+	case errors.Is(err, pgx.ErrNoRows):
+		current = nil
+	default:
+		return nil, err
+	}
+
+	res, err := resolveLocale(current, req)
+	if err != nil {
+		return nil, err
+	}
+
+	if res.append {
+		inserted, insErr := q.CreateLocaleBinding(ctx, db.CreateLocaleBindingParams{
+			ConversationID: conversationID,
+			Version:        res.binding.Version,
+			Locale:         res.binding.Locale,
+		})
+		if insErr != nil {
+			return nil, insErr
+		}
+		return &LocaleBinding{Locale: inserted.Locale, Version: inserted.Version}, nil
+	}
+
+	if current == nil && req == nil {
+		// No binding and none declared: the conversation has no locale.
 		return nil, nil
 	}
 	bound := res.binding

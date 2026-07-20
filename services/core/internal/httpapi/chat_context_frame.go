@@ -27,6 +27,7 @@ type conversationFrameInjector struct {
 	src            io.ReadCloser
 	conversationID uuid.UUID
 	binding        *conversation.ContextBinding
+	locale         *conversation.LocaleBinding
 
 	scan        bytes.Buffer // bytes read from src but not yet frame-delimited
 	out         bytes.Buffer // processed bytes ready for the caller
@@ -38,9 +39,12 @@ type conversationFrameInjector struct {
 // newConversationFrameInjector wraps the upstream SSE body so the single
 // `conversation` frame carries the gateway's authoritative id and context binding.
 // binding is nil when the turn declared/holds no context (the `global`-less case);
-// the frame then carries the authoritative id and no context echo fields.
-func newConversationFrameInjector(src io.ReadCloser, conversationID uuid.UUID, binding *conversation.ContextBinding) *conversationFrameInjector {
-	return &conversationFrameInjector{src: src, conversationID: conversationID, binding: binding}
+// the frame then carries the authoritative id and no context echo fields. locale is
+// the conversation's authoritative bound locale (LOC-001, issue #120), echoed so the
+// client sends its version back on the next turn and a locale change is an explicit,
+// versioned transition; nil only on a no-locale (legacy) conversation.
+func newConversationFrameInjector(src io.ReadCloser, conversationID uuid.UUID, binding *conversation.ContextBinding, locale *conversation.LocaleBinding) *conversationFrameInjector {
+	return &conversationFrameInjector{src: src, conversationID: conversationID, binding: binding, locale: locale}
 }
 
 func (c *conversationFrameInjector) Read(b []byte) (int, error) {
@@ -122,6 +126,10 @@ func (c *conversationFrameInjector) rewriteConversationFrame(frame []byte) []byt
 		if c.binding.EntityID != nil {
 			out["contextEntityId"] = *c.binding.EntityID
 		}
+	}
+	if c.locale != nil {
+		out["localeTag"] = c.locale.Locale
+		out["localeVersion"] = c.locale.Version
 	}
 	encoded, err := json.Marshal(out)
 	if err != nil {

@@ -171,6 +171,7 @@ from .selection_set_preview_request_criteria import SelectionSetPreviewRequestCr
 from .selection_set_preview_result import SelectionSetPreviewResult
 from .session_info import SessionInfo
 from .single_cost_entry_request import SingleCostEntryRequest
+from .supported_locale import SupportedLocale
 from .today_feed import TodayFeed
 from .user_list import UserList
 from .user_role import UserRole
@@ -351,6 +352,7 @@ __all__ = (
     "SelectionSetPreviewResult",
     "SessionInfo",
     "SingleCostEntryRequest",
+    "SupportedLocale",
     "TodayFeed",
     "UserList",
     "UserRole",

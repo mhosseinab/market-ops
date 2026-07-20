@@ -132,6 +132,36 @@ func (q *Queries) CreateConversation(ctx context.Context, arg CreateConversation
 	return i, err
 }
 
+const createLocaleBinding = `-- name: CreateLocaleBinding :one
+INSERT INTO conversation_locale_bindings (conversation_id, version, locale)
+VALUES ($1, $2, $3)
+RETURNING id, conversation_id, version, locale, created_at
+`
+
+type CreateLocaleBindingParams struct {
+	ConversationID uuid.UUID
+	Version        int32
+	Locale         string
+}
+
+// Appends one locale-binding version to a conversation (LOC-001, issue #120).
+// APPEND-ONLY: a transition inserts a NEW version; a prior binding is never updated
+// or deleted. The (conversation_id, version) UNIQUE constraint rejects a
+// double-apply of the same version, so a retried transition cannot silently fork
+// the locale history.
+func (q *Queries) CreateLocaleBinding(ctx context.Context, arg CreateLocaleBindingParams) (ConversationLocaleBinding, error) {
+	row := q.db.QueryRow(ctx, createLocaleBinding, arg.ConversationID, arg.Version, arg.Locale)
+	var i ConversationLocaleBinding
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.Version,
+		&i.Locale,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getConversationForOrg = `-- name: GetConversationForOrg :one
 SELECT id, organization_id, opened_by_user_id, marketplace_account_id, title, pinned, created_at, updated_at, retention_expires_at FROM conversations
 WHERE id = $1 AND organization_id = $2
@@ -184,6 +214,31 @@ func (q *Queries) GetCurrentContextBinding(ctx context.Context, conversationID u
 		&i.Version,
 		&i.Kind,
 		&i.EntityID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getCurrentLocaleBinding = `-- name: GetCurrentLocaleBinding :one
+SELECT id, conversation_id, version, locale, created_at FROM conversation_locale_bindings
+WHERE conversation_id = $1
+ORDER BY version DESC
+LIMIT 1
+`
+
+// Resolves a conversation's CURRENT bound locale (the highest version row) for the
+// caller's turn (LOC-001, issue #120). The caller has already validated the
+// conversation belongs to its organization (GetConversationForOrg), so this read is
+// org-safe by construction. Returns no row when the conversation has no locale
+// binding yet (a legacy or first-turn conversation). APPEND-ONLY read.
+func (q *Queries) GetCurrentLocaleBinding(ctx context.Context, conversationID uuid.UUID) (ConversationLocaleBinding, error) {
+	row := q.db.QueryRow(ctx, getCurrentLocaleBinding, conversationID)
+	var i ConversationLocaleBinding
+	err := row.Scan(
+		&i.ID,
+		&i.ConversationID,
+		&i.Version,
+		&i.Locale,
 		&i.CreatedAt,
 	)
 	return i, err

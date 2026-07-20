@@ -1,4 +1,4 @@
-import { faIR } from "@market-ops/locale";
+import { en, faIR } from "@market-ops/locale";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
@@ -251,6 +251,104 @@ describe("ChatDock — binds route + picker context to the conversation (CHAT-00
     const second = bodies[1];
     expect(second?.conversationId).toBeUndefined();
     expect(second?.context).toEqual({ kind: "event", entityId: EVENT_ID });
+  });
+});
+
+// ── Active locale on the wire (LOC-001/LOC-007, issue #120) ─────────────────
+describe("ChatDock — sends the ACTIVE locale with every turn (LOC-001)", () => {
+  function captureBodies(bodies: ChatTurnRequest[], frame?: Partial<ChatStreamEvent>) {
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        bodies.push((await request.json()) as ChatTurnRequest);
+        return sseResponse([
+          { kind: "conversation", conversationId: "conv-1", ...frame },
+          { kind: "final", envelope: { sections: [], evidence: [] } },
+        ]);
+      }),
+    );
+  }
+
+  it("a first turn carries the ACTIVE locale (fa-IR) with no version or transition", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    captureBodies(bodies);
+    await openDock(); // renders at DEFAULT_LOCALE = fa-IR
+    await sendComposer("سلام");
+    await waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]?.locale).toBe("fa-IR");
+    expect(bodies[0]?.localeVersion).toBeUndefined();
+    expect(bodies[0]?.localeTransition).toBeUndefined();
+  });
+
+  it("a first turn carries the ACTIVE locale (en) when the app renders in English", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    captureBodies(bodies);
+    renderRoute("/today", { locale: "en" });
+    fireEvent.click(await screen.findByLabelText(en["topbar.chat.toggle"]));
+    await screen.findByTestId("chat-dock");
+    await sendComposer("hi");
+    await waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]?.locale).toBe("en");
+  });
+
+  it("Persian digits, Latin digits, technical ids, and neutral text NEVER change the sent locale", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    captureBodies(bodies);
+    await openDock(); // fa-IR active
+    await sendComposer("قیمت ۱۲۳"); // Persian text + Persian digits
+    await waitFor(() => expect(bodies.length).toBe(1));
+    await sendComposer("price 123"); // Latin text + Latin digits
+    await waitFor(() => expect(bodies.length).toBe(2));
+    await sendComposer("SKU DKP-42 / v-7"); // technical ids only
+    await waitFor(() => expect(bodies.length).toBe(3));
+    // The message content differs wildly, but the locale is DATA from the active
+    // provider — never inferred from digit shape or text.
+    for (const b of bodies) expect(b.locale).toBe("fa-IR");
+  });
+
+  it("a same-locale continuation PRESERVES the bound locale, echoing the gateway version", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    captureBodies(bodies, { localeTag: "fa-IR", localeVersion: 1 });
+    await openDock();
+    await sendComposer("یک");
+    await waitFor(() => expect(bodies.length).toBe(1));
+    await sendComposer("دو");
+    await waitFor(() => expect(bodies.length).toBe(2));
+    // The first turn claims no version; the continuation sends back the gateway's
+    // echoed version and carries NO transition (idempotent, never a relabel).
+    expect(bodies[0]?.localeVersion).toBeUndefined();
+    expect(bodies[1]?.locale).toBe("fa-IR");
+    expect(bodies[1]?.localeVersion).toBe(1);
+    expect(bodies[1]?.localeTransition).toBeUndefined();
+  });
+
+  it("a locale switch mid-conversation is an EXPLICIT, versioned transition (never a silent relabel)", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        bodies.push((await request.json()) as ChatTurnRequest);
+        const first = bodies.length === 1;
+        return sseResponse([
+          {
+            kind: "conversation",
+            conversationId: "conv-1",
+            localeTag: first ? "fa-IR" : "en",
+            localeVersion: first ? 1 : 2,
+          },
+          { kind: "final", envelope: { sections: [], evidence: [] } },
+        ]);
+      }),
+    );
+    await openDock(); // fa-IR active
+    await sendComposer("اول");
+    await waitFor(() => expect(bodies.length).toBe(1));
+    // Toggle the app locale to English via the TopBar control, then send again on the
+    // SAME conversation.
+    fireEvent.click(screen.getByText(faIR["app.langName.en"]));
+    await sendComposer("second");
+    await waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies[1]?.locale).toBe("en");
+    expect(bodies[1]?.localeVersion).toBe(1); // the from-version the gateway echoed
+    expect(bodies[1]?.localeTransition).toBe(true);
   });
 });
 

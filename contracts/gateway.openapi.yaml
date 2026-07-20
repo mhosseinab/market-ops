@@ -2503,6 +2503,7 @@ components:
         from this field.
       required:
         - message
+        - locale
       properties:
         conversationId:
           type: string
@@ -2510,6 +2511,36 @@ components:
           description: >-
             Existing conversation to continue. Absent on the first turn; the
             gateway opens a new conversation and returns its id in the stream.
+        locale:
+          allOf:
+            - $ref: '#/components/schemas/SupportedLocale'
+          description: >-
+            The active application locale this turn is authored in (LOC-001/LOC-007).
+            REQUIRED and carried on EVERY turn: input digit-family normalization
+            makes Persian and Latin digits identical on the wire, so the locale can
+            NEVER be recovered from the message text, digit shape, region, or account
+            default — this field is the ONLY authoritative locale signal. Locale is
+            DATA, not inferred: the gateway validates it against the closed supported
+            set and FAILS CLOSED (canonical 4xx) on an unknown or missing value, and
+            binds/versions it on the conversation. It carries no approval authority.
+        localeVersion:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >-
+            The conversation's locale-binding version this turn is issued against
+            (mirrors `contextVersion`, CHAT-007). Absent on the first turn (the
+            gateway issues version 1). On a continuation whose `locale` differs from
+            the conversation's current bound locale it must equal the current bound
+            version; a stale/mismatched version is rejected without producing a Draft.
+        localeTransition:
+          type: boolean
+          description: >-
+            Set true to EXPLICITLY transition the conversation's bound locale to a
+            different value (appends a new locale version). Without it, a turn whose
+            `locale` differs from the conversation's current bound locale is rejected
+            rather than silently relabeling the conversation — a same-locale
+            continuation is idempotent and needs neither this flag nor a version.
         marketplaceAccountId:
           type: string
           format: uuid
@@ -2525,6 +2556,20 @@ components:
         context:
           $ref: '#/components/schemas/ConversationContextBinding'
       additionalProperties: false
+
+    SupportedLocale:
+      type: string
+      description: >-
+        The CLOSED set of locales the application supports (PRD §11.1, LOC-001).
+        A BCP-47 language tag treated purely as DATA — it selects a locale pack
+        (direction, digits, calendar, catalog) with NO locale/calendar/currency
+        branch in core logic. The set mirrors the web locale package's declared
+        locales; adding a locale is a new entry here plus a locale pack, never a
+        code branch. The gateway validates every chat turn's locale against this
+        set and fails closed on anything outside it — locale is never inferred.
+      enum:
+        - fa-IR
+        - en
 
     ConversationContextKind:
       type: string
@@ -2663,6 +2708,23 @@ components:
             Echoed on the `conversation` frame: the conversation's current
             server-issued context version. The client sends it back on the next
             turn so a stale binding is rejected rather than silently relabeled.
+        localeTag:
+          allOf:
+            - $ref: '#/components/schemas/SupportedLocale'
+          description: >-
+            Echoed on the `conversation` frame: the conversation's AUTHORITATIVE
+            bound locale (LOC-001), so the client sees the locale the gateway
+            actually persisted, never one it merely claimed. It is a bounded
+            technical tag, never Persian display copy.
+        localeVersion:
+          type: integer
+          format: int32
+          minimum: 1
+          description: >-
+            Echoed on the `conversation` frame: the conversation's current
+            server-issued locale-binding version. The client sends it back on the
+            next turn so a locale change is an explicit, versioned transition and a
+            stale binding is rejected rather than silently relabeled.
         token:
           type: string
           description: Incremental assistant text on a `token` frame.

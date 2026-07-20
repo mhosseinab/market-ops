@@ -4,7 +4,7 @@ import {
   type ExternalStoreAdapter,
   useExternalStoreRuntime,
 } from "@assistant-ui/react";
-import { normalizeDigits } from "@market-ops/locale";
+import { type LocaleId, normalizeDigits } from "@market-ops/locale";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useAccount } from "../data/account";
 import type { ChatContext, ChatContextKind } from "./context";
@@ -73,6 +73,45 @@ function sameEntity(
   return a !== undefined && a.kind === kind && a.entityId === entityId;
 }
 
+// BoundLocale is the conversation's current locale as the client believes the
+// gateway has it. version is the server-issued locale version echoed on the
+// conversation frame (or tracked optimistically until the gateway corrects it).
+interface BoundLocale {
+  readonly locale: LocaleId;
+  readonly version: number;
+}
+
+// LocalePlan is the locale a turn carries on the wire plus the optimistic bound
+// locale to commit if the gateway echoes none. Locale is DATA (LOC-001): the ACTIVE
+// locale is always sent; a same-locale continuation is idempotent; a locale change
+// is an EXPLICIT, versioned transition — never a silent relabel, never inferred.
+interface LocalePlan {
+  readonly fields: Pick<ChatTurnRequest, "locale" | "localeVersion" | "localeTransition">;
+  readonly next: BoundLocale;
+}
+
+function planLocale(active: LocaleId, bound: BoundLocale | undefined): LocalePlan {
+  if (bound === undefined) {
+    // First turn on this conversation: bind the active locale at version 1. No
+    // version claim, no transition flag.
+    return { fields: { locale: active }, next: { locale: active, version: 1 } };
+  }
+  if (bound.locale === active) {
+    // Same locale: idempotent continuation. Send the version the gateway echoed so a
+    // stale binding is rejected rather than silently relabeled.
+    return {
+      fields: { locale: active, localeVersion: bound.version },
+      next: bound,
+    };
+  }
+  // The active locale changed mid-conversation: an EXPLICIT, versioned transition
+  // (never a silent relabel). The gateway appends the next version.
+  return {
+    fields: { locale: active, localeVersion: bound.version, localeTransition: true },
+    next: { locale: active, version: bound.version + 1 },
+  };
+}
+
 export interface ChatDockRuntime {
   readonly runtime: AssistantRuntime;
   readonly messages: readonly DockMessage[];
@@ -90,13 +129,21 @@ export interface ChatDockRuntime {
   readonly activeContext: ChatContext;
 }
 
-export function useChatDock(context: ChatContext): ChatDockRuntime {
+export function useChatDock(context: ChatContext, locale: LocaleId): ChatDockRuntime {
   const { marketplaceAccountId } = useAccount();
   const [messages, setMessages] = useState<readonly DockMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [unavailable, setUnavailable] = useState<ChatUnavailable | null>(null);
   const conversationIdRef = useRef<string | undefined>(undefined);
   const boundContextRef = useRef<BoundContext | undefined>(undefined);
+  // The gateway-echoed authoritative bound locale (LOC-001, issue #120), committed
+  // at the `conversation` frame. undefined until the first turn commits.
+  const boundLocaleRef = useRef<BoundLocale | undefined>(undefined);
+  // The latest active locale, read at send time so every turn carries the ACTIVE
+  // locale (LOC-001) without a stale closure — the same authoritative signal the
+  // rest of the app renders from; never inferred from the message text.
+  const localeRef = useRef<LocaleId>(locale);
+  localeRef.current = locale;
   // The gateway-echoed authoritative context, committed at the `conversation`
   // frame. Kept as STATE (not just the ref) so the chip re-renders to the bound
   // context the gateway persisted — undefined until the first turn commits.
@@ -173,11 +220,19 @@ export function useChatDock(context: ChatContext): ChatDockRuntime {
         // A route-context change opens a fresh bound conversation; the previous
         // conversation keeps its own context (never relabeled). Drop the committed
         // chip context so it falls back to the new route until the fresh turn's
-        // `conversation` frame commits the gateway-authoritative binding.
+        // `conversation` frame commits the gateway-authoritative binding. The bound
+        // locale is per-conversation, so it resets too — the fresh turn rebinds the
+        // active locale at version 1.
         conversationIdRef.current = undefined;
         boundContextRef.current = undefined;
+        boundLocaleRef.current = undefined;
         setCommittedContext(undefined);
       }
+
+      // Every turn carries the ACTIVE locale (LOC-001). A same-locale continuation is
+      // idempotent; a locale switch mid-conversation is an explicit, versioned
+      // transition — never a silent relabel. The gateway is authoritative.
+      const localePlan = planLocale(localeRef.current, boundLocaleRef.current);
 
       try {
         const outcome = await postChatTurn({
@@ -185,6 +240,7 @@ export function useChatDock(context: ChatContext): ChatDockRuntime {
           ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
           marketplaceAccountId,
           ...(plan.binding ? { context: plan.binding } : {}),
+          ...localePlan.fields,
         });
 
         if (outcome.kind === "unavailable") {
@@ -218,6 +274,18 @@ export function useChatDock(context: ChatContext): ChatDockRuntime {
                 kind: committed.kind,
                 ...(committed.entityId !== undefined ? { entityId: committed.entityId } : {}),
               });
+              // Commit the AUTHORITATIVE bound locale the gateway echoes (tag +
+              // version it actually persisted), never the optimistically-planned one;
+              // only when the gateway omits the echo (no store wired) fall back to the
+              // plan. The next turn sends this version back so a locale change is an
+              // explicit, versioned transition.
+              boundLocaleRef.current =
+                event.localeTag !== undefined
+                  ? {
+                      locale: event.localeTag,
+                      version: event.localeVersion ?? localePlan.next.version,
+                    }
+                  : localePlan.next;
               break;
             }
             case "token":

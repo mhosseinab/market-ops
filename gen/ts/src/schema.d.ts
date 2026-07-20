@@ -1324,6 +1324,15 @@ export interface components {
              * @description Existing conversation to continue. Absent on the first turn; the gateway opens a new conversation and returns its id in the stream.
              */
             conversationId?: string;
+            /** @description The active application locale this turn is authored in (LOC-001/LOC-007). REQUIRED and carried on EVERY turn: input digit-family normalization makes Persian and Latin digits identical on the wire, so the locale can NEVER be recovered from the message text, digit shape, region, or account default — this field is the ONLY authoritative locale signal. Locale is DATA, not inferred: the gateway validates it against the closed supported set and FAILS CLOSED (canonical 4xx) on an unknown or missing value, and binds/versions it on the conversation. It carries no approval authority. */
+            locale: components["schemas"]["SupportedLocale"];
+            /**
+             * Format: int32
+             * @description The conversation's locale-binding version this turn is issued against (mirrors `contextVersion`, CHAT-007). Absent on the first turn (the gateway issues version 1). On a continuation whose `locale` differs from the conversation's current bound locale it must equal the current bound version; a stale/mismatched version is rejected without producing a Draft.
+             */
+            localeVersion?: number;
+            /** @description Set true to EXPLICITLY transition the conversation's bound locale to a different value (appends a new locale version). Without it, a turn whose `locale` differs from the conversation's current bound locale is rejected rather than silently relabeling the conversation — a same-locale continuation is idempotent and needs neither this flag nor a version. */
+            localeTransition?: boolean;
             /**
              * Format: uuid
              * @description Optional account context for the turn. Exactly one context is active per conversation; ambiguity is resolved by a structured picker, never inferred (CHAT-007).
@@ -1333,6 +1342,11 @@ export interface components {
             message: string;
             context?: components["schemas"]["ConversationContextBinding"];
         };
+        /**
+         * @description The CLOSED set of locales the application supports (PRD §11.1, LOC-001). A BCP-47 language tag treated purely as DATA — it selects a locale pack (direction, digits, calendar, catalog) with NO locale/calendar/currency branch in core logic. The set mirrors the web locale package's declared locales; adding a locale is a new entry here plus a locale pack, never a code branch. The gateway validates every chat turn's locale against this set and fails closed on anything outside it — locale is never inferred.
+         * @enum {string}
+         */
+        SupportedLocale: "fa-IR" | "en";
         /**
          * @description The kind of entity a conversation's single deterministic context is bound to (PRD §8.1 CHAT-007). One canonical §15.1 record kind per value; a conversation has EXACTLY ONE active context at a time, never inferred from free text. `global` is the no-entity context (the operator's whole account). The gateway is authoritative for the bound kind — this field is the client's DECLARED binding, validated and versioned server-side.
          * @enum {string}
@@ -1384,6 +1398,13 @@ export interface components {
              * @description Echoed on the `conversation` frame: the conversation's current server-issued context version. The client sends it back on the next turn so a stale binding is rejected rather than silently relabeled.
              */
             contextVersion?: number;
+            /** @description Echoed on the `conversation` frame: the conversation's AUTHORITATIVE bound locale (LOC-001), so the client sees the locale the gateway actually persisted, never one it merely claimed. It is a bounded technical tag, never Persian display copy. */
+            localeTag?: components["schemas"]["SupportedLocale"];
+            /**
+             * Format: int32
+             * @description Echoed on the `conversation` frame: the conversation's current server-issued locale-binding version. The client sends it back on the next turn so a locale change is an explicit, versioned transition and a stale binding is rejected rather than silently relabeled.
+             */
+            localeVersion?: number;
             /** @description Incremental assistant text on a `token` frame. */
             token?: string;
             /** @description The final typed response envelope on a `final` frame. Its internal shape (category-separated content, evidence, freshness) is owned and validated inside the LLM plane (§12.2). UNCHANGED in S37: narrowing this field to the new ChatEnvelope schema (below) is a breaking change for the S29 web consumer's current view-model (`{sections, evidence}`) and needs FE coordination outside this step's delegation boundary — see the S37 PD-3 addendum note on ChatEnvelope. The gateway relays this verbatim. */
