@@ -12,6 +12,8 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
+	"github.com/mhosseinab/market-ops/services/core/internal/observation"
+	"github.com/mhosseinab/market-ops/services/core/internal/watchlist"
 )
 
 // validRecommendationRow is a minimal, well-formed db.Recommendation with
@@ -81,31 +83,75 @@ func TestGetRecommendationDetailWellFormedJSONStillSucceeds(t *testing.T) {
 	}
 }
 
-// fakeGuardrail is a GuardrailService stub for transport tests.
+// fakeGuardrail is a GuardrailService stub for transport tests (issue #237: the
+// gateway depends only on the org-scoped methods).
 type fakeGuardrail struct {
 	view guardrail.ConfigView
 	err  error
 }
 
-func (f *fakeGuardrail) Get(context.Context, uuid.UUID) (guardrail.ConfigView, error) {
+func (f *fakeGuardrail) GetForOrg(context.Context, uuid.UUID, uuid.UUID) (guardrail.ConfigView, error) {
 	return f.view, f.err
 }
-func (f *fakeGuardrail) Set(context.Context, uuid.UUID, audit.Actor, guardrail.Settings) (guardrail.ConfigView, error) {
+func (f *fakeGuardrail) SetForOrg(context.Context, uuid.UUID, uuid.UUID, audit.Actor, guardrail.Settings) (guardrail.ConfigView, error) {
 	return f.view, f.err
 }
 
-// fakeWatchlist is a WatchlistService stub for transport tests.
+// fakeWatchlist is a WatchlistService stub for transport tests (issue #237:
+// org-scoped methods only).
 type fakeWatchlist struct {
 	entries []db.WatchlistEntry
 	entry   db.WatchlistEntry
 	err     error
 }
 
-func (f *fakeWatchlist) List(context.Context, uuid.UUID) ([]db.WatchlistEntry, error) {
+func (f *fakeWatchlist) ListForOrg(context.Context, uuid.UUID, uuid.UUID) ([]db.WatchlistEntry, error) {
 	return f.entries, f.err
 }
-func (f *fakeWatchlist) Add(context.Context, uuid.UUID, uuid.UUID, audit.Actor) (db.WatchlistEntry, error) {
+func (f *fakeWatchlist) AddForOrg(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, audit.Actor) (db.WatchlistEntry, error) {
 	return f.entry, f.err
+}
+
+// TestS37HandlersMapForeignAccountToUniform404 is the issue #237 transport-level
+// proof (no database): when the org-scoping service reports the caller's org does
+// not own the requested account (ErrAccountNotFound), every S37 handler — the two
+// guardrail money/policy routes, both watchlist routes, and the market-conflict read
+// — returns a uniform 404, never a 500 and never a 200 disclosure. It complements the
+// DB-backed cross-tenant proof (tenant_scoping_s37_db_test.go) by pinning the
+// handler's error-to-status mapping deterministically. An authenticated Owner is used
+// (perm passes) so the 404 is the ownership guard's, not an auth rejection.
+func TestS37HandlersMapForeignAccountToUniform404(t *testing.T) {
+	acct := uuid.New().String()
+	body := `{"marketplaceAccountId":"` + acct + `","settings":{"contributionFloor":{"mantissa":"100","currency":"USD","exponent":-2},"movementCapBasisPoints":500,"cooldownSeconds":3600,"strategy":"match","strategyEnabled":true}}`
+	addBody := `{"marketplaceAccountId":"` + acct + `","variantId":"` + uuid.New().String() + `"}`
+
+	cases := []struct {
+		name    string
+		method  string
+		path    string
+		reqBody string
+		opt     Option
+	}{
+		{"GetGuardrails", http.MethodGet, "/guardrails?marketplaceAccountId=" + acct, "", WithGuardrail(&fakeGuardrail{err: guardrail.ErrAccountNotFound})},
+		{"SetGuardrails", http.MethodPost, "/guardrails", body, WithGuardrail(&fakeGuardrail{err: guardrail.ErrAccountNotFound})},
+		{"ListWatchlist", http.MethodGet, "/watchlist?marketplaceAccountId=" + acct, "", WithWatchlist(&fakeWatchlist{err: watchlist.ErrAccountNotFound})},
+		{"AddWatchlistEntry", http.MethodPost, "/watchlist", addBody, WithWatchlist(&fakeWatchlist{err: watchlist.ErrAccountNotFound})},
+		{"ListMarketConflicts", http.MethodGet, "/market/conflicts?marketplaceAccountId=" + acct, "", WithObservation(&fakeObservation{conflictErr: observation.ErrAccountNotFound})},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv, tok := systemOwnerServerForOrg(t, uuid.New(), c.opt)
+			var rec *httptest.ResponseRecorder
+			if c.method == http.MethodGet {
+				rec = getJSON(t, srv, tok, c.path, nil)
+			} else {
+				rec = postJSON(t, srv, tok, c.path, c.reqBody)
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s %s with a foreign account = %d, want 404 (uniform not-found, no existence oracle); body=%s", c.method, c.path, rec.Code, rec.Body.String())
+			}
+		})
+	}
 }
 
 // TestMachinePrincipalCannotWriteGuardrailsEditPriceOrBulkMint is the S37
