@@ -12,6 +12,7 @@ import { ViewState } from "../components/ViewState";
 import { classifyDisposition, type Disposition } from "../data/disposition";
 import { formatCount } from "../data/format";
 import { queryKeys, useBulkConfirm, useObservationTargets, useObservedOffers } from "../data/hooks";
+import { offerRowKey, offersByTargetId } from "../data/offers";
 import type {
   BulkApprovalConfirmResult,
   MarginReadiness,
@@ -80,6 +81,20 @@ interface Candidate {
   readonly reasonKey?: MessageKey;
 }
 
+// A candidate is one OBSERVED OFFER IDENTITY on a target (OBS-004): its selection
+// membership, inclusion, and classification are keyed by the offer, so a
+// conflicted/stale sibling is never hidden behind a verified one and one arbitrary
+// offer never stands in for the whole target.
+function candidateKey(c: Candidate): string {
+  return offerRowKey(c.target.id, c.offer);
+}
+
+// The stable, per-offer include-control test id: the offer identity when present
+// (native variant + seller), else the target's native variant id.
+function candidateSlug(c: Candidate): string {
+  return c.offer ? c.offer.offerIdentity : String(c.target.nativeVariantId);
+}
+
 function newLineage(): string {
   const c = globalThis.crypto;
   if (c && typeof c.randomUUID === "function") return c.randomUUID();
@@ -130,11 +145,24 @@ export function BulkApproval() {
   // Only the queries that ERRORED — the scoped-retry set for the degraded state.
   const failedReadiness = readinessQueries.filter((q) => q.isError);
 
-  const offerByTarget = useMemo(() => {
-    const map = new Map<string, ObservedOffer>();
-    for (const o of offersQuery.data?.items ?? []) if (!map.has(o.targetId)) map.set(o.targetId, o);
+  // Every observed offer identity is preserved (OBS-004), grouped order-
+  // independently. A target's readiness is per-VARIANT, so all its offers share
+  // one readiness query — the fan-out below stays bound to the page's targets.
+  const offersByTarget = useMemo(
+    () => offersByTargetId(offersQuery.data?.items ?? []),
+    [offersQuery.data],
+  );
+  const readinessByTargetId = useMemo(() => {
+    const map = new Map<string, (typeof readinessQueries)[number]>();
+    for (let i = 0; i < pageTargets.length; i++) {
+      const tg = pageTargets[i];
+      const q = readinessQueries[i];
+      if (tg && q) {
+        map.set(tg.id, q);
+      }
+    }
     return map;
-  }, [offersQuery.data]);
+  }, [pageTargets, readinessQueries]);
 
   // The versioned selection set. `version` bumps on ANY membership/filter mutation;
   // `previewedVersion` pins the version the current preview (and any approve
@@ -153,32 +181,43 @@ export function BulkApproval() {
   }
 
   const candidates: Candidate[] = useMemo(() => {
-    return pageTargets
-      .map((target, i) => {
-        const offer = offerByTarget.get(target.id);
-        const query = readinessQueries[i];
+    const rows: Candidate[] = [];
+    for (const target of pageTargets) {
+      const query = readinessByTargetId.get(target.id);
+      const targetOffers = offersByTarget.get(target.id) ?? [];
+      // A target with no observed offer keeps a single placeholder row; each
+      // observed offer identity is classified on its OWN quality (OBS-004), so a
+      // conflicted/stale sibling never hides behind a verified one.
+      const offerList: (ObservedOffer | undefined)[] = targetOffers.length
+        ? targetOffers
+        : [undefined];
+      for (const offer of offerList) {
         // A FAILED readiness load is left unclassified — never fabricated into a
         // "missing cost" blocked verdict (error ≠ absence, issue #81/#245).
         if (query?.isError) {
-          return { target, offer, readiness: undefined, readinessFailed: true };
+          rows.push({ target, offer, readiness: undefined, readinessFailed: true });
+          continue;
         }
         const readiness = query?.data;
         const d = classifyDisposition(offer?.quality, readiness?.state);
-        return {
+        rows.push({
           target,
           offer,
           readiness,
           readinessFailed: false,
           disposition: d.disposition,
           reasonKey: d.reasonKey,
-        };
-      })
-      .filter((c) => !readinessFilter || c.readiness?.state === readinessFilter);
-  }, [pageTargets, offerByTarget, readinessQueries, readinessFilter]);
+        });
+      }
+    }
+    return rows.filter((c) => !readinessFilter || c.readiness?.state === readinessFilter);
+  }, [pageTargets, offersByTarget, readinessByTargetId, readinessFilter]);
 
-  // Membership: a candidate is IN the set unless explicitly excluded; a blocked
-  // candidate is NEVER counted as executable regardless of membership.
-  const included = (id: string) => !excluded.has(id);
+  // Membership: a candidate (one offer identity) is IN the set unless explicitly
+  // excluded; a blocked candidate is NEVER counted as executable regardless of
+  // membership. Exclusion is keyed per OFFER, so excluding one sibling never
+  // silently drops the other.
+  const included = (key: string) => !excluded.has(key);
   const counts = useMemo(() => {
     let executable = 0;
     let warning = 0;
@@ -188,7 +227,7 @@ export function BulkApproval() {
       // neither executable, warning, nor blocked.
       if (c.readinessFailed || c.disposition === undefined) continue;
       if (c.disposition === "blocked") blocked += 1;
-      else if (excluded.has(c.target.id)) continue;
+      else if (excluded.has(candidateKey(c))) continue;
       else if (c.disposition === "executable") executable += 1;
       else warning += 1;
     }
@@ -202,29 +241,32 @@ export function BulkApproval() {
     {
       id: "include",
       header: "bulk.col.include",
-      render: (c) =>
+      render: (c) => {
         // No include control for a blocked candidate, nor for an unclassified
         // (readiness-failed) row — an unknown verdict is never executable.
-        c.disposition === "blocked" || c.disposition === undefined ? (
-          <LtrToken text="—" />
-        ) : (
+        if (c.disposition === "blocked" || c.disposition === undefined) {
+          return <LtrToken text="—" />;
+        }
+        const key = candidateKey(c);
+        return (
           <input
             type="checkbox"
             aria-label={t("bulk.col.include")}
-            data-testid={`bulk-include-${c.target.nativeVariantId}`}
-            checked={included(c.target.id)}
+            data-testid={`bulk-include-${candidateSlug(c)}`}
+            checked={included(key)}
             onChange={() =>
               mutateSet(() =>
                 setExcluded((prev) => {
                   const next = new Set(prev);
-                  if (next.has(c.target.id)) next.delete(c.target.id);
-                  else next.add(c.target.id);
+                  if (next.has(key)) next.delete(key);
+                  else next.add(key);
                   return next;
                 }),
               )
             }
           />
-        ),
+        );
+      },
     },
     {
       id: "product",
@@ -235,6 +277,13 @@ export function BulkApproval() {
       id: "sku",
       header: "bulk.col.sku",
       render: (c) => <LtrToken text={String(c.target.nativeVariantId)} />,
+    },
+    {
+      id: "offer",
+      // The observed offer identity (native variant + seller), LTR-isolated, so
+      // sibling offers on one target are individually attributable (OBS-004).
+      header: "bulk.col.offer",
+      render: (c) => (c.offer ? <LtrToken text={c.offer.offerIdentity} /> : <LtrToken text="—" />),
     },
     {
       id: "from",
@@ -280,7 +329,7 @@ export function BulkApproval() {
       header: "bulk.col.result",
       render: (c) => {
         if (!result?.valid) return <LtrToken text="—" />;
-        if (c.disposition === "blocked" || !included(c.target.id))
+        if (c.disposition === "blocked" || !included(candidateKey(c)))
           return (
             <span className="muted" data-testid="result-excluded">
               {t("bulk.result.excluded")}
@@ -387,7 +436,7 @@ export function BulkApproval() {
               </span>
             )}
           </div>
-          <DataTable columns={columns} rows={candidates} rowKey={(c) => c.target.id} />
+          <DataTable columns={columns} rows={candidates} rowKey={candidateKey} />
 
           <nav className="pagination" aria-label={t("bulk.pagination.label")}>
             <button

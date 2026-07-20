@@ -1,5 +1,5 @@
 import { faIR } from "@market-ops/locale";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import { offer } from "../test/msw/fixtures";
@@ -50,6 +50,55 @@ describe("Market (freshness / quality / conflicts)", () => {
     renderRoute("/market");
     fireEvent.click(await screen.findByTestId("market-refresh"));
     await waitFor(() => expect(refreshed).toBe(true));
+  });
+
+  it("keeps BOTH offer identities on one target visible and attributable (OBS-004)", async () => {
+    // Two offer identities on the SAME target: a Verified one and a Conflicted
+    // sibling. The conflicted sibling must NOT disappear behind the verified one.
+    const verified = {
+      ...offer,
+      id: "o-v",
+      offerIdentity: "8842213:seller-1",
+      quality: "verified" as const,
+    };
+    const conflicted = {
+      ...offer,
+      id: "o-c",
+      offerIdentity: "8842213:seller-2",
+      quality: "conflicted" as const,
+    };
+    server.use(
+      http.get(`${BASE}/observation/observed-offers`, () =>
+        HttpResponse.json({ items: [verified, conflicted] }),
+      ),
+    );
+    renderRoute("/market");
+    await screen.findByText(faIR["market.watch.title"]);
+    const table = document.querySelector(".data-table") as HTMLElement;
+    // Both offer identities render in the watch table, attributable to their own
+    // seller — the conflicted sibling is NOT hidden behind the verified one.
+    expect(within(table).getByText("8842213:seller-1")).toBeInTheDocument();
+    expect(within(table).getByText("8842213:seller-2")).toBeInTheDocument();
+    // Each keeps its OWN quality — verified AND conflicted are both visible in the table.
+    expect(within(table).getByText(faIR["state.verified"])).toBeInTheDocument();
+    expect(within(table).getByText(faIR["state.conflicted"])).toBeInTheDocument();
+  });
+
+  it("is order-independent — reordering the offers does not change what is shown", async () => {
+    const a = {
+      ...offer,
+      id: "o-a",
+      offerIdentity: "8842213:seller-1",
+      quality: "verified" as const,
+    };
+    const b = { ...offer, id: "o-b", offerIdentity: "8842213:seller-2", quality: "stale" as const };
+    server.use(
+      http.get(`${BASE}/observation/observed-offers`, () => HttpResponse.json({ items: [b, a] })),
+    );
+    renderRoute("/market");
+    const rows = await screen.findAllByText(/8842213:seller-/);
+    // Both offer identities present regardless of the arrival order.
+    expect(rows.map((n) => n.textContent).sort()).toEqual(["8842213:seller-1", "8842213:seller-2"]);
   });
 
   it("surfaces the empty state when there are no watch targets", async () => {
