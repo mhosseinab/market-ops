@@ -45,6 +45,35 @@ Two failure classes, both fail closed:
     the status table, or a ``- S<N>:`` bullet in the human "Deferred verification
     gate" section with no corresponding ``GATE`` row (an unclassified deferral
     could otherwise hide an unverified ``passed``).
+
+3. The machine-checked **transition log**, a comment block (issue #20)::
+
+       <!-- LEDGER-TRANSITIONS:BEGIN
+       TXN S1 | pending -> passed | <reason / evidence> | <commit/check ref>
+       ...
+       LEDGER-TRANSITIONS:END -->
+
+   Each ``TXN`` row records one ordered state change: previous state, new state,
+   a reason/evidence note, and a relevant commit/check reference. The **parity
+   check** replays these rows in file order, deriving each step's current state
+   from the initial ``pending`` state, and asserts the derived state EXACTLY
+   equals the status table. This closes the issue-#20 gap where a status-table
+   cell could diverge from the chronological log with no enforcement — a silent
+   table edit masquerading as a valid transition.
+
+   Parity fails closed on:
+     * an **unlogged table change** — a non-initial table state with no producing
+       transition;
+     * an **illegal transition** — an edge the state machine forbids (e.g.
+       ``passed -> in_progress`` without a ``reopened``/``regressed`` marker), a
+       transition whose declared previous state does not match the replayed
+       state (a broken chain), or an unknown state token;
+     * **log/table divergence** — the replay-derived current state differs from
+       the status-table state.
+
+   The state machine handles ``blocked``, ``in-progress``/``in_progress``,
+   ``passed``, ``verify-pending``, ``reopened`` and ``regressed`` (``pending`` is
+   the implicit initial state; a ``pending`` table step needs no transition).
 """
 from __future__ import annotations
 
@@ -71,6 +100,44 @@ BEGIN_MARK = "LEDGER-VERIFICATION-GATES:BEGIN"
 END_MARK = "LEDGER-VERIFICATION-GATES:END"
 DEFERRED_HEADING = "Deferred verification gate"
 DEFERRED_BULLET_RE = re.compile(r"^-\s+(S\d+)\s*:")
+
+# --- Transition-log parity (issue #20) -------------------------------------
+TXN_BEGIN_MARK = "LEDGER-TRANSITIONS:BEGIN"
+TXN_END_MARK = "LEDGER-TRANSITIONS:END"
+# TXN S<N> | <prev> -> <new> | <reason/evidence> | <commit/check ref>
+TXN_RE = re.compile(
+    r"^TXN\s+(S\d+)\s*\|\s*([A-Za-z_-]+)\s*->\s*([A-Za-z_-]+)\s*\|"
+)
+# The implicit initial state every step starts from before any transition.
+INITIAL_STATE = "pending"
+# Canonical status vocabulary. `in-progress`/`in_progress` and
+# `verify-pending`/`verify_pending` are the same state (spelling is data).
+KNOWN_STATES_MACHINE = {
+    "pending",
+    "in_progress",
+    "passed",
+    "verify_pending",
+    "blocked",
+    "reopened",
+    "regressed",
+}
+# Legal edges of the ledger state machine. Anything not listed is forbidden.
+# A `passed` step may only revert through an explicit `reopened`/`regressed`
+# marker — never silently back to `in_progress`.
+LEGAL_TRANSITIONS: dict[str, set[str]] = {
+    "pending": {"in_progress", "passed", "verify_pending", "blocked"},
+    "in_progress": {"passed", "verify_pending", "blocked", "reopened", "regressed"},
+    "verify_pending": {"passed", "blocked"},
+    "blocked": {"in_progress", "passed"},
+    "passed": {"reopened", "regressed"},
+    "reopened": {"in_progress", "passed"},
+    "regressed": {"in_progress", "passed"},
+}
+
+
+def canon_state(raw: str) -> str:
+    """Normalise a status token: spelling and separators are data, not identity."""
+    return raw.strip().lower().replace("-", "_")
 
 
 def parse_status_table(text: str) -> dict[str, str]:
@@ -156,6 +223,107 @@ def parse_deferred_bullets(text: str) -> set[str]:
     return steps
 
 
+def parse_transition_log(
+    text: str,
+) -> tuple[list[tuple[str, str, str]], list[str]]:
+    """Parse the machine-checked transition-log block (issue #20).
+
+    Returns (transitions, errors) where transitions is an ordered list of
+    (step, prev_state, new_state) with states canonicalised. Malformed rows and
+    an absent block are reported as errors (fail closed).
+    """
+    transitions: list[tuple[str, str, str]] = []
+    errors: list[str] = []
+    inside = False
+    seen_block = False
+    for line in text.splitlines():
+        if TXN_BEGIN_MARK in line:
+            inside = True
+            seen_block = True
+            continue
+        if TXN_END_MARK in line:
+            inside = False
+            continue
+        if not inside:
+            continue
+        stripped = line.strip()
+        if not stripped or not stripped.startswith("TXN"):
+            continue
+        m = TXN_RE.match(stripped)
+        if not m:
+            errors.append(
+                f"malformed TXN row (expected 'TXN S<N> | <prev> -> <new> | "
+                f"<reason> | <ref>'): {stripped!r}"
+            )
+            continue
+        step, prev, new = m.group(1), canon_state(m.group(2)), canon_state(m.group(3))
+        transitions.append((step, prev, new))
+    if not seen_block:
+        errors.append(
+            "no LEDGER-TRANSITIONS block found — the machine-checked "
+            "transition log is missing, so status-table parity cannot be "
+            "verified (fail closed)."
+        )
+    return transitions, errors
+
+
+def validate_parity(
+    statuses: dict[str, str], transitions: list[tuple[str, str, str]]
+) -> list[str]:
+    """Replay the ordered transition log and assert parity with the status table.
+
+    Fails closed on an unlogged table change, an illegal transition, a broken
+    chain, an unknown state, or log/table divergence.
+    """
+    violations: list[str] = []
+    derived: dict[str, str] = {}
+    logged_steps: set[str] = set()
+
+    for step, prev, new in transitions:
+        logged_steps.add(step)
+        if step not in statuses:
+            violations.append(
+                f"{step}: transition '{prev} -> {new}' logged but the step is "
+                f"absent from the status table."
+            )
+        if prev not in KNOWN_STATES_MACHINE:
+            violations.append(f"{step}: unknown previous state {prev!r} in transition log.")
+        if new not in KNOWN_STATES_MACHINE:
+            violations.append(f"{step}: unknown new state {new!r} in transition log.")
+        current = derived.get(step, INITIAL_STATE)
+        if prev != current:
+            violations.append(
+                f"{step}: broken transition chain — '{prev} -> {new}' starts "
+                f"from '{prev}' but the replayed current state is '{current}'."
+            )
+        elif new not in LEGAL_TRANSITIONS.get(prev, set()):
+            violations.append(
+                f"{step}: illegal transition '{prev} -> {new}' — the ledger "
+                f"state machine forbids this edge."
+            )
+        derived[step] = new
+
+    for step, raw_status in sorted(statuses.items()):
+        table_state = canon_state(raw_status)
+        if table_state == INITIAL_STATE:
+            # `pending` is the initial state — it needs no producing transition.
+            continue
+        if step not in logged_steps:
+            violations.append(
+                f"{step}: status table shows '{raw_status}' but no transition-log "
+                f"entry produces it (unlogged table change — fail closed)."
+            )
+            continue
+        final = derived.get(step, INITIAL_STATE)
+        if final != table_state:
+            violations.append(
+                f"{step}: log/table divergence — the transition log derives "
+                f"'{final}' but the status table says '{raw_status}'."
+            )
+
+    return violations
+
+
 def validate(text: str) -> list[str]:
     """Return a list of violation strings (empty == valid)."""
     violations: list[str] = []
@@ -163,6 +331,8 @@ def validate(text: str) -> list[str]:
     gates, gate_errors = parse_gate_registry(text)
     violations.extend(gate_errors)
     deferred_steps = parse_deferred_bullets(text)
+    transitions, txn_errors = parse_transition_log(text)
+    violations.extend(txn_errors)
 
     if not statuses:
         violations.append("status table not found or empty (fail closed).")
@@ -192,6 +362,10 @@ def validate(text: str) -> list[str]:
                 f"{step}: listed in the 'Deferred verification gate' section but has "
                 f"no GATE row in the machine-checked registry (classify it)."
             )
+
+    # Rule 3 — transition-log ⇄ status-table parity (issue #20). The replay
+    # derives per-step state from the ordered log and must match the table.
+    violations.extend(validate_parity(statuses, transitions))
 
     return violations
 

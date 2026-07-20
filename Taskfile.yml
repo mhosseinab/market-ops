@@ -137,11 +137,14 @@ tasks:
   ledger:validate:
     desc: >-
       Validate the orchestration progress ledger's verification-gate integrity
-      (issue #19): a step may be recorded `passed` — and satisfy a dependency
-      gate — only after every MANDATORY verification has a successful evidence
-      record. Rejects any `passed` step whose exact Verify block is recorded as a
-      still-pending mandatory gate, and any deferred item left unclassified.
-      Stdlib-only; part of `task ci:local`.
+      (issue #19) AND transition-log ⇄ status-table parity (issue #20): a step
+      may be recorded `passed` — and satisfy a dependency gate — only after every
+      MANDATORY verification has a successful evidence record; and every
+      non-initial status-table state must have a producing, legal entry in the
+      machine-checked transition log. Rejects any `passed` step whose exact
+      Verify block is recorded as a still-pending mandatory gate, any deferred
+      item left unclassified, an unlogged table change, an illegal transition, or
+      any log/table divergence. Stdlib-only; part of `task ci:local`.
     silent: true
     cmds:
       - python3 tools/ledger/validate_ledger.py --file docs/implementation/dk-p0-progress.md
