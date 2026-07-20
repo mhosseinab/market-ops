@@ -68,10 +68,13 @@ func (f *fakePairing) RevokeForOrganization(_ context.Context, org uuid.UUID) er
 // ingested so tests can assert the capture route reached ingestion.
 type fakeObservation struct {
 	ingested []observation.Capture
-	// conflictErr, when set, is returned by ListConflictedObservedOffersForOrg so a
-	// transport test can drive the tenant-scoping (issue #237) not-found mapping
-	// without a database.
+	// conflictErr, when set, is returned by ListConflictedObservedOffersForOrg and
+	// ListMarketConflictsForOrg so a transport test can drive the tenant-scoping
+	// (issue #237) not-found mapping without a database.
 	conflictErr error
+	// conflicts is returned by ListMarketConflictsForOrg (issue #94) so a transport
+	// test can assert the per-route conflict-evidence wire mapping without a database.
+	conflicts []observation.ConflictView
 
 	// Tenant-scoped read fixtures (issue #131): the *ForOrg methods record the org they
 	// were called with and return the configured rows/scopeErr, so a transport test can
@@ -113,6 +116,13 @@ func (f *fakeObservation) Ingest(_ context.Context, c observation.Capture) (obse
 }
 func (f *fakeObservation) ListConflictedObservedOffersForOrg(context.Context, uuid.UUID, uuid.UUID) ([]db.ObservedOffer, error) {
 	return nil, f.conflictErr
+}
+func (f *fakeObservation) ListMarketConflictsForOrg(_ context.Context, org, account uuid.UUID) ([]observation.ConflictView, error) {
+	f.lastOrg, f.lastAccount = org, account
+	if f.conflictErr != nil {
+		return nil, f.conflictErr
+	}
+	return f.conflicts, nil
 }
 
 func serverWithPairing(t *testing.T, fa *fakeAuth, fp *fakePairing, fo *fakeObservation) *http.Server {

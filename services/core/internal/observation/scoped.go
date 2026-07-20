@@ -9,6 +9,8 @@ package observation
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -106,4 +108,98 @@ func (s *Service) ListConflictedObservedOffersForOrg(ctx context.Context, organi
 		return nil, ErrAccountNotFound
 	}
 	return s.ListConflictedObservedOffers(ctx, account)
+}
+
+// ConflictRouteEvidence is one route's LATEST still-in-window observation behind a
+// conflict (issue #94). It is the existing per-route in-window row surfaced
+// VERBATIM — the raw price value/unit (money quarantine §9.1, never promoted to
+// Money), availability, and capture/freshness times. No value is recomputed.
+type ConflictRouteEvidence struct {
+	Route              string
+	Value              string
+	Unit               string
+	AvailabilityStatus string
+	CapturedAt         time.Time
+	FreshnessDeadline  time.Time
+}
+
+// ConflictEvidence is the cross-route disagreeing evidence behind ONE conflicted
+// Observed Offer (issue #94). Available is true ONLY when at least two routes are
+// still in window and therefore inspectable side-by-side; when fewer than two
+// remain the comparison evidence is missing/incomplete and Available is FALSE — an
+// EXPLICIT fail-closed state the transport surfaces as `unavailable`, never a
+// fabricated complete panel. The offer stays blocked regardless.
+type ConflictEvidence struct {
+	Available bool
+	Routes    []ConflictRouteEvidence
+}
+
+// ConflictView pairs a conflicted Observed Offer with its per-route disagreeing
+// evidence (issue #94).
+type ConflictView struct {
+	Offer    db.ObservedOffer
+	Evidence ConflictEvidence
+}
+
+// conflictEvidenceFrom maps the existing per-route in-window rows onto the
+// read-model evidence (issue #94), applying the fail-closed availability rule:
+// inspecting a cross-route disagreement requires at least TWO distinct in-window
+// routes (the query is DISTINCT ON route). With fewer, the disagreeing evidence can
+// no longer be inspected, so Available is false and Routes is empty — the caller
+// renders the EXPLICIT error state and never infers the missing routes. No value is
+// recomputed; each row is surfaced verbatim.
+func conflictEvidenceFrom(rows []db.ListInWindowRouteValuesRow) ConflictEvidence {
+	if len(rows) < 2 {
+		return ConflictEvidence{Available: false, Routes: nil}
+	}
+	out := make([]ConflictRouteEvidence, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, ConflictRouteEvidence{
+			Route:              string(r.Route),
+			Value:              r.PriceRawValue,
+			Unit:               r.PriceRawUnit,
+			AvailabilityStatus: string(r.AvailabilityStatus),
+			CapturedAt:         r.CapturedAt,
+			FreshnessDeadline:  r.FreshnessDeadline,
+		})
+	}
+	return ConflictEvidence{Available: true, Routes: out}
+}
+
+// ListMarketConflictsForOrg returns the caller's OWN account conflicted Observed
+// Offers, each paired with its per-route disagreeing evidence (issue #94). Tenant
+// scoping reuses accountForOrg (issue #131/#237): the requested account MUST equal
+// the caller's resolved account, else ErrAccountNotFound (uniform not-found, no
+// existence oracle) — a foreign or org-less caller never sees another tenant's
+// conflict evidence. The per-route evidence is surfaced VERBATIM from the existing
+// ListInWindowRouteValues query (no recompute); when the comparison evidence is
+// no longer inspectable the view's Evidence.Available is false (fail-closed
+// explicit-error state).
+func (s *Service) ListMarketConflictsForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID) ([]ConflictView, error) {
+	account, err := s.accountForOrg(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	if requestedAccount != account {
+		return nil, ErrAccountNotFound
+	}
+	offers, err := s.ListConflictedObservedOffers(ctx, account)
+	if err != nil {
+		return nil, err
+	}
+	q := db.New(s.pool)
+	now := s.now()
+	views := make([]ConflictView, 0, len(offers))
+	for _, o := range offers {
+		rows, err := q.ListInWindowRouteValues(ctx, db.ListInWindowRouteValuesParams{
+			TargetID:          o.TargetID,
+			OfferIdentity:     o.OfferIdentity,
+			FreshnessDeadline: now,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("observation: conflict route evidence: %w", err)
+		}
+		views = append(views, ConflictView{Offer: o, Evidence: conflictEvidenceFrom(rows)})
+	}
+	return views, nil
 }

@@ -598,8 +598,16 @@ export const faIR: Catalog = {
   "market.col.price": "قیمت مشاهده‌شده",
   "market.conflict.title": "مشاهدهٔ متناقض ({count})",
   "market.conflict.body": "تا رفع تعارض مسدود است.",
-  "market.conflict.valuesUnavailable": "مقادیر مقایسهٔ مسیرها در دسترس نیست.",
+  "market.conflict.evidenceRoute": "مسیر",
+  "market.conflict.evidenceValue": "مقدار مشاهده‌شده",
+  "market.conflict.evidenceCaptured": "زمان ثبت",
+  "market.conflict.evidenceUnavailable":
+    "شواهد مسیرها برای مقایسه دیگر در دسترس نیست؛ همچنان مسدود است.",
   "market.conflict.toOperations": "تشخیص در عملیات ←",
+  "market.conflict.loading": "در حال بررسی مشاهده‌های متناقض…",
+  "market.conflict.errorTitle": "شواهد تعارض در دسترس نیست",
+  "market.conflict.error":
+    "شواهد تعارض بارگذاری نشد؛ مشاهده‌های مسدود همچنان مسدود است. دوباره تلاش کنید یا در عملیات بررسی کنید.",
 
   "actions.filter.pending": "در انتظار تطبیق",
   "actions.filter.failed": "ناموفق",

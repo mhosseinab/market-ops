@@ -22,17 +22,98 @@ describe("Market (freshness / quality / conflicts)", () => {
     expect(screen.getByText(faIR["market.watch.title"])).toBeInTheDocument();
   });
 
-  it("surfaces the conflicted-observation banner with an Operations deep link", async () => {
+  it("surfaces the conflicted-observation banner with per-route evidence and a deep link", async () => {
+    // The banner reads the dedicated /market/conflicts endpoint, which carries each
+    // conflicted offer's per-route disagreeing evidence (issue #94).
     server.use(
-      http.get(`${BASE}/observation/observed-offers`, () =>
-        HttpResponse.json({ items: [{ ...offer, quality: "conflicted" }] }),
+      http.get(`${BASE}/market/conflicts`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              ...offer,
+              quality: "conflicted",
+              conflictEvidence: {
+                state: "available",
+                routes: [
+                  {
+                    route: "route_c",
+                    value: "100",
+                    unit: "IRR-rial",
+                    availabilityStatus: "in_stock",
+                    capturedAt: "2026-07-20T10:00:00Z",
+                    freshnessDeadline: "2026-07-20T11:00:00Z",
+                  },
+                  {
+                    route: "route_a",
+                    value: "200",
+                    unit: "IRR-rial",
+                    availabilityStatus: "in_stock",
+                    capturedAt: "2026-07-20T10:01:00Z",
+                    freshnessDeadline: "2026-07-20T11:01:00Z",
+                  },
+                ],
+              },
+            },
+          ],
+        }),
       ),
     );
     renderRoute("/market");
     const toOps = await screen.findByTestId("conflict-to-operations");
     expect(toOps).toHaveAttribute("href", expect.stringContaining("/operations"));
-    // Cross-route values are not surfaced — explicitly stated, never fabricated.
-    expect(screen.getByText(faIR["market.conflict.valuesUnavailable"])).toBeInTheDocument();
+    // Both routes' disagreeing raw values are shown side-by-side (the evidence that
+    // caused the block), each retaining its route identity.
+    expect(await screen.findByText("route_c")).toBeInTheDocument();
+    expect(screen.getByText("route_a")).toBeInTheDocument();
+    expect(screen.getByText("100 IRR-rial")).toBeInTheDocument();
+    expect(screen.getByText("200 IRR-rial")).toBeInTheDocument();
+  });
+
+  it("shows an explicit fail-closed error when the comparison evidence is unavailable", async () => {
+    // Missing/incomplete comparison evidence is an EXPLICIT read-model error — never a
+    // fabricated complete panel and never client-side inference (issue #94).
+    server.use(
+      http.get(`${BASE}/market/conflicts`, () =>
+        HttpResponse.json({
+          items: [
+            {
+              ...offer,
+              quality: "conflicted",
+              conflictEvidence: { state: "unavailable", routes: [] },
+            },
+          ],
+        }),
+      ),
+    );
+    renderRoute("/market");
+    expect(await screen.findByTestId("conflict-evidence-unavailable")).toHaveTextContent(
+      faIR["market.conflict.evidenceUnavailable"],
+    );
+    // The action stays blocked: the deep link to Operations is still present.
+    expect(screen.getByTestId("conflict-to-operations")).toBeInTheDocument();
+  });
+
+  it("fails CLOSED when /market/conflicts errors while offers load — explicit affordance, not an absent banner", async () => {
+    // A failed conflicts read must NOT collapse to an empty/absent banner (§4.6
+    // screens-only-fallback, STATE_MATRIX Market/Conflicted): the error is surfaced as
+    // an EXPLICIT affordance and the Operations deep link is retained, because any
+    // blocked observation stays blocked whether or not its evidence loaded.
+    server.use(
+      http.get(`${BASE}/market/conflicts`, () =>
+        HttpResponse.json({ error: "boom" }, { status: 500 }),
+      ),
+    );
+    renderRoute("/market");
+    // The watch table (offers succeeded) still renders — only the conflict read failed.
+    await screen.findByText(faIR["market.watch.title"]);
+    // The explicit error affordance is shown (NOT silently absent).
+    const errorLine = await screen.findByTestId("conflict-surface-error");
+    expect(errorLine).toHaveTextContent(faIR["market.conflict.error"]);
+    // The action stays blocked-safe: the Operations deep link is retained.
+    const toOps = screen.getByTestId("conflict-to-operations");
+    expect(toOps).toHaveAttribute("href", expect.stringContaining("/operations"));
+    // A retry affordance is offered.
+    expect(screen.getByTestId("conflict-retry")).toBeInTheDocument();
   });
 
   it("issues a budgeted refresh request without recomputing anything", async () => {

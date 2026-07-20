@@ -42,6 +42,9 @@ from .chat_turn_request import ChatTurnRequest
 from .chat_unavailable import ChatUnavailable
 from .chat_unavailable_reason import ChatUnavailableReason
 from .column_component_mapping import ColumnComponentMapping
+from .conflict_evidence import ConflictEvidence
+from .conflict_evidence_state import ConflictEvidenceState
+from .conflict_route_evidence import ConflictRouteEvidence
 from .connector_account_ref import ConnectorAccountRef
 from .connector_capability import ConnectorCapability
 from .connector_capability_state import ConnectorCapabilityState
@@ -223,6 +226,9 @@ __all__ = (
     "ChatUnavailable",
     "ChatUnavailableReason",
     "ColumnComponentMapping",
+    "ConflictEvidence",
+    "ConflictEvidenceState",
+    "ConflictRouteEvidence",
     "ConnectorAccountRef",
     "ConnectorCapability",
     "ConnectorCapabilityState",

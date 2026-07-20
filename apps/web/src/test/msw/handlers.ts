@@ -59,6 +59,7 @@ export const handlers = [
   http.get(`${B}/observation/targets`, () => HttpResponse.json({ items: [target] })),
   http.get(`${B}/observation/observed-offers`, () => HttpResponse.json({ items: [offer] })),
   http.get(`${B}/observation/observations`, () => HttpResponse.json({ items: [] })),
+  http.get(`${B}/market/conflicts`, () => HttpResponse.json({ items: [] })),
 
   http.get(`${B}/cost/readiness`, () => HttpResponse.json(readinessMissing)),
   http.get(`${B}/cost/profiles`, () => HttpResponse.json({ items: [] })),

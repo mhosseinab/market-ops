@@ -11,7 +11,12 @@ import { Section } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
 import { formatCount, formatInstant } from "../data/format";
 import { freshnessState, freshnessTransitions } from "../data/freshness";
-import { useConnectorAction, useObservationTargets, useObservedOffers } from "../data/hooks";
+import {
+  useConnectorAction,
+  useMarketConflicts,
+  useObservationTargets,
+  useObservedOffers,
+} from "../data/hooks";
 import { offerRowKey, offersByTargetId } from "../data/offers";
 import type { ObservationTarget, ObservedOffer, QualityState } from "../data/types";
 
@@ -44,6 +49,54 @@ function FreshnessCell({ offer, now }: { offer?: ObservedOffer; now: number }) {
   return <FreshnessPill state={freshnessState(offer, now)} />;
 }
 
+// ConflictEvidencePanel renders ONE conflicted offer's per-route disagreeing
+// evidence side-by-side (issue #94): each route's identity, its raw observed
+// value/unit (LTR-isolated, money quarantine — never reformatted), and its capture
+// time. When the server reports the explicit `unavailable` state the evidence can no
+// longer be inspected, so an EXPLICIT catalog-backed error line is shown — never a
+// fabricated complete panel and never client-side inference. The offer stays blocked
+// either way (its quality is `conflicted`); this panel only surfaces the WHY.
+function ConflictEvidencePanel({ offer }: { offer: ObservedOffer }) {
+  const t = useT();
+  const { locale } = useLocale();
+  const evidence = offer.conflictEvidence;
+  return (
+    <div className="conflict-evidence" data-testid="conflict-evidence">
+      <div className="conflict-evidence__offer">
+        <LtrToken text={offer.offerIdentity} />
+      </div>
+      {evidence && evidence.state === "available" ? (
+        <table className="conflict-evidence__routes">
+          <thead>
+            <tr>
+              <th scope="col">{t("market.conflict.evidenceRoute")}</th>
+              <th scope="col">{t("market.conflict.evidenceValue")}</th>
+              <th scope="col">{t("market.conflict.evidenceCaptured")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {evidence.routes.map((r) => (
+              <tr key={r.route}>
+                <td>
+                  <LtrToken text={r.route} />
+                </td>
+                <td>
+                  <LtrToken text={`${r.value} ${r.unit}`} />
+                </td>
+                <td>{formatInstant(r.capturedAt, locale)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      ) : (
+        <p className="conflict-evidence__error" data-testid="conflict-evidence-unavailable">
+          {t("market.conflict.evidenceUnavailable")}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // Buckets by the SHARED deadline-driven derivation (apps/web/src/data/freshness
 // → packages/locale) — the SAME `freshnessState` the row pill and the extension
 // overlay use, at the SAME `now`, so counts can never silently drift.
@@ -69,6 +122,7 @@ export function Market() {
   const { locale } = useLocale();
   const targetsQuery = useObservationTargets();
   const offersQuery = useObservedOffers();
+  const conflictsQuery = useMarketConflicts();
   const refresh = useConnectorAction("/connector/refresh");
 
   const targets = useMemo(() => targetsQuery.data?.items ?? [], [targetsQuery.data]);
@@ -95,7 +149,11 @@ export function Market() {
     return counts;
   }, [offers]);
 
-  const conflicted = useMemo(() => offers.filter((o) => o.quality === "conflicted"), [offers]);
+  // The conflict banner reads the DEDICATED /market/conflicts endpoint, which
+  // carries each conflicted offer's per-route disagreeing evidence (issue #94). The
+  // watch table above still reads the observed-offers list; only the banner needs the
+  // per-route evidence, so it is fetched separately and never blocks the table.
+  const conflicts = useMemo(() => conflictsQuery.data?.items ?? [], [conflictsQuery.data]);
 
   // One row per observed offer identity; a target with no observed offer keeps a
   // single placeholder row so it never silently disappears from the watch list.
@@ -183,23 +241,58 @@ export function Market() {
           </Section>
         </div>
 
-        {conflicted.length > 0 ? (
+        {/* The conflict surface fails CLOSED (§4.6 screens-only-fallback, STATE_MATRIX
+            Market/Conflicted): a failed or pending /market/conflicts read is an
+            EXPLICIT affordance, never collapsed to an absent banner. On error we still
+            route to Operations, because any blocked observation stays blocked whether or
+            not its evidence loaded; while pending we show a loading line. Only a genuine
+            empty (loaded, zero conflicts) renders nothing. */}
+        {conflictsQuery.isError ? (
+          <Banner
+            tone="conflict"
+            title={t("market.conflict.errorTitle")}
+            body={<span data-testid="conflict-surface-error">{t("market.conflict.error")}</span>}
+            actions={
+              <>
+                <button
+                  type="button"
+                  className="btn btn--sm btn--secondary"
+                  data-testid="conflict-retry"
+                  onClick={() => void conflictsQuery.refetch()}
+                >
+                  {t("mutationError.retry")}
+                </button>
+                <AppLink to="/operations" className="btn btn--sm" testId="conflict-to-operations">
+                  {t("market.conflict.toOperations")}
+                </AppLink>
+              </>
+            }
+          />
+        ) : conflictsQuery.isPending ? (
+          <Banner
+            tone="info"
+            title={
+              <span data-testid="conflict-surface-loading">{t("market.conflict.loading")}</span>
+            }
+            actions={
+              <AppLink to="/operations" className="btn btn--sm" testId="conflict-to-operations">
+                {t("market.conflict.toOperations")}
+              </AppLink>
+            }
+          />
+        ) : conflicts.length > 0 ? (
           <Banner
             tone="conflict"
             title={t("market.conflict.title", {
-              count: formatCount(conflicted.length, locale),
+              count: formatCount(conflicts.length, locale),
             })}
             body={
-              <span>
-                {t("market.conflict.body")}{" "}
-                {conflicted.map((o) => (
-                  <span className="chip" key={o.id}>
-                    <LtrToken text={o.offerIdentity} /> · <LtrToken text={o.routes.join("/")} /> ·{" "}
-                    {formatInstant(o.capturedAt, locale)}
-                  </span>
+              <div className="conflict-evidence__list">
+                <span>{t("market.conflict.body")}</span>
+                {conflicts.map((o) => (
+                  <ConflictEvidencePanel key={o.id} offer={o} />
                 ))}
-                <span className="muted"> {t("market.conflict.valuesUnavailable")}</span>
-              </span>
+              </div>
             }
             actions={
               <AppLink to="/operations" className="btn btn--sm" testId="conflict-to-operations">

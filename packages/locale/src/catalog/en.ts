@@ -602,8 +602,16 @@ export const en: Catalog = {
   "market.col.price": "Observed price",
   "market.conflict.title": "Conflicted observation ({count})",
   "market.conflict.body": "Blocked until the conflict is resolved.",
-  "market.conflict.valuesUnavailable": "Cross-route value comparison is unavailable.",
+  "market.conflict.evidenceRoute": "Route",
+  "market.conflict.evidenceValue": "Observed value",
+  "market.conflict.evidenceCaptured": "Captured",
+  "market.conflict.evidenceUnavailable":
+    "Route evidence is no longer available to compare; the block stands.",
   "market.conflict.toOperations": "Diagnose in Operations →",
+  "market.conflict.loading": "Checking for conflicted observations…",
+  "market.conflict.errorTitle": "Conflict evidence unavailable",
+  "market.conflict.error":
+    "Conflict evidence could not be loaded; any blocked observations stay blocked. Retry or diagnose in Operations.",
 
   "actions.filter.pending": "Pending reconciliation",
   "actions.filter.failed": "Failed",
