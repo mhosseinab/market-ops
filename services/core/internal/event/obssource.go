@@ -43,13 +43,20 @@ import (
 //     a competitor movement (quarantine-over-inference, §4.6). The quarantine is
 //     observable (counter + structured log), never silent.
 //
-// WORK BOUND (issue #212). Each pass drains at most pageLimit unconsumed
-// observations per target; the durable cursor continues across passes. The cursor
-// advances only when a transition is actually CONSUMED (a material candidate writes
-// the event + ledger + cursor atomically). A trailing IMMATERIAL (below-threshold)
-// transition does not advance the cursor and is re-derived next pass — deliberately,
-// so a material transition can never be skipped past a failed/retried predecessor in
-// the same stream. This re-read is bounded (pageLimit per pass) and never produces a
+// WORK BOUND + FAIR PAGING (issue #212 + REOPEN residual). Each pass drains at most
+// pageLimit unconsumed observations PER STREAM (not one global page per target), so
+// total per-pass work is pageLimit × the target's naturally-bounded set of competing
+// streams. This is the fairness fix: under a single global page a high-backlog
+// earlier-sorting seller filled the whole page every pass and later sellers' streams
+// were never reached (their durable cursors never advanced). Per-stream paging means
+// EVERY seller stream advances by up to pageLimit of its own oldest-unconsumed
+// observations each pass, so no seller is starved and every stream makes progress
+// within bounded passes. The durable cursor continues across passes; it advances only
+// when a transition is actually CONSUMED (a material candidate writes the event +
+// ledger + cursor atomically). A trailing IMMATERIAL (below-threshold) transition does
+// not advance the cursor and is re-derived next pass — deliberately, so a material
+// transition can never be skipped past a failed/retried predecessor in the same
+// stream. This re-read is bounded (pageLimit per stream per pass) and never produces a
 // duplicate or a gap; advancing dormant tails is a future optimization, not a
 // correctness requirement.
 //
@@ -75,9 +82,10 @@ type ObservationSource struct {
 }
 
 // NewObservationSource builds the production Source over the pool. Defaults: drain
-// up to 500 unconsumed observations per target per pass (bounded work; the cursor
-// provides continuation across passes), and open events with a 24h TTL (the §15.1
-// expiry sweep advances lifecycle independently).
+// up to 500 unconsumed observations per STREAM per pass (bounded, fair work — no
+// single seller can starve another; the cursor provides continuation across passes),
+// and open events with a 24h TTL (the §15.1 expiry sweep advances lifecycle
+// independently).
 func NewObservationSource(pool *pgxpool.Pool) *ObservationSource {
 	return &ObservationSource{
 		pool:      pool,
@@ -88,8 +96,8 @@ func NewObservationSource(pool *pgxpool.Pool) *ObservationSource {
 	}
 }
 
-// WithPageLimit overrides the per-pass drain bound (tests exercise pagination with a
-// small page). A non-positive value is ignored.
+// WithPageLimit overrides the per-STREAM per-pass drain bound (tests exercise
+// pagination with a small page). A non-positive value is ignored.
 func (s *ObservationSource) WithPageLimit(n int32) *ObservationSource {
 	if n > 0 {
 		s.pageLimit = n
@@ -194,26 +202,40 @@ func (s *ObservationSource) targetTransitions(
 	if err != nil {
 		return nil, fmt.Errorf("observation source: drain observations: %w", err)
 	}
-	if int32(len(rows)) == s.pageLimit {
-		// The page is saturated: this target has more unconsumed observations than one
-		// pass drains. This is expected (the cursor continues next pass) but must be
-		// OBSERVABLE so a genuinely growing backlog is not mistaken for "caught up".
-		s.tel.pageSaturated.Add(ctx, 1)
-		s.logger.InfoContext(ctx, "observation source: drain page saturated (backlog continues next pass)",
-			"target", target.ID.String(), "page_limit", s.pageLimit)
-	}
 
+	// The drain pages PER STREAM (issue #212 fair paging): each competing stream draws
+	// at most pageLimit of its OWN oldest-unconsumed observations, so a high-backlog
+	// seller can never monopolise a shared page and starve later sellers. Saturation is
+	// therefore a PER-STREAM signal — a stream that fills its own budget has more
+	// unconsumed observations than one pass drains (expected; the durable cursor
+	// continues next pass) and must be OBSERVABLE so a genuinely growing per-stream
+	// backlog is not mistaken for "caught up". Rows arrive grouped by (seller, offer),
+	// so a contiguous run of exactly pageLimit rows is one saturated stream.
 	var out []Transition
 	var cur streamKey
 	var prev obsCursor
+	var curCount int32
 	started := false
+	flushSaturation := func() {
+		if started && curCount == s.pageLimit {
+			s.tel.pageSaturated.Add(ctx, 1)
+			s.logger.InfoContext(ctx, "observation source: stream drain page saturated (backlog continues next pass)",
+				"target", target.ID.String(),
+				"native_seller_id", cur.seller,
+				"offer_identity", cur.offer,
+				"page_limit", s.pageLimit)
+		}
+	}
 	for _, r := range rows {
 		sk := streamKey{r.NativeSellerID, r.OfferIdentity}
 		if !started || sk != cur {
+			flushSaturation() // finalize the stream we are leaving
 			cur = sk
 			started = true
+			curCount = 0
 			prev = anchor[sk] // zero value has set=false
 		}
+		curCount++
 		if !prev.set {
 			// First observation of a never-consumed stream: it is the "before" of the
 			// stream's first future movement, not a movement itself.
@@ -233,6 +255,7 @@ func (s *ObservationSource) targetTransitions(
 		// bounded page. Overwrite keeps the LAST (newest) row per contiguous stream.
 		s.setHighWater(account, target.ID, r)
 	}
+	flushSaturation() // finalize the last stream in the page
 	return out, nil
 }
 
@@ -356,6 +379,6 @@ func newObsSourceTelemetry() *obsSourceTelemetry {
 		quarantined: ctr("event.obssource.account_quarantined",
 			"accounts skipped because their owned seller identity is unresolved (issue #212 fail-closed)"),
 		pageSaturated: ctr("event.obssource.page_saturated",
-			"target drains that filled the bounded page — backlog continues next pass (issue #212)"),
+			"per-stream drains that filled their fair page — that stream's backlog continues next pass (issue #212)"),
 	}
 }
