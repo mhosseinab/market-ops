@@ -42,6 +42,21 @@ chmod 600 "$COMPOSE_ENV_FILE"
 printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > "$COMPOSE_ENV_FILE"
 export MARKET_OPS_COMPOSE_ENV_FILE="$COMPOSE_ENV_FILE"
 COMPOSE="docker compose --env-file $COMPOSE_ENV_FILE -f deploy/compose.test.yml"
+# CI-only caching overlay (deploy/compose.test.cache.yml): merged in ONLY when the
+# ci.yml integration job exports MARKET_OPS_COMPOSE_EXTRA_FILE (pointing at it) plus
+# the MARKET_OPS_GO_CACHE_DIR/MARKET_OPS_UV_CACHE_DIR mount sources it needs. Unset
+# locally ⇒ base stack only, behavior unchanged. EVERY stack bring-up in the S32
+# suite appends the SAME overlay — this orchestrator's `up`, run_killswitch_journey.sh,
+# and run_coldstart_llm_unhealthy_journey.sh — so the three bring-ups share ONE
+# host-side Go/uv cache and the 2nd/3rd reuse the 1st's compiled objects (see the
+# overlay header for why `down -v` otherwise re-does ~66% of the run each time).
+if [ -n "${MARKET_OPS_COMPOSE_EXTRA_FILE:-}" ]; then
+  COMPOSE="$COMPOSE -f $MARKET_OPS_COMPOSE_EXTRA_FILE"
+fi
+# One-line diagnostic so a CI log unambiguously shows whether the Go/uv cache
+# overlay engaged in THIS bring-up (each of the three uses its own COMPOSE): grep
+# the job for "compose overlay:" — it must read the overlay path, not "none".
+echo "== compose overlay: ${MARKET_OPS_COMPOSE_EXTRA_FILE:-none} =="
 echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
 
 declare -A RESULT
