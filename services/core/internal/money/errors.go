@@ -28,4 +28,11 @@ var (
 	// ErrMalformed is returned when decoding a Money from its text encoding
 	// fails structurally.
 	ErrMalformed = errors.New("money: malformed encoding")
+
+	// ErrInvalidMoney is returned when a domain operation is given an invalid
+	// (uninitialised / non-constructed) Money value as its receiver or operand —
+	// including the Go zero value, which has an empty currency. Authoritative
+	// values must be built via New or Zero; an invalid value is a missing amount,
+	// never a real numeric zero (never-cut money correctness, PRD §9.1).
+	ErrInvalidMoney = errors.New("money: invalid (uninitialised or unconstructed) money value")
 )

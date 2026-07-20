@@ -59,9 +59,27 @@ func (m Money) Exponent() int8 { return m.exponent }
 // IsZero reports whether the mantissa is zero.
 func (m Money) IsZero() bool { return m.mantissa == 0 }
 
-// compatible reports whether o may be combined with m: same currency and same
-// exponent. It returns a typed error identifying which invariant was violated.
+// invalidMoneyMarker is the canonical String() rendering of an invalid Money. It
+// is deliberately NOT a parseable "CURRENCY:mantissa:exponent" encoding and
+// announces invalidity explicitly, so a downstream reader can never mistake a
+// missing/uninitialised amount for a real numeric zero (PRD §9.1).
+const invalidMoneyMarker = "money(invalid)"
+
+// valid reports whether m is an authoritative value — i.e. constructed through
+// New/Zero and therefore carrying a recognised ISO-4217 currency. The Go zero
+// value (empty currency) is invalid: a missing amount, not a real zero.
+func (m Money) valid() bool { return ValidCurrency(m.currency) }
+
+// compatible reports whether o may be combined with m. An invalid receiver or
+// operand (the Go zero value, or any value not built via New/Zero) is rejected
+// FIRST with the actionable ErrInvalidMoney — before the currency/exponent
+// checks — so an uninitialised operand names its own fault rather than surfacing
+// as a misleading currency mismatch. Otherwise it requires the same currency and
+// exponent, returning the typed error identifying which invariant was violated.
 func (m Money) compatible(o Money) error {
+	if !m.valid() || !o.valid() {
+		return ErrInvalidMoney
+	}
 	if m.currency != o.currency {
 		return ErrCurrencyMismatch
 	}
@@ -97,9 +115,13 @@ func (m Money) Sub(o Money) (Money, error) {
 	return Money{mantissa: diff, currency: m.currency, exponent: m.exponent}, nil
 }
 
-// Neg returns -m. It returns ErrOverflow only for the single unrepresentable
-// case (mantissa == math.MinInt64).
+// Neg returns -m. It rejects an invalid receiver with ErrInvalidMoney, and
+// returns ErrOverflow only for the single unrepresentable case
+// (mantissa == math.MinInt64).
 func (m Money) Neg() (Money, error) {
+	if !m.valid() {
+		return Money{}, ErrInvalidMoney
+	}
 	n, err := ineg(m.mantissa)
 	if err != nil {
 		return Money{}, err
@@ -135,6 +157,9 @@ func Net(values ...Money) (Money, error) {
 		return Money{}, ErrMalformed
 	}
 	acc := values[0]
+	if !acc.valid() {
+		return Money{}, ErrInvalidMoney
+	}
 	for _, v := range values[1:] {
 		next, err := acc.Add(v)
 		if err != nil {
@@ -146,9 +171,14 @@ func Net(values ...Money) (Money, error) {
 }
 
 // MarshalText encodes Money as "CURRENCY:mantissa:exponent" (e.g. "IRR:12345:-2").
-// The encoding is exact and lossless — no float is involved. It implements
+// The encoding is exact and lossless — no float is involved. It rejects an
+// invalid (uninitialised) receiver with ErrInvalidMoney rather than emitting a
+// currency-less encoding a decoder would treat as a real amount. It implements
 // encoding.TextMarshaler.
 func (m Money) MarshalText() ([]byte, error) {
+	if !m.valid() {
+		return nil, ErrInvalidMoney
+	}
 	var b strings.Builder
 	b.WriteString(m.currency)
 	b.WriteByte(':')
@@ -158,9 +188,15 @@ func (m Money) MarshalText() ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// String returns the canonical text encoding (see MarshalText).
+// String returns the canonical text encoding (see MarshalText). String cannot
+// return an error, so an invalid (uninitialised) receiver renders the explicit
+// invalidMoneyMarker — never an empty string or a "0"-like encoding that a
+// reader could mistake for a real amount.
 func (m Money) String() string {
-	t, _ := m.MarshalText()
+	t, err := m.MarshalText()
+	if err != nil {
+		return invalidMoneyMarker
+	}
 	return string(t)
 }
 

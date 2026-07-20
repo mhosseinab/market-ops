@@ -43,6 +43,9 @@ func (b BasisPoints) Value() int64 { return b.value }
 // This is the single sanctioned way to apply a rate to money — there is no
 // float path and no caller-side integer arithmetic.
 func (m Money) ApplyRate(bp BasisPoints, round Rounder) (Money, error) {
+	if !m.valid() {
+		return Money{}, ErrInvalidMoney
+	}
 	if round == nil {
 		round = RoundHalfEven
 	}
