@@ -59,13 +59,15 @@ func TestConfirmIndividual_SupersededCardFailsClosed(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool)
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
 
 	v1 := awaitingCard(t, svc, account, variant)
 	presentedV1 := bindingOf(t, v1) // the exact, unchanged V1 control binding.
 
-	// V2 is minted in the SAME lineage (EditPrice → new card version).
-	newPrice, err := money.New(111100, "IRR", -2)
+	// V2 is minted in the SAME lineage (EditPrice → new card version). The edited
+	// price is inside the boundary + 5% movement window so the policy re-check
+	// (issue #134) admits it and the version mint proceeds.
+	newPrice, err := money.New(1010, "IRR", 0)
 	if err != nil {
 		t.Fatalf("money.New: %v", err)
 	}

@@ -41,6 +41,13 @@ type ExecutionDispatcher interface {
 type Service struct {
 	pool       *pgxpool.Pool
 	dispatcher ExecutionDispatcher
+	// editPriceRecheck resolves the authoritative policy context for a card's
+	// recommendation so EditPrice can re-run the full six-stage chain against an
+	// edited price (issue #134, CHAT-044). It is nil until wired via
+	// SetEditPriceRechecker; while nil, EditPrice fails CLOSED (no edited price mints
+	// a control-bearing version) — the dark P0 posture, since the live authoritative
+	// policy resolver lands under the same gated enablement as the execution write path.
+	editPriceRecheck EditPriceRechecker
 	// auditAppend is the AUD-001 audit-append seam. It defaults to audit.Append and
 	// is only swapped by white-box tests (export_test.go) to force an append failure
 	// and prove a confirmation rolls back atomically when its audit cannot commit
@@ -62,6 +69,17 @@ func NewService(pool *pgxpool.Pool) *Service {
 // Service for chaining.
 func (s *Service) SetExecutionDispatcher(d ExecutionDispatcher) *Service {
 	s.dispatcher = d
+	return s
+}
+
+// SetEditPriceRechecker wires the authoritative policy re-check context resolver
+// for price edits (issue #134, CHAT-044). It is called once during startup, before
+// the HTTP server serves, so there is no concurrent access to the field. Until it
+// is set, EditPrice fails closed (ErrEditedPriceRejected): no edited price can mint
+// a control-bearing card version without a full policy re-check. It returns the
+// Service for chaining.
+func (s *Service) SetEditPriceRechecker(r EditPriceRechecker) *Service {
+	s.editPriceRecheck = r
 	return s
 }
 

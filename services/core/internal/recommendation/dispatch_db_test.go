@@ -146,12 +146,13 @@ func TestConfirmDispatch_SupersededNoIntent(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetExecutionDispatcher(realDispatcherFor(t, pool))
+	svc := recommendation.NewService(pool).SetExecutionDispatcher(realDispatcherFor(t, pool)).SetEditPriceRechecker(admitAllRechecker{})
 
 	v1 := awaitingCard(t, svc, account, variant)
 	presentedV1 := bindingOf(t, v1)
 
-	newPrice, err := money.New(111100, "IRR", -2)
+	// In-window edit so the #134 policy re-check admits it and V2 is minted.
+	newPrice, err := money.New(1010, "IRR", 0)
 	if err != nil {
 		t.Fatalf("money.New: %v", err)
 	}
