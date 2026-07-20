@@ -10,10 +10,10 @@ tasks:
       - uv run pytest services/llm -q
 
   lint:
-    desc: Ruff check + strict mypy for the LLM plane, from the repo root.
+    desc: Ruff check + strict mypy for the LLM plane and integration tooling, from the repo root.
     cmds:
-      - uv run ruff check services/llm
-      - uv run mypy services/llm
+      - uv run ruff check services/llm tools/integration
+      - uv run mypy services/llm tools/integration
 
   fmt:
     desc: Format Python sources with ruff.

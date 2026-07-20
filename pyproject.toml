@@ -44,7 +44,10 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 strict = true
 python_version = "3.12"
-mypy_path = "services/llm/src"
+# tools/integration holds top-level replay scripts imported by sibling tests by
+# bare module name (e.g. `import replay_adversarial`); it is on the search path
+# so strict mypy resolves those imports the same way pytest does at runtime.
+mypy_path = ["services/llm/src", "tools/integration"]
 explicit_package_bases = true
 exclude = ["gen/python"]
 
