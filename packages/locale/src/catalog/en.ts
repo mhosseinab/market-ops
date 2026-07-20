@@ -170,8 +170,9 @@ export const en: Catalog = {
   "chat.briefing.open": "Open event →",
   "chat.briefing.empty": "No events for today.",
   "chat.briefing.generatedAt": "Generated at {time}",
-  "chat.briefing.failure.title": "Briefing generation failed",
-  "chat.briefing.failure.body": "Last briefing: {date}. Today stays current.",
+  "chat.briefing.failure.title": "Briefing unavailable",
+  "chat.briefing.failure.unknownLast":
+    "The last successful briefing is unavailable. Today stays current.",
   "chat.unavailable.title": "Assistant unavailable",
   "chat.unavailable.kill_switch_global": "The assistant is temporarily disabled.",
   "chat.unavailable.kill_switch_account": "The assistant is disabled for this account.",

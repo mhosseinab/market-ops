@@ -1,0 +1,149 @@
+import { DEFAULT_LOCALE, type LocaleId, PSEUDO_CLOSE, PSEUDO_OPEN } from "@market-ops/locale";
+import { QueryClient } from "@tanstack/react-query";
+import {
+  createMemoryHistory,
+  createRootRoute,
+  createRouter,
+  RouterProvider,
+} from "@tanstack/react-router";
+import { render, screen, waitFor } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Providers } from "../../app/Providers";
+import { formatInstant } from "../../data/format";
+import { ACCOUNT_ID, dailyBriefing } from "../../test/msw/fixtures";
+import { BASE } from "../../test/msw/handlers";
+import { server } from "../../test/msw/server";
+import { BriefingPanel } from "./BriefingPanel";
+
+// Issue #119 (evidence-quality never-cut — provenance): a FAILED briefing fetch
+// must never fabricate a "last briefing" date from the REQUESTED business day.
+// Error ≠ absence (the #81 pattern): a request date is not observed history, so on
+// failure the dock shows an explicit unknown/unavailable provenance state with NO
+// date. A successful briefing renders ONLY its authoritative generatedAt.
+
+// The success path renders a deep-link (TanStack <Link>), which needs a router.
+function renderPanel(locale: LocaleId = DEFAULT_LOCALE, pseudo = false) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+  const rootRoute = createRootRoute({
+    component: () => (
+      <Providers
+        initialLocale={locale}
+        marketplaceAccountId={ACCOUNT_ID}
+        queryClient={queryClient}
+        pseudo={pseudo}
+      >
+        <BriefingPanel />
+      </Providers>
+    ),
+  });
+  const router = createRouter({
+    routeTree: rootRoute,
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+  });
+  return render(<RouterProvider router={router as never} />);
+}
+
+// A fixed "today" so the requested businessDay is deterministic and its formatted
+// form can be asserted ABSENT from any failure render.
+const FIXED_NOW = new Date("2026-07-20T08:30:00Z");
+const DIGIT = /[0-9۰-۹]/;
+
+beforeEach(() => {
+  // Advance the mocked clock with real time so RTL's async polling still runs,
+  // while `new Date()` stays pinned to FIXED_NOW's business day (2026-07-20).
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(FIXED_NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+  document.documentElement.removeAttribute("dir");
+  document.documentElement.removeAttribute("lang");
+});
+
+const requestedDay = "2026-07-20";
+
+describe("BriefingPanel — #119 no fabricated last-briefing date on failure", () => {
+  it("failure with NO stored prior briefing shows an unknown/unavailable state WITHOUT a date", async () => {
+    server.use(
+      http.get(`${BASE}/briefing`, () =>
+        HttpResponse.json({ code: "internal", message: "boom" }, { status: 500 }),
+      ),
+    );
+
+    const { container } = renderPanel();
+
+    const failure = await screen.findByTestId("briefing-failure");
+    const unknown = await screen.findByTestId("briefing-failure-unknown");
+    // The unknown-state copy carries NO date slot: no digits of any family.
+    expect(DIGIT.test(unknown.textContent ?? "")).toBe(false);
+    // The requested day is never synthesized as provenance.
+    const requestedFormatted = formatInstant(`${requestedDay}T00:00:00Z`, DEFAULT_LOCALE);
+    expect(container.textContent ?? "").not.toContain(requestedFormatted);
+    expect(container.textContent ?? "").not.toContain("2026");
+    expect(failure).toContainElement(unknown);
+  });
+
+  it.each([
+    ["404 not-found", HttpResponse.json({ code: "not_found", message: "none" }, { status: 404 })],
+    ["500 server error", HttpResponse.json({ code: "internal", message: "boom" }, { status: 500 })],
+    ["network failure", HttpResponse.error()],
+  ])("%s cannot synthesize the requested date as history", async (_label, response) => {
+    server.use(http.get(`${BASE}/briefing`, () => response));
+
+    const { container } = renderPanel();
+
+    await screen.findByTestId("briefing-failure-unknown");
+    expect(container.textContent ?? "").not.toContain("2026");
+    expect(screen.queryByTestId("briefing-generatedAt")).toBeNull();
+  });
+
+  it("a successful current briefing renders only its authoritative generatedAt", async () => {
+    server.use(http.get(`${BASE}/briefing`, () => HttpResponse.json(dailyBriefing)));
+
+    renderPanel();
+
+    const generatedAt = await screen.findByTestId("briefing-generatedAt");
+    const authoritative = formatInstant(dailyBriefing.generatedAt, DEFAULT_LOCALE);
+    expect(generatedAt.textContent ?? "").toContain(authoritative);
+    expect(screen.getAllByTestId("briefing-row")).toHaveLength(dailyBriefing.events.length);
+    expect(screen.queryByTestId("briefing-failure")).toBeNull();
+    expect(screen.queryByTestId("briefing-failure-unknown")).toBeNull();
+  });
+
+  it("preserves the unknown-vs-known distinction under Persian (fa-IR)", async () => {
+    server.use(
+      http.get(`${BASE}/briefing`, () =>
+        HttpResponse.json({ code: "internal", message: "boom" }, { status: 500 }),
+      ),
+    );
+
+    const { container } = renderPanel("fa-IR");
+
+    const unknown = await screen.findByTestId("briefing-failure-unknown");
+    // No date in ANY digit family (Latin or Persian) — provenance is not fabricated.
+    expect(DIGIT.test(unknown.textContent ?? "")).toBe(false);
+    await waitFor(() => expect(document.documentElement.getAttribute("dir")).toBe("rtl"));
+    expect(container.textContent ?? "").not.toContain("2026");
+  });
+
+  it("resolves the unknown-state copy through the catalog under the pseudo pack (LOC-011)", async () => {
+    server.use(
+      http.get(`${BASE}/briefing`, () =>
+        HttpResponse.json({ code: "internal", message: "boom" }, { status: 500 }),
+      ),
+    );
+
+    renderPanel(DEFAULT_LOCALE, true);
+
+    const unknown = await screen.findByTestId("briefing-failure-unknown");
+    // The new key resolves via the catalog (bracketed) — not a hardcoded literal —
+    // and carries NO date, so the unknown-vs-known distinction survives pseudo.
+    expect(unknown.textContent ?? "").toContain(PSEUDO_OPEN);
+    expect(unknown.textContent ?? "").toContain(PSEUDO_CLOSE);
+    expect(DIGIT.test(unknown.textContent ?? "")).toBe(false);
+  });
+});
