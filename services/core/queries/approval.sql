@@ -84,16 +84,34 @@ ORDER BY occurred_at, id;
 
 -- name: ListApprovalCardsByAccount :many
 -- Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
--- (greatest) version per lineage, newest first. State filtering is done in Go
--- (internal/recommendation) to keep this one simple, always-safe read.
+-- (greatest) version per lineage, newest first. The unfiltered read: every
+-- current lineage head for the account. A deterministic id tie-break keeps
+-- ordering stable across rows sharing a created_at (stable keyset paging).
 SELECT latest.* FROM (
     SELECT DISTINCT ON (ac.lineage_id) ac.*
     FROM approval_cards ac
     WHERE ac.marketplace_account_id = $1
     ORDER BY ac.lineage_id, ac.version DESC
 ) latest
-ORDER BY latest.created_at DESC
+ORDER BY latest.created_at DESC, latest.id DESC
 LIMIT $2;
+
+-- name: ListApprovalCardsByAccountAndState :many
+-- Actions queue narrowed to a single §8.4 state (issue #142). The state
+-- predicate is AUTHORITATIVE and runs on the current (greatest-version) lineage
+-- head BEFORE ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered
+-- newest-N prefix, so an older matching head is never hidden behind newer
+-- non-matching ones. Tenant scoping (marketplace_account_id) is unchanged and
+-- the id tie-break keeps paging stable across equal created_at.
+SELECT ac.* FROM approval_cards ac
+WHERE ac.marketplace_account_id = $1
+  AND ac.state = $2
+  AND ac.version = (
+      SELECT max(ac2.version) FROM approval_cards ac2
+      WHERE ac2.lineage_id = ac.lineage_id
+  )
+ORDER BY ac.created_at DESC, ac.id DESC
+LIMIT $3;
 
 -- name: ListLiveCardsForVariant :many
 -- Live (control-bearing or revalidating) cards for a variant. Used by the

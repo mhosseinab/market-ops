@@ -77,32 +77,43 @@ func (s *Service) EditPrice(ctx context.Context, cardID uuid.UUID, newPrice mone
 	return s.mintDraftCard(ctx, current.RecommendationID, current.LineageID, current.MarketplaceAccountID, binding, newPrice)
 }
 
+// Default and hard-maximum page sizes for the actions queue read (PD-3 item 5).
+// The default is conservative; the maximum is a hard cap the caller can never
+// exceed, so a large or absent client limit can never unbound the scan.
+const (
+	defaultActionsLimit int32 = 200
+	maxActionsLimit     int32 = 500
+)
+
 // ListActions returns the account's actions queue: the current (greatest)
 // version per lineage, newest first, bounded by limit (PD-3 item 5). A
 // non-empty stateFilter narrows to that exact §8.4 state; empty returns every
-// state. Filtering happens here (Go), not in SQL, to keep the query simple and
-// always-safe.
+// state.
+//
+// The state predicate is AUTHORITATIVE and applied in SQL, on the current
+// lineage head, BEFORE LIMIT (issue #142) — a page bounds MATCHING rows, never
+// an unfiltered newest-N prefix, so an older matching head is never hidden
+// behind newer non-matching ones. Tenant scoping stays account-scoped exactly
+// as before; the account arg is resolved upstream.
 func (s *Service) ListActions(ctx context.Context, account uuid.UUID, stateFilter string, limit int32) ([]db.ApprovalCard, error) {
 	if limit <= 0 {
-		limit = 200
+		limit = defaultActionsLimit
 	}
-	rows, err := db.New(s.pool).ListApprovalCardsByAccount(ctx, db.ListApprovalCardsByAccountParams{
+	if limit > maxActionsLimit {
+		limit = maxActionsLimit
+	}
+	q := db.New(s.pool)
+	if stateFilter == "" {
+		return q.ListApprovalCardsByAccount(ctx, db.ListApprovalCardsByAccountParams{
+			MarketplaceAccountID: account,
+			Limit:                limit,
+		})
+	}
+	return q.ListApprovalCardsByAccountAndState(ctx, db.ListApprovalCardsByAccountAndStateParams{
 		MarketplaceAccountID: account,
+		State:                stateFilter,
 		Limit:                limit,
 	})
-	if err != nil {
-		return nil, err
-	}
-	if stateFilter == "" {
-		return rows, nil
-	}
-	out := make([]db.ApprovalCard, 0, len(rows))
-	for _, r := range rows {
-		if r.State == stateFilter {
-			out = append(out, r)
-		}
-	}
-	return out, nil
 }
 
 // ErrUnknownMember is returned when a bulk-preview member names a

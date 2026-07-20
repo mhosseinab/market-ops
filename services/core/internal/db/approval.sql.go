@@ -361,7 +361,7 @@ SELECT latest.id, latest.recommendation_id, latest.marketplace_account_id, lates
     WHERE ac.marketplace_account_id = $1
     ORDER BY ac.lineage_id, ac.version DESC
 ) latest
-ORDER BY latest.created_at DESC
+ORDER BY latest.created_at DESC, latest.id DESC
 LIMIT $2
 `
 
@@ -371,10 +371,74 @@ type ListApprovalCardsByAccountParams struct {
 }
 
 // Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
-// (greatest) version per lineage, newest first. State filtering is done in Go
-// (internal/recommendation) to keep this one simple, always-safe read.
+// (greatest) version per lineage, newest first. The unfiltered read: every
+// current lineage head for the account. A deterministic id tie-break keeps
+// ordering stable across rows sharing a created_at (stable keyset paging).
 func (q *Queries) ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error) {
 	rows, err := q.db.Query(ctx, listApprovalCardsByAccount, arg.MarketplaceAccountID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ApprovalCard{}
+	for rows.Next() {
+		var i ApprovalCard
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecommendationID,
+			&i.MarketplaceAccountID,
+			&i.LineageID,
+			&i.Version,
+			&i.ActionID,
+			&i.ParameterVersion,
+			&i.ContextVersion,
+			&i.PolicyVersion,
+			&i.CostProfileVersion,
+			&i.EvidenceVersions,
+			&i.IdempotencyKey,
+			&i.State,
+			&i.PriceMantissa,
+			&i.PriceCurrency,
+			&i.PriceExponent,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listApprovalCardsByAccountAndState = `-- name: ListApprovalCardsByAccountAndState :many
+SELECT ac.id, ac.recommendation_id, ac.marketplace_account_id, ac.lineage_id, ac.version, ac.action_id, ac.parameter_version, ac.context_version, ac.policy_version, ac.cost_profile_version, ac.evidence_versions, ac.idempotency_key, ac.state, ac.price_mantissa, ac.price_currency, ac.price_exponent, ac.expires_at, ac.created_at FROM approval_cards ac
+WHERE ac.marketplace_account_id = $1
+  AND ac.state = $2
+  AND ac.version = (
+      SELECT max(ac2.version) FROM approval_cards ac2
+      WHERE ac2.lineage_id = ac.lineage_id
+  )
+ORDER BY ac.created_at DESC, ac.id DESC
+LIMIT $3
+`
+
+type ListApprovalCardsByAccountAndStateParams struct {
+	MarketplaceAccountID uuid.UUID
+	State                string
+	Limit                int32
+}
+
+// Actions queue narrowed to a single §8.4 state (issue #142). The state
+// predicate is AUTHORITATIVE and runs on the current (greatest-version) lineage
+// head BEFORE ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered
+// newest-N prefix, so an older matching head is never hidden behind newer
+// non-matching ones. Tenant scoping (marketplace_account_id) is unchanged and
+// the id tie-break keeps paging stable across equal created_at.
+func (q *Queries) ListApprovalCardsByAccountAndState(ctx context.Context, arg ListApprovalCardsByAccountAndStateParams) ([]ApprovalCard, error) {
+	rows, err := q.db.Query(ctx, listApprovalCardsByAccountAndState, arg.MarketplaceAccountID, arg.State, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
