@@ -100,6 +100,52 @@ func (r *ParserRegistry) Register(e ParserSupport) {
 	r.supported[k] = cur
 }
 
+// ParserRejectionReason is the BOUNDED, closed-set classification of WHY a capture's
+// parser identity failed the server-owned registry gate (#154 REOPEN). It exists so
+// the parser-drift metric can attribute a rejection WITHOUT ever using the raw,
+// attacker-influenced version string as a label value — the raw version is unbounded
+// and would blow up metric cardinality (observability-integrity DoS, §8 SRE). The
+// value set is fixed regardless of input; the raw version stays in the append-only
+// quarantine log/evidence, never in a metric label.
+type ParserRejectionReason string
+
+const (
+	// RejectionBlankParserVersion: the parser version was empty/whitespace. Ingest's
+	// Capture.Validate blocks this upstream, so it is a defensive terminal bucket.
+	RejectionBlankParserVersion ParserRejectionReason = "blank_parser_version"
+	// RejectionUnknownParser: the (sourceType, parserVersion) tuple is not registered.
+	RejectionUnknownParser ParserRejectionReason = "unknown_parser"
+	// RejectionConnectorIncompatible: the parser tuple is registered but pins connector
+	// versions and the capture's connector version matches none of them.
+	RejectionConnectorIncompatible ParserRejectionReason = "connector_incompatible"
+)
+
+// ClassifyRejection maps a capture that FAILED Supported into the bounded rejection
+// reason. It is the single authority (same registry state as Supported) and returns a
+// value from the closed ParserRejectionReason set only — it never echoes the input
+// version. Callers must only invoke it when Supported returned false; a registered
+// tuple still classifies as RejectionUnknownParser (defensive) rather than leaking.
+func (r *ParserRegistry) ClassifyRejection(sourceType SourceType, parserVersion, connectorVersion string) ParserRejectionReason {
+	if strings.TrimSpace(parserVersion) == "" {
+		return RejectionBlankParserVersion
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	set, ok := r.supported[parserKey{sourceType: sourceType, parser: parserVersion}]
+	if !ok {
+		return RejectionUnknownParser
+	}
+	if set.any {
+		// Tuple accepts any connector: it should have been Supported. Reaching here is
+		// unexpected; classify without leaking the version.
+		return RejectionUnknownParser
+	}
+	if _, matched := set.connectors[connectorVersion]; !matched {
+		return RejectionConnectorIncompatible
+	}
+	return RejectionUnknownParser
+}
+
 // Supported reports whether a capture's parser identity is registered. It is exact:
 // the (sourceType, parserVersion) must be present AND, when the entry pins connector
 // versions, the connectorVersion must match one of them. A blank/whitespace parser
