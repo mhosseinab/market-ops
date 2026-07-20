@@ -744,6 +744,7 @@ type Recommendation struct {
 	Simulation                    bool
 	ExpiresAt                     pgtype.Timestamptz
 	CreatedAt                     time.Time
+	EvidenceVersions              []byte
 }
 
 type RecommendationInvalidationEvent struct {

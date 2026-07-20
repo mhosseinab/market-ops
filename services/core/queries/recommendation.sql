@@ -13,7 +13,8 @@ INSERT INTO recommendations (
     allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent, allowed_range_reason,
     readiness, evidence_quality, evidence_observation_id, evidence_refs, evidence_as_of,
     cost_profile_version, policy_version, context_version, parameter_version,
-    inputs, assumptions, blockers, approvable, simulation, expires_at
+    inputs, assumptions, blockers, approvable, simulation, expires_at,
+    evidence_versions
 ) VALUES (
     $1, $2, $3,
     (SELECT COALESCE(MAX(version), 0) + 1 FROM recommendations WHERE lineage_id = $3),
@@ -25,7 +26,8 @@ INSERT INTO recommendations (
     $24, $25, $26, $27, $28, $29,
     $30, $31, $32, $33, $34,
     $35, $36, $37, $38,
-    $39, $40, $41, $42, $43, $44
+    $39, $40, $41, $42, $43, $44,
+    $45
 )
 RETURNING *;
 

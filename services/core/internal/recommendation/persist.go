@@ -45,6 +45,17 @@ func buildInsertRecommendationParams(lineage uuid.UUID, rec Recommendation) (db.
 	if err != nil {
 		return db.InsertRecommendationParams{}, err
 	}
+	// Persist the REAL per-observation evidence-version map the recommendation was
+	// assembled from (APR-001 evidence-invalidation, never-cut §4.6, issue #133), so
+	// a later read (the S23 chat Draft path) can rebuild the binding with the SAME
+	// versions the S17 card was bound to — never an empty map that leaves the
+	// evidence dimension with nothing to compare against. A nil/empty map encodes as
+	// an empty object (no backing evidence recorded); no synthetic version is ever
+	// fabricated.
+	evidenceVersions, err := marshalEvidenceVersions(rec.binding.EvidenceVersions)
+	if err != nil {
+		return db.InsertRecommendationParams{}, err
+	}
 
 	params := db.InsertRecommendationParams{
 		MarketplaceAccountID:  rec.AccountID,
@@ -68,6 +79,7 @@ func buildInsertRecommendationParams(lineage uuid.UUID, rec Recommendation) (db.
 		Blockers:              blockers,
 		Approvable:            rec.Approvable(),
 		Simulation:            rec.Simulation,
+		EvidenceVersions:      evidenceVersions,
 	}
 
 	applyOptionalMoney(rec.ProposedPrice, rec.ProposedPrice.Reason(),

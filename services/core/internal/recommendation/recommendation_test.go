@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/margin"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
@@ -81,6 +82,74 @@ func TestApprovable_HappyPath(t *testing.T) {
 	}
 	if card.Simulation {
 		t.Fatalf("executable card must not be a simulation")
+	}
+}
+
+// TestPersist_CarriesEvidenceVersions_Issue133 is the #133 RED→GREEN proof at the
+// persistence seam: the append-only recommendation INSERT must carry the REAL
+// per-observation evidence-version map the recommendation was assembled from, so a
+// later read (the S23 chat Draft path) can rebuild the APR-001 binding with real
+// versions instead of an empty map. Before the fix, evidence_versions was never
+// written and the evidence-invalidation dimension had nothing to compare against.
+func TestPersist_CarriesEvidenceVersions_Issue133(t *testing.T) {
+	in := baseValidInput(t)
+	obs := uuid.New()
+	in.Evidence.ObservationID = obs
+	in.EvidenceVersions = map[uuid.UUID]int64{obs: 4}
+	rec := recommendation.Assemble(in)
+
+	params, err := recommendation.BuildInsertRecommendationParamsForTest(uuid.New(), rec)
+	if err != nil {
+		t.Fatalf("build insert params: %v", err)
+	}
+	got, err := recommendation.DecodeEvidenceVersionsForTest(params.EvidenceVersions)
+	if err != nil {
+		t.Fatalf("decode persisted evidence versions: %v", err)
+	}
+	if got[obs] != 4 || len(got) != 1 {
+		t.Fatalf("persisted evidence versions = %v, want {%s:4} (real per-observation map not persisted)", got, obs)
+	}
+}
+
+// TestApprovableCard_CarriesEvidenceVersions_Issue133 proves the minted Draft card
+// binds the REAL per-observation evidence-version map, so an add / remove / version
+// bump on a backing observation invalidates the bound control (APR-001 evidence-
+// invalidation, never-cut §4.6). Each subtest mutates a REAL binding taken from a
+// minted card, not a hardcoded map.
+func TestApprovableCard_CarriesEvidenceVersions_Issue133(t *testing.T) {
+	in := baseValidInput(t)
+	obs := uuid.New()
+	in.Evidence.ObservationID = obs
+	in.EvidenceVersions = map[uuid.UUID]int64{obs: 2}
+	rec := recommendation.Assemble(in)
+
+	card, ok := rec.NewDraftCard(uuid.New(), uuid.New(), 1)
+	if !ok {
+		t.Fatalf("approvable recommendation refused to mint a Draft card")
+	}
+	bound := card.Binding
+	if bound.EvidenceVersions[obs] != 2 {
+		t.Fatalf("card bound evidence version = %v, want {%s:2}", bound.EvidenceVersions, obs)
+	}
+
+	cases := []struct {
+		name    string
+		current map[uuid.UUID]int64
+		want    approval.InvalidationReason
+	}{
+		{"unchanged_stays_valid", map[uuid.UUID]int64{obs: 2}, approval.ReasonNone},
+		{"version_bump_invalidates", map[uuid.UUID]int64{obs: 3}, approval.ReasonEvidenceChanged},
+		{"removed_invalidates", map[uuid.UUID]int64{}, approval.ReasonEvidenceChanged},
+		{"added_invalidates", map[uuid.UUID]int64{obs: 2, uuid.New(): 1}, approval.ReasonEvidenceChanged},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			current := bound
+			current.EvidenceVersions = tc.current
+			if got := bound.ValidateAgainst(current, in.Now); got != tc.want {
+				t.Fatalf("ValidateAgainst reason = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
