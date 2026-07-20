@@ -331,6 +331,7 @@ type GuardrailSetting struct {
 	StrategyEnabled           bool
 	UpdatedBy                 string
 	UpdatedAt                 time.Time
+	Version                   int64
 }
 
 type Level2Proposal struct {

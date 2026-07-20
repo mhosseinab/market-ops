@@ -59,7 +59,7 @@ func (s *Service) GetForOrg(ctx context.Context, organizationID, requestedAccoun
 // org-less caller returns ErrAccountNotFound with NO mutation and NO audit row for
 // the foreign account. Only after the account is confirmed owned does the write
 // (with its atomic AUD-001 audit append) run under the resolved account.
-func (s *Service) SetForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID, actor audit.Actor, settings Settings) (ConfigView, error) {
+func (s *Service) SetForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID, actor audit.Actor, settings Settings, expectedVersion int64) (ConfigView, error) {
 	account, err := s.accountForOrg(ctx, organizationID)
 	if err != nil {
 		return ConfigView{}, err
@@ -67,5 +67,5 @@ func (s *Service) SetForOrg(ctx context.Context, organizationID, requestedAccoun
 	if requestedAccount != account {
 		return ConfigView{}, ErrAccountNotFound
 	}
-	return s.Set(ctx, account, actor, settings)
+	return s.Set(ctx, account, actor, settings, expectedVersion)
 }

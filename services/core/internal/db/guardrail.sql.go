@@ -13,7 +13,7 @@ import (
 
 const getGuardrailSettings = `-- name: GetGuardrailSettings :one
 
-SELECT marketplace_account_id, contribution_floor_mantissa, contribution_floor_currency, contribution_floor_exponent, movement_cap_basis_points, cooldown_seconds, strategy, strategy_enabled, updated_by, updated_at FROM guardrail_settings WHERE marketplace_account_id = $1
+SELECT marketplace_account_id, contribution_floor_mantissa, contribution_floor_currency, contribution_floor_exponent, movement_cap_basis_points, cooldown_seconds, strategy, strategy_enabled, updated_by, updated_at, version FROM guardrail_settings WHERE marketplace_account_id = $1
 `
 
 // L3 commercial guardrail persistence (PD-3 item 6, S37). One row per account;
@@ -33,6 +33,7 @@ func (q *Queries) GetGuardrailSettings(ctx context.Context, marketplaceAccountID
 		&i.StrategyEnabled,
 		&i.UpdatedBy,
 		&i.UpdatedAt,
+		&i.Version,
 	)
 	return i, err
 }
@@ -41,8 +42,8 @@ const upsertGuardrailSettings = `-- name: UpsertGuardrailSettings :one
 INSERT INTO guardrail_settings (
     marketplace_account_id, contribution_floor_mantissa, contribution_floor_currency,
     contribution_floor_exponent, movement_cap_basis_points, cooldown_seconds,
-    strategy, strategy_enabled, updated_by
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    strategy, strategy_enabled, updated_by, version
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)
 ON CONFLICT (marketplace_account_id) DO UPDATE
 SET contribution_floor_mantissa = EXCLUDED.contribution_floor_mantissa,
     contribution_floor_currency = EXCLUDED.contribution_floor_currency,
@@ -52,8 +53,10 @@ SET contribution_floor_mantissa = EXCLUDED.contribution_floor_mantissa,
     strategy                    = EXCLUDED.strategy,
     strategy_enabled            = EXCLUDED.strategy_enabled,
     updated_by                  = EXCLUDED.updated_by,
-    updated_at                  = now()
-RETURNING marketplace_account_id, contribution_floor_mantissa, contribution_floor_currency, contribution_floor_exponent, movement_cap_basis_points, cooldown_seconds, strategy, strategy_enabled, updated_by, updated_at
+    updated_at                  = now(),
+    version                     = guardrail_settings.version + 1
+WHERE guardrail_settings.version = $10
+RETURNING marketplace_account_id, contribution_floor_mantissa, contribution_floor_currency, contribution_floor_exponent, movement_cap_basis_points, cooldown_seconds, strategy, strategy_enabled, updated_by, updated_at, version
 `
 
 type UpsertGuardrailSettingsParams struct {
@@ -66,8 +69,16 @@ type UpsertGuardrailSettingsParams struct {
 	Strategy                  string
 	StrategyEnabled           bool
 	UpdatedBy                 string
+	ExpectedVersion           int64
 }
 
+// Optimistic-concurrency guarded upsert (issue #101). On a fresh INSERT the row
+// starts at version 1. On an UPDATE the version-guarded WHERE commits ONLY if the
+// caller's expected_version is still current, bumping it by one; a stale write
+// matches no row, so RETURNING yields nothing (pgx.ErrNoRows) and the service maps
+// that to a SAFE conflict — never a lost update. The create race is caught by the
+// same guard: the second concurrent INSERT conflicts and its DO UPDATE WHERE
+// version = expected(0) no longer matches the just-created version-1 row.
 func (q *Queries) UpsertGuardrailSettings(ctx context.Context, arg UpsertGuardrailSettingsParams) (GuardrailSetting, error) {
 	row := q.db.QueryRow(ctx, upsertGuardrailSettings,
 		arg.MarketplaceAccountID,
@@ -79,6 +90,7 @@ func (q *Queries) UpsertGuardrailSettings(ctx context.Context, arg UpsertGuardra
 		arg.Strategy,
 		arg.StrategyEnabled,
 		arg.UpdatedBy,
+		arg.ExpectedVersion,
 	)
 	var i GuardrailSetting
 	err := row.Scan(
@@ -92,6 +104,7 @@ func (q *Queries) UpsertGuardrailSettings(ctx context.Context, arg UpsertGuardra
 		&i.StrategyEnabled,
 		&i.UpdatedBy,
 		&i.UpdatedAt,
+		&i.Version,
 	)
 	return i, err
 }

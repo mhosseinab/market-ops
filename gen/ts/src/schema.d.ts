@@ -2794,6 +2794,11 @@ export interface components {
             /** Format: uuid */
             marketplaceAccountId: string;
             settings: components["schemas"]["GuardrailSettings"];
+            /**
+             * Format: int64
+             * @description Optimistic-concurrency token (issue #101). Echo this value as `expectedVersion` on the next setGuardrails write; a mismatch is a safe conflict (409), never a lost update. A never-configured account has no view (404), so a first write uses expectedVersion 0.
+             */
+            version: number;
             /** Format: date-time */
             updatedAt: string;
             /** @description The Owner actor id who last wrote these guardrails (AUD-001). */
@@ -2803,6 +2808,12 @@ export interface components {
             /** Format: uuid */
             marketplaceAccountId: string;
             settings: components["schemas"]["GuardrailSettings"];
+            /**
+             * Format: int64
+             * @description The version the caller last read (GuardrailConfigView.version), for optimistic concurrency. Omitted or 0 means "first write" (no config yet); a value that no longer matches the persisted version is a safe 409 conflict with NO mutation and NO audit row. Guardrails are stricter-only (PRC-004 / §8.3): a write may only tighten the authoritative effective baseline.
+             * @default 0
+             */
+            expectedVersion: number;
         };
         UserSummary: {
             /** Format: uuid */

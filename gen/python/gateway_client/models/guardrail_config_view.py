@@ -22,12 +22,16 @@ class GuardrailConfigView:
     Attributes:
         marketplace_account_id (UUID):
         settings (GuardrailSettings): The L3 commercial guardrails (PD-3 item 6).
+        version (int): Optimistic-concurrency token (issue #101). Echo this value as `expectedVersion` on the next
+            setGuardrails write; a mismatch is a safe conflict (409), never a lost update. A never-configured account has no
+            view (404), so a first write uses expectedVersion 0.
         updated_at (datetime.datetime):
         updated_by (str | Unset): The Owner actor id who last wrote these guardrails (AUD-001).
     """
 
     marketplace_account_id: UUID
     settings: GuardrailSettings
+    version: int
     updated_at: datetime.datetime
     updated_by: str | Unset = UNSET
 
@@ -35,6 +39,8 @@ class GuardrailConfigView:
         marketplace_account_id = str(self.marketplace_account_id)
 
         settings = self.settings.to_dict()
+
+        version = self.version
 
         updated_at = self.updated_at.isoformat()
 
@@ -46,6 +52,7 @@ class GuardrailConfigView:
             {
                 "marketplaceAccountId": marketplace_account_id,
                 "settings": settings,
+                "version": version,
                 "updatedAt": updated_at,
             }
         )
@@ -63,6 +70,8 @@ class GuardrailConfigView:
 
         settings = GuardrailSettings.from_dict(d.pop("settings"))
 
+        version = d.pop("version")
+
         updated_at = datetime.datetime.fromisoformat(d.pop("updatedAt"))
 
         updated_by = d.pop("updatedBy", UNSET)
@@ -70,6 +79,7 @@ class GuardrailConfigView:
         guardrail_config_view = cls(
             marketplace_account_id=marketplace_account_id,
             settings=settings,
+            version=version,
             updated_at=updated_at,
             updated_by=updated_by,
         )
