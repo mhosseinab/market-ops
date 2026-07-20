@@ -79,6 +79,7 @@ describe("GatewayClient.fetchOwnedTargets — credential-scoped owned-target rea
         targetId: target.id,
         marketplaceAccountId: target.marketplaceAccountId,
         nativeVariantId: target.nativeVariantId,
+        variantId: target.variantId,
       },
     ]);
     expect(fetcher).toHaveBeenCalledWith(
