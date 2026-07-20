@@ -68,12 +68,27 @@ func (s *Syncer) recordResult(ctx context.Context, account, runID uuid.UUID, d S
 
 // Start creates a sync run and returns its id. The run begins in 'running' with
 // next_page=1; the actual work is driven by Resume (directly or from a worker).
+//
+// Account-scoped serialization (issue #8, reconciliation never-cut §4.6): the
+// insert goes through CreateCatalogSyncRun's ON CONFLICT DO NOTHING against the
+// partial unique index uq_catalog_sync_runs_inflight, so at most one non-terminal
+// run may exist per marketplace account at a time. When another run already holds
+// the account boundary this returns NO row (pgx.ErrNoRows); Start surfaces that as
+// the EXPLICIT connector.ErrSyncAlreadyInFlight deferral sentinel — the SAME signal
+// the transactional enqueue path (enqueueRun) returns — so a second same-account
+// run is deferred handleably, never mistaken for a raw fault and never allowed to
+// interleave its page writes and corrupt the first run's reconciliation marker.
+// The DB is the serialization point, so the guarantee holds across processes and
+// River workers; different-account runs are unaffected and still start concurrently.
 func (s *Syncer) Start(ctx context.Context, account uuid.UUID, kind Kind) (uuid.UUID, error) {
 	q := db.New(s.pool)
 	run, err := q.CreateCatalogSyncRun(ctx, db.CreateCatalogSyncRunParams{
 		MarketplaceAccountID: account,
 		Kind:                 string(kind),
 	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, connector.ErrSyncAlreadyInFlight
+	}
 	if err != nil {
 		return uuid.Nil, fmt.Errorf("catalog: create sync run: %w", err)
 	}
