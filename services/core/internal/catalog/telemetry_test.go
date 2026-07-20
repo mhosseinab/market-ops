@@ -1,8 +1,11 @@
 package catalog
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -172,7 +175,7 @@ func TestDeriveStreaks_FromDurableState(t *testing.T) {
 		{Account: c, RunID: uuid.New(), Status: "failed", HasError: true},
 		{Account: c, RunID: uuid.New(), Status: "completed", HasError: false},
 	}
-	got, counted := deriveStreaks(rows)
+	got, counted, resolved := deriveStreaks(rows)
 	want := map[uuid.UUID]int64{a: 2, b: 0, c: 1}
 	for acct, w := range want {
 		if got[acct] != w {
@@ -187,6 +190,83 @@ func TestDeriveStreaks_FromDurableState(t *testing.T) {
 	}
 	if _, ok := counted[aRun2]; !ok {
 		t.Fatalf("counted set must include the still-retrying running-with-error run %s", aRun2)
+	}
+	// Every account here has a 'completed' run within its history, so its streak is
+	// authoritative (the walk hit a success and stopped) rather than a bounded-suffix
+	// lower bound. resolved must be true for all three.
+	for _, acct := range []uuid.UUID{a, b, c} {
+		if !resolved[acct] {
+			t.Fatalf("account %s reached a completed run; resolved must be true", acct)
+		}
+	}
+}
+
+// TestDeriveStreaks_ResolvedFlag proves the issue #211 authority signal: an account
+// whose newest-first walk hits a 'completed' run is resolved (the streak is exact);
+// an account whose entire (bounded) suffix is failures never hit a success, so it is
+// UNRESOLVED — the streak is a lower bound, not an authoritative value.
+func TestDeriveStreaks_ResolvedFlag(t *testing.T) {
+	resolvedAcct := uuid.New()
+	unresolvedAcct := uuid.New()
+	rows := []SyncRunOutcome{
+		// resolvedAcct: one failure then a completed run => streak 1, resolved.
+		{Account: resolvedAcct, RunID: uuid.New(), Status: "failed", HasError: true},
+		{Account: resolvedAcct, RunID: uuid.New(), Status: "completed", HasError: false},
+		// unresolvedAcct: an all-failure suffix, no completed run in view => streak 2,
+		// UNRESOLVED (the walk ran off the end of the bounded suffix).
+		{Account: unresolvedAcct, RunID: uuid.New(), Status: "failed", HasError: true},
+		{Account: unresolvedAcct, RunID: uuid.New(), Status: "failed", HasError: true},
+	}
+	streaks, _, resolved := deriveStreaks(rows)
+	if streaks[resolvedAcct] != 1 || !resolved[resolvedAcct] {
+		t.Fatalf("resolvedAcct: streak=%d resolved=%v, want 1/true", streaks[resolvedAcct], resolved[resolvedAcct])
+	}
+	if streaks[unresolvedAcct] != 2 || resolved[unresolvedAcct] {
+		t.Fatalf("unresolvedAcct: streak=%d resolved=%v, want 2/false", streaks[unresolvedAcct], resolved[unresolvedAcct])
+	}
+}
+
+// TestSeedFromOutcomes_BoundExhaustionObservable proves the issue #211 no-silent-
+// truncation invariant: when an account's bounded suffix is fully consumed by
+// failures (count >= bound && unresolved) the seam emits a WARN with bounded
+// technical identifiers, and it does NOT warn for a short-history account whose
+// suffix is smaller than the bound (count < bound) — so a genuinely short history is
+// never mis-flagged as a truncated streak. The seeded value in the exhausted case is
+// the bound-sized lower bound, which itself trips the §20.1 wire (fail-closed).
+func TestSeedFromOutcomes_BoundExhaustionObservable(t *testing.T) {
+	const bound = 4
+
+	exhausted := uuid.New() // bound failures, no completed => truncated, must warn.
+	short := uuid.New()     // fewer than bound rows, no completed => must NOT warn.
+
+	var rows []SyncRunOutcome
+	for i := 0; i < bound; i++ {
+		rows = append(rows, SyncRunOutcome{Account: exhausted, RunID: uuid.New(), Status: "failed", HasError: true})
+	}
+	for i := 0; i < bound-2; i++ {
+		rows = append(rows, SyncRunOutcome{Account: short, RunID: uuid.New(), Status: "failed", HasError: true})
+	}
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	tel := newSyncTelemetry(slog.New(handler))
+
+	tel.seedFromOutcomes(context.Background(), rows, bound)
+
+	logs := buf.String()
+	if !strings.Contains(logs, "bound") || !strings.Contains(logs, exhausted.String()) {
+		t.Fatalf("exhausted account must emit a bounded WARN with its account_id and bound; logs=%q", logs)
+	}
+	if strings.Contains(logs, short.String()) {
+		t.Fatalf("short-history account (count<bound) must NOT be flagged as truncated; logs=%q", logs)
+	}
+	// The exhausted account is seeded to the bound-sized lower bound, which trips the
+	// §20.1 wire — never presented as a resolved zero/short streak.
+	if got := tel.streakFor(exhausted); got != bound {
+		t.Fatalf("exhausted account must seed a fail-closed lower bound of %d, got %d", bound, got)
+	}
+	if got := tel.streakFor(short); got != bound-2 {
+		t.Fatalf("short account streak should be its exact %d, got %d", bound-2, got)
 	}
 }
 
