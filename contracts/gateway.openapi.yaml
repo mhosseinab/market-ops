@@ -16,10 +16,20 @@ servers:
   - url: http://localhost:8080
     description: Local dev (core service)
 
-# Bearer (JWT) auth applies to the whole surface by default. Operational probes
-# such as /healthz opt out with an explicit empty `security: []`.
+# Cookie session auth (the secure httpOnly `mo_session` cookie) applies to the
+# whole surface by default, because the runtime `authMiddleware` authenticates
+# every protected route EXCLUSIVELY from that cookie via `sessionToken(r)` — the
+# Authorization header is never evaluated for a first-party caller (PRD §8,
+# §12.3: server-side sessions, no client-stored token). Operational probes such
+# as /healthz opt out with an explicit empty `security: []`. The ONLY operations
+# that genuinely validate a bearer token override this default explicitly: the
+# machine-only, read/Draft-only LLM-plane routes (`/chat/cards/*`, bearerAuth)
+# and the scoped extension capture credential routes (`/observation/capture`,
+# `/ext/owned-targets`, captureAuth). A human session cookie is refused on the
+# `/chat/cards/*` routes, so bearerAuth — not cookieAuth — is their truthful
+# declaration.
 security:
-  - bearerAuth: []
+  - cookieAuth: []
 
 # One tag per PRD §15.1 canonical domain. These are placeholders in v0 — the
 # operations that populate them land in later [C] steps. Keeping the tag set
