@@ -105,13 +105,14 @@ func (s *gatewayServer) EditApprovalCardPrice(
 		// chain declined, and no new version was minted (fail closed, §4.6).
 		//
 		// The transport keys on the SINGLE declined-edit class only. The domain
-		// (AdmitEditedPrice) already folds EVERY edited-VALUE policy rejection —
-		// cross-unit (policy.ErrReferenceUnitMismatch) AND zero/absent
-		// (policy.ErrMissingReference) — into recommendation.ErrEditedPriceRejected
-		// (issue #306). Keying on the decision class, not on shared policy sentinels,
-		// keeps a genuine STORED-config resolution fault (which can surface the SAME
-		// raw sentinels once a live rechecker is wired) as a 500 — it is never
-		// misreported as a declined edit.
+		// (AdmitEditedPrice) resolves EVERY edited-VALUE rejection — cross-unit and
+		// zero/absent (validateEditedValue), a hard-stage blocker, or a price the
+		// account's REAL strategy/objective would not propose (issue #134) — into
+		// recommendation.ErrEditedPriceRejected. Keying on the decision class, not on
+		// shared policy sentinels, keeps a genuine STORED-config resolution fault
+		// (which can surface a raw policy sentinel from the account's OWN config once
+		// a live rechecker is wired) as a 500 — it is never misreported as a declined
+		// edit.
 		if errors.Is(err, recommendation.ErrEditedPriceRejected) {
 			return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 409, Body: approvalErr(err)}, nil
 		}

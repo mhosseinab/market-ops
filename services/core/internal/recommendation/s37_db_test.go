@@ -296,12 +296,14 @@ func TestPreviewBulkSelectionRejectsUnknownOrForeignMember(t *testing.T) {
 func TestEditPriceMintsNewCardVersionAndNewParameterVersion(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(authoritativeRechecker{})
 	original := persistApprovableCard(t, svc, account, variant)
 
-	// Within the seeded boundary [900,1200] and the 5% movement window around the
-	// current price (1000), so the policy re-check (issue #134) admits the edit.
-	newPrice, err := money.New(1020, "IRR", 0)
+	// Equal to the account's authoritative Hold/MaximizeContribution proposal —
+	// feasHigh (1050), inside the seeded boundary [900,1200] and the 5% movement
+	// window around the current price (1000) — so the policy re-check (issue #134)
+	// admits the edit.
+	newPrice, err := money.New(1050, "IRR", 0)
 	if err != nil {
 		t.Fatalf("money.New: %v", err)
 	}
@@ -349,7 +351,7 @@ func TestEditPriceMintsNewCardVersionAndNewParameterVersion(t *testing.T) {
 func TestListActionsStateFilterAppliedBeforeLimit(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(authoritativeRechecker{})
 
 	// Oldest lineage head, driven to Approved (§8.4 happy path). Separate
 	// transactions give each card a strictly increasing created_at (now() is
@@ -385,7 +387,7 @@ func TestListActionsStateFilterAppliedBeforeLimit(t *testing.T) {
 func TestListActionsStateFilterBoundsMatchingRows(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(authoritativeRechecker{})
 
 	// One Approved head plus several Draft heads.
 	approvedCard := persistApprovableCard(t, svc, account, variant)
@@ -417,7 +419,7 @@ func TestListActionsStateFilterBoundsMatchingRows(t *testing.T) {
 func TestListActionsFilteredOnCurrentLineageHeadOnly(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(authoritativeRechecker{})
 
 	// Drive the ORIGINAL card (v1) to Approved FIRST, so the lineage genuinely
 	// has an Approved version in its append-only history. Without this the query
@@ -426,9 +428,10 @@ func TestListActionsFilteredOnCurrentLineageHeadOnly(t *testing.T) {
 	original := persistApprovableCard(t, svc, account, variant)
 	driveToState(t, svc, original.ID, approval.StateApproved)
 
-	// A price edit then mints a NEW Draft head (v2) in the SAME lineage. The
-	// Approved v1 now sits in history; the CURRENT head is Draft.
-	newPrice, err := money.New(1040, "IRR", 0)
+	// A price edit to the account's authoritative proposal (feasHigh 1050) then
+	// mints a NEW Draft head (v2) in the SAME lineage. The Approved v1 now sits in
+	// history; the CURRENT head is Draft.
+	newPrice, err := money.New(1050, "IRR", 0)
 	if err != nil {
 		t.Fatalf("money.New: %v", err)
 	}
@@ -468,11 +471,12 @@ func TestListActionsFilteredOnCurrentLineageHeadOnly(t *testing.T) {
 func TestListActionsReturnsCurrentVersionPerLineageNewestFirst(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(authoritativeRechecker{})
 	first := persistApprovableCard(t, svc, account, variant)
 
-	// In-window edit (see TestEditPrice…): admitted by the policy re-check (#134).
-	newPrice, err := money.New(1030, "IRR", 0)
+	// Edit to the authoritative proposal (feasHigh 1050): admitted by the policy
+	// re-check (#134).
+	newPrice, err := money.New(1050, "IRR", 0)
 	if err != nil {
 		t.Fatalf("money.New: %v", err)
 	}

@@ -13,16 +13,19 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
-// admitAllRechecker is the test EditPriceRechecker: it derives a self-consistent
-// PolicyContext from the recommendation's OWN persisted, versioned inputs
-// (CST-002) — its boundary (AllowedRange), current price, Complete readiness — with
-// a trivially-satisfiable floor and a fixed positive contribution oracle. It admits
-// exactly the prices the real six-stage chain would: those inside boundary ∩ the 5%
-// movement window around the current price. It is NOT permissive about the never-cut
-// hard stages — it reuses policy.Evaluate through recommendation.AdmitEditedPrice.
-type admitAllRechecker struct{}
+// authoritativeRechecker is the test EditPriceRechecker: it derives a
+// self-consistent PolicyContext from the recommendation's OWN persisted, versioned
+// inputs (CST-002) — its boundary (AllowedRange), current price, Complete readiness
+// — with a trivially-satisfiable floor and a fixed positive contribution oracle,
+// under the account's REAL configured Hold + MaximizeContribution chain. Because
+// the re-check evaluates that AUTHORITATIVE chain (issue #134), an edit is admitted
+// ONLY when it EQUALS the authoritative proposal — feasHigh (the boundary ∩ 5%
+// movement upper edge, 1050 for the seeded current price 1000). It is NOT
+// permissive about the never-cut hard stages OR the configured strategy/objective —
+// it reuses policy.Evaluate through recommendation.AdmitEditedPrice.
+type authoritativeRechecker struct{}
 
-func (admitAllRechecker) PolicyContextFor(_ context.Context, rec db.Recommendation) (recommendation.PolicyContext, error) {
+func (authoritativeRechecker) PolicyContextFor(_ context.Context, rec db.Recommendation) (recommendation.PolicyContext, error) {
 	current, err := money.New(rec.CurrentPriceMantissa, rec.CurrentPriceCurrency, int8(rec.CurrentPriceExponent))
 	if err != nil {
 		return recommendation.PolicyContext{}, err
@@ -69,7 +72,7 @@ func (admitAllRechecker) PolicyContextFor(_ context.Context, rec db.Recommendati
 func TestEditPriceOutsideBoundaryNeverMintsControlBearingVersion(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(authoritativeRechecker{})
 	original := persistApprovableCard(t, svc, account, variant)
 
 	// 1300 is outside the seeded boundary [900,1200] and the 5% movement window.
@@ -93,24 +96,25 @@ func TestEditPriceOutsideBoundaryNeverMintsControlBearingVersion(t *testing.T) {
 
 // TestEditPrice_EditedValueRejectionsClassifiedAsDeclinedEdit is the issue #306
 // fix-cycle regression through a WIRED rechecker (mirrors the live edit path): a
-// cross-currency edited value AND a zero/absent edited value both stem from
-// evaluating the EDITED VALUE (the six-stage re-check pins Reference=edited), so
-// EditPrice folds BOTH into the single declined-edit class (ErrEditedPriceRejected)
-// — never a raw policy sentinel a transport could misreport as a 500. Fail closed:
-// NO new card version and NO new parameter version is minted (mintDraftCard is
-// never reached), so neither declined edit can ever reach a control-bearing state
-// (§4.6). Money never-cut: the cross-unit/zero values reject at the policy layer.
-// Deferred to CI (needs a database).
+// cross-currency edited value AND a zero/absent edited value are both rejected on
+// the EDITED VALUE's own terms by validateEditedValue — BEFORE the authoritative
+// chain runs — so EditPrice folds BOTH into the single declined-edit class
+// (ErrEditedPriceRejected), independent of which strategy the account runs (issue
+// #134) and never a raw policy sentinel a transport could misreport as a 500. Fail
+// closed: NO new card version and NO new parameter version is minted (mintDraftCard
+// is never reached), so neither declined edit can ever reach a control-bearing
+// state (§4.6). Money never-cut: the cross-unit/zero values reject before policy
+// arithmetic. Deferred to CI (needs a database).
 func TestEditPriceEditedValueRejectionsClassifiedAsDeclinedEdit(t *testing.T) {
 	pool, q := newPool(t)
 	account, variant := seedVariant(t, q)
-	svc := recommendation.NewService(pool).SetEditPriceRechecker(admitAllRechecker{})
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(authoritativeRechecker{})
 	original := persistApprovableCard(t, svc, account, variant)
 
-	// admitAllRechecker derives the policy money unit from the recommendation's own
-	// current price (seeded IRR). A USD edited value is therefore cross-unit; a zero
-	// IRR edited value is a missing/zero reference. Both are edited-VALUE rejections,
-	// classified identically into the declined-edit class.
+	// authoritativeRechecker derives the policy money unit from the recommendation's
+	// own current price (seeded IRR). A USD edited value is therefore cross-unit; a
+	// zero IRR edited value is a missing/zero value. Both are edited-VALUE
+	// rejections, classified identically into the declined-edit class.
 	for _, tc := range []struct {
 		name  string
 		price money.Money
@@ -136,6 +140,41 @@ func TestEditPriceEditedValueRejectionsClassifiedAsDeclinedEdit(t *testing.T) {
 	}
 	if rows[0].ParameterVersion != original.ParameterVersion {
 		t.Fatalf("parameter version advanced on a declined edit: got %d want %d", rows[0].ParameterVersion, original.ParameterVersion)
+	}
+}
+
+// TestEditPrice_RejectsPriceAdmissibleOnlyUnderADifferentStrategy is the issue
+// #134 REOPEN regression END TO END through a WIRED rechecker: authoritativeRechecker
+// resolves the account's REAL Hold + MaximizeContribution chain, whose authoritative
+// proposal is feasHigh (1050). An in-window price (1010) that would pass ONLY under a
+// hardcoded Match/TrackStrategy targeting it is REJECTED, mints NO new card version
+// and NO new parameter version, and can never reach a control-bearing state (§4.6,
+// §9.3). Deferred to CI (needs a database).
+func TestEditPriceRejectsPriceAdmissibleOnlyUnderADifferentStrategy(t *testing.T) {
+	pool, q := newPool(t)
+	account, variant := seedVariant(t, q)
+	svc := recommendation.NewService(pool).SetEditPriceRechecker(authoritativeRechecker{})
+	original := persistApprovableCard(t, svc, account, variant)
+
+	// 1010 is inside boundary [900,1200] ∩ the 5% movement window ([950,1050]) and
+	// floor-satisfying, but it is NOT the account's authoritative Hold/MaximizeContribution
+	// proposal (feasHigh, 1050) — so the never-cut re-check declines it.
+	nonAuthoritative := mustMoney(t, 1010, "IRR", 0)
+	if _, err := svc.EditPrice(context.Background(), original.ID, nonAuthoritative, time.Now().UTC()); err != recommendation.ErrEditedPriceRejected {
+		t.Fatalf("EditPrice(non-authoritative strategy price) err = %v, want ErrEditedPriceRejected", err)
+	}
+
+	// Fail closed: the current head is still the original Draft at its original
+	// parameter version — no control-bearing version was minted.
+	rows, err := svc.ListActions(context.Background(), account, "", 0)
+	if err != nil {
+		t.Fatalf("ListActions: %v", err)
+	}
+	if len(rows) != 1 || rows[0].ID != original.ID {
+		t.Fatalf("current version changed after a rejected edit; rows=%d want the original card %s", len(rows), original.ID)
+	}
+	if rows[0].ParameterVersion != original.ParameterVersion {
+		t.Fatalf("parameter version advanced on a rejected edit: got %d want %d", rows[0].ParameterVersion, original.ParameterVersion)
 	}
 }
 
