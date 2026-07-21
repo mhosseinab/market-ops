@@ -23,20 +23,20 @@ The reader provides helpers like `required`, `optional`, and `boolOptional` to e
 flowchart TD
     Env[Environment Variables] --> Load[Load]
     Load --> Read{Read Key}
-    Read -->|Required| CheckReq{Is Empty?}
+    Read -->|Required| CheckReq{"Is Empty?"}
     CheckReq -->|Yes| Missing[Add to missing list]
     CheckReq -->|No| Assign[Assign to Config]
     
-    Read -->|Optional| CheckOpt{Is Empty?}
+    Read -->|Optional| CheckOpt{"Is Empty?"}
     CheckOpt -->|Yes| Default[Use Default]
     CheckOpt -->|No| Parse[Parse/Format]
     Default --> Assign
     Parse --> Assign
     
-    Assign --> Next{More Keys?}
+    Assign --> Next{"More Keys?"}
     Missing --> Next
     Next -->|Yes| Read
-    Next -->|No| Final{Missing list empty?}
+    Next -->|No| Final{"Missing list empty?"}
     
     Final -->|Yes| ReturnConfig([Return Config struct])
     Final -->|No| ReturnErr([Return Error with all missing keys])

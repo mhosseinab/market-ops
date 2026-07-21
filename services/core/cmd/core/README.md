@@ -29,7 +29,7 @@ Upon startup, the binary:
 flowchart TD
     A[Start core] --> B[Load Config & Init Logger]
     B --> C[Init OpenTelemetry obs]
-    C --> D{Is DATABASE_URL set?}
+    C --> D{"Is DATABASE_URL set?"}
     D -->|Yes| E[Init pgxpool]
     E --> F[Wire Auth, Connector, DB Services]
     F --> G[Start River Job Pipeline]
@@ -37,6 +37,6 @@ flowchart TD
     G --> I[Init HTTP Server]
     H --> I
     I --> J[ListenAndServe]
-    J --> K{OS Signal Received?}
+    J --> K{"OS Signal Received?"}
     K --> L[Graceful Shutdown: Server, Obs, Pipeline]
 ```

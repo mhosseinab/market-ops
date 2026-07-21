@@ -47,19 +47,19 @@ flowchart TD
 ### Error Classification Flow (Transport Wrapping)
 ```mermaid
 flowchart TD
-    Call[Model I/O Method Called<br/>_generate, _stream, etc.] --> TryCatch{Exception Occurs?}
+    Call[Model I/O Method Called<br/>_generate, _stream, etc.] --> TryCatch{"Exception Occurs?"}
     TryCatch -- No --> Success([Return Result])
     TryCatch -- Yes --> Classify[classify_provider_error]
     
-    Classify --> IsRetryableTransport{Is Retryable Transport?<br/>Timeout, ConnectError, etc.}
+    Classify --> IsRetryableTransport{"Is Retryable Transport?<br/>Timeout, ConnectError, etc."}
     IsRetryableTransport -- Yes --> RetRetryable[return 'retryable']
-    IsRetryableTransport -- No --> IsAPIStatus{Is APIStatusError?}
+    IsRetryableTransport -- No --> IsAPIStatus{"Is APIStatusError?"}
     
     IsAPIStatus -- Yes --> CheckStatus{Status Code}
     CheckStatus -- 408, 409, 429, >=500 --> RetRetryable
     CheckStatus -- Other 4xx --> RetNonRetryable[return 'non_retryable']
     
-    IsAPIStatus -- No --> IsOtherAPI{Other API/HTTP Error?}
+    IsAPIStatus -- No --> IsOtherAPI{"Other API/HTTP Error?"}
     IsOtherAPI -- Yes --> RetNonRetryable
     IsOtherAPI -- No --> RetNone[return None]
     

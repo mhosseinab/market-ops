@@ -53,7 +53,7 @@ This flowchart illustrates how user intents are gated and routed, ensuring the m
 ```mermaid
 flowchart TD
     %% Intent & Containment
-    Intent([User Intent]) --> Contain{dispatch.py<br/>contain(intent)}
+    Intent([User Intent]) --> Contain{"dispatch.py<br/>contain(intent)"}
     
     %% Containment Decision
     Contain -- "ApproveAction / ConfirmResult" --> Guidance[models.py<br/>GuidanceOnly]

@@ -34,7 +34,7 @@ flowchart TD
         Querier[Querier Interface]
         New[db.New/db.WithTx]
         Models[models.go Structs]
-        Impl[Generated SQL Methods\ne.g., InsertApprovalCard]
+        Impl["Generated SQL Methods<br/>e.g., InsertApprovalCard"]
     end
     
     subgraph Database

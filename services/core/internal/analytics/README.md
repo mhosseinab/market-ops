@@ -33,37 +33,37 @@ flowchart TD
     App([Application]) -->|Emit Event| Emit[Emitter.Emit]
     App -->|Record Cost| RecordCost[Emitter.RecordCost]
 
-    Emit --> ValEnv1{Envelope\nValid?}
+    Emit --> ValEnv1{"Envelope<br/>Valid?"}
     ValEnv1 -->|No| ErrEnv[ErrIncompleteEnvelope]
-    ValEnv1 -->|Yes| ValFam{Family\nValid?}
+    ValEnv1 -->|Yes| ValFam{"Family<br/>Valid?"}
     ValFam -->|No| ErrFam[ErrInvalidFamily]
-    ValFam -->|Yes| Store{Has Store?}
+    ValFam -->|Yes| Store{"Has Store?"}
     
     Store -->|No| OTel[telemetry.event]
     Store -->|Yes| ResolveOrg[resolveOwnerOrg]
     
-    ResolveOrg --> CheckOrg{Org == \nAcct.Org?}
-    CheckOrg -->|No| ErrCross[ErrCrossTenant\n+ telemetry.tenantReject]
+    ResolveOrg --> CheckOrg{"Org == <br/>Acct.Org?"}
+    CheckOrg -->|No| ErrCross["ErrCrossTenant<br/>+ telemetry.tenantReject"]
     CheckOrg -->|Yes| ValEntity[validateEntityScope]
     
-    ValEntity --> IsAcctLevel{Account\nLevel?}
-    IsAcctLevel -->|Yes| AcctMatch{Entity ==\nAccount?}
-    AcctMatch -->|No| ErrScope[ErrEntityScope\n+ telemetry.entityReject]
+    ValEntity --> IsAcctLevel{"Account<br/>Level?"}
+    IsAcctLevel -->|Yes| AcctMatch{"Entity ==<br/>Account?"}
+    AcctMatch -->|No| ErrScope["ErrEntityScope<br/>+ telemetry.entityReject"]
     AcctMatch -->|Yes| Insert[db.InsertAnalyticsEvent]
     
-    IsAcctLevel -->|No| HasRes{Has Resolver?}
+    IsAcctLevel -->|No| HasRes{"Has Resolver?"}
     HasRes -->|No| ErrScope
     HasRes -->|Yes| ResEnt[Resolver.ResolveEntity]
-    ResEnt --> CheckScope{Match Acct\n& Family?}
+    ResEnt --> CheckScope{"Match Acct<br/>& Family?"}
     CheckScope -->|No| ErrScope
     CheckScope -->|Yes| Insert
     
     Insert --> OTel
     OTel --> Done([Done])
     
-    RecordCost --> ValEnv2{Envelope\nValid?}
+    RecordCost --> ValEnv2{"Envelope<br/>Valid?"}
     ValEnv2 -->|No| ErrEnv
-    ValEnv2 -->|Yes| ValKind{CostKind\nValid?}
+    ValEnv2 -->|Yes| ValKind{"CostKind<br/>Valid?"}
     ValKind -->|No| ErrKind[ErrInvalidCostKind]
     ValKind -->|Yes| OTelCost[telemetry.cost]
     OTelCost --> Done

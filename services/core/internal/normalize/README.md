@@ -28,7 +28,7 @@ graph TD
     Trim --> Lower[strings.ToLower]
     Lower --> OutputEmail[Canonical Email String]
     
-    InputDigits[Raw String] --> Scan{Contains Foldable Digits?}
+    InputDigits[Raw String] --> Scan{"Contains Foldable Digits?"}
     Scan --> |No| OutputDigits[Original ASCII String]
     Scan --> |Yes| Builder[strings.Builder]
     

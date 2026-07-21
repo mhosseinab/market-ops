@@ -27,14 +27,14 @@ flowchart TD
     
     Event --> Append[audit.Append]
     
-    Append --> Marshal[Marshal JSON:\nEvidence Versions, \nCard Snapshot, \nDetail]
+    Append --> Marshal["Marshal JSON:<br/>Evidence Versions, <br/>Card Snapshot, <br/>Detail"]
     Marshal --> Insert[db.AppendAuditRecord]
     
-    Insert --> DB[(Database:\naudit_records)]
+    Insert --> DB[("Database:<br/>audit_records")]
     
     Reviewer([Reviewer / System]) -->|ActionID| Reproduce[audit.Reproduce]
     Reproduce --> Query[db.ListAuditRecordsForAction]
     DB --> Query
     Query --> Repro[audit.Reproduction]
-    Repro --> HasTerminal{HasTerminal()?}
+    Repro --> HasTerminal{"HasTerminal()?"}
 ```

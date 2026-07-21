@@ -25,7 +25,7 @@ graph TD
     Mux --> Handler[capRoute / Endpoint Handler]
     Handler --> CheckFault[serveAuthFault / serveCapFault]
     
-    CheckFault --> |Configured Fault| ReturnFault{Mode?}
+    CheckFault --> |Configured Fault| ReturnFault{"Mode?"}
     ReturnFault --> |ModeUnauthorized| HTTP401[401 Unauthorized]
     ReturnFault --> |ModeForbidden| HTTP403[403 Forbidden]
     ReturnFault --> |ModeRateLimited| HTTP429[429 Too Many Requests]

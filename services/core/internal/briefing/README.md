@@ -25,14 +25,14 @@ flowchart TD
         GenAcct --> Ranker[TodayRanker.Today]
         Ranker -->|Ranked Events| Tx[Begin Tx]
         Tx --> InsertHead[db.InsertBriefing]
-        InsertHead -->|Already Exists?| NoOp[Idempotent No-op]
+        InsertHead -->|"Already Exists?"| NoOp[Idempotent No-op]
         InsertHead -->|New| InsertEvts[db.InsertBriefingEvent]
         InsertEvts --> Commit[Commit Tx]
     end
     
     subgraph Retrieval
         GetOrg[GetForOrg] --> ResolveAcct[accountForOrg]
-        ResolveAcct --> CheckOwnership{Acct == Requested?}
+        ResolveAcct --> CheckOwnership{"Acct == Requested?"}
         CheckOwnership -->|No / Missing| Err404[ErrAccountNotFound]
         CheckOwnership -->|Yes| Get[Get]
         Get --> GetHead[db.GetBriefingByAccountDay]

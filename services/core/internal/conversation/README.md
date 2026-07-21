@@ -26,26 +26,26 @@ The `conversation` package serves as the gateway-owned durability layer for chat
 ```mermaid
 flowchart TD
     Begin[BeginTurn: OpenParams, userBody] --> Tx[(Begin Tx)]
-    Tx --> CheckID{ConversationID\nNil?}
+    Tx --> CheckID{"ConversationID<br/>Nil?"}
     CheckID -->|Yes| Create[db.CreateConversation]
     CheckID -->|No| GetConv[db.GetConversationForOrg]
     
-    GetConv -->|Not Found| ErrDenied[ErrConversationDenied\nFail Closed]
+    GetConv -->|Not Found| ErrDenied["ErrConversationDenied<br/>Fail Closed"]
     GetConv -->|Found| ResolveCtx
     Create --> ResolveCtx[resolveTurnContext]
     
-    ResolveCtx -->|Stale/Error| ErrCtx[ErrContextVersionStale\nFail Closed]
+    ResolveCtx -->|Stale/Error| ErrCtx["ErrContextVersionStale<br/>Fail Closed"]
     ResolveCtx -->|Valid| ResolveLoc[resolveTurnLocale]
     
-    ResolveLoc -->|Stale/Error| ErrLoc[ErrLocaleVersionStale\nFail Closed]
-    ResolveLoc -->|Valid| AppendUser[db.AppendConversationMessage\nAuthorUser]
+    ResolveLoc -->|Stale/Error| ErrLoc["ErrLocaleVersionStale<br/>Fail Closed"]
+    ResolveLoc -->|Valid| AppendUser["db.AppendConversationMessage<br/>AuthorUser"]
     
-    AppendUser --> Touch[db.TouchConversation\nAdvance updated_at]
+    AppendUser --> Touch["db.TouchConversation<br/>Advance updated_at"]
     Touch --> Commit[(Commit Tx)]
     
     Commit --> RetConv([Return Conversation Metadata])
     RetConv --> LLM[LLM Stream]
     
     LLM -.->|Stream completes| AppendAsst[AppendAssistant]
-    AppendAsst --> AppendAsstDB[(db.AppendConversationMessage\nAuthorAssistant)]
+    AppendAsst --> AppendAsstDB[("db.AppendConversationMessage<br/>AuthorAssistant")]
 ```

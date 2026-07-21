@@ -23,11 +23,11 @@ It encapsulates amounts in a `Money` struct containing a `mantissa`, `currency`,
 ## Logic Flow Diagram
 ```mermaid
 graph TD
-    Construct[Caller Input] --> |New/Zero/Decode| Validation{Valid Currency?}
+    Construct[Caller Input] --> |New/Zero/Decode| Validation{"Valid Currency?"}
     Validation --> |No| ErrInvalid[ErrInvalidCurrency]
     Validation --> |Yes| MoneyInstance[Money struct]
     
-    MoneyInstance --> |Add/Sub/Compare| CompatCheck{Same Currency & Exponent?}
+    MoneyInstance --> |Add/Sub/Compare| CompatCheck{"Same Currency & Exponent?"}
     CompatCheck --> |No| ErrMismatch[ErrCurrencyMismatch / ErrExponentMismatch]
     CompatCheck --> |Yes| Math[Int64 Arithmetic]
     Math --> |Overflow| ErrOverflow[ErrOverflow]

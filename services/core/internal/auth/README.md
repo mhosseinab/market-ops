@@ -42,8 +42,8 @@ flowchart TD
     Verify -->|Valid| Issue[Issue Session]
     Issue --> GenToken[Generate 256-bit Token]
     GenToken --> HashToken[SHA-256 Hash Token]
-    HashToken --> StoreSession[db.CreateSession\nStores only Hash]
-    StoreSession --> RetSession([Return raw Token\n& Principal])
+    HashToken --> StoreSession["db.CreateSession<br/>Stores only Hash"]
+    StoreSession --> RetSession(["Return raw Token<br/>& Principal"])
     
     Resolve([Resolve Session: token]) --> HashTokenReq[SHA-256 Hash Token]
     HashTokenReq --> GetSession[db.GetSessionUser]

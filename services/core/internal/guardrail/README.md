@@ -23,9 +23,9 @@ Writes are governed by two critical invariants:
 ```mermaid
 graph TD
     Client[Client / Caller] --> |Set/SetForOrg| CheckBaseline[baselineTx: Read Current Settings]
-    CheckBaseline --> |Has Baseline| ConcurrencyCheck{Expected Version Matches?}
+    CheckBaseline --> |Has Baseline| ConcurrencyCheck{"Expected Version Matches?"}
     ConcurrencyCheck --> |No| StaleWrite[ErrVersionConflict: Fail Closed]
-    ConcurrencyCheck --> |Yes| StricterCheck{New Values Stricter?}
+    ConcurrencyCheck --> |Yes| StricterCheck{"New Values Stricter?"}
     
     CheckBaseline --> |No Baseline| StricterCheck
     

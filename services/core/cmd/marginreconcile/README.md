@@ -26,16 +26,16 @@ flowchart TD
     A[Start marginreconcile] --> B[margin.LoadSettlementExamples]
     B --> C[margin.Reconcile]
     C --> D{Iterate Results}
-    D --> E{Has Error?}
+    D --> E{"Has Error?"}
     E -->|Yes| F[Print FAIL with Error]
-    E -->|No| G{Matched Expected?}
+    E -->|No| G{"Matched Expected?"}
     G -->|No| H[Print FAIL with Delta]
     G -->|Yes| I[Print OK]
     F --> J
     H --> J
     I --> J[Next Result]
     J --> D
-    D -->|Done| K{Failures > 0?}
+    D -->|Done| K{"Failures > 0?"}
     K -->|Yes| L[Exit 1]
     K -->|No| M[Exit 0]
 ```

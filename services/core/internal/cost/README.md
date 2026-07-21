@@ -31,7 +31,7 @@ flowchart TD
         Preview[PreviewImport: CSV parsing] --> Resolve[Resolve SKUs]
         Resolve --> Persist[Persist preview batch]
         
-        Commit[CommitImport] --> CheckBatch{In Preview &\nNo Dups?}
+        Commit[CommitImport] --> CheckBatch{"In Preview &<br/>No Dups?"}
         CheckBatch -->|No| Err[ErrBatchNotPreview / ErrUnresolvedDuplicates]
         CheckBatch -->|Yes| InsertBatch[Insert CostProfileVersion]
         InsertBatch --> RecomputeBatch[Recompute Readiness]
@@ -50,6 +50,6 @@ flowchart TD
         Recompute --> CostAt[CostProfileAt]
         CostAt --> LoadPol[loadPolicy / loadApplicable]
         LoadPol --> Derive[DeriveReadiness]
-        Derive --> Upsert[UpsertMarginReadiness\nwith StaleBoundary]
+        Derive --> Upsert["UpsertMarginReadiness<br/>with StaleBoundary"]
     end
 ```

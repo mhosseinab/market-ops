@@ -23,7 +23,7 @@ The `dkprobe` command is a capability probe harness used to execute PRD §15.2 p
 ```mermaid
 flowchart TD
     A[Operator/CLI] -->|Flags: -base, -token, -variant, -record| B(main)
-    B -->|Parse Flags| C{Is -record provided?}
+    B -->|Parse Flags| C{"Is -record provided?"}
     C -->|Yes| D[Init RecordingTransport]
     D --> E[Inject into HTTP Client]
     C -->|No| F[Default HTTP Client]

@@ -32,13 +32,13 @@ The `watchlist` package implements the EXT-007 priority watchlist feature. It al
 
 ```mermaid
 flowchart TD
-    R[Add Request] --> V{Variant Confirmed Identity?}
+    R[Add Request] --> V{"Variant Confirmed Identity?"}
     V -- No --> F[ErrNotConfirmed]
     V -- Yes --> T[Begin Transaction]
     T --> L[Acquire Account Advisory Lock]
-    L --> C{Total Entries < Max?}
+    L --> C{"Total Entries < Max?"}
     C -- No --> CE[ErrCapExceeded / Rollback]
-    C -- Yes --> I{Already in Watchlist?}
+    C -- Yes --> I{"Already in Watchlist?"}
     I -- Yes --> N[No-Op / Return Existing]
     I -- No --> W[Insert into watchlist_entries]
     W --> A[Append audit.EventWatchlistChange]

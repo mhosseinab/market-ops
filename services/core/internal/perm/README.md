@@ -24,14 +24,14 @@ The `perm` package is the single, declarative permission matrix for the entire p
 
 ```mermaid
 flowchart TD
-    R[Request Arrives] --> T{Actor Type?}
+    R[Request Arrives] --> T{"Actor Type?"}
     T -- Human User --> P[perm.Can]
     T -- Machine/LLM --> G[perm.GatewayCan]
     P --> M[Lookup Action in Matrix]
     M --> L{Check LevelBaseline & Allowed Roles}
     L -- Role Allowed --> A[Approve]
     L -- Role Denied / Unknown --> D[Deny / Fail Closed]
-    G --> L1{In L1 Read/Draft-Only Allowlist?}
+    G --> L1{"In L1 Read/Draft-Only Allowlist?"}
     L1 -- Yes --> A
     L1 -- No --> D
 ```

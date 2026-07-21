@@ -29,13 +29,13 @@ The `observation` package manages the core evidence-quality state machine and th
 
 ```mermaid
 flowchart TD
-    C[Capture Arrives via Ingest] --> Q{Parser Registry & Identity Valid?}
+    C[Capture Arrives via Ingest] --> Q{"Parser Registry & Identity Valid?"}
     Q -- No --> U[Quarantined: Floor to Unverified]
-    Q -- Yes --> D{Dedup Key Exists?}
+    Q -- Yes --> D{"Dedup Key Exists?"}
     D -- Yes & Payload Matches --> N[No-Op / Idempotent]
     D -- Yes & Payload Differs --> F[ErrDedupEvidenceConflict / Fail Closed]
     D -- No --> A[Append to db.Observation]
-    A --> CR{Cross-Route Conflict?}
+    A --> CR{"Cross-Route Conflict?"}
     CR -- Yes --> CF[Downgrade to Conflicted]
     CR -- No --> O[Upsert db.ObservedOffer]
     O --> S[SweepExpired Background Job]

@@ -22,7 +22,7 @@ The `mockdk` command provides a configurable mock DK Seller server implementatio
 ```mermaid
 flowchart TD
     A[Start MockDK] --> B[Load Default Config]
-    B --> C{Override via Env?}
+    B --> C{"Override via Env?"}
     C -->|MOCKDK_MODE| D[Set Default Mode]
     C -->|MOCKDK_AUTH_MODE| E[Set Auth Mode]
     C -->|MOCKDK_WRITE_SCOPE| F[Set Write Scope]

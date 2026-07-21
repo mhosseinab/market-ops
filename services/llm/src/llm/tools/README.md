@@ -49,12 +49,12 @@ flowchart TD
     
     I1 -->|candidate names| I2{Intersect}
     
-    Reg[(Tool Registry)] -->|names()| I2
+    Reg[(Tool Registry)] -->|"names()"| I2
     
     I2 -->|valid names| I3{Filter by Kind}
     
     C -->|allowed_kinds| I3
-    Reg -->|spec().kind| I3
+    Reg -->|"spec().kind"| I3
     
     I3 --> F[Bound Tool Names frozenset]
 ```

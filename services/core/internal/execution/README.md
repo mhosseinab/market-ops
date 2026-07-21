@@ -30,7 +30,7 @@ graph TD
     CheckExisting -->|Record Exists| Replay[replayWrite / Idempotent Replay]
     CheckExisting -->|No Record| Revalidate[Resolver.Resolve]
     
-    Revalidate --> ModeCheck{Writes Enabled?}
+    Revalidate --> ModeCheck{"Writes Enabled?"}
     
     ModeCheck -->|No| RecommendOnly[recordRecommendOnly]
     ModeCheck -->|Yes| ExecuteWrite[executeWrite]

@@ -29,7 +29,7 @@ flowchart TD
     M --> C[Display Raw Code to Admin]
     M --> H[Save SHA-256 Hash to DB]
     C --> E[Extension Submits Code to Claim]
-    E --> V{Hash Match & Not Expired?}
+    E --> V{"Hash Match & Not Expired?"}
     V -- No --> F[Fail Closed / ErrInvalidCode]
     V -- Yes --> R[Invalidate Code Hash]
     R --> CC[Return Capture Credential]

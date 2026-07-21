@@ -23,7 +23,7 @@ The `seede2e` command is a test infrastructure tool intended specifically for in
 
 ```mermaid
 flowchart TD
-    A[Start seede2e] --> B{Env Vars Present?}
+    A[Start seede2e] --> B{"Env Vars Present?"}
     B -->|Missing DATABASE_URL/SEEDE2E_PASSWORD| C[Fail/Exit]
     B -->|Valid| D[Normalize Email]
     D --> E[Init pgxpool & DB Query]

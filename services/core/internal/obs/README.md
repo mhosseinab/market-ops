@@ -25,11 +25,11 @@ The `obs` package configures and wires process-wide observability for the servic
 
 ```mermaid
 flowchart TD
-    I[obs.Init] --> O{OTEL_ENABLED?}
+    I[obs.Init] --> O{"OTEL_ENABLED?"}
     O -- Yes --> P[Install Global Tracer & Meter Providers]
     O -- No --> N1[No-Op / Safe Default]
     P --> T[W3C Trace-Context & Baggage Propagators]
-    I --> S{SENTRY_SPOTLIGHT?}
+    I --> S{"SENTRY_SPOTLIGHT?"}
     S -- Yes --> S1[Install spotlightTransport]
     S -- No --> N2[No-Op]
     S1 --> L[Stream to localhost:8969]

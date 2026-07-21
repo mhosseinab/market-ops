@@ -39,11 +39,11 @@ The `routec` package implements the Route C server-side observer (PRD §7.3 OBS-
 flowchart TD
     S[RunSweep Triggered] --> E[Enumerate Targets & Trim to Budget]
     E --> O[ObserveTarget]
-    O --> K{Kill Switch / Drift Guard Active?}
+    O --> K{"Kill Switch / Drift Guard Active?"}
     K -- Yes --> A[Abort]
-    K -- No --> C{Circuit Breaker Allow?}
+    K -- No --> C{"Circuit Breaker Allow?"}
     C -- No --> A
-    C -- Yes --> B{Budget Reservation?}
+    C -- Yes --> B{"Budget Reservation?"}
     B -- No --> A
     B -- Yes --> L{Concurrency Limit Check}
     L -- No --> A

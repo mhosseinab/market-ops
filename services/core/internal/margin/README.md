@@ -28,7 +28,7 @@ The package strictly utilizes exact money and fixed-point basis-point arithmetic
 graph TD
     Input[ContributionInput] --> Engine[Engine.Contribution]
     
-    Engine --> CheckRequired{Missing COGS or Commission?}
+    Engine --> CheckRequired{"Missing COGS or Commission?"}
     CheckRequired --> |Yes| RejectMissing[ErrMissingRequiredComponent]
     CheckRequired --> |No| LoopComponents[For each ComponentInput]
     

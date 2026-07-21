@@ -26,7 +26,7 @@ The `connector` package manages integration with the external DK Seller API. It 
 ```mermaid
 flowchart TD
     subgraph Connection Flow
-        Connect[Connect (Auth Code)] --> Validate[Validate Tenant]
+        Connect["Connect (Auth Code)"] --> Validate[Validate Tenant]
         Validate --> Exch[Exchange for Tokens]
         Exch --> Seed[Seed Capabilities to Unknown]
         Seed --> Store[Store Sealed Tokens]
@@ -37,7 +37,7 @@ flowchart TD
     subgraph Operation Flow
         Op[API Requested] --> ReqCap[Require Capability]
         ReqCap -->|Unknown| Probe2[Probe / Fetch]
-        Probe2 --> CheckCap{Is Supported?}
+        Probe2 --> CheckCap{"Is Supported?"}
         ReqCap -->|Known| CheckCap
         
         CheckCap -->|No| ErrCap[ErrCapabilityNotSupported]

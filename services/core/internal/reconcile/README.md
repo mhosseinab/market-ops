@@ -29,7 +29,7 @@ The `reconcile` package is responsible for resolving the external state of a wri
 
 ```mermaid
 flowchart TD
-    R[ReconcilePending Invoked] --> V{Action Pending & Resolution Valid?}
+    R[ReconcilePending Invoked] --> V{"Action Pending & Resolution Valid?"}
     V -- No --> F[Fail Closed / Remain Pending]
     V -- Yes --> T[Begin Transaction]
     T --> E[Update Execution Record]

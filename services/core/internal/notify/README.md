@@ -33,7 +33,7 @@ flowchart TD
     E[System Event] --> D[JobDispatcher]
     D -- Enqueue --> R[River Job: NotificationDeliverArgs]
     R --> W[Store.Deliver]
-    W --> C{Bypasses Digest?}
+    W --> C{"Bypasses Digest?"}
     C -- Yes (execution/safety) --> U[Urgent Email Outbox]
     C -- No (market_event) --> S[Notification Store]
     U --> UE[Urgent Email Delivery]

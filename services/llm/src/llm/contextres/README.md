@@ -42,23 +42,23 @@ The following flowchart illustrates the high-level decision tree inside `resolve
 
 ```mermaid
 flowchart TD
-    Start([Start: resolve]) --> HasTimePhrase{Has time_phrase?}
+    Start([Start: resolve]) --> HasTimePhrase{"Has time_phrase?"}
     HasTimePhrase -- Yes --> ResolveTime[resolve_time_range]
-    HasTimePhrase -- No --> HasRefs{req.references?}
+    HasTimePhrase -- No --> HasRefs{"req.references?"}
     ResolveTime --> HasRefs
     
     HasRefs -- Yes --> ResolveRefs[[_resolve_with_references]]
-    HasRefs -- No --> HasActiveCtx{req.active_context?}
+    HasRefs -- No --> HasActiveCtx{"req.active_context?"}
     
     HasActiveCtx -- No --> RetPickerNoCtx[Return PICKER<br>no_active_context]
-    HasActiveCtx -- Yes --> ValidateScope{Scope matches?}
+    HasActiveCtx -- Yes --> ValidateScope{"Scope matches?"}
     
     ValidateScope -- No --> RetNotFoundScope[Return NOT_FOUND<br>scope_mismatch]
-    ValidateScope -- Yes --> CardLeading{Card-leading<br>intent?}
+    ValidateScope -- Yes --> CardLeading{"Card-leading<br>intent?"}
     
-    CardLeading -- Yes --> CardCapable{Context is<br>card-capable?}
+    CardLeading -- Yes --> CardCapable{"Context is<br>card-capable?"}
     CardCapable -- No --> RetPickerAcct[Return PICKER<br>account_level_context_needs_target]
-    CardCapable -- Yes --> HasVersions{Has required<br>versions?}
+    CardCapable -- Yes --> HasVersions{"Has required<br>versions?"}
     
     HasVersions -- No --> RetNotFoundVers[Return NOT_FOUND<br>missing_version]
     HasVersions -- Yes --> RetResolved[Return RESOLVED<br>active_context]
@@ -72,23 +72,23 @@ When explicit references are provided, `_resolve_with_references()` determines t
 
 ```mermaid
 flowchart TD
-    Start([Start: _resolve_with_references]) --> MultipleRefs{>1 references?}
+    Start([Start: _resolve_with_references]) --> MultipleRefs{">1 references?"}
     MultipleRefs -- Yes --> RetPickerMult[Return PICKER<br>multiple_explicit_references]
     
     MultipleRefs -- No --> MatchCands[Canonicalize and match against candidates]
-    MatchCands --> ValidScope{All matched<br>candidates<br>in scope?}
+    MatchCands --> ValidScope{"All matched<br>candidates<br>in scope?"}
     
     ValidScope -- No --> RetNotFoundScope[Return NOT_FOUND<br>scope_mismatch]
-    ValidScope -- Yes --> KeyCollision{colliding_keys > 1?}
+    ValidScope -- Yes --> KeyCollision{"colliding_keys > 1?"}
     
     KeyCollision -- Yes --> RetPickerColl[Return PICKER<br>canonical_key_collision]
-    KeyCollision -- No --> CandCount{Candidate<br>count?}
+    KeyCollision -- No --> CandCount{"Candidate<br>count?"}
     
     CandCount -- "0" --> RetNotFoundZero[Return NOT_FOUND<br>reference_matched_nothing]
     CandCount -- "> 1" --> RetPickerAmb[Return PICKER<br>ambiguous_reference]
     
-    CandCount -- "1" --> IsCardLeading{Card-leading<br>intent?}
-    IsCardLeading -- Yes --> HasVersions{Candidate has<br>required versions?}
+    CandCount -- "1" --> IsCardLeading{"Card-leading<br>intent?"}
+    IsCardLeading -- Yes --> HasVersions{"Candidate has<br>required versions?"}
     HasVersions -- No --> RetNotFoundVers[Return NOT_FOUND<br>missing_version]
     HasVersions -- Yes --> RetResolved[Return RESOLVED<br>explicit_reference_override]
     IsCardLeading -- No --> RetResolved

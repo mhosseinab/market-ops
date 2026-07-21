@@ -45,7 +45,7 @@ flowchart TD
     K --> N
     L --> N
     M --> N
-    N --> O{Failed rows > 0?}
+    N --> O{"Failed rows > 0?"}
     O -->|Yes| P[Exit 1]
     O -->|No| Q[Exit 0]
 ```

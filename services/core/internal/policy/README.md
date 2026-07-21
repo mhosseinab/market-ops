@@ -32,17 +32,17 @@ The engine evaluates proposed actions against a strictly ordered pipeline:
 
 ```mermaid
 flowchart TD
-    I[EvaluateInput] --> B{1. Marketplace Bounds Valid?}
+    I[EvaluateInput] --> B{"1. Marketplace Bounds Valid?"}
     B -- No --> R[Reject]
-    B -- Yes --> F{2. Contribution Floor Met?}
+    B -- Yes --> F{"2. Contribution Floor Met?"}
     F -- No --> R
-    F -- Yes --> C{3. Movement Cap Met?}
+    F -- Yes --> C{"3. Movement Cap Met?"}
     C -- No --> R
-    C -- Yes --> CD{4. Cooldown Passed?}
+    C -- Yes --> CD{"4. Cooldown Passed?"}
     CD -- No --> R
     CD -- Yes --> S[5. Evaluate Strategy]
     S --> O[6. Optimize Objective]
-    O --> AP{Approvable? StateComplete?}
+    O --> AP{"Approvable? StateComplete?"}
     AP -- Yes --> P[Approvable Proposal]
     AP -- No --> UP[Unapprovable Proposal]
 ```

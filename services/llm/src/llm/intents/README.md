@@ -64,7 +64,7 @@ flowchart TD
     IntentClass --> Routing[models.py: route_intent]
 
     subgraph Routing Phase
-        Routing --> CheckGuidance{Is GUIDANCE_ONLY?}
+        Routing --> CheckGuidance{"Is GUIDANCE_ONLY?"}
         CheckGuidance -->|Yes| GuidanceRoute[IntentRoute: GUIDANCE_ONLY]
         CheckGuidance -->|No| ToolCapableRoute[IntentRoute: TOOL_CAPABLE]
         

@@ -27,7 +27,7 @@ The `catalog` package is responsible for the idempotent synchronization (initial
 ```mermaid
 flowchart TD
     subgraph Sync Path
-        Enq[Enqueue Sync (Initial/Incremental)] -->|Create run row| Tx1[(Tx: catalog_sync_run)]
+        Enq["Enqueue Sync (Initial/Incremental)"] -->|Create run row| Tx1[(Tx: catalog_sync_run)]
         Tx1 -->|Success| Job[River Job Enqueued]
         Tx1 -->|Conflict| ErrInflight[ErrSyncAlreadyInFlight]
         
@@ -35,7 +35,7 @@ flowchart TD
         Resume --> Fetch[Source.FetchVariantsPage]
         
         Fetch --> Tx2[(Tx: Apply Page)]
-        Tx2 --> UpdProd[Upsert Product, Variant,\nListing, Owned Offer]
+        Tx2 --> UpdProd["Upsert Product, Variant,<br/>Listing, Owned Offer"]
         Tx2 --> Snap[Insert Payload Snapshot]
         Tx2 --> Adv[Advance Run Cursor]
         
@@ -52,10 +52,10 @@ flowchart TD
         Cap --> Query[Fetch Canonical Row]
         Query --> Mkt[marketOffersByTarget]
         Mkt --> Build[listRowToProductRow / getRowToProductRow]
-        Build --> CheckCap{Cap == Supported\n& Present?}
+        Build --> CheckCap{"Cap == Supported<br/>& Present?"}
         
-        CheckCap -->|Yes| RawPrice[Include Raw Price\n& Stock Evidence]
-        CheckCap -->|No| Gated[Gate Data\nUnavailableReason]
+        CheckCap -->|Yes| RawPrice["Include Raw Price<br/>& Stock Evidence"]
+        CheckCap -->|No| Gated["Gate Data<br/>UnavailableReason"]
         
         RawPrice --> Ret([Return ProductRow])
         Gated --> Ret

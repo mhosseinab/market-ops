@@ -30,7 +30,7 @@ graph TD
     RequestValidator -->|Valid| AuthMiddleware[authMiddleware]
     
     AuthMiddleware --> ExtractToken[Extract Session / Machine Token]
-    ExtractToken --> CheckPerm{Has perm.Action?}
+    ExtractToken --> CheckPerm{"Has perm.Action?"}
     CheckPerm -->|No| Reject401_403[401 / 403 Unauthorized]
     CheckPerm -->|Yes| REDMetrics[RED Metrics & Tracing]
     
