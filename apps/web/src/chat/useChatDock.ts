@@ -129,7 +129,12 @@ export interface ChatDockRuntime {
   readonly activeContext: ChatContext;
 }
 
-export function useChatDock(context: ChatContext, locale: LocaleId): ChatDockRuntime {
+export function useChatDock(
+  context: ChatContext,
+  locale: LocaleId,
+  activateConversationLocale: (locale: unknown) => Promise<void>,
+  resetConversationLocale: () => void,
+): ChatDockRuntime {
   const { marketplaceAccountId } = useAccount();
   const [messages, setMessages] = useState<readonly DockMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
@@ -226,6 +231,7 @@ export function useChatDock(context: ChatContext, locale: LocaleId): ChatDockRun
         conversationIdRef.current = undefined;
         boundContextRef.current = undefined;
         boundLocaleRef.current = undefined;
+        resetConversationLocale();
         setCommittedContext(undefined);
       }
 
@@ -279,13 +285,18 @@ export function useChatDock(context: ChatContext, locale: LocaleId): ChatDockRun
               // only when the gateway omits the echo (no store wired) fall back to the
               // plan. The next turn sends this version back so a locale change is an
               // explicit, versioned transition.
-              boundLocaleRef.current =
+              const committedLocale: BoundLocale =
                 event.localeTag !== undefined
                   ? {
                       locale: event.localeTag,
                       version: event.localeVersion ?? localePlan.next.version,
                     }
                   : localePlan.next;
+              // Catalog activation is an awaited stream barrier. A token or
+              // terminal frame cannot become renderable until the chat-scoped
+              // catalog for the authoritative locale is prepared and committed.
+              await activateConversationLocale(committedLocale.locale);
+              boundLocaleRef.current = committedLocale;
               break;
             }
             case "token":
@@ -323,7 +334,7 @@ export function useChatDock(context: ChatContext, locale: LocaleId): ChatDockRun
         setIsRunning(false);
       }
     },
-    [marketplaceAccountId, patchAssistant],
+    [marketplaceAccountId, patchAssistant, activateConversationLocale, resetConversationLocale],
   );
 
   const onNew = useCallback(
