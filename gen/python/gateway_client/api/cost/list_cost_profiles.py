@@ -5,7 +5,7 @@ from uuid import UUID
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.cost_profile_list import CostProfileList
 from ...models.error_envelope import ErrorEnvelope
 from ...types import UNSET, Response, Unset
@@ -38,9 +38,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> CostProfileList | ErrorEnvelope:
+def _parse_response(*, client: Client, response: httpx.Response) -> CostProfileList | ErrorEnvelope:
     if response.status_code == 200:
         response_200 = CostProfileList.from_dict(response.json())
 
@@ -51,9 +49,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[CostProfileList | ErrorEnvelope]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[CostProfileList | ErrorEnvelope]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -64,7 +60,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     variant_id: UUID,
     as_of: datetime.datetime | Unset = UNSET,
 ) -> Response[CostProfileList | ErrorEnvelope]:
@@ -100,7 +96,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     variant_id: UUID,
     as_of: datetime.datetime | Unset = UNSET,
 ) -> CostProfileList | ErrorEnvelope | None:
@@ -131,7 +127,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     variant_id: UUID,
     as_of: datetime.datetime | Unset = UNSET,
 ) -> Response[CostProfileList | ErrorEnvelope]:
@@ -165,7 +161,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     variant_id: UUID,
     as_of: datetime.datetime | Unset = UNSET,
 ) -> CostProfileList | ErrorEnvelope | None:

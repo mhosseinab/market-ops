@@ -4,7 +4,7 @@ from uuid import UUID
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.catalog_product_page import CatalogProductPage
 from ...models.error_envelope import ErrorEnvelope
 from ...types import UNSET, Response, Unset
@@ -37,9 +37,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> CatalogProductPage | ErrorEnvelope:
+def _parse_response(*, client: Client, response: httpx.Response) -> CatalogProductPage | ErrorEnvelope:
     if response.status_code == 200:
         response_200 = CatalogProductPage.from_dict(response.json())
 
@@ -50,9 +48,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[CatalogProductPage | ErrorEnvelope]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[CatalogProductPage | ErrorEnvelope]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -63,7 +59,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     cursor: str | Unset = UNSET,
     limit: int | Unset = UNSET,
@@ -111,7 +107,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     cursor: str | Unset = UNSET,
     limit: int | Unset = UNSET,
@@ -154,7 +150,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     cursor: str | Unset = UNSET,
     limit: int | Unset = UNSET,
@@ -200,7 +196,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     cursor: str | Unset = UNSET,
     limit: int | Unset = UNSET,

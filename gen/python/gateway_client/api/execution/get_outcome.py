@@ -4,7 +4,7 @@ from uuid import UUID
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.outcome_view import OutcomeView
 from ...types import UNSET, Response
@@ -31,7 +31,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorEnvelope | OutcomeView:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | OutcomeView:
     if response.status_code == 200:
         response_200 = OutcomeView.from_dict(response.json())
 
@@ -42,9 +42,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | OutcomeView]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | OutcomeView]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,7 +53,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     action_id: UUID,
 ) -> Response[ErrorEnvelope | OutcomeView]:
     """Get an action's seven-day outcome window and result (OUT-001).
@@ -88,7 +86,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     action_id: UUID,
 ) -> ErrorEnvelope | OutcomeView | None:
     """Get an action's seven-day outcome window and result (OUT-001).
@@ -116,7 +114,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     action_id: UUID,
 ) -> Response[ErrorEnvelope | OutcomeView]:
     """Get an action's seven-day outcome window and result (OUT-001).
@@ -147,7 +145,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     action_id: UUID,
 ) -> ErrorEnvelope | OutcomeView | None:
     """Get an action's seven-day outcome window and result (OUT-001).

@@ -3,7 +3,7 @@ from typing import Any, cast
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...types import Response
 
@@ -18,7 +18,7 @@ def _get_kwargs() -> dict[str, Any]:
     return _kwargs
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Any | ErrorEnvelope:
+def _parse_response(*, client: Client, response: httpx.Response) -> Any | ErrorEnvelope:
     if response.status_code == 204:
         response_204 = cast(Any, None)
         return response_204
@@ -28,7 +28,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
     return response_default
 
 
-def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> Response[Any | ErrorEnvelope]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[Any | ErrorEnvelope]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -39,7 +39,7 @@ def _build_response(*, client: AuthenticatedClient | Client, response: httpx.Res
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient,
+    client: Client,
 ) -> Response[Any | ErrorEnvelope]:
     """Close the current server-side session.
 
@@ -65,7 +65,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient,
+    client: Client,
 ) -> Any | ErrorEnvelope | None:
     """Close the current server-side session.
 
@@ -87,7 +87,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient,
+    client: Client,
 ) -> Response[Any | ErrorEnvelope]:
     """Close the current server-side session.
 
@@ -111,7 +111,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient,
+    client: Client,
 ) -> Any | ErrorEnvelope | None:
     """Close the current server-side session.
 

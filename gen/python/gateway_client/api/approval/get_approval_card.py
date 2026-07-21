@@ -4,7 +4,7 @@ from uuid import UUID
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.approval_card_view import ApprovalCardView
 from ...models.error_envelope import ErrorEnvelope
 from ...types import UNSET, Response
@@ -31,9 +31,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ApprovalCardView | ErrorEnvelope:
+def _parse_response(*, client: Client, response: httpx.Response) -> ApprovalCardView | ErrorEnvelope:
     if response.status_code == 200:
         response_200 = ApprovalCardView.from_dict(response.json())
 
@@ -44,9 +42,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ApprovalCardView | ErrorEnvelope]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ApprovalCardView | ErrorEnvelope]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -57,7 +53,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     card_id: UUID,
 ) -> Response[ApprovalCardView | ErrorEnvelope]:
     """Get an approval card and its append-only §8.4 state history.
@@ -91,7 +87,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     card_id: UUID,
 ) -> ApprovalCardView | ErrorEnvelope | None:
     """Get an approval card and its append-only §8.4 state history.
@@ -120,7 +116,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     card_id: UUID,
 ) -> Response[ApprovalCardView | ErrorEnvelope]:
     """Get an approval card and its append-only §8.4 state history.
@@ -152,7 +148,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     card_id: UUID,
 ) -> ApprovalCardView | ErrorEnvelope | None:
     """Get an approval card and its append-only §8.4 state history.

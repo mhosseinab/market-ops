@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.connector_account_ref import ConnectorAccountRef
 from ...models.connector_status import ConnectorStatus
 from ...models.error_envelope import ErrorEnvelope
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ConnectorStatus | ErrorEnvelope:
+def _parse_response(*, client: Client, response: httpx.Response) -> ConnectorStatus | ErrorEnvelope:
     if response.status_code == 200:
         response_200 = ConnectorStatus.from_dict(response.json())
 
@@ -42,9 +40,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ConnectorStatus | ErrorEnvelope]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ConnectorStatus | ErrorEnvelope]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,7 +51,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: ConnectorAccountRef,
 ) -> Response[ConnectorStatus | ErrorEnvelope]:
     """Start (or resume) an idempotent catalog synchronization.
@@ -92,7 +88,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: ConnectorAccountRef,
 ) -> ConnectorStatus | ErrorEnvelope | None:
     """Start (or resume) an idempotent catalog synchronization.
@@ -124,7 +120,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: ConnectorAccountRef,
 ) -> Response[ConnectorStatus | ErrorEnvelope]:
     """Start (or resume) an idempotent catalog synchronization.
@@ -159,7 +155,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: ConnectorAccountRef,
 ) -> ConnectorStatus | ErrorEnvelope | None:
     """Start (or resume) an idempotent catalog synchronization.

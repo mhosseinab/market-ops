@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import AuthenticatedClient
 from ...models.error_envelope import ErrorEnvelope
 from ...models.level_2_proposal_request import Level2ProposalRequest
 from ...models.level_2_proposal_result import Level2ProposalResult
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorEnvelope | Level2ProposalResult:
+def _parse_response(*, client: AuthenticatedClient, response: httpx.Response) -> ErrorEnvelope | Level2ProposalResult:
     if response.status_code == 200:
         response_200 = Level2ProposalResult.from_dict(response.json())
 
@@ -43,7 +41,7 @@ def _parse_response(
 
 
 def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
+    *, client: AuthenticatedClient, response: httpx.Response
 ) -> Response[ErrorEnvelope | Level2ProposalResult]:
     return Response(
         status_code=HTTPStatus(response.status_code),
