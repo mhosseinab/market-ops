@@ -132,7 +132,7 @@ export interface ChatDockRuntime {
 export function useChatDock(
   context: ChatContext,
   locale: LocaleId,
-  commitLocale: (locale: LocaleId) => void,
+  activateConversationLocale: (locale: unknown) => Promise<void>,
 ): ChatDockRuntime {
   const { marketplaceAccountId } = useAccount();
   const [messages, setMessages] = useState<readonly DockMessage[]>([]);
@@ -290,12 +290,11 @@ export function useChatDock(
                       version: event.localeVersion ?? localePlan.next.version,
                     }
                   : localePlan.next;
+              // Catalog activation is an awaited stream barrier. A token or
+              // terminal frame cannot become renderable until the chat-scoped
+              // catalog for the authoritative locale is prepared and committed.
+              await activateConversationLocale(committedLocale.locale);
               boundLocaleRef.current = committedLocale;
-              // The gateway frame is the conversation's authoritative locale
-              // binding. Commit it through the same locale provider that renders
-              // catalog copy before any terminal frame is shown, so response and
-              // failure copy cannot drift from the persisted conversation locale.
-              if (event.localeTag !== undefined) commitLocale(committedLocale.locale);
               break;
             }
             case "token":
@@ -333,7 +332,7 @@ export function useChatDock(
         setIsRunning(false);
       }
     },
-    [marketplaceAccountId, patchAssistant, commitLocale],
+    [marketplaceAccountId, patchAssistant, activateConversationLocale],
   );
 
   const onNew = useCallback(
