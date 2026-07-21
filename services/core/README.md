@@ -4,78 +4,59 @@ The `services/core` package is the deterministic Go core and API gateway for the
 
 ## Architecture at a Glance
 
+The binary is four planes plus one external seam. **Every service inside the gateway box is wired by the handlers and persists through the single PostgreSQL pool** — the per-service fan-out is collapsed into the plane-level arrows here and broken out service-by-service in the [Module Dependency Graph](#module-dependency-graph) below.
+
 ```mermaid
 flowchart TD
+    PRODUCERS["Scheduled producers<br/>(internal/jobs → River)"]
+
     subgraph Ingress["HTTP ingress (internal/httpapi)"]
-        REQ[Request]
-        VAL[OpenAPI validator]
-        AUTH[Auth + perm middleware]
-        HAND[gatewayServer handlers]
-        REQ --> VAL --> AUTH --> HAND
+        direction LR
+        REQ[Request] --> VAL[OpenAPI validator] --> AUTH[Auth + perm middleware] --> HAND[gatewayServer handlers]
     end
 
     subgraph Gateway["Gateway-owned domain"]
-        CONV[conversation.Store<br/>CHAT-008]
-        BRIEF[briefing.Service<br/>CHAT-010]
-        REC[recommendation.Service<br/>Draft-only seam]
-        EV[event.Service<br/>EVT-001..005]
-        EXEC[execution.Service<br/>EXE-001..005]
-        OBS[observation.Service]
-        CAT[catalog.ReadService]
-        COST[cost.Service]
-        CONN[connector.Service]
-    end
-
-    subgraph Producers["Scheduled producers (internal/jobs → River)"]
-        EvtProd[event.Producer]
-        RecProd[recommendation.Producer]
-        BriefGen[briefing.GenerateAll]
-        ExecMatch[execution.RecommendOnlyReconciler]
-        OutClose[outcome.Closer]
-        ExecDispatch[execute_approved worker]
-        NotifyDeliver[notification_deliver worker]
-        ReopenDispatch[mapping_reopened worker]
-        UrgentEmail[notification_urgent_email worker]
-        CatalogSync[catalog sync workers]
+        direction LR
+        CONV[conversation.Store · CHAT-008] ~~~ BRIEF[briefing.Service · CHAT-010] ~~~ REC[recommendation.Service · Draft-only seam]
+        EV[event.Service · EVT-001..005] ~~~ EXEC[execution.Service · EXE-001..005] ~~~ OUT[outcome.Service]
+        OBS[observation.Service] ~~~ CAT[catalog.ReadService] ~~~ COST[cost.Service] ~~~ CONN[connector.Service]
     end
 
     subgraph Persistence["Persistence (internal/db → sqlc + pgx)"]
-        PG[(PostgreSQL)]
-        RIVER[(river_queue)]
+        direction LR
+        RIVER[(river_queue)] --> PG[(PostgreSQL)]
     end
 
     LLMSVC["LLM plane (Python, external)<br/>OpenAI-compatible HTTP"]
 
-    HAND --> CONV
-    HAND --> BRIEF
-    HAND --> REC
-    HAND --> EV
-    HAND --> EXEC
-    HAND --> OBS
-    HAND --> CAT
-    HAND --> COST
-    HAND --> CONN
-    HAND -->|SSE proxy| LLMSVC
+    PRODUCERS -->|drive| Gateway
+    PRODUCERS -->|enqueue| RIVER
+    Ingress ==>|handlers wire every service| Gateway
+    Ingress -->|SSE proxy /chat| LLMSVC
+    Gateway ==>|single pgx pool| PG
+```
 
-    EvtProd --> EV
-    RecProd --> REC
-    BriefGen --> BRIEF
-    ExecMatch --> EXEC
-    OutClose --> OUT[outcome.Service]
-    ExecDispatch --> EXEC
-    CatalogSync --> CONN
+Notes: `outcome.Service` is driven only by the producer pipeline (no direct handler route); the LLM plane has no arrow to Persistence — it holds no DB credential.
 
-    CONV --> PG
-    BRIEF --> PG
-    REC --> PG
-    EV --> PG
-    EXEC --> PG
-    OBS --> PG
-    CAT --> PG
-    COST --> PG
-    CONN --> PG
-    Producers --> RIVER
-    RIVER --> PG
+### Scheduled producer wiring
+
+Which producer drives which gateway service (all run via River, `internal/jobs`):
+
+```mermaid
+flowchart LR
+    EvtProd[event.Producer] --> EV[event.Service]
+    RecProd[recommendation.Producer] --> REC[recommendation.Service]
+    BriefGen[briefing.GenerateAll] --> BRIEF[briefing.Service]
+    ExecMatch[execution.RecommendOnlyReconciler] --> EXEC[execution.Service]
+    ExecDispatch[execute_approved worker] --> EXEC
+    OutClose[outcome.Closer] --> OUT[outcome.Service]
+    CatalogSync[catalog sync workers] --> CONN[connector.Service]
+
+    subgraph QueueOnly["Queue-only workers (no gateway service dependency)"]
+        NotifyDeliver[notification_deliver worker]
+        ReopenDispatch[mapping_reopened worker]
+        UrgentEmail[notification_urgent_email worker]
+    end
 ```
 
 ### Commands (`cmd/`)
@@ -97,56 +78,55 @@ Business logic is modular and separated into focused domain packages:
 
 ## Module Dependency Graph
 
-The diagram below shows how the wired services depend on each other at runtime. Arrows point from a consumer to its dependency. The LLM plane is intentionally isolated — the gateway proxies a turn to it but it never touches the database.
+The two diagrams below show how the wired services depend on each other at runtime. Arrows point from a consumer to its dependency. The LLM plane is intentionally isolated — the gateway proxies a turn to it but it never touches the database.
+
+### Gateway fan-out and DB access
+
+`httpapi gatewayServer` wires all seventeen services listed below, and **every one of them reads/writes through the single `db.Queries` / pgx pool** — so the per-service `HTTP -->` and `--> DB` edges are collapsed into the two plane-level arrows:
 
 ```mermaid
 flowchart LR
     HTTP[httpapi gatewayServer]
 
-    HTTP --> AUTH SVC[auth.Service]
-    HTTP --> CONN[connector.Service]
-    HTTP --> COST[cost.Service]
-    HTTP --> EVT[event.Service]
-    HTTP --> REC[recommendation.Service]
-    HTTP --> IDEN[identity.Service]
-    HTTP --> EXEC[execution.Service]
-    HTTP --> OUT[outcome.Service]
-    HTTP --> GUARD[guardrail.Service]
-    HTTP --> WATCH[watchlist.Service]
-    HTTP --> BRIEF[briefing.Service]
-    HTTP --> NOTIFY[notify.Store]
-    HTTP --> CONV[conversation.Store]
-    HTTP --> OBS[observation.Service]
-    HTTP --> CAT[catalog.ReadService]
-    HTTP --> DIAG[diagnostics.ReadService]
-    HTTP --> PAIR[pairing.Service]
-    HTTP -->|SSE proxy only| LLM[LLM plane<br/>external]
+    subgraph SVCS["Wired services — each one HTTP-wired AND DB-backed"]
+        direction TB
+        AUTHSVC[auth.Service]
+        CONN[connector.Service]
+        COST[cost.Service]
+        EVT[event.Service]
+        REC[recommendation.Service]
+        IDEN[identity.Service]
+        EXEC[execution.Service]
+        OUT[outcome.Service]
+        GUARD[guardrail.Service]
+        WATCH[watchlist.Service]
+        BRIEF[briefing.Service]
+        NOTIFY[notify.Store]
+        CONV[conversation.Store]
+        OBS[observation.Service]
+        CAT[catalog.ReadService]
+        DIAG[diagnostics.ReadService]
+        PAIR[pairing.Service]
+    end
 
-    BRIEF --> EVT
-    REC --> EXEC
+    HTTP -->|wires all 17| SVCS
+    SVCS -->|every service| DB[(db.Queries / pgx pool)]
+    HTTP -.->|SSE proxy only, no DB| LLM[LLM plane<br/>external]
+```
+
+### Cross-service dependencies
+
+Only six runtime edges exist *between* services — everything else talks solely to the DB pool. `analytics.Emitter` is the one DB consumer that is not wired to HTTP directly (it is reached via `notify.Store`):
+
+```mermaid
+flowchart LR
+    BRIEF[briefing.Service] --> EVT[event.Service]
+    REC[recommendation.Service] --> EXEC[execution.Service]
     EXEC --> REC
-    NOTIFY --> ANALYTICS[analytics.Emitter]
-    IDEN --> REC
+    IDEN[identity.Service] --> REC
     IDEN --> ROUTEC[routec.TargetRetirer]
-
-    AUTH SVC --> DB[(db.Queries / pgx pool)]
-    CONN --> DB
-    COST --> DB
-    EVT --> DB
-    REC --> DB
-    IDEN --> DB
-    EXEC --> DB
-    OUT --> DB
-    GUARD --> DB
-    WATCH --> DB
-    BRIEF --> DB
-    NOTIFY --> DB
-    CONV --> DB
-    OBS --> DB
-    CAT --> DB
-    DIAG --> DB
-    PAIR --> DB
-    ANALYTICS --> DB
+    NOTIFY[notify.Store] --> ANALYTICS[analytics.Emitter]
+    ANALYTICS --> DB[(db.Queries / pgx pool)]
 ```
 
 Key properties enforced by this graph:
