@@ -11,24 +11,6 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 )
 
-// connectorOperations is the set of /connector/* operations whose runtime
-// (middleware.go routePolicies, all kindProtected) authenticates EXCLUSIVELY
-// from the secure httpOnly mo_session cookie via sessionToken(r). The
-// Authorization header is never evaluated for a connector caller: the
-// connect/refresh/disconnect/catalog.sync actions are L2+ writes outside the
-// machine gateway envelope (perm.GatewayCan denies them), and while GET
-// /connector/status is additionally reachable by the internal LLM machine
-// bearer, its FIRST-PARTY generated-client contract is the cookie. Issue #5:
-// the published contract must therefore resolve every connector operation to
-// cookieAuth, not the mis-declared root bearerAuth.
-var connectorOperations = []struct{ method, path string }{
-	{http.MethodPost, "/connector/connect"},
-	{http.MethodPost, "/connector/refresh"},
-	{http.MethodPost, "/connector/disconnect"},
-	{http.MethodPost, "/connector/catalog/sync"},
-	{http.MethodGet, "/connector/status"},
-}
-
 // effectiveSecurity returns the security requirements that apply to an
 // operation: its own if declared, otherwise the document-level default (the
 // OpenAPI 3.1 root `security`). A nil operation-level list means "inherit"; an
@@ -40,28 +22,31 @@ func effectiveSecurity(doc *openapi3.T, op *openapi3.Operation) openapi3.Securit
 	return doc.Security
 }
 
-// requirementSchemes lists the security-scheme names referenced anywhere in a
-// requirement set (across every OR alternative).
-func requirementSchemes(reqs openapi3.SecurityRequirements) map[string]bool {
-	out := map[string]bool{}
-	for _, req := range reqs {
-		for name := range req {
-			out[name] = true
+func securityAlternatives(reqs openapi3.SecurityRequirements) map[string]bool {
+	alternatives := make(map[string]bool, len(reqs))
+	for _, requirement := range reqs {
+		if len(requirement) == 0 {
+			alternatives["public"] = true
+			continue
+		}
+		if len(requirement) != 1 {
+			alternatives["compound"] = true
+			continue
+		}
+		for name := range requirement {
+			alternatives[name] = true
 		}
 	}
-	return out
+	return alternatives
 }
 
-// TestConnectorOperationsResolveToCookieAuth is the issue #5 contract-assertion
-// (written first as a failing negative against the pre-fix contract, whose root
-// `security: [{bearerAuth: []}]` leaves connector operations advertising a
-// bearer path the runtime never accepts). It reads the security declared by the
-// GENERATED gen/go embedded spec (GetSpec) — which is generated from
-// contracts/gateway.openapi.yaml — so it simultaneously proves the contract is
-// truthful AND that regeneration carried the correction into the generated
-// artifacts. Every connector operation must resolve to cookieAuth and must NOT
-// advertise bearerAuth.
-func TestConnectorOperationsResolveToCookieAuth(t *testing.T) {
+// TestContractSecurityMatchesRuntimeRoutePolicies keeps the authored/generated
+// auth contract exactly aligned with middleware.go. Protected routes accept a
+// human cookie and accept the machine bearer only when GatewayCan grants their
+// exact action. Connector writes therefore remain cookie-only, while connector
+// status and every other allowlisted machine read truthfully expose cookie OR
+// bearer as separate OpenAPI alternatives (never a compound AND requirement).
+func TestContractSecurityMatchesRuntimeRoutePolicies(t *testing.T) {
 	doc, err := gateway.GetSpec()
 	if err != nil {
 		t.Fatalf("loading generated embedded gateway spec: %v", err)
@@ -81,28 +66,50 @@ func TestConnectorOperationsResolveToCookieAuth(t *testing.T) {
 			SessionCookieName, got.Type, got.In, got.Name)
 	}
 
-	for _, co := range connectorOperations {
-		pathItem := doc.Paths.Find(co.path)
+	for _, policy := range routePolicies {
+		pathItem := doc.Paths.Find(policy.path)
 		if pathItem == nil {
-			t.Errorf("contract has no path %q", co.path)
+			t.Errorf("contract has no path %q", policy.path)
 			continue
 		}
-		op := pathItem.GetOperation(co.method)
+		op := pathItem.GetOperation(policy.method)
 		if op == nil {
-			t.Errorf("contract has no %s operation on %q", co.method, co.path)
+			t.Errorf("contract has no %s operation on %q", policy.method, policy.path)
 			continue
 		}
-		reqs := effectiveSecurity(doc, op)
-		if len(reqs) == 0 {
-			t.Errorf("%s %s: connector operation resolves to NO security (must be cookieAuth)", co.method, co.path)
+		got := securityAlternatives(effectiveSecurity(doc, op))
+		want := map[string]bool{}
+		switch policy.kind {
+		case kindPublic:
+			// An empty security array means the operation is public.
+		case kindSessionOptional:
+			want["public"] = true
+			want["cookieAuth"] = true
+		case kindGatewayDraft:
+			want["bearerAuth"] = true
+		case kindCapture:
+			want["captureAuth"] = true
+			want["cookieAuth"] = true
+		case kindCaptureRead:
+			want["captureAuth"] = true
+		case kindProtected:
+			want["cookieAuth"] = true
+			if perm.GatewayCan(policy.action) {
+				want["bearerAuth"] = true
+			}
+		default:
+			t.Fatalf("unclassified runtime route kind %d", policy.kind)
+		}
+
+		if len(got) != len(want) {
+			t.Errorf("%s %s: contract security alternatives = %v, runtime requires %v", policy.method, policy.path, got, want)
 			continue
 		}
-		schemes := requirementSchemes(reqs)
-		if !schemes["cookieAuth"] {
-			t.Errorf("%s %s: effective security %v does not include cookieAuth (runtime authenticates the connector caller by the mo_session cookie only)", co.method, co.path, schemes)
-		}
-		if schemes["bearerAuth"] {
-			t.Errorf("%s %s: effective security %v advertises bearerAuth, but the runtime never validates a bearer for a first-party connector caller (issue #5)", co.method, co.path, schemes)
+		for alternative := range want {
+			if !got[alternative] {
+				t.Errorf("%s %s: contract security alternatives = %v, runtime requires %v", policy.method, policy.path, got, want)
+				break
+			}
 		}
 	}
 }
@@ -150,7 +157,7 @@ func TestConnectorAuthenticatesByCookieNotBearer(t *testing.T) {
 	// 2) Bearer machine gateway token only, no cookie: a connector WRITE is a
 	// non-Draft L2+ action outside the machine envelope (perm.GatewayCan denies
 	// it), so it MUST be rejected. This is why the contract may not advertise
-	// bearerAuth for connector operations.
+	// bearerAuth for connector writes.
 	t.Run("bearer does not authenticate a connector write", func(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/connector/connect", nil)
 		req.Header.Set("Authorization", "Bearer "+gatewayToken)

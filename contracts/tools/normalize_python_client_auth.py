@@ -15,8 +15,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ruamel.yaml import YAML
-
 HTTP_METHODS = frozenset({"delete", "get", "head", "options", "patch", "post", "put", "trace"})
 CLIENT_ANNOTATION = re.compile(
     r"client: (?:AuthenticatedClient \| Client|AuthenticatedClient|Client)(?=[,)])"
@@ -31,31 +29,29 @@ def python_identifier(value: str) -> str:
     return "_".join(re.findall(r"[^\. _-]+", sanitized)).lower()
 
 
-def security_scheme_names(requirements: Any) -> set[str]:
-    if requirements is None:
-        return set()
-    if not isinstance(requirements, list):
-        raise ValueError("security requirements must be a list")
-
-    names: set[str] = set()
-    for requirement in requirements:
-        if not isinstance(requirement, Mapping):
-            raise ValueError("each security requirement must be a mapping")
-        names.update(str(name) for name in requirement)
-    return names
-
-
 def client_annotation(
     requirements: Any,
     security_schemes: Mapping[str, Any],
 ) -> str:
-    names = security_scheme_names(requirements)
-    if not names:
-        return "Client"
+    if not isinstance(requirements, list):
+        raise ValueError("security requirements must be a list")
 
-    accepts_cookie = False
-    accepts_bearer = False
-    for name in names:
+    accepts_client = False
+    accepts_authenticated_client = False
+    for requirement in requirements:
+        if not isinstance(requirement, Mapping):
+            raise ValueError("each security requirement must be a mapping")
+        if not requirement:
+            accepts_client = True
+            continue
+        if len(requirement) != 1:
+            names = ", ".join(str(name) for name in requirement)
+            raise ValueError(
+                "generated Python client cannot represent compound AND security requirement: "
+                f"{names}"
+            )
+
+        name = str(next(iter(requirement)))
         raw_scheme = security_schemes.get(name)
         if not isinstance(raw_scheme, Mapping):
             raise ValueError(f"security requirement references unknown scheme {name!r}")
@@ -64,17 +60,17 @@ def client_annotation(
         location = raw_scheme.get("in")
         http_scheme = raw_scheme.get("scheme")
         if scheme_type == "apiKey" and location == "cookie":
-            accepts_cookie = True
+            accepts_client = True
         elif scheme_type == "http" and http_scheme == "bearer":
-            accepts_bearer = True
+            accepts_authenticated_client = True
         else:
             raise ValueError(
                 f"generated Python client has no credential adapter for security scheme {name!r}"
             )
 
-    if accepts_cookie and accepts_bearer:
+    if accepts_client and accepts_authenticated_client:
         return "AuthenticatedClient | Client"
-    if accepts_bearer:
+    if accepts_authenticated_client:
         return "AuthenticatedClient"
     return "Client"
 
@@ -99,10 +95,7 @@ def normalize_module(module_path: Path, annotation: str) -> None:
     module_path.write_text(normalized, encoding="utf-8")
 
 
-def normalize_generated_client(spec_path: Path, package_path: Path) -> None:
-    yaml = YAML(typ="safe")
-    with spec_path.open(encoding="utf-8") as spec_file:
-        document = yaml.load(spec_file)
+def normalize_document(document: Any, package_path: Path) -> None:
     if not isinstance(document, Mapping):
         raise ValueError("OpenAPI document must be a mapping")
 
@@ -151,6 +144,18 @@ def normalize_generated_client(spec_path: Path, package_path: Path) -> None:
     if unclassified:
         names = ", ".join(str(path) for path in sorted(unclassified))
         raise ValueError(f"generated endpoint modules were not classified: {names}")
+
+
+def normalize_generated_client(spec_path: Path, package_path: Path) -> None:
+    # The generator carries ruamel.yaml in its isolated uvx environment. Keep
+    # the import at this I/O boundary so the deterministic normalization core
+    # and its repository tests need no undeclared parser dependency.
+    from ruamel.yaml import YAML
+
+    yaml = YAML(typ="safe")
+    with spec_path.open(encoding="utf-8") as spec_file:
+        document = yaml.load(spec_file)
+    normalize_document(document, package_path)
 
 
 def main() -> int:

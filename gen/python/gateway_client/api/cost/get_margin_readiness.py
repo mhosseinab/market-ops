@@ -4,7 +4,7 @@ from uuid import UUID
 
 import httpx
 
-from ...client import Client
+from ...client import AuthenticatedClient, Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.margin_readiness import MarginReadiness
 from ...types import UNSET, Response
@@ -31,7 +31,9 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | MarginReadiness:
+def _parse_response(
+    *, client: AuthenticatedClient | Client, response: httpx.Response
+) -> ErrorEnvelope | MarginReadiness:
     if response.status_code == 200:
         response_200 = MarginReadiness.from_dict(response.json())
 
@@ -42,7 +44,9 @@ def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelop
     return response_default
 
 
-def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | MarginReadiness]:
+def _build_response(
+    *, client: AuthenticatedClient | Client, response: httpx.Response
+) -> Response[ErrorEnvelope | MarginReadiness]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -53,7 +57,7 @@ def _build_response(*, client: Client, response: httpx.Response) -> Response[Err
 
 def sync_detailed(
     *,
-    client: Client,
+    client: AuthenticatedClient | Client,
     variant_id: UUID,
 ) -> Response[ErrorEnvelope | MarginReadiness]:
     """Read a SKU's margin readiness.
@@ -86,7 +90,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: Client,
+    client: AuthenticatedClient | Client,
     variant_id: UUID,
 ) -> ErrorEnvelope | MarginReadiness | None:
     """Read a SKU's margin readiness.
@@ -114,7 +118,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: Client,
+    client: AuthenticatedClient | Client,
     variant_id: UUID,
 ) -> Response[ErrorEnvelope | MarginReadiness]:
     """Read a SKU's margin readiness.
@@ -145,7 +149,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: Client,
+    client: AuthenticatedClient | Client,
     variant_id: UUID,
 ) -> ErrorEnvelope | MarginReadiness | None:
     """Read a SKU's margin readiness.

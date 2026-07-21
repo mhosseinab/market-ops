@@ -3,19 +3,22 @@ from uuid import UUID
 
 import httpx
 from gateway_client import AuthenticatedClient, Client
+from gateway_client.api.cost import get_cost_import_preview, get_margin_readiness
 from gateway_client.api.observation import upload_capture
-from gateway_client.api.organization import connect_connector
+from gateway_client.api.organization import connect_connector, get_connector_status
 from gateway_client.api.recommendation import create_recommendation_draft
-from gateway_client.api.session import login
+from gateway_client.api.session import login, logout
 from gateway_client.api.system import get_healthz
 from gateway_client.models.connector_connect_request import ConnectorConnectRequest
 from gateway_client.models.login_request import LoginRequest
 
 
 def test_connector_generated_client_requires_cookie_capable_client() -> None:
-    hints = get_type_hints(connect_connector.sync_detailed)
+    write_hints = get_type_hints(connect_connector.sync_detailed)
+    status_hints = get_type_hints(get_connector_status.sync_detailed)
 
-    assert hints["client"] is Client
+    assert write_hints["client"] is Client
+    assert set(get_args(status_hints["client"])) == {AuthenticatedClient, Client}
 
 
 def test_generated_client_types_match_each_contract_auth_mode() -> None:
@@ -27,6 +30,12 @@ def test_generated_client_types_match_each_contract_auth_mode() -> None:
         AuthenticatedClient,
         Client,
     }
+    assert set(get_args(get_type_hints(get_margin_readiness.sync_detailed)["client"])) == {
+        AuthenticatedClient,
+        Client,
+    }
+    assert get_type_hints(get_cost_import_preview.sync_detailed)["client"] is Client
+    assert get_type_hints(logout.sync_detailed)["client"] is Client
 
 
 def test_login_cookie_is_reused_for_connector_call_without_bearer() -> None:
