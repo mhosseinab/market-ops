@@ -44,7 +44,7 @@ tasks:
   gen:python:
     desc: Generate the Python gateway client (openapi-python-client) into gen/python.
     cmds:
-      - uvx openapi-python-client@{{.OPENAPI_PY_VERSION}} generate --path "{{.GATEWAY_SPEC}}" --meta uv --config "{{.ROOT_DIR}}/gen/python-client.config.yaml" --output-path "{{.ROOT_DIR}}/gen/python" --overwrite
+      - uvx openapi-python-client@{{.OPENAPI_PY_VERSION}} generate --path "{{.GATEWAY_SPEC}}" --meta uv --config "{{.ROOT_DIR}}/contracts/python-client.config.yaml" --output-path "{{.ROOT_DIR}}/gen/python" --overwrite
       # openapi-python-client runs ruff post-generation, leaving a cache dir that
       # must never be committed.
       - rm -rf "{{.ROOT_DIR}}/gen/python/.ruff_cache"

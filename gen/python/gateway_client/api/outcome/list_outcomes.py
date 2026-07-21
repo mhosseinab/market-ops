@@ -4,7 +4,7 @@ from uuid import UUID
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.outcome_list import OutcomeList
 from ...types import UNSET, Response, Unset
@@ -34,7 +34,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorEnvelope | OutcomeList:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | OutcomeList:
     if response.status_code == 200:
         response_200 = OutcomeList.from_dict(response.json())
 
@@ -45,9 +45,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | OutcomeList]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | OutcomeList]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -58,7 +56,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     limit: int | Unset = UNSET,
 ) -> Response[ErrorEnvelope | OutcomeList]:
@@ -94,7 +92,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     limit: int | Unset = UNSET,
 ) -> ErrorEnvelope | OutcomeList | None:
@@ -125,7 +123,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     limit: int | Unset = UNSET,
 ) -> Response[ErrorEnvelope | OutcomeList]:
@@ -159,7 +157,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     limit: int | Unset = UNSET,
 ) -> ErrorEnvelope | OutcomeList | None:

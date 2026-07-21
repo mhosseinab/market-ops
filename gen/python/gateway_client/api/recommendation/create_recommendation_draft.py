@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import AuthenticatedClient
 from ...models.error_envelope import ErrorEnvelope
 from ...models.recommendation_draft_request import RecommendationDraftRequest
 from ...models.recommendation_draft_result import RecommendationDraftResult
@@ -30,7 +30,7 @@ def _get_kwargs(
 
 
 def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
+    *, client: AuthenticatedClient, response: httpx.Response
 ) -> ErrorEnvelope | RecommendationDraftResult:
     if response.status_code == 200:
         response_200 = RecommendationDraftResult.from_dict(response.json())
@@ -43,7 +43,7 @@ def _parse_response(
 
 
 def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
+    *, client: AuthenticatedClient, response: httpx.Response
 ) -> Response[ErrorEnvelope | RecommendationDraftResult]:
     return Response(
         status_code=HTTPStatus(response.status_code),

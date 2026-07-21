@@ -17,17 +17,12 @@ servers:
     description: Local dev (core service)
 
 # Cookie session auth (the secure httpOnly `mo_session` cookie) applies to the
-# whole surface by default, because the runtime `authMiddleware` authenticates
-# every protected route EXCLUSIVELY from that cookie via `sessionToken(r)` — the
-# Authorization header is never evaluated for a first-party caller (PRD §8,
-# §12.3: server-side sessions, no client-stored token). Operational probes such
-# as /healthz opt out with an explicit empty `security: []`. The ONLY operations
-# that genuinely validate a bearer token override this default explicitly: the
-# machine-only, read/Draft-only LLM-plane routes (`/chat/cards/*`, bearerAuth)
-# and the scoped extension capture credential routes (`/observation/capture`,
-# `/ext/owned-targets`, captureAuth). A human session cookie is refused on the
-# `/chat/cards/*` routes, so bearerAuth — not cookieAuth — is their truthful
-# declaration.
+# whole human surface by default. Operations in the runtime's explicit
+# read/Draft-only machine allowlist add bearerAuth as a separate OR alternative;
+# this never widens the machine credential beyond `perm.GatewayCan`. Operational
+# probes opt out with `security: []`, and logout declares its optional cookie.
+# Scoped extension credentials use captureAuth. A human session cookie is
+# refused on the machine-only `/chat/cards/*` routes, so those remain bearer-only.
 security:
   - cookieAuth: []
 
@@ -169,6 +164,9 @@ paths:
         Returns the current connection state plus every §15.2 capability with
         its status and last-verified time. Capabilities default to Unknown and
         never enable dependent UI while Unknown (ACC-001).
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
       parameters:
         - name: marketplaceAccountId
           in: query
@@ -339,6 +337,7 @@ paths:
         Deletes the server-side session bound to the request cookie and clears
         the cookie. Idempotent: closing an already-absent session succeeds.
       security:
+        - {}
         - cookieAuth: []
       responses:
         '204':
@@ -1114,6 +1113,9 @@ paths:
         `asOf` (CST-002 point-in-time lookup). Omitting `asOf` returns the current
         in-force versions. This reproduces the cost profile that produced a
         historical number, never the current one.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
       parameters:
         - name: variantId
           in: query
@@ -1154,6 +1156,9 @@ paths:
         Complete, Partial, Stale, Missing, with the components that block or limit
         it. Only Complete drives an executable recommendation (enforced
         downstream); Partial may show analysis but no approval control.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
       parameters:
         - name: variantId
           in: query

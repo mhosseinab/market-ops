@@ -55,7 +55,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient,
+    client: AuthenticatedClient | Client,
     body: CaptureUpload,
 ) -> Response[CaptureAccepted | ErrorEnvelope]:
     """Upload an extension (Route B) observation capture.
@@ -97,7 +97,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient,
+    client: AuthenticatedClient | Client,
     body: CaptureUpload,
 ) -> CaptureAccepted | ErrorEnvelope | None:
     """Upload an extension (Route B) observation capture.
@@ -134,7 +134,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient,
+    client: AuthenticatedClient | Client,
     body: CaptureUpload,
 ) -> Response[CaptureAccepted | ErrorEnvelope]:
     """Upload an extension (Route B) observation capture.
@@ -174,7 +174,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient,
+    client: AuthenticatedClient | Client,
     body: CaptureUpload,
 ) -> CaptureAccepted | ErrorEnvelope | None:
     """Upload an extension (Route B) observation capture.
