@@ -182,3 +182,17 @@ func TestAdmitEditedPriceZeroValueRejected(t *testing.T) {
 		t.Fatal("the raw policy.ErrMissingReference sentinel must not leak past the domain classification")
 	}
 }
+
+// TestAdmitEditedPriceInvalidMoneyRejected keeps the edited-value boundary
+// compatible with Money.IsZero's fail-closed contract: an uninitialised Money is
+// a missing edited value, never a legitimate zero and never policy input.
+func TestAdmitEditedPriceInvalidMoneyRejected(t *testing.T) {
+	pc := permissivePolicyContext(t)
+	_, ok, err := recommendation.AdmitEditedPrice(pc, money.Money{}, time.Now())
+	if ok {
+		t.Fatal("an uninitialised edited price must NOT be admissible")
+	}
+	if !errors.Is(err, recommendation.ErrEditedPriceRejected) {
+		t.Fatalf("invalid edited price err = %v, want the declined-edit class ErrEditedPriceRejected", err)
+	}
+}

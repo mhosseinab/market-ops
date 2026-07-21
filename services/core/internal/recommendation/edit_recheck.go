@@ -89,7 +89,8 @@ func AdmitEditedPrice(pc PolicyContext, edited money.Money, now time.Time) (poli
 // strategy/reference config is a genuine integrity fault, is NOT folded here, and
 // still fails as a 500 (via evaluateEditedPrice).
 func validateEditedValue(edited, unit money.Money) error {
-	if edited.IsZero() {
+	isZero, err := edited.IsZero()
+	if err != nil || isZero {
 		return ErrEditedPriceRejected
 	}
 	if edited.Currency() != unit.Currency() || edited.Exponent() != unit.Exponent() {
