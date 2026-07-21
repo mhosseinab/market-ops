@@ -22,6 +22,15 @@ RETURNING *;
 SELECT * FROM briefings
 WHERE marketplace_account_id = $1 AND business_day = $2;
 
+-- name: GetLatestBriefingBeforeDay :one
+-- Bounded provenance lookup for the briefing-failure surface (#119). The upper
+-- bound is exclusive: a failed request for today can only surface an earlier,
+-- actually stored briefing and can never relabel the requested day as history.
+SELECT * FROM briefings
+WHERE marketplace_account_id = $1 AND business_day < $2
+ORDER BY business_day DESC
+LIMIT 1;
+
 -- name: ListBriefingEvents :many
 -- The ranked events of a briefing, in Today order (rank asc).
 SELECT * FROM briefing_events

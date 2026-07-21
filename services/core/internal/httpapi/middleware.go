@@ -214,6 +214,7 @@ var routePolicies = []routePolicy{
 	// machine envelope (issue #26 — the machine grant may not exceed the typed
 	// tool registry manifest).
 	{http.MethodGet, "/briefing", kindProtected, perm.ActionReadEvents},
+	{http.MethodGet, "/briefing/latest", kindProtected, perm.ActionReadEvents},
 	// In-app notification feed read + acknowledgement (NOT-001) — L1, every role.
 	// Ack advances only a bounded read-state projection; neither carries a control.
 	{http.MethodGet, "/notifications", kindProtected, perm.ActionReadNotifications},

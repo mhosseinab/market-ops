@@ -182,6 +182,10 @@ export const faIR: Catalog = {
   "chat.briefing.empty": "رویدادی برای امروز نیست.",
   "chat.briefing.generatedAt": "تولیدشده در {time}",
   "chat.briefing.failure.title": "گزارش در دسترس نیست",
+  "chat.briefing.failure.lastSuccessful": "آخرین گزارش موفق: {date}. صفحهٔ امروز به‌روز است.",
+  "chat.briefing.failure.neverGenerated": "گزارش موفق قبلی وجود ندارد. صفحهٔ امروز به‌روز است.",
+  "chat.briefing.failure.lookupUnavailable":
+    "بررسی آخرین گزارش موفق ممکن نیست. صفحهٔ امروز به‌روز است.",
   "chat.briefing.failure.unknownLast": "آخرین گزارش موفق در دسترس نیست. صفحهٔ امروز به‌روز است.",
   "chat.briefing.eventTypeUnknown": "نوع رویداد نامشخص",
   "chat.unavailable.title": "دستیار در دسترس نیست",

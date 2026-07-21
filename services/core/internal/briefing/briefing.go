@@ -153,6 +153,26 @@ func (s *Service) Get(ctx context.Context, account uuid.UUID, day time.Time) (Br
 	if err != nil {
 		return Briefing{}, err
 	}
+	return loadBriefing(ctx, q, header)
+}
+
+// LatestBefore returns the newest briefing actually stored before the exclusive
+// UTC business-day bound. pgx.ErrNoRows means the account has never generated an
+// earlier briefing; storage failures remain errors and are never collapsed into
+// that absence state (#119).
+func (s *Service) LatestBefore(ctx context.Context, account uuid.UUID, before time.Time) (Briefing, error) {
+	q := db.New(s.pool)
+	header, err := q.GetLatestBriefingBeforeDay(ctx, db.GetLatestBriefingBeforeDayParams{
+		MarketplaceAccountID: account,
+		BusinessDay:          pgtype.Date{Time: before.UTC(), Valid: true},
+	})
+	if err != nil {
+		return Briefing{}, err
+	}
+	return loadBriefing(ctx, q, header)
+}
+
+func loadBriefing(ctx context.Context, q *db.Queries, header db.Briefing) (Briefing, error) {
 	rows, err := q.ListBriefingEvents(ctx, header.ID)
 	if err != nil {
 		return Briefing{}, err

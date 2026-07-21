@@ -1742,6 +1742,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
 
+  /briefing/latest:
+    get:
+      operationId: getLatestBriefing
+      tags:
+        - event
+      summary: Get the latest stored briefing before a business day.
+      description: >-
+        Returns authoritative provenance for the latest stored briefing strictly
+        before `beforeBusinessDay`. This read never generates a briefing and never
+        substitutes the requested date. `available` always carries a stored
+        `DailyBriefing`; `never_generated` means no earlier stored briefing exists.
+        Service or storage failures use the error envelope and are not collapsed
+        into `never_generated`.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: beforeBusinessDay
+          in: query
+          required: true
+          description: Exclusive UTC calendar-date upper bound for the lookup.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Authoritative latest-briefing provenance or an explicit never-generated state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatestBriefingRead'
+        default:
+          description: The latest-briefing lookup is unavailable or failed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
   /notifications:
     get:
       operationId: listNotifications
@@ -5444,6 +5485,32 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BriefingEvent'
+      additionalProperties: false
+
+    LatestBriefingRead:
+      type: object
+      description: >-
+        Provenance-aware result for a bounded latest-briefing lookup. When `state`
+        is `available`, `provenance` is `stored_briefing` and `briefing` is required.
+        When `state` is `never_generated`, `provenance` is `none` and `briefing`
+        is omitted. Transport/storage errors are ErrorEnvelope responses, never a
+        fabricated date or a `never_generated` success.
+      required:
+        - state
+        - provenance
+      properties:
+        state:
+          type: string
+          enum:
+            - available
+            - never_generated
+        provenance:
+          type: string
+          enum:
+            - stored_briefing
+            - none
+        briefing:
+          $ref: '#/components/schemas/DailyBriefing'
       additionalProperties: false
 
     BriefingEvent:

@@ -390,6 +390,10 @@ type Querier interface {
 	// transaction — see internal/guardrail).
 	GetGuardrailSettings(ctx context.Context, marketplaceAccountID uuid.UUID) (GuardrailSetting, error)
 	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
+	// Bounded provenance lookup for the briefing-failure surface (#119). The upper
+	// bound is exclusive: a failed request for today can only surface an earlier,
+	// actually stored briefing and can never relabel the requested day as history.
+	GetLatestBriefingBeforeDay(ctx context.Context, arg GetLatestBriefingBeforeDayParams) (Briefing, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
 	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (CatalogSyncRun, error)
 	GetLevel2Proposal(ctx context.Context, id uuid.UUID) (Level2Proposal, error)
