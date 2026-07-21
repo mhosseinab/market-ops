@@ -35,6 +35,7 @@ type DraftService interface {
 // briefing feeds are personal data, so cross-tenant disclosure here is a §4.6 breach.
 type BriefingService interface {
 	GetForOrg(ctx context.Context, organizationID, account uuid.UUID, day time.Time) (briefing.Briefing, error)
+	LatestBeforeForOrg(ctx context.Context, organizationID, account uuid.UUID, before time.Time) (briefing.Briefing, error)
 }
 
 // CreateRecommendationDraft mints the individual-approval Draft for a persisted,
@@ -150,6 +151,41 @@ func (s *gatewayServer) GetBriefing(
 		return gateway.GetBriefingdefaultJSONResponse{StatusCode: 500, Body: briefingErr(err)}, nil
 	}
 	return gateway.GetBriefing200JSONResponse(toBriefingView(b)), nil
+}
+
+// GetLatestBriefing returns the latest actually stored briefing before the
+// exclusive requested-day bound. Absence is an explicit never-generated success;
+// storage/service failures stay errors so the UI cannot mistake them for history.
+func (s *gatewayServer) GetLatestBriefing(
+	ctx context.Context, req gateway.GetLatestBriefingRequestObject,
+) (gateway.GetLatestBriefingResponseObject, error) {
+	if s.briefing == nil {
+		return gateway.GetLatestBriefingdefaultJSONResponse{StatusCode: 503, Body: briefingUnavailableErr()}, nil
+	}
+	b, err := s.briefing.LatestBeforeForOrg(
+		ctx,
+		orgFromCtx(ctx),
+		req.Params.MarketplaceAccountId,
+		req.Params.BeforeBusinessDay.Time,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return gateway.GetLatestBriefing200JSONResponse{
+				State:      gateway.LatestBriefingReadStateNeverGenerated,
+				Provenance: gateway.LatestBriefingReadProvenanceNone,
+			}, nil
+		}
+		if errors.Is(err, briefing.ErrAccountNotFound) {
+			return gateway.GetLatestBriefingdefaultJSONResponse{StatusCode: 404, Body: briefingNotFoundErr()}, nil
+		}
+		return gateway.GetLatestBriefingdefaultJSONResponse{StatusCode: 500, Body: briefingErr(err)}, nil
+	}
+	view := toBriefingView(b)
+	return gateway.GetLatestBriefing200JSONResponse{
+		State:      gateway.LatestBriefingReadStateAvailable,
+		Provenance: gateway.LatestBriefingReadProvenanceStoredBriefing,
+		Briefing:   &view,
+	}, nil
 }
 
 // toBriefingView maps a stored briefing onto the wire shape, preserving rank order.

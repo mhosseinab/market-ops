@@ -210,6 +210,9 @@ export const MESSAGE_KEYS = [
   "chat.briefing.empty",
   "chat.briefing.generatedAt",
   "chat.briefing.failure.title",
+  "chat.briefing.failure.lastSuccessful",
+  "chat.briefing.failure.neverGenerated",
+  "chat.briefing.failure.lookupUnavailable",
   // Provenance (evidence-quality never-cut, #119): on failure the last SUCCESSFUL
   // briefing is unknown/unavailable — never the requested day synthesized as a date.
   "chat.briefing.failure.unknownLast",

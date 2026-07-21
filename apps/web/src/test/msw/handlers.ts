@@ -124,6 +124,9 @@ export const handlers = [
 
   // ── S29: chat dock ──────────────────────────────────────────────────────────
   http.get(`${B}/briefing`, () => HttpResponse.json(dailyBriefing)),
+  http.get(`${B}/briefing/latest`, () =>
+    HttpResponse.json({ state: "never_generated", provenance: "none" }),
+  ),
   // Default chat turn: a conversation id + a token + a final envelope frame. The
   // free-text-never-approves invariant holds regardless — /chat carries no control.
   http.post(`${B}/chat`, () =>

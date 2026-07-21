@@ -183,6 +183,11 @@ export const en: Catalog = {
   "chat.briefing.empty": "No events for today.",
   "chat.briefing.generatedAt": "Generated at {time}",
   "chat.briefing.failure.title": "Briefing unavailable",
+  "chat.briefing.failure.lastSuccessful": "Last successful briefing: {date}. Today stays current.",
+  "chat.briefing.failure.neverGenerated":
+    "No earlier successful briefing exists. Today stays current.",
+  "chat.briefing.failure.lookupUnavailable":
+    "The last successful briefing could not be checked. Today stays current.",
   "chat.briefing.failure.unknownLast":
     "The last successful briefing is unavailable. Today stays current.",
   "chat.briefing.eventTypeUnknown": "Unavailable event type",

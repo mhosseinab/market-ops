@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -45,14 +46,23 @@ func (f *fakeDraft) PrepareLevel2Proposal(_ context.Context, _ uuid.UUID, actor 
 // (issue #131) so a transport test can assert the handler derives tenant scope from
 // the authenticated principal, never from the request param.
 type fakeBriefing struct {
-	b       briefing.Briefing
-	err     error
-	lastOrg uuid.UUID
+	b          briefing.Briefing
+	err        error
+	latest     briefing.Briefing
+	latestErr  error
+	lastOrg    uuid.UUID
+	lastBefore time.Time
 }
 
 func (f *fakeBriefing) GetForOrg(_ context.Context, org, _ uuid.UUID, _ time.Time) (briefing.Briefing, error) {
 	f.lastOrg = org
 	return f.b, f.err
+}
+
+func (f *fakeBriefing) LatestBeforeForOrg(_ context.Context, org, _ uuid.UUID, before time.Time) (briefing.Briefing, error) {
+	f.lastOrg = org
+	f.lastBefore = before
+	return f.latest, f.latestErr
 }
 
 // draftServer builds a server with auth armed, the gateway (machine) token set,
@@ -285,6 +295,66 @@ func TestBriefingRoute_ServesAndFailsClosed(t *testing.T) {
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("missing briefing = %d, want 404", rec.Code)
+	}
+}
+
+// TestLatestBriefingRoute_TruthfulProvenance covers all success/error states of
+// the #119 fallback seam: stored means authoritative, no row means never generated,
+// and storage failure remains an error rather than fabricated absence/history.
+func TestLatestBriefingRoute_TruthfulProvenance(t *testing.T) {
+	account := uuid.New()
+	priorDay := time.Date(2026, 7, 18, 0, 0, 0, 0, time.UTC)
+	generatedAt := time.Date(2026, 7, 18, 6, 15, 0, 0, time.UTC)
+	fa := newFakeAuth()
+	fa.principals["tok-owner"] = principal(perm.RoleOwner)
+	fb := &fakeBriefing{latest: briefing.Briefing{
+		AccountID: account, BusinessDay: priorDay, GeneratedAt: generatedAt,
+	}}
+	srv := draftServer(t, fa, &fakeDraft{}, fb)
+	path := "/briefing/latest?marketplaceAccountId=" + account.String() + "&beforeBusinessDay=2026-07-20"
+
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("latest briefing status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	var available gateway.LatestBriefingRead
+	if err := json.Unmarshal(rec.Body.Bytes(), &available); err != nil {
+		t.Fatalf("decode available: %v", err)
+	}
+	if available.State != gateway.LatestBriefingReadStateAvailable ||
+		available.Provenance != gateway.LatestBriefingReadProvenanceStoredBriefing ||
+		available.Briefing == nil || !available.Briefing.GeneratedAt.Equal(generatedAt) {
+		t.Fatalf("available provenance = %+v, want stored briefing at %s", available, generatedAt)
+	}
+	if want := time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC); !fb.lastBefore.Equal(want) {
+		t.Fatalf("exclusive bound = %s, want %s", fb.lastBefore, want)
+	}
+
+	fb.latest = briefing.Briefing{}
+	fb.latestErr = pgx.ErrNoRows
+	req = httptest.NewRequest(http.MethodGet, path, nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	var never gateway.LatestBriefingRead
+	if err := json.Unmarshal(rec.Body.Bytes(), &never); err != nil {
+		t.Fatalf("decode never generated: %v", err)
+	}
+	if rec.Code != http.StatusOK || never.State != gateway.LatestBriefingReadStateNeverGenerated ||
+		never.Provenance != gateway.LatestBriefingReadProvenanceNone || never.Briefing != nil {
+		t.Fatalf("never-generated response = code %d, body %+v", rec.Code, never)
+	}
+
+	fb.latestErr = errors.New("storage failed")
+	req = httptest.NewRequest(http.MethodGet, path, nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("storage failure = %d, want 500, body=%s", rec.Code, rec.Body.String())
 	}
 }
 
