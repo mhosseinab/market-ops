@@ -133,6 +133,7 @@ export function useChatDock(
   context: ChatContext,
   locale: LocaleId,
   activateConversationLocale: (locale: unknown) => Promise<void>,
+  resetConversationLocale: () => void,
 ): ChatDockRuntime {
   const { marketplaceAccountId } = useAccount();
   const [messages, setMessages] = useState<readonly DockMessage[]>([]);
@@ -230,6 +231,7 @@ export function useChatDock(
         conversationIdRef.current = undefined;
         boundContextRef.current = undefined;
         boundLocaleRef.current = undefined;
+        resetConversationLocale();
         setCommittedContext(undefined);
       }
 
@@ -332,7 +334,7 @@ export function useChatDock(
         setIsRunning(false);
       }
     },
-    [marketplaceAccountId, patchAssistant, activateConversationLocale],
+    [marketplaceAccountId, patchAssistant, activateConversationLocale, resetConversationLocale],
   );
 
   const onNew = useCallback(

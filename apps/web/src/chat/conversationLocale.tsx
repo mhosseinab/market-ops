@@ -10,7 +10,7 @@ import {
   useState,
 } from "react";
 import { flushSync } from "react-dom";
-import { I18nextProvider } from "react-i18next";
+import { I18nextProvider, useTranslation } from "react-i18next";
 import { LocaleContext } from "../app/i18n";
 
 export interface PreparedConversationLocale {
@@ -21,7 +21,11 @@ export interface PreparedConversationLocale {
 export type ConversationLocalePreparer = (locale: LocaleId) => Promise<PreparedConversationLocale>;
 
 export interface ConversationLocaleController extends PreparedConversationLocale {
+  readonly dir: string;
+  readonly lang: string;
   activate: (locale: unknown) => Promise<void>;
+  reset: () => void;
+  setApplicationLocale: (locale: LocaleId) => void;
 }
 
 function isSupportedLocale(locale: unknown): locale is LocaleId {
@@ -55,22 +59,26 @@ export function ConversationLocalePreparerProvider({
 }
 
 /**
- * Owns the catalog used by the conversation surface. It is deliberately
- * independent from the application locale preference: a gateway-echoed locale
- * can switch chat copy without changing the rest of the shell or <html> direction.
+ * Before a gateway binding exists, the conversation surface shares the active
+ * application i18next instance. That keeps a closed/unbound dock synchronized
+ * with application language changes and preserves non-gateway catalogs such as
+ * the pseudo-locale. Only an authoritative gateway frame creates an isolated,
+ * supported-locale catalog; subsequent app changes cannot relabel that binding.
  */
-export function useConversationLocale(initialLocale: LocaleId): ConversationLocaleController {
+export function useConversationLocale(
+  applicationLocale: LocaleId,
+  setApplicationLocale: (locale: LocaleId) => void,
+): ConversationLocaleController {
   const prepare = useContext(ConversationLocalePreparerContext);
-  const [prepared, setPrepared] = useState<PreparedConversationLocale>(() =>
-    prepareLocale(initialLocale),
-  );
-  const preparedRef = useRef(prepared);
-  preparedRef.current = prepared;
+  const { i18n: applicationInstance } = useTranslation();
+  const [bound, setBound] = useState<PreparedConversationLocale | null>(null);
+  const boundRef = useRef(bound);
+  boundRef.current = bound;
 
   const activate = useCallback(
     async (locale: unknown) => {
       if (!isSupportedLocale(locale)) throw new Error("chat_locale_unsupported");
-      if (preparedRef.current.locale === locale) return;
+      if (boundRef.current?.locale === locale) return;
 
       const next = await prepare(locale);
       if (next.locale !== locale || next.instance.resolvedLanguage !== locale) {
@@ -80,14 +88,36 @@ export function useConversationLocale(initialLocale: LocaleId): ConversationLoca
       // or terminal frame. flushSync makes that ordering observable at the DOM
       // boundary instead of relying on React's async batching chronology.
       flushSync(() => {
-        preparedRef.current = next;
-        setPrepared(next);
+        boundRef.current = next;
+        setBound(next);
       });
     },
     [prepare],
   );
 
-  return { ...prepared, activate };
+  const reset = useCallback(() => {
+    if (boundRef.current === null) return;
+    flushSync(() => {
+      boundRef.current = null;
+      setBound(null);
+    });
+  }, []);
+
+  const locale = bound?.locale ?? applicationLocale;
+  const instance = bound?.instance ?? applicationInstance;
+  const catalogLanguage = instance.resolvedLanguage ?? instance.language;
+  const supportedCatalog = isSupportedLocale(catalogLanguage);
+  const pack = supportedCatalog ? LOCALE_PACKS[catalogLanguage] : null;
+
+  return {
+    locale,
+    instance,
+    dir: pack?.dir ?? instance.dir(catalogLanguage),
+    lang: pack?.lang ?? catalogLanguage,
+    activate,
+    reset,
+    setApplicationLocale,
+  };
 }
 
 export function ConversationLocaleBoundary({
@@ -100,9 +130,7 @@ export function ConversationLocaleBoundary({
   const localeState = useMemo(
     () => ({
       locale: controller.locale,
-      setLocale: (next: LocaleId) => {
-        void controller.activate(next);
-      },
+      setLocale: controller.setApplicationLocale,
     }),
     [controller],
   );

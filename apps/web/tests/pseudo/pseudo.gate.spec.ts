@@ -1,4 +1,4 @@
-import { PSEUDO_DIR, PSEUDO_ID } from "@market-ops/locale";
+import { buildPseudoCatalog, PSEUDO_DIR, PSEUDO_ID } from "@market-ops/locale";
 import { expect, test } from "@playwright/test";
 import {
   CRITICAL_SELECTORS,
@@ -46,3 +46,19 @@ for (const route of PSEUDO_ROUTES) {
     await expect(page).toHaveScreenshot(`${route.name}.png`);
   });
 }
+
+test("the unbound chat dock preserves the active pseudo catalog and direction", async ({
+  page,
+}) => {
+  const pseudo = buildPseudoCatalog();
+  await page.goto(`${PSEUDO_HARNESS_PATH}#/today`);
+  await page.waitForFunction(() => document.documentElement.dataset.pseudoReady === "1");
+  await page.getByRole("button", { name: pseudo["topbar.chat.toggle"] }).click();
+
+  const dock = page.getByTestId("chat-dock");
+  await expect(dock).toBeVisible();
+  await expect(dock).toHaveAttribute("lang", PSEUDO_ID);
+  await expect(dock).toHaveAttribute("dir", PSEUDO_DIR);
+  await expect(dock.locator(".chat-dock__title")).toHaveText(pseudo["chat.title"]);
+  await expect(dock.getByTestId("chat-empty")).toContainText(pseudo["chat.empty.title"]);
+});

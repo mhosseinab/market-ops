@@ -291,6 +291,50 @@ describe("ChatDock — sends the ACTIVE locale with every turn (LOC-001)", () =>
     expect(bodies[0]?.locale).toBe("en");
   });
 
+  it("follows an app locale change while unbound and closed before sending the first turn", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    let releaseResponse: (() => void) | undefined;
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        bodies.push((await request.json()) as ChatTurnRequest);
+        await new Promise<void>((resolve) => {
+          releaseResponse = resolve;
+        });
+        return sseResponse([
+          {
+            kind: "conversation",
+            conversationId: "conv-1",
+            localeTag: "en",
+            localeVersion: 1,
+          },
+          { kind: "final", envelope: { sections: [], evidence: [] } },
+        ]);
+      }),
+    );
+
+    renderRoute("/today");
+    expect(screen.queryByTestId("chat-dock")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText(faIR["app.langName.en"]));
+
+    await screen.findByText(en["route.today.title"], { selector: ".top-bar__title" });
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("lang", "en"));
+    expect(document.documentElement).toHaveAttribute("dir", "ltr");
+
+    fireEvent.click(screen.getByLabelText(en["topbar.chat.toggle"]));
+    const dock = await screen.findByTestId("chat-dock");
+    expect(dock).toHaveAttribute("lang", "en");
+    expect(dock).toHaveAttribute("dir", "ltr");
+    expect(dock).toHaveTextContent(en["chat.title"]);
+    expect(dock).not.toHaveTextContent(faIR["chat.title"]);
+
+    await sendComposer("first turn");
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]?.locale).toBe("en");
+    expect(screen.queryByTestId("chat-msg-assistant")).toBeInTheDocument();
+
+    await act(async () => releaseResponse?.());
+  });
+
   it("renders terminal copy from the gateway locale without changing the selected app locale", async () => {
     const bodies: ChatTurnRequest[] = [];
     let releaseLocale: (() => void) | undefined;

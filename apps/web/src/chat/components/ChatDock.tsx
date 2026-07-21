@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, ComposerPrimitive, ThreadPrimitive } from "@assistant-ui/react";
-import { LOCALE_PACKS, type MessageKey } from "@market-ops/locale";
+import type { MessageKey } from "@market-ops/locale";
 import { useRouterState } from "@tanstack/react-router";
 import { useAppState } from "../../app/appState";
 import { useLocale, useT } from "../../app/i18n";
@@ -63,22 +63,23 @@ function UnavailableBanner({ unavailable }: { unavailable: ChatUnavailable }) {
 }
 
 export function ChatDock() {
-  const { locale } = useLocale();
+  const applicationLocale = useLocale();
+  const { locale } = applicationLocale;
   const { chatOpen, toggleChat } = useAppState();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const rawSearch = useRouterState({ select: (s) => s.location.search });
   const context = deriveChatContext(pathname, rawSearch as Record<string, string>);
-  const conversationLocale = useConversationLocale(locale);
+  const conversationLocale = useConversationLocale(locale, applicationLocale.setLocale);
   // The ACTIVE application locale is sent with every turn (LOC-001, issue #120):
   // it is DATA, never inferred from the message. The gateway echo activates a
   // separate conversation catalog; it never overwrites the user's app preference.
-  const dock = useChatDock(context, locale, conversationLocale.activate);
+  const dock = useChatDock(context, locale, conversationLocale.activate, conversationLocale.reset);
 
   if (!chatOpen) return null;
 
   return (
     <ConversationLocaleBoundary controller={conversationLocale}>
-      <ChatDockContent {...dock} toggleChat={toggleChat} />
+      <ChatDockContent {...dock} toggleChat={toggleChat} conversationLocale={conversationLocale} />
     </ConversationLocaleBoundary>
   );
 }
@@ -89,17 +90,20 @@ function ChatDockContent({
   actions,
   activeContext,
   toggleChat,
-}: ReturnType<typeof useChatDock> & { readonly toggleChat: () => void }) {
+  conversationLocale,
+}: ReturnType<typeof useChatDock> & {
+  readonly toggleChat: () => void;
+  readonly conversationLocale: ReturnType<typeof useConversationLocale>;
+}) {
   const t = useT();
   const { locale } = useLocale();
-  const pack = LOCALE_PACKS[locale];
 
   return (
     <aside
       className="chat-dock"
       data-testid="chat-dock"
-      dir={pack.dir}
-      lang={pack.lang}
+      dir={conversationLocale.dir}
+      lang={conversationLocale.lang}
       data-conversation-locale={locale}
     >
       <ChatDockActionsContext.Provider value={actions}>
