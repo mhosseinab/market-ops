@@ -166,3 +166,32 @@ func TestBriefingEventsEqualTodayFeed(t *testing.T) {
 		t.Fatalf("after regen briefing has %d events, want %d (no duplication)", len(b2.Events), len(today))
 	}
 }
+
+// TestLatestBeforeReturnsNewestStoredPriorBriefing proves the #119 provenance
+// lookup is exclusive and ordered by stored business day, never the requested day.
+func TestLatestBeforeReturnsNewestStoredPriorBriefing(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account, _ := seedAccountWithVariants(t, q, 1)
+	bsvc := briefing.NewService(pool, event.NewService(pool))
+
+	for _, day := range []time.Time{
+		time.Date(2026, 7, 17, 8, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 18, 8, 0, 0, 0, time.UTC),
+		time.Date(2026, 7, 20, 8, 0, 0, 0, time.UTC),
+	} {
+		clock := day
+		bsvc.WithClock(func() time.Time { return clock })
+		if created, err := bsvc.GenerateForAccount(ctx, account); err != nil || !created {
+			t.Fatalf("generate %s: created=%v err=%v", day, created, err)
+		}
+	}
+
+	latest, err := bsvc.LatestBefore(ctx, account, time.Date(2026, 7, 20, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("latest before: %v", err)
+	}
+	if want := "2026-07-18"; latest.BusinessDay.Format(time.DateOnly) != want {
+		t.Fatalf("latest day = %s, want %s (requested day must be excluded)", latest.BusinessDay.Format(time.DateOnly), want)
+	}
+}

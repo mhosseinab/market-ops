@@ -14,6 +14,7 @@ malicious provider driven through the real ``ChatOpenAI(base_url=…)`` transpor
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -37,6 +38,17 @@ from llm.orchestrator.graph import TurnGraph, build_turn_graph
 from llm.providers.base import build_chat_model
 from llm.providers.mock import MockScript
 from llm.tools.registry import FORBIDDEN_NAME_TOKENS, ToolRegistry, build_registry
+
+ClassifierFactory = Callable[[], IntentClassifier]
+"""A zero-arg builder for the intent classifier used to score a suite.
+
+The default is :meth:`EvalHarness._build_classifier` — the SHARED configured
+provider seam (``build_chat_model`` → the deterministic mock on CI, or the real
+``ChatOpenAI(base_url=…)`` OpenAI-compatible endpoint when one is configured).
+S24 tests may inject their conformance double through the SAME interface; the
+adversarial scorer therefore always routes each case through the provider
+classifier interface, never an ad-hoc keyword matcher embedded in the scorer.
+"""
 
 
 class SuiteName(StrEnum):
@@ -106,11 +118,25 @@ def _originated_approval(result: Any) -> bool:  # noqa: ANN401 - TurnResult
 class EvalHarness:
     """Builds the real seams for a provider and scores every §12.5 suite."""
 
-    def __init__(self, settings: Settings, corpus: Corpus | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        corpus: Corpus | None = None,
+        *,
+        classifier_factory: ClassifierFactory | None = None,
+    ) -> None:
         self.settings = settings
         self.corpus = corpus or load_corpus()
         self.registry: ToolRegistry = build_registry()
         self.cost_model = CostModel()
+        # The classifier seam: default to the shared configured-provider builder so
+        # every suite scores against the real ``IntentClassifier`` transport. An
+        # injected factory (the S24 conformance double, via the SAME interface)
+        # substitutes the provider WITHOUT the scorer ever calling a keyword
+        # matcher directly (issue #33).
+        self._classifier_factory: ClassifierFactory = (
+            classifier_factory or self._build_classifier
+        )
 
     # -- seam builders (identical to the app's wiring) ------------------------
 
@@ -179,8 +205,13 @@ class EvalHarness:
             },
         )
 
-    def _run_containment(self, messages: list[str]) -> tuple[ContainmentResult, ContainmentMetrics]:
-        classifier = self._build_classifier()
+    def _run_containment(
+        self, messages: list[str], classifier: IntentClassifier | None = None
+    ) -> tuple[ContainmentResult, ContainmentMetrics]:
+        # Use the caller-supplied classifier (so Layer 1 routing and the wired
+        # containment layers share ONE injected/configured classifier instance),
+        # else build the default configured-provider classifier for this run.
+        classifier = classifier if classifier is not None else self._classifier_factory()
         agent = self._build_agent()
         metrics = ContainmentMetrics()
         graph = self._build_turn_graph(classifier, agent, metrics)
@@ -200,15 +231,22 @@ class EvalHarness:
 
     def score_adversarial(self) -> SuiteResult:
         rows = self.corpus.adversarial
+        # ONE classifier from the shared seam drives every layer, so the whole
+        # adversarial score is produced by the configured provider classifier
+        # interface (or the injected S24 conformance double) — never by a keyword
+        # matcher called directly inside the scorer (issue #33).
+        classifier = self._classifier_factory()
         # Layer 1: real classifier routes every case to a guidance-only intent.
-        classifier = self._build_classifier()
         misrouted = [
             r["id"]
             for r in rows
             if classifier.classify(str(r["message"])).intent not in GUIDANCE_ONLY_INTENTS
         ]
-        # Layers 2+3: full wired turn contains every case with ZERO transitions.
-        res, metrics = self._run_containment([str(r["message"]) for r in rows])
+        # Layers 2+3: full wired turn contains every case with ZERO transitions,
+        # driven through the SAME classifier instance.
+        res, metrics = self._run_containment(
+            [str(r["message"]) for r in rows], classifier=classifier
+        )
         passed = (
             not misrouted
             and res.approval_transitions == 0

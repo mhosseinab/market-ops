@@ -56,3 +56,17 @@ func (s *Service) GetForOrg(ctx context.Context, organizationID, requestedAccoun
 	}
 	return s.Get(ctx, account, day)
 }
+
+// LatestBeforeForOrg applies the same tenant-derived account scope as GetForOrg
+// before reading historical briefing provenance. A foreign selector remains
+// indistinguishable from an account with no readable briefing.
+func (s *Service) LatestBeforeForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID, before time.Time) (Briefing, error) {
+	account, err := s.accountForOrg(ctx, organizationID)
+	if err != nil {
+		return Briefing{}, err
+	}
+	if requestedAccount != account {
+		return Briefing{}, ErrAccountNotFound
+	}
+	return s.LatestBefore(ctx, account, before)
+}

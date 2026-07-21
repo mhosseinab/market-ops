@@ -4,6 +4,18 @@ import type { Catalog } from "./keys";
 // copied VERBATIM from design/README.md §"Canonical State Glossary" / PRD §11.4 —
 // never paraphrased, never synonymized (enforced by the glossary test).
 export const faIR: Catalog = {
+  "auth.login.title": "ورود به مرکز فرمان",
+  "auth.login.subtitle": "برای دسترسی به داشبورد وارد حساب سازمانی خود شوید.",
+  "auth.login.emailLabel": "رایانامه",
+  "auth.login.passwordLabel": "گذرواژه",
+  "auth.login.submit": "ورود",
+  "auth.login.submitting": "در حال ورود…",
+  "auth.login.error.invalidCredentials": "رایانامه یا گذرواژه نادرست است.",
+  "auth.login.error.generic": "ورود ممکن نشد. لطفاً دوباره تلاش کنید.",
+  "auth.login.expiredNote": "نشست شما پایان یافته است. لطفاً دوباره وارد شوید.",
+  "auth.gate.loading": "در حال بررسی نشست…",
+  "auth.logout": "خروج",
+
   "app.name": "مرکز فرمان دیجی‌کالا",
   "app.langName.fa": "فارسی",
   "app.langName.en": "English",
@@ -170,6 +182,10 @@ export const faIR: Catalog = {
   "chat.briefing.empty": "رویدادی برای امروز نیست.",
   "chat.briefing.generatedAt": "تولیدشده در {time}",
   "chat.briefing.failure.title": "گزارش در دسترس نیست",
+  "chat.briefing.failure.lastSuccessful": "آخرین گزارش موفق: {date}. صفحهٔ امروز به‌روز است.",
+  "chat.briefing.failure.neverGenerated": "گزارش موفق قبلی وجود ندارد. صفحهٔ امروز به‌روز است.",
+  "chat.briefing.failure.lookupUnavailable":
+    "بررسی آخرین گزارش موفق ممکن نیست. صفحهٔ امروز به‌روز است.",
   "chat.briefing.failure.unknownLast": "آخرین گزارش موفق در دسترس نیست. صفحهٔ امروز به‌روز است.",
   "chat.briefing.eventTypeUnknown": "نوع رویداد نامشخص",
   "chat.unavailable.title": "دستیار در دسترس نیست",
@@ -271,7 +287,12 @@ export const faIR: Catalog = {
   "products.pagination.next": "بعدی",
   "products.readiness.error.title": "آمادگی حاشیهٔ برخی کالاها بارگذاری نشد",
   "products.readiness.error.body":
-    "بارگذاری آمادگی حاشیه برای {count} کالا در این صفحه ناموفق بود. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
+    "بارگذاری آمادگی حاشیه برای {count} کالا ناموفق بود. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
+  "products.readiness.unknown": "آمادگی در دسترس نیست",
+  "products.truncated.title": "فهرست کالاها بزرگ‌تر از حد بارگذاری کامل است",
+  "products.truncated.body":
+    "این فهرست در یک حد ایمنی متوقف شد و همهٔ کالاها را دربر نمی‌گیرد. تعداد و صفحه‌های زیر فقط بخش بارگذاری‌شده را نشان می‌دهند، نه کل فهرست کالاها. برای محدودکردن نما از جست‌وجو یا صافی استفاده کنید.",
+  "products.truncated.count": "نمایش {count} کالا از یک مجموعهٔ ناقص",
   "products.market.multiple": "{count} آگهی",
   "tier.priority": "اولویت‌دار",
   "tier.standard": "استاندارد",

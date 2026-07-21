@@ -85,6 +85,7 @@ export type PolicyBoundary = components["schemas"]["PolicyBoundary"];
 // ── S28: Actions/outcomes, bulk approval, settings, operations ──────────────
 export type SessionInfo = components["schemas"]["SessionInfo"];
 export type UserRole = components["schemas"]["UserRole"];
+export type LoginRequest = components["schemas"]["LoginRequest"];
 
 export type ActionExecutionView = components["schemas"]["ActionExecutionView"];
 export type ExecutionMode = components["schemas"]["ExecutionMode"];

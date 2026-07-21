@@ -94,6 +94,9 @@ from .guardrail_write_request import GuardrailWriteRequest
 from .health import Health
 from .health_status import HealthStatus
 from .identity_decision_request import IdentityDecisionRequest
+from .latest_briefing_read import LatestBriefingRead
+from .latest_briefing_read_provenance import LatestBriefingReadProvenance
+from .latest_briefing_read_state import LatestBriefingReadState
 from .level_2_proposal_request import Level2ProposalRequest
 from .level_2_proposal_result import Level2ProposalResult
 from .listing_diagnostic import ListingDiagnostic
@@ -278,6 +281,9 @@ __all__ = (
     "Health",
     "HealthStatus",
     "IdentityDecisionRequest",
+    "LatestBriefingRead",
+    "LatestBriefingReadProvenance",
+    "LatestBriefingReadState",
     "Level2ProposalRequest",
     "Level2ProposalResult",
     "ListingDiagnostic",

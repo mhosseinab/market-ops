@@ -5,20 +5,20 @@ version: '3'
 
 tasks:
   test:
-    desc: Run the Python (LLM plane) test suite.
+    desc: Run the Python plane and generated-client contract regression suites.
     cmds:
-      - uv run pytest services/llm -q
+      - uv run pytest services/llm contracts/tools/test_normalize_python_client_auth.py -q
 
   lint:
     desc: Ruff check + strict mypy for the LLM plane and integration tooling, from the repo root.
     cmds:
-      - uv run ruff check services/llm tools/integration
+      - uv run ruff check services/llm tools/integration contracts/tools/*.py
       - uv run mypy services/llm tools/integration
 
   fmt:
     desc: Format Python sources with ruff.
     cmds:
-      - uv run ruff format services/llm
+      - uv run ruff format services/llm contracts/tools/*.py
 
   build:
     desc: Build the LLM plane wheel.

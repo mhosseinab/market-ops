@@ -23,6 +23,12 @@ type UnsupportedParserEvent struct {
 	SourceType       string
 	ParserVersion    string
 	ConnectorVersion string
+	// Reason is the BOUNDED, closed-set classification of the rejection (#154 REOPEN).
+	// It — never the raw version — is what carries the drift attribution onto the
+	// metric, so label cardinality stays bounded regardless of attacker input. An empty
+	// Reason degrades to RejectionUnknownParser at emit time (fail closed to a bounded
+	// bucket, never to the raw string).
+	Reason ParserRejectionReason
 }
 
 // ParserDriftSink receives the bounded parser-drift signal so an unsupported parser
@@ -61,12 +67,21 @@ func newTelemetryDriftSink(logger *slog.Logger) *telemetryDriftSink {
 }
 
 // UnsupportedParser emits the bounded rejection to metrics and the structured log.
+// CARDINALITY INVARIANT (#154 REOPEN, §8 SRE observability integrity): the metric
+// labels are ONLY bounded, closed-set technical identifiers — route (3), source_type
+// (validated enum), and the bounded rejection reason. The raw parser/connector VERSION
+// strings are attacker-influenced and unbounded, so they are NEVER used as metric label
+// values; they remain in the append-only structured quarantine log below (evidence,
+// not a metric dimension), keeping the drift signal intact and observable.
 func (s *telemetryDriftSink) UnsupportedParser(ctx context.Context, ev UnsupportedParserEvent) {
+	reason := ev.Reason
+	if reason == "" {
+		reason = RejectionUnknownParser
+	}
 	s.rejections.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("route", ev.Route),
 		attribute.String("source_type", ev.SourceType),
-		attribute.String("parser_version", ev.ParserVersion),
-		attribute.String("connector_version", ev.ConnectorVersion),
+		attribute.String("reason", string(reason)),
 	))
 	s.logger.WarnContext(ctx, "capture parser identity not registered; quarantined to Unverified",
 		slog.String("event", "unsupported_parser_quarantined"),
@@ -74,6 +89,7 @@ func (s *telemetryDriftSink) UnsupportedParser(ctx context.Context, ev Unsupport
 		slog.String("target_id", ev.TargetID.String()),
 		slog.String("route", ev.Route),
 		slog.String("source_type", ev.SourceType),
+		slog.String("reason", string(reason)),
 		slog.String("parser_version", ev.ParserVersion),
 		slog.String("connector_version", ev.ConnectorVersion),
 	)

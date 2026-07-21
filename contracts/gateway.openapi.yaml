@@ -17,17 +17,12 @@ servers:
     description: Local dev (core service)
 
 # Cookie session auth (the secure httpOnly `mo_session` cookie) applies to the
-# whole surface by default, because the runtime `authMiddleware` authenticates
-# every protected route EXCLUSIVELY from that cookie via `sessionToken(r)` — the
-# Authorization header is never evaluated for a first-party caller (PRD §8,
-# §12.3: server-side sessions, no client-stored token). Operational probes such
-# as /healthz opt out with an explicit empty `security: []`. The ONLY operations
-# that genuinely validate a bearer token override this default explicitly: the
-# machine-only, read/Draft-only LLM-plane routes (`/chat/cards/*`, bearerAuth)
-# and the scoped extension capture credential routes (`/observation/capture`,
-# `/ext/owned-targets`, captureAuth). A human session cookie is refused on the
-# `/chat/cards/*` routes, so bearerAuth — not cookieAuth — is their truthful
-# declaration.
+# whole human surface by default. Operations in the runtime's explicit
+# read/Draft-only machine allowlist add bearerAuth as a separate OR alternative;
+# this never widens the machine credential beyond `perm.GatewayCan`. Operational
+# probes opt out with `security: []`, and logout declares its optional cookie.
+# Scoped extension credentials use captureAuth. A human session cookie is
+# refused on the machine-only `/chat/cards/*` routes, so those remain bearer-only.
 security:
   - cookieAuth: []
 
@@ -169,6 +164,9 @@ paths:
         Returns the current connection state plus every §15.2 capability with
         its status and last-verified time. Capabilities default to Unknown and
         never enable dependent UI while Unknown (ACC-001).
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
       parameters:
         - name: marketplaceAccountId
           in: query
@@ -339,6 +337,7 @@ paths:
         Deletes the server-side session bound to the request cookie and clears
         the cookie. Idempotent: closing an already-absent session succeeds.
       security:
+        - {}
         - cookieAuth: []
       responses:
         '204':
@@ -1114,6 +1113,9 @@ paths:
         `asOf` (CST-002 point-in-time lookup). Omitting `asOf` returns the current
         in-force versions. This reproduces the cost profile that produced a
         historical number, never the current one.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
       parameters:
         - name: variantId
           in: query
@@ -1154,6 +1156,9 @@ paths:
         Complete, Partial, Stale, Missing, with the components that block or limit
         it. Only Complete drives an executable recommendation (enforced
         downstream); Partial may show analysis but no approval control.
+      security:
+        - cookieAuth: []
+        - bearerAuth: []
       parameters:
         - name: variantId
           in: query
@@ -1732,6 +1737,47 @@ paths:
                 $ref: '#/components/schemas/DailyBriefing'
         default:
           description: Unexpected error (including no briefing for that day).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /briefing/latest:
+    get:
+      operationId: getLatestBriefing
+      tags:
+        - event
+      summary: Get the latest stored briefing before a business day.
+      description: >-
+        Returns authoritative provenance for the latest stored briefing strictly
+        before `beforeBusinessDay`. This read never generates a briefing and never
+        substitutes the requested date. `available` always carries a stored
+        `DailyBriefing`; `never_generated` means no earlier stored briefing exists.
+        Service or storage failures use the error envelope and are not collapsed
+        into `never_generated`.
+      parameters:
+        - name: marketplaceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: beforeBusinessDay
+          in: query
+          required: true
+          description: Exclusive UTC calendar-date upper bound for the lookup.
+          schema:
+            type: string
+            format: date
+      responses:
+        '200':
+          description: Authoritative latest-briefing provenance or an explicit never-generated state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LatestBriefingRead'
+        default:
+          description: The latest-briefing lookup is unavailable or failed.
           content:
             application/json:
               schema:
@@ -5439,6 +5485,32 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/BriefingEvent'
+      additionalProperties: false
+
+    LatestBriefingRead:
+      type: object
+      description: >-
+        Provenance-aware result for a bounded latest-briefing lookup. When `state`
+        is `available`, `provenance` is `stored_briefing` and `briefing` is required.
+        When `state` is `never_generated`, `provenance` is `none` and `briefing`
+        is omitted. Transport/storage errors are ErrorEnvelope responses, never a
+        fabricated date or a `never_generated` success.
+      required:
+        - state
+        - provenance
+      properties:
+        state:
+          type: string
+          enum:
+            - available
+            - never_generated
+        provenance:
+          type: string
+          enum:
+            - stored_briefing
+            - none
+        briefing:
+          $ref: '#/components/schemas/DailyBriefing'
       additionalProperties: false
 
     BriefingEvent:

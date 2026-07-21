@@ -4,7 +4,7 @@ from uuid import UUID
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.guardrail_config_view import GuardrailConfigView
 from ...types import UNSET, Response
@@ -31,9 +31,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorEnvelope | GuardrailConfigView:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | GuardrailConfigView:
     if response.status_code == 200:
         response_200 = GuardrailConfigView.from_dict(response.json())
 
@@ -44,9 +42,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | GuardrailConfigView]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | GuardrailConfigView]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -57,7 +53,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
 ) -> Response[ErrorEnvelope | GuardrailConfigView]:
     """Read an account's L3 commercial guardrails (PD-3 item 6).
@@ -90,7 +86,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
 ) -> ErrorEnvelope | GuardrailConfigView | None:
     """Read an account's L3 commercial guardrails (PD-3 item 6).
@@ -118,7 +114,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
 ) -> Response[ErrorEnvelope | GuardrailConfigView]:
     """Read an account's L3 commercial guardrails (PD-3 item 6).
@@ -149,7 +145,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
 ) -> ErrorEnvelope | GuardrailConfigView | None:
     """Read an account's L3 commercial guardrails (PD-3 item 6).

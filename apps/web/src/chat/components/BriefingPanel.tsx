@@ -4,7 +4,7 @@ import { AppLink } from "../../components/AppLink";
 import { ViewState } from "../../components/ViewState";
 import { formatCount, formatInstant } from "../../data/format";
 import { briefingEventTypeKey } from "../catalogMaps";
-import { useBriefing, utcBusinessDay } from "../hooks";
+import { useBriefing, useLatestBriefingBefore, utcBusinessDay } from "../hooks";
 import type { BriefingEvent } from "../types";
 
 // Pre-loaded daily briefing (CHAT-010): a READ whose events carry the SAME ids +
@@ -15,10 +15,9 @@ import type { BriefingEvent } from "../types";
 // the requested business day as a "last briefing" date. Error ≠ absence (the #81 /
 // #295 pattern): a request date is not observed history. No authoritative prior
 // briefing is available on this surface (the /briefing read is single-day, with no
-// latest-success metadata or persisted client cache), so the failure state is an
-// explicit unknown/unavailable message carrying NO date. Showing a REAL prior date
-// would require a new briefing-read contract field/endpoint (escalated — the
-// contracts slot is held by #115); it is deliberately NOT fabricated here.
+// latest-success metadata or persisted client cache), so the failure state uses
+// the additive `/briefing/latest` provenance read. Only its stored briefing may
+// supply a date; never-generated and lookup-error states carry NO date.
 
 const SEVERITY_KEY: Record<string, MessageKey> = {
   info: "event.severity.info",
@@ -59,17 +58,47 @@ export function BriefingPanel() {
   const { locale } = useLocale();
   const businessDay = utcBusinessDay();
   const query = useBriefing(businessDay);
+  const latest = useLatestBriefingBefore(businessDay, query.isError);
 
   if (query.isError) {
-    // §16 briefing failure (#119): explicit unknown/unavailable provenance — NO
-    // date. The requested day is never synthesized as a stored briefing date;
-    // Today stays current.
+    const retry = () => {
+      void query.refetch();
+      void latest.refetch();
+    };
     return (
       <section className="briefing briefing--failed" data-testid="briefing-failure">
         <p className="briefing__title">{t("chat.briefing.failure.title")}</p>
-        <p className="briefing__failure-body" data-testid="briefing-failure-unknown">
-          {t("chat.briefing.failure.unknownLast")}
-        </p>
+        <ViewState pending={latest.isPending} error={false}>
+          {latest.data?.state === "available" && latest.data.briefing ? (
+            <p className="briefing__failure-body" data-testid="briefing-failure-known">
+              {t("chat.briefing.failure.lastSuccessful", {
+                date: formatInstant(latest.data.briefing.generatedAt, locale),
+              })}
+            </p>
+          ) : (
+            <p
+              className="briefing__failure-body"
+              data-testid="briefing-failure-unknown"
+              data-provenance-state={latest.isError ? "unavailable" : "never-generated"}
+            >
+              {t(
+                latest.isError
+                  ? "chat.briefing.failure.lookupUnavailable"
+                  : "chat.briefing.failure.neverGenerated",
+              )}
+            </p>
+          )}
+        </ViewState>
+        {!latest.isPending ? (
+          <button
+            type="button"
+            className="btn btn--secondary"
+            disabled={query.isFetching || latest.isFetching}
+            onClick={retry}
+          >
+            {t("action.retry")}
+          </button>
+        ) : null}
       </section>
     );
   }

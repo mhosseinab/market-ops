@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.cost_profile_version import CostProfileVersion
 from ...models.error_envelope import ErrorEnvelope
 from ...models.single_cost_entry_request import SingleCostEntryRequest
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> CostProfileVersion | ErrorEnvelope:
+def _parse_response(*, client: Client, response: httpx.Response) -> CostProfileVersion | ErrorEnvelope:
     if response.status_code == 200:
         response_200 = CostProfileVersion.from_dict(response.json())
 
@@ -42,9 +40,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[CostProfileVersion | ErrorEnvelope]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[CostProfileVersion | ErrorEnvelope]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,7 +51,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: SingleCostEntryRequest,
 ) -> Response[CostProfileVersion | ErrorEnvelope]:
     """Record a single cost-component value.
@@ -89,7 +85,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: SingleCostEntryRequest,
 ) -> CostProfileVersion | ErrorEnvelope | None:
     """Record a single cost-component value.
@@ -118,7 +114,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: SingleCostEntryRequest,
 ) -> Response[CostProfileVersion | ErrorEnvelope]:
     """Record a single cost-component value.
@@ -150,7 +146,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: SingleCostEntryRequest,
 ) -> CostProfileVersion | ErrorEnvelope | None:
     """Record a single cost-component value.

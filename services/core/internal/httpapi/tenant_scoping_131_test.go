@@ -235,3 +235,20 @@ func TestBriefingRejectsForeignScope(t *testing.T) {
 		t.Fatalf("same-tenant briefing events = %+v", got.Events)
 	}
 }
+
+func TestLatestBriefingRejectsForeignScope(t *testing.T) {
+	fa := newFakeAuth()
+	orgID := ownerSession(fa).OrganizationID
+	foreignAccount := uuid.New()
+	fb := &fakeBriefing{latestErr: briefing.ErrAccountNotFound}
+	srv := NewServer(":0", BuildInfo{}, testLogger(), WithAuth(fa), WithCookieSecure(false), WithBriefing(fb))
+
+	rec := getWithSession(
+		srv,
+		"/briefing/latest?marketplaceAccountId="+foreignAccount.String()+"&beforeBusinessDay=2026-07-20",
+	)
+	expectNotFoundBody(t, rec, "NOT_FOUND")
+	if fb.lastOrg != orgID {
+		t.Fatalf("latest-briefing service org = %v, want authenticated org %v", fb.lastOrg, orgID)
+	}
+}

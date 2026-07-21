@@ -390,6 +390,10 @@ type Querier interface {
 	// transaction — see internal/guardrail).
 	GetGuardrailSettings(ctx context.Context, marketplaceAccountID uuid.UUID) (GuardrailSetting, error)
 	GetIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
+	// Bounded provenance lookup for the briefing-failure surface (#119). The upper
+	// bound is exclusive: a failed request for today can only surface an earlier,
+	// actually stored briefing and can never relabel the requested day as history.
+	GetLatestBriefingBeforeDay(ctx context.Context, arg GetLatestBriefingBeforeDayParams) (Briefing, error)
 	// Backs the sync-status view the UI reads (data persisted for a later UI step).
 	GetLatestCatalogSyncRun(ctx context.Context, marketplaceAccountID uuid.UUID) (CatalogSyncRun, error)
 	GetLevel2Proposal(ctx context.Context, id uuid.UUID) (Level2Proposal, error)
@@ -533,6 +537,20 @@ type Querier interface {
 	// Appends one notification (with its SHARED event id) to a digest's membership
 	// snapshot. APPEND-ONLY.
 	InsertDigestItem(ctx context.Context, arg InsertDigestItemParams) (NotificationDigestItem, error)
+	// Record the issue #105 gate-blocked recovery marker for a card a crash left in
+	// Executing whose EXE-001 gate FAILED on resume (no external write happened). It is
+	// written in the SAME transaction as the Executing→PendingReconciliation advance so
+	// the parked card is VISIBLE to the OPS-002 queue (ListPendingReconciliationByAccount)
+	// and the pending_reconciliation backlog gauge (AggregatePendingReconciliation), and
+	// DRAINABLE by ReconcilePending — never an operations-invisible zombie.
+	//
+	// external_state = 'pending_reconciliation' and gate_blocked = true: the marker had
+	// NO write, so reconciliation may resolve it ONLY to Failed, never Accepted (EXE-003:
+	// never infer a success from a write that never happened). It claims the card's stable
+	// idempotency_key, so ON CONFLICT DO NOTHING makes concurrent resumes idempotent AND
+	// permanently forecloses any later claimAndWrite on that key (at-most-one-write,
+	// EXE-002): the marker can never be consumed as a green light for an external write.
+	InsertGateBlockedExecution(ctx context.Context, arg InsertGateBlockedExecutionParams) (ActionExecution, error)
 	// APPEND-ONLY audit row (who/when/evidence). The ONLY write path to this table is
 	// INSERT; there is deliberately no UPDATE/DELETE query.
 	InsertIdentityDecision(ctx context.Context, arg InsertIdentityDecisionParams) (MarketProductIdentityDecision, error)
@@ -812,19 +830,30 @@ type Querier interface {
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)
 	ListSelectionSetMembers(ctx context.Context, selectionSetID uuid.UUID) ([]SelectionSetMember, error)
-	// Durable forward drain for the market-event producer (issue #212). Returns the
-	// target's append-only observations that lie STRICTLY AFTER each stream's durable
-	// consumer cursor, oldest-first per stream. A stream is (native_seller_id,
-	// offer_identity); the LEFT JOIN gives the stream's cursor (NULL when never
-	// consumed) and the (captured_at, id) tie-break makes "after" deterministic for
-	// equal timestamps. Ordered by (native_seller_id, offer_identity, captured_at, id)
-	// so the caller groups by stream and walks each in captured order; LIMIT bounds the
-	// per-pass work and the cursor provides continuation across passes (no fixed
-	// latest-N window). Seller identity is part of the stream key, so a reused offer
+	// Durable, FAIRLY-PAGED forward drain for the market-event producer (issue #212 +
+	// REOPEN residual). Returns the target's append-only observations that lie STRICTLY
+	// AFTER each stream's durable consumer cursor, oldest-first per stream. A stream is
+	// (native_seller_id, offer_identity); the LEFT JOIN gives the stream's cursor (NULL
+	// when never consumed) and the (captured_at, id) tie-break makes "after" deterministic
+	// for equal timestamps. Seller identity is part of the stream key, so a reused offer
 	// identity across two sellers is TWO streams and is never paired.
-	// The owned seller's own stream is excluded here (sqlc.arg(owned_seller)) so it
-	// never consumes the per-pass page budget — EVT-001 type 2 is a COMPETITOR movement,
-	// and the caller has already validated owned_seller as an authoritative decimal id.
+	//
+	// FAIRNESS (REOPEN residual): the per-pass bound is applied PER STREAM via a
+	// ROW_NUMBER window PARTITIONED by (native_seller_id, offer_identity), NOT as one
+	// global LIMIT over the whole target. A single high-backlog earlier-sorting seller can
+	// therefore NEVER monopolise the drain and starve later sellers: every stream advances
+	// by up to :page_limit of its own oldest-unconsumed observations each pass, so every
+	// seller stream makes progress within bounded passes. Total per-pass work stays bounded
+	// (page_limit × the target's naturally-bounded set of competing streams), and the
+	// durable cursor still provides continuation across passes (no fixed latest-N window).
+	// The owned seller's own stream is excluded here (sqlc.arg(owned_seller)) so it never
+	// consumes any per-stream budget — EVT-001 type 2 is a COMPETITOR movement, and the
+	// caller has already validated owned_seller as an authoritative decimal id.
+	// Ordered by (native_seller_id, offer_identity, captured_at, id) so the caller groups
+	// by stream and walks each in captured order. The per-stream slice is a CROSS JOIN
+	// LATERAL with its OWN LIMIT :page_limit, driven by the target's DISTINCT competing
+	// streams — the same bounded-per-group idiom the catalog streak read uses — so the
+	// built-in analyzer resolves the shape and no single seller can exhaust a shared page.
 	ListUnconsumedObservationsByTarget(ctx context.Context, arg ListUnconsumedObservationsByTargetParams) ([]ListUnconsumedObservationsByTargetRow, error)
 	ListUsersByOrganization(ctx context.Context, organizationID uuid.UUID) ([]User, error)
 	// Candidate-generation source (rule-based exact-native-id). Returns variants that

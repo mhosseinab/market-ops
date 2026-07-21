@@ -20,6 +20,7 @@ export type ChatUnavailableReason = components["schemas"]["ChatUnavailableReason
 export type ChatFailure = components["schemas"]["ChatFailure"];
 export type DailyBriefing = components["schemas"]["DailyBriefing"];
 export type BriefingEvent = components["schemas"]["BriefingEvent"];
+export type LatestBriefingRead = components["schemas"]["LatestBriefingRead"];
 
 // The seven CHAT-004 statement kinds a grounded operational response separates.
 export type StatementKind =

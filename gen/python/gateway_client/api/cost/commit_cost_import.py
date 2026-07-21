@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.cost_import_commit_request import CostImportCommitRequest
 from ...models.cost_import_commit_result import CostImportCommitResult
 from ...models.error_envelope import ErrorEnvelope
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> CostImportCommitResult | ErrorEnvelope:
+def _parse_response(*, client: Client, response: httpx.Response) -> CostImportCommitResult | ErrorEnvelope:
     if response.status_code == 200:
         response_200 = CostImportCommitResult.from_dict(response.json())
 
@@ -42,9 +40,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[CostImportCommitResult | ErrorEnvelope]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[CostImportCommitResult | ErrorEnvelope]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,7 +51,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: CostImportCommitRequest,
 ) -> Response[CostImportCommitResult | ErrorEnvelope]:
     """Commit a confirmed cost-import preview.
@@ -88,7 +84,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: CostImportCommitRequest,
 ) -> CostImportCommitResult | ErrorEnvelope | None:
     """Commit a confirmed cost-import preview.
@@ -116,7 +112,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: CostImportCommitRequest,
 ) -> Response[CostImportCommitResult | ErrorEnvelope]:
     """Commit a confirmed cost-import preview.
@@ -147,7 +143,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: CostImportCommitRequest,
 ) -> CostImportCommitResult | ErrorEnvelope | None:
     """Commit a confirmed cost-import preview.

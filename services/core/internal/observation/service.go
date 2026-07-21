@@ -262,6 +262,10 @@ func (s *Service) Ingest(ctx context.Context, c Capture) (IngestResult, error) {
 			SourceType:       string(c.SourceType),
 			ParserVersion:    c.ParserVersion,
 			ConnectorVersion: c.ConnectorVersion,
+			// Bounded rejection classification derived from the SAME server-owned
+			// registry that just returned false; this — not the raw version — is what
+			// reaches the metric label (#154 REOPEN, bounded cardinality).
+			Reason: s.registry.ClassifyRejection(c.SourceType, c.ParserVersion, c.ConnectorVersion),
 		})
 	}
 

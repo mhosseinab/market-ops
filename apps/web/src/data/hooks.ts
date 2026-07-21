@@ -1,4 +1,11 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  queryOptions,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { resetUnauthenticated } from "../app/authEvents";
 import { gateway } from "../app/query";
 import { useAccount } from "./account";
 import { type ErrorEnvelope, GatewayError } from "./errors";
@@ -9,10 +16,12 @@ import type {
   ApprovalConfirmResult,
   BulkApprovalConfirmRequest,
   BulkApprovalConfirmResult,
+  CatalogProductPage,
   CostImportCommitResult,
   CostImportPreview,
   CostProfileVersion,
   EventRelevanceKind,
+  LoginRequest,
   MarginReadiness,
   MarketEvent,
   OutcomeView,
@@ -40,8 +49,7 @@ function unwrap<T>(result: { data?: T; error?: unknown; response?: Response }): 
 
 export const queryKeys = {
   connectorStatus: (accountId: string) => ["connector-status", accountId] as const,
-  catalogProducts: (accountId: string, cursor: string) =>
-    ["catalog-products", accountId, cursor] as const,
+  catalogProductsAll: (accountId: string) => ["catalog-products-all", accountId] as const,
   catalogProduct: (accountId: string, variantId: string) =>
     ["catalog-product", accountId, variantId] as const,
   productDiagnostics: (accountId: string, variantId: string) =>
@@ -76,24 +84,42 @@ export function useConnectorStatus() {
   });
 }
 
-// The canonical Products read model (S26, PRD §6.1). Rows come from Product/
-// Variant/Owned Offer entities — never observation targets. Pagination is by the
-// stable native_variant_id cursor the server returns; the screen advances it.
-export function useCatalogProducts(cursor: string | null) {
+// The §4.5 account target ceiling is 200 canonical products, so requesting the
+// max page size (200) returns the whole catalog in a SINGLE page in production.
+// CATALOG_MAX_PAGES is defensive headroom that bounds the page walk if the server
+// ever returns smaller pages — the walk is therefore explicitly bounded, never an
+// unbounded whole-catalog crawl. The accumulated worst case is thus
+// CATALOG_PAGE_LIMIT × CATALOG_MAX_PAGES = 200 × 4 = 800 rows (4× the 200 ceiling of
+// headroom). If the server still has pages AT the cap, the accumulated set is
+// INCOMPLETE and the Products screen fails closed (a distinct truncated state), never
+// binding count/pageCount to a partial slice as if it were complete. Having the FULL
+// search-filtered set client-side is what lets the screen apply the readiness filter
+// BEFORE pagination and bind count/pageCount to the complete filtered set (issue #256).
+export const CATALOG_PAGE_LIMIT = 200;
+export const CATALOG_MAX_PAGES = 4;
+
+// The authoritative, account-scoped Products set, fetched as a BOUNDED cursor walk
+// (see CATALOG_PAGE_LIMIT/CATALOG_MAX_PAGES). The screen accumulates every page's
+// rows and paginates them client-side, so pagination metadata and the readiness
+// filter describe the complete set rather than one server page.
+export function useAllCatalogProducts() {
   const { marketplaceAccountId } = useAccount();
-  return useQuery({
-    queryKey: queryKeys.catalogProducts(marketplaceAccountId, cursor ?? ""),
-    queryFn: async () =>
+  return useInfiniteQuery({
+    queryKey: queryKeys.catalogProductsAll(marketplaceAccountId),
+    initialPageParam: null as string | null,
+    queryFn: async ({ pageParam }): Promise<CatalogProductPage> =>
       unwrap(
         await gateway.GET("/catalog/products", {
           params: {
             query: {
               marketplaceAccountId,
-              ...(cursor ? { cursor } : {}),
+              limit: CATALOG_PAGE_LIMIT,
+              ...(pageParam ? { cursor: pageParam } : {}),
             },
           },
         }),
       ),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
 }
 
@@ -419,13 +445,66 @@ export function useEventRelevance() {
 
 // ── S28: session / actions-outcomes / bulk ──────────────────────────────────
 
+// The single query options for the current principal (/auth/me). BOTH the router
+// auth gate (beforeLoad → ensureQueryData, issue #168) and `useSession` read this
+// EXACT options object so there is one shared cache entry — the gate resolves the
+// session before any protected/account-scoped query mounts, and the screens read
+// the already-resolved principal without a second round trip. `retry: false`: an
+// unauthenticated 401 must fail fast to the login redirect, never retry-storm.
+export function sessionQueryOptions() {
+  return queryOptions({
+    queryKey: queryKeys.session(),
+    queryFn: async (): Promise<SessionInfo> => unwrap(await gateway.GET("/auth/me")),
+    retry: false,
+  });
+}
+
 // The current principal (ACC-002): role drives the SHARED permission matrix that
 // gates L3 guardrail edits (Owner-only) and the internal Operations surfaces. The
 // screen renders what the session says; it never infers or elevates a role.
 export function useSession() {
-  return useQuery({
-    queryKey: queryKeys.session(),
-    queryFn: async (): Promise<SessionInfo> => unwrap(await gateway.GET("/auth/me")),
+  return useQuery(sessionQueryOptions());
+}
+
+// Production login (issue #168): POST /auth/login with the email/password
+// credential. On success the server sets the secure httpOnly session cookie and
+// returns the SessionInfo — we prime the shared session cache from that body so
+// the destination route's auth gate resolves WITHOUT another /auth/me round trip,
+// and release the 401 storm guard so a later expiry redirects again. The password
+// lives only in the request body for this call; it is NEVER persisted anywhere
+// client-readable and NEVER cached. A 401 is surfaced as a GatewayError so the
+// login screen can render the NON-enumerating invalid-credentials copy.
+export function useLogin() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (credential: LoginRequest): Promise<SessionInfo> => {
+      const res = await gateway.POST("/auth/login", { body: credential });
+      if (res.error) throw new GatewayError(res.error as ErrorEnvelope, res.response?.status);
+      if (res.data === undefined) throw new Error("empty_response");
+      return res.data;
+    },
+    onSuccess: (session) => {
+      qc.setQueryData(queryKeys.session(), session);
+      resetUnauthenticated();
+    },
+  });
+}
+
+// Logout (issue #168): POST /auth/logout closes the server-side session and
+// clears the cookie (idempotent). On EITHER transition — explicit logout or a
+// session expiry — the whole Query cache is cleared so no protected/account-scoped
+// data outlives the session; the caller then routes to the login screen.
+export function useLogout() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: async (): Promise<void> => {
+      const res = await gateway.POST("/auth/logout");
+      // 204 (no content) succeeds with no body; a structured error still throws.
+      if (res.error) throw new GatewayError(res.error as ErrorEnvelope, res.response?.status);
+    },
+    onSuccess: () => {
+      qc.clear();
+    },
   });
 }
 

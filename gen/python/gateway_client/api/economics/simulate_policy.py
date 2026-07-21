@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.policy_simulation_request import PolicySimulationRequest
 from ...models.policy_simulation_result import PolicySimulationResult
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorEnvelope | PolicySimulationResult:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | PolicySimulationResult:
     if response.status_code == 200:
         response_200 = PolicySimulationResult.from_dict(response.json())
 
@@ -42,9 +40,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | PolicySimulationResult]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | PolicySimulationResult]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,7 +51,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: PolicySimulationRequest,
 ) -> Response[ErrorEnvelope | PolicySimulationResult]:
     """Simulate the contribution + six-stage policy engines (non-executable).
@@ -97,7 +93,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: PolicySimulationRequest,
 ) -> ErrorEnvelope | PolicySimulationResult | None:
     """Simulate the contribution + six-stage policy engines (non-executable).
@@ -134,7 +130,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: PolicySimulationRequest,
 ) -> Response[ErrorEnvelope | PolicySimulationResult]:
     """Simulate the contribution + six-stage policy engines (non-executable).
@@ -174,7 +170,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: PolicySimulationRequest,
 ) -> ErrorEnvelope | PolicySimulationResult | None:
     """Simulate the contribution + six-stage policy engines (non-executable).

@@ -37,7 +37,7 @@ async function boot(): Promise<void> {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  const router = createAppRouter(createMemoryHistory({ initialEntries: [route] }));
+  const router = createAppRouter(queryClient, createMemoryHistory({ initialEntries: [route] }));
 
   const rootEl = document.getElementById("root");
   if (!rootEl) throw new Error("root element missing");

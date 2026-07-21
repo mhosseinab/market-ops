@@ -4,6 +4,18 @@ import type { Catalog } from "./keys";
 // fa-IR resolves here and emits missing-key telemetry; a raw key never surfaces.
 // This is also the base for the generated pseudo pack.
 export const en: Catalog = {
+  "auth.login.title": "Sign in to Command Center",
+  "auth.login.subtitle": "Sign in with your organization account to access the dashboard.",
+  "auth.login.emailLabel": "Email",
+  "auth.login.passwordLabel": "Password",
+  "auth.login.submit": "Sign in",
+  "auth.login.submitting": "Signing in…",
+  "auth.login.error.invalidCredentials": "Incorrect email or password.",
+  "auth.login.error.generic": "Could not sign in. Please try again.",
+  "auth.login.expiredNote": "Your session has ended. Please sign in again.",
+  "auth.gate.loading": "Checking your session…",
+  "auth.logout": "Sign out",
+
   "app.name": "Digikala Command Center",
   "app.langName.fa": "فارسی",
   "app.langName.en": "English",
@@ -171,6 +183,11 @@ export const en: Catalog = {
   "chat.briefing.empty": "No events for today.",
   "chat.briefing.generatedAt": "Generated at {time}",
   "chat.briefing.failure.title": "Briefing unavailable",
+  "chat.briefing.failure.lastSuccessful": "Last successful briefing: {date}. Today stays current.",
+  "chat.briefing.failure.neverGenerated":
+    "No earlier successful briefing exists. Today stays current.",
+  "chat.briefing.failure.lookupUnavailable":
+    "The last successful briefing could not be checked. Today stays current.",
   "chat.briefing.failure.unknownLast":
     "The last successful briefing is unavailable. Today stays current.",
   "chat.briefing.eventTypeUnknown": "Unavailable event type",
@@ -273,7 +290,12 @@ export const en: Catalog = {
   "products.pagination.next": "Next",
   "products.readiness.error.title": "Some margin readiness could not be loaded",
   "products.readiness.error.body":
-    "Readiness for {count} products on this page failed to load. Other rows are shown; retry to load the rest.",
+    "Readiness for {count} products failed to load. Other rows are shown; retry to load the rest.",
+  "products.readiness.unknown": "Readiness unavailable",
+  "products.truncated.title": "Catalog too large to load completely",
+  "products.truncated.body":
+    "This list stopped at a safety limit and does not include every product. The count and pages below describe only the loaded part, not your full catalog. Use search or a filter to narrow the view.",
+  "products.truncated.count": "Showing {count} products from an incomplete set",
   "products.market.multiple": "{count} offers",
   "tier.priority": "Priority",
   "tier.standard": "Standard",

@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.retry_action_request import RetryActionRequest
 from ...models.retry_action_result import RetryActionResult
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorEnvelope | RetryActionResult:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | RetryActionResult:
     if response.status_code == 200:
         response_200 = RetryActionResult.from_dict(response.json())
 
@@ -42,9 +40,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | RetryActionResult]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | RetryActionResult]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,7 +51,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: RetryActionRequest,
 ) -> Response[ErrorEnvelope | RetryActionResult]:
     r"""Retry an eligible failed action (EXE-003, CHAT-074).
@@ -91,7 +87,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: RetryActionRequest,
 ) -> ErrorEnvelope | RetryActionResult | None:
     r"""Retry an eligible failed action (EXE-003, CHAT-074).
@@ -122,7 +118,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: RetryActionRequest,
 ) -> Response[ErrorEnvelope | RetryActionResult]:
     r"""Retry an eligible failed action (EXE-003, CHAT-074).
@@ -156,7 +152,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: RetryActionRequest,
 ) -> ErrorEnvelope | RetryActionResult | None:
     r"""Retry an eligible failed action (EXE-003, CHAT-074).

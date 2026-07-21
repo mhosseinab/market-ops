@@ -1,7 +1,8 @@
 import type { MessageKey } from "@market-ops/locale";
 import { normalizeDigits } from "@market-ops/locale";
 import { useQueries } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { reportCatalogTruncation } from "../app/catalogTruncationTelemetry";
 import { useLocale, useT } from "../app/i18n";
 import { gateway } from "../app/query";
 import { AppLink } from "../components/AppLink";
@@ -11,13 +12,18 @@ import { LtrToken } from "../components/LtrToken";
 import { FilterChips } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
 import { formatCount } from "../data/format";
-import { queryKeys, useCatalogProducts } from "../data/hooks";
+import { CATALOG_MAX_PAGES, queryKeys, useAllCatalogProducts } from "../data/hooks";
 import type {
   CatalogProductRow,
   MarginReadiness,
   MarginReadinessState,
   ObservedOffer,
 } from "../data/types";
+
+// Client-side page size for the READINESS-FILTERED authoritative set. Pagination,
+// counts, and page membership are all derived from that set (issue #256), never
+// from a single server page.
+const PAGE_SIZE = 20;
 
 const READINESS_FILTERS: readonly { id: MarginReadinessState; labelKey: MessageKey }[] = [
   { id: "complete", labelKey: "readiness.complete" },
@@ -27,11 +33,21 @@ const READINESS_FILTERS: readonly { id: MarginReadinessState; labelKey: MessageK
 ];
 
 // Readiness is fetched per variant (the P0 contract exposes no batch/paginated
-// readiness endpoint). The Products read model is SERVER-paginated, so the fan-out
-// is naturally bounded to the current page's rows — never the whole catalog.
+// readiness endpoint), always through a DOCUMENTED bound:
+//   - no readiness filter → only the current display page (≤ PAGE_SIZE requests);
+//   - readiness filter active → the whole search-filtered candidate set so the
+//     filter is applied BEFORE pagination. That set is the accumulated bounded walk,
+//     whose worst case is CATALOG_PAGE_LIMIT × CATALOG_MAX_PAGES = 200 × 4 = 800 rows
+//     (the §4.5 target ceiling is 200, so production returns the whole catalog in the
+//     first page; the 4× is defensive headroom). It is never an unbounded
+//     whole-catalog-per-page crawl. Beyond the cap the set is TRUNCATED and fails
+//     closed (see `catalogTruncated`), never silently presented as complete.
+// A failed or not-yet-loaded readiness value is DEGRADED/unknown — it is never
+// treated as a definitive mismatch and so is never silently filtered out.
 interface Row {
   readonly product: CatalogProductRow;
   readonly readiness?: MarginReadiness;
+  readonly degraded?: boolean;
 }
 
 // The contract-defined market snapshot: marketOffers are the variant's current
@@ -79,17 +95,29 @@ function MappingCell({ product }: { product: CatalogProductRow }) {
   );
 }
 
-function ReadinessCell({ value }: { value?: MarginReadiness }) {
-  if (!value) return <LtrToken text="—" />;
-  // `data-state` exposes the SERVER-DERIVED readiness verdict (CST-003) as a
-  // stable, locale-independent hook so the journey-1 real-core smoke can assert
-  // a genuine server-backed value per row (not localized copy). It mirrors the
-  // badge's own state — presentation is unchanged.
-  return (
-    <span data-testid="product-row-readiness" data-state={value.state}>
-      <ReadinessBadge state={value.state} />
-    </span>
-  );
+function ReadinessCell({ value, degraded }: { value?: MarginReadiness; degraded?: boolean }) {
+  const t = useT();
+  if (value) {
+    // `data-state` exposes the SERVER-DERIVED readiness verdict (CST-003) as a
+    // stable, locale-independent hook so the journey-1 real-core smoke can assert
+    // a genuine server-backed value per row (not localized copy). It mirrors the
+    // badge's own state — presentation is unchanged.
+    return (
+      <span data-testid="product-row-readiness" data-state={value.state}>
+        <ReadinessBadge state={value.state} />
+      </span>
+    );
+  }
+  // A FAILED readiness lookup is an explicit degraded/unknown state (STATE_MATRIX),
+  // never a silent "—" that could be mistaken for a definitive verdict.
+  if (degraded) {
+    return (
+      <span data-testid="product-row-readiness" data-state="unknown" className="muted">
+        {t("products.readiness.unknown")}
+      </span>
+    );
+  }
+  return <LtrToken text="—" />;
 }
 
 // Products workspace (design screen 7). Rows are the account's CANONICAL products
@@ -100,22 +128,46 @@ function ReadinessCell({ value }: { value?: MarginReadiness }) {
 export function Products() {
   const t = useT();
   const { locale } = useLocale();
-  // Cursor stack: each entry is the cursor used to fetch a page; [] is the first
-  // page. `push` on Next (server's nextCursor), `pop` on Previous.
-  const [cursorStack, setCursorStack] = useState<string[]>([]);
-  const currentCursor =
-    cursorStack.length > 0 ? (cursorStack[cursorStack.length - 1] ?? null) : null;
-  const productsQuery = useCatalogProducts(currentCursor);
   const [search, setSearch] = useState("");
   const [readinessFilter, setReadinessFilter] = useState<MarginReadinessState | null>(null);
+  // Zero-based client page index over the AUTHORITATIVE (readiness-filtered) set.
+  const [page, setPage] = useState(0);
 
-  const products = useMemo(() => productsQuery.data?.items ?? [], [productsQuery.data]);
-  const nextCursor = productsQuery.data?.nextCursor ?? null;
+  // The full account catalog, fetched as a bounded cursor walk (see the hook).
+  const productsQuery = useAllCatalogProducts();
+  const pagesFetched = productsQuery.data?.pages.length ?? 0;
+  const products = useMemo(
+    () => productsQuery.data?.pages.flatMap((p) => p.items) ?? [],
+    [productsQuery.data],
+  );
 
-  // Search matches the LTR native identifiers on the current page only. The P0
-  // read model has no server-side search param, and the page is already bounded
-  // by the cursor, so this narrows the LOADED page (carry-forward, documented).
-  const filtered = useMemo(() => {
+  // Walk remaining pages until the server has no more OR the documented cap is
+  // reached — an explicitly bounded crawl, never open-ended. `pagesFetched` drives
+  // the effect: each landed page reliably reruns it to fetch the next.
+  const walkComplete = !productsQuery.hasNextPage || pagesFetched >= CATALOG_MAX_PAGES;
+  const { hasNextPage, isFetching, fetchNextPage } = productsQuery;
+  useEffect(() => {
+    if (hasNextPage && !isFetching && pagesFetched < CATALOG_MAX_PAGES) {
+      void fetchNextPage();
+    }
+  }, [hasNextPage, isFetching, pagesFetched, fetchNextPage]);
+
+  // FAIL CLOSED at the cap boundary (issue #256): the walk stopped at CATALOG_MAX_PAGES
+  // while the server STILL reports another page. The accumulated set is therefore an
+  // INCOMPLETE, non-authoritative slice — count/pageCount below describe only what
+  // loaded, never the full catalog. This is a distinct STATE_MATRIX state, never a
+  // silent table, and it is emitted once (per transition) so the cap hit is observable.
+  const catalogTruncated = hasNextPage === true && pagesFetched >= CATALOG_MAX_PAGES;
+  useEffect(() => {
+    if (catalogTruncated) {
+      reportCatalogTruncation({ pagesFetched, pageCap: CATALOG_MAX_PAGES });
+    }
+  }, [catalogTruncated, pagesFetched]);
+
+  // Search matches the LTR native identifiers across the WHOLE fetched set (the
+  // authoritative candidate set), not one server page. No server-side search param
+  // exists in P0; the set is bounded by the §4.5 ceiling, so this is bounded too.
+  const candidates = useMemo(() => {
     const normalizedSearch = normalizeDigits(search.trim());
     if (normalizedSearch === "") return products;
     return products.filter((p) =>
@@ -123,10 +175,18 @@ export function Products() {
     );
   }, [products, search]);
 
-  // Fan out readiness for the current page's variants only (server pagination
-  // already bounds the page). Already-fetched variants stay cached by queryKey.
+  // Readiness fan-out target (see the DOCUMENTED bound above): the whole candidate
+  // set when a readiness filter is active (so filtering precedes pagination), else
+  // only the current display page. Both are bounded; already-fetched variants stay
+  // cached by queryKey so navigating pages never refetches.
+  const pageStart = page * PAGE_SIZE;
+  const readinessTargets = useMemo(
+    () => (readinessFilter ? candidates : candidates.slice(pageStart, pageStart + PAGE_SIZE)),
+    [readinessFilter, candidates, pageStart],
+  );
+
   const readinessQueries = useQueries({
-    queries: filtered.map((p) => ({
+    queries: readinessTargets.map((p) => ({
       queryKey: queryKeys.readiness(p.variantId),
       queryFn: async (): Promise<MarginReadiness> => {
         const res = await gateway.GET("/cost/readiness", {
@@ -140,11 +200,44 @@ export function Products() {
 
   const failedReadiness = readinessQueries.filter((q) => q.isError);
 
+  // variantId → { readiness, degraded } for every fetched variant.
+  const readinessByVariant = useMemo(() => {
+    const map = new Map<string, { readiness?: MarginReadiness; degraded: boolean }>();
+    readinessTargets.forEach((p, i) => {
+      const q = readinessQueries[i];
+      map.set(p.variantId, { readiness: q?.data, degraded: Boolean(q?.isError) });
+    });
+    return map;
+  }, [readinessTargets, readinessQueries]);
+
+  // The AUTHORITATIVE set: the search-filtered candidates narrowed by readiness
+  // BEFORE pagination. A definitive verdict that differs from the filter is
+  // excluded; a failed OR not-yet-loaded lookup is NEVER a definitive mismatch, so
+  // it is kept (and rendered degraded) rather than silently dropped (issue #256).
+  const authoritative = useMemo(() => {
+    if (!readinessFilter) return candidates;
+    return candidates.filter((p) => {
+      const r = readinessByVariant.get(p.variantId);
+      if (!r?.readiness) return true;
+      return r.readiness.state === readinessFilter;
+    });
+  }, [candidates, readinessFilter, readinessByVariant]);
+
+  const pageCount = Math.max(1, Math.ceil(authoritative.length / PAGE_SIZE));
+  // Clamp the page whenever the authoritative set shrinks (search/filter change or
+  // readiness resolving) so navigation never skips or duplicates a row.
+  useEffect(() => {
+    if (page > pageCount - 1) setPage(pageCount - 1);
+  }, [page, pageCount]);
+  const currentPage = Math.min(page, pageCount - 1);
+
   const rows: Row[] = useMemo(() => {
-    return filtered
-      .map((product, i) => ({ product, readiness: readinessQueries[i]?.data }))
-      .filter((row) => !readinessFilter || row.readiness?.state === readinessFilter);
-  }, [filtered, readinessQueries, readinessFilter]);
+    const start = currentPage * PAGE_SIZE;
+    return authoritative.slice(start, start + PAGE_SIZE).map((product) => {
+      const r = readinessByVariant.get(product.variantId);
+      return { product, readiness: r?.readiness, degraded: r?.degraded };
+    });
+  }, [authoritative, currentPage, readinessByVariant]);
 
   const columns: readonly Column<Row>[] = [
     {
@@ -165,7 +258,7 @@ export function Products() {
     {
       id: "readiness",
       header: "products.col.readiness",
-      render: (r) => <ReadinessCell value={r.readiness} />,
+      render: (r) => <ReadinessCell value={r.readiness} degraded={r.degraded} />,
     },
     {
       id: "quality",
@@ -189,8 +282,6 @@ export function Products() {
     },
   ];
 
-  const pageNumber = cursorStack.length + 1;
-
   return (
     <div className="screen">
       <div className="toolbar">
@@ -198,7 +289,10 @@ export function Products() {
           className="toolbar__search"
           placeholder={t("products.search.placeholder")}
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(e) => {
+            setSearch(e.target.value);
+            setPage(0);
+          }}
           aria-label={t("products.search.placeholder")}
         />
         <AppLink to="/bulk" className="btn btn--secondary" testId="bulk-entry">
@@ -217,19 +311,29 @@ export function Products() {
         ]}
         onToggle={(id) => {
           setReadinessFilter(id === "all" ? null : (id as MarginReadinessState));
+          setPage(0);
         }}
       />
 
       <p className="muted">
-        {t("products.count", { count: formatCount(filtered.length, locale) })}
+        {catalogTruncated
+          ? t("products.truncated.count", { count: formatCount(authoritative.length, locale) })
+          : t("products.count", { count: formatCount(authoritative.length, locale) })}
       </p>
 
       <ViewState
-        pending={productsQuery.isPending}
+        pending={productsQuery.isPending || !walkComplete}
         error={productsQuery.isError}
         isEmpty={products.length === 0}
         onRetry={() => void productsQuery.refetch()}
       >
+        {catalogTruncated ? (
+          <div className="view-error" role="alert" data-testid="products-truncated">
+            <p className="view-error__title">{t("products.truncated.title")}</p>
+            <p className="view-error__body">{t("products.truncated.body")}</p>
+          </div>
+        ) : null}
+
         {failedReadiness.length > 0 ? (
           <div className="view-error" role="alert" data-testid="products-readiness-error">
             <p className="view-error__title">{t("products.readiness.error.title")}</p>
@@ -257,22 +361,23 @@ export function Products() {
             type="button"
             className="btn btn--secondary"
             data-testid="products-prev-page"
-            disabled={cursorStack.length === 0}
-            onClick={() => setCursorStack((s) => s.slice(0, -1))}
+            disabled={currentPage === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
           >
             {t("products.pagination.prev")}
           </button>
           <span className="muted" data-testid="products-page-indicator">
-            {formatCount(pageNumber, locale)}
+            {t("products.pagination.page", {
+              page: formatCount(currentPage + 1, locale),
+              total: formatCount(pageCount, locale),
+            })}
           </span>
           <button
             type="button"
             className="btn btn--secondary"
             data-testid="products-next-page"
-            disabled={nextCursor === null}
-            onClick={() => {
-              if (nextCursor !== null) setCursorStack((s) => [...s, nextCursor]);
-            }}
+            disabled={currentPage >= pageCount - 1}
+            onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
           >
             {t("products.pagination.next")}
           </button>

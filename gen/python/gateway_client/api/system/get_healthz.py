@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.health import Health
 from ...types import Response
@@ -19,7 +19,7 @@ def _get_kwargs() -> dict[str, Any]:
     return _kwargs
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorEnvelope | Health:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | Health:
     if response.status_code == 200:
         response_200 = Health.from_dict(response.json())
 
@@ -30,9 +30,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | Health]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | Health]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -43,7 +41,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
 ) -> Response[ErrorEnvelope | Health]:
     """Liveness probe with build identity.
 
@@ -69,7 +67,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
 ) -> ErrorEnvelope | Health | None:
     """Liveness probe with build identity.
 
@@ -91,7 +89,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
 ) -> Response[ErrorEnvelope | Health]:
     """Liveness probe with build identity.
 
@@ -115,7 +113,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
 ) -> ErrorEnvelope | Health | None:
     """Liveness probe with build identity.
 

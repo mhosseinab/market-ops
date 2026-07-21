@@ -1,7 +1,7 @@
 import type { MessageKey } from "@market-ops/locale";
 import { normalizeDigits, parseNumericInput } from "@market-ops/locale";
 import { useRouterState } from "@tanstack/react-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useLocale, useT } from "../app/i18n";
 import { DispositionBadge } from "../components/badges";
 import { type Column, DataTable } from "../components/DataTable";
@@ -107,6 +107,10 @@ export function CostImport() {
 
   const [csv, setCsv] = useState("");
   const [filename, setFilename] = useState<string | undefined>(undefined);
+  // Monotonic source-selection generation. Every new source (a file pick or a
+  // textarea edit) advances it; an async file read binds to the generation live
+  // at pick time so a superseded read can be dropped on resolve (see onFile).
+  const sourceGeneration = useRef(0);
   const preview = useCostImportPreview();
   const commit = useCostImportCommit();
 
@@ -122,6 +126,10 @@ export function CostImport() {
   // never left clickable). Resetting the mutations removes the preview section
   // and its commit control until a fresh preview is requested.
   function changeSource(text: string, name?: string) {
+    // A new authoritative source: advance the generation so any file read still
+    // in flight (or a slower read from an earlier pick) is superseded and will be
+    // discarded when it resolves.
+    sourceGeneration.current += 1;
     setCsv(text);
     setFilename(name);
     preview.reset();
@@ -129,7 +137,14 @@ export function CostImport() {
   }
 
   async function onFile(file: File) {
+    // Bind this read to the generation live at pick time. If a newer selection
+    // (another file pick or a textarea edit) supersedes it before file.text()
+    // resolves, the read is DISCARDED — an older, slower read must never
+    // overwrite the newer parse (fail closed; import-boundary correctness, #79).
+    sourceGeneration.current += 1;
+    const generation = sourceGeneration.current;
     const text = await file.text();
+    if (generation !== sourceGeneration.current) return;
     changeSource(text, file.name);
   }
 

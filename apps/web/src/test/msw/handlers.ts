@@ -110,6 +110,11 @@ export const handlers = [
 
   // ── S28 defaults ──────────────────────────────────────────────────────────
   http.get(`${B}/auth/me`, () => HttpResponse.json(sessionOwner)),
+  // Auth lifecycle (issue #168): login returns the session identity (the cookie is
+  // set by a Set-Cookie header, invisible to JS); logout is a 204. Tests override
+  // these to exercise invalid credentials, expiry, and logout transitions.
+  http.post(`${B}/auth/login`, () => HttpResponse.json(sessionOwner)),
+  http.post(`${B}/auth/logout`, () => new HttpResponse(null, { status: 204 })),
   http.get(`${B}/actions/execution`, () => HttpResponse.json(execAccepted)),
   http.get(`${B}/outcomes`, () => HttpResponse.json(outcomeClosed)),
   http.post(`${B}/actions/retry`, () =>
@@ -119,6 +124,9 @@ export const handlers = [
 
   // ── S29: chat dock ──────────────────────────────────────────────────────────
   http.get(`${B}/briefing`, () => HttpResponse.json(dailyBriefing)),
+  http.get(`${B}/briefing/latest`, () =>
+    HttpResponse.json({ state: "never_generated", provenance: "none" }),
+  ),
   // Default chat turn: a conversation id + a token + a final envelope frame. The
   // free-text-never-approves invariant holds regardless — /chat carries no control.
   http.post(`${B}/chat`, () =>

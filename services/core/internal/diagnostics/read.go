@@ -70,6 +70,13 @@ func (s *ReadService) GetVariantDiagnostics(ctx context.Context, organizationID,
 	if err != nil {
 		return Report{}, fmt.Errorf("diagnostics: get variant listing: %w", err)
 	}
+	// Description and ImageCount are left nil (NOT OBSERVED): the DK Seller catalog
+	// projection does not surface listing description/image content yet, so the read
+	// model has no captured evidence for them and the derivation honestly reports
+	// not_observed → warn (fail closed, never inferred). When a go_connector_observer
+	// step projects that content into GetVariantListingForDiagnostics, populate these
+	// two fields here and descriptionDiagnostic/imageDiagnostic already derive the
+	// correct present/empty/not_observed evidence-quality state.
 	items := Derive(Input{
 		NativeVariantID: row.NativeVariantID,
 		VariantTitle:    row.VariantTitle,

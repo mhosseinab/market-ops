@@ -43,6 +43,7 @@ type ActionExecution struct {
 	ReconciledAt    pgtype.Timestamptz
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	GateBlocked     bool
 }
 
 type AnalyticsEvent struct {

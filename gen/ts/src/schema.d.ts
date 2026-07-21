@@ -944,6 +944,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/briefing/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the latest stored briefing before a business day.
+         * @description Returns authoritative provenance for the latest stored briefing strictly before `beforeBusinessDay`. This read never generates a briefing and never substitutes the requested date. `available` always carries a stored `DailyBriefing`; `never_generated` means no earlier stored briefing exists. Service or storage failures use the error envelope and are not collapsed into `never_generated`.
+         */
+        get: operations["getLatestBriefing"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/notifications": {
         parameters: {
             query?: never;
@@ -2572,6 +2592,14 @@ export interface components {
             /** Format: date-time */
             generatedAt: string;
             events: components["schemas"]["BriefingEvent"][];
+        };
+        /** @description Provenance-aware result for a bounded latest-briefing lookup. When `state` is `available`, `provenance` is `stored_briefing` and `briefing` is required. When `state` is `never_generated`, `provenance` is `none` and `briefing` is omitted. Transport/storage errors are ErrorEnvelope responses, never a fabricated date or a `never_generated` success. */
+        LatestBriefingRead: {
+            /** @enum {string} */
+            state: "available" | "never_generated";
+            /** @enum {string} */
+            provenance: "stored_briefing" | "none";
+            briefing?: components["schemas"]["DailyBriefing"];
         };
         /** @description One ranked event in a daily briefing. `rank` is 1-based and matches the Today feed position; `eventId` matches the Today feed event id. */
         BriefingEvent: {
@@ -4481,6 +4509,39 @@ export interface operations {
                 };
             };
             /** @description Unexpected error (including no briefing for that day). */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    getLatestBriefing: {
+        parameters: {
+            query: {
+                marketplaceAccountId: string;
+                /** @description Exclusive UTC calendar-date upper bound for the lookup. */
+                beforeBusinessDay: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Authoritative latest-briefing provenance or an explicit never-generated state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LatestBriefingRead"];
+                };
+            };
+            /** @description The latest-briefing lookup is unavailable or failed. */
             default: {
                 headers: {
                     [name: string]: unknown;

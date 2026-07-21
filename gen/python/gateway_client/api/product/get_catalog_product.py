@@ -4,7 +4,7 @@ from uuid import UUID
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.catalog_product_row import CatalogProductRow
 from ...models.error_envelope import ErrorEnvelope
 from ...types import UNSET, Response
@@ -35,9 +35,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> CatalogProductRow | ErrorEnvelope:
+def _parse_response(*, client: Client, response: httpx.Response) -> CatalogProductRow | ErrorEnvelope:
     if response.status_code == 200:
         response_200 = CatalogProductRow.from_dict(response.json())
 
@@ -48,9 +46,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[CatalogProductRow | ErrorEnvelope]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[CatalogProductRow | ErrorEnvelope]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -61,7 +57,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     variant_id: UUID,
 ) -> Response[CatalogProductRow | ErrorEnvelope]:
@@ -98,7 +94,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     variant_id: UUID,
 ) -> CatalogProductRow | ErrorEnvelope | None:
@@ -130,7 +126,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     variant_id: UUID,
 ) -> Response[CatalogProductRow | ErrorEnvelope]:
@@ -165,7 +161,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     marketplace_account_id: UUID,
     variant_id: UUID,
 ) -> CatalogProductRow | ErrorEnvelope | None:

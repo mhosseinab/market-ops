@@ -294,12 +294,28 @@ func (d *UrgentDispatcher) Dispatch(ctx context.Context, args jobs.UrgentEmailAr
 // transition — the OBSERVABLE permanent-failure state (metric + warn log + durable row
 // + observer) — and the email is NOT marked delivered (no false "delivered"). An
 // urgent category is therefore never silently dropped and never shed.
+//
+// The terminal signals (dead-letter metric + observer) fire ONLY AFTER the durable
+// pending → dead_letter transition actually lands (issue #122 reopen residual). If that
+// state write itself fails, the failure is NON-terminal: the signals are SUPPRESSED (no
+// false "durable dead letter" in monitoring) and fail returns the
+// jobs.ErrUrgentDeadLetterUnpersisted recovery marker instead of the send cause, so the
+// worker RE-DRIVES the intent (JobSnooze) rather than discarding it on the exhausted
+// attempt. Observability truthfulness is never-cut (§4.6): no signal for a state that
+// was never persisted.
 func (d *UrgentDispatcher) fail(ctx context.Context, args jobs.UrgentEmailArgs, channel string, lastAttempt bool, reason string, cause error) error {
 	if lastAttempt {
-		if err := d.outbox.MarkDeadLetter(ctx, args.NotificationID, channel, reason, d.now()); err != nil && d.logger != nil {
-			d.logger.ErrorContext(ctx, "urgent email: dead-letter state write failed",
-				"notification_id", args.NotificationID, "channel", channel, "category", args.Category,
-				"reason", reason, "error", err.Error())
+		if err := d.outbox.MarkDeadLetter(ctx, args.NotificationID, channel, reason, d.now()); err != nil {
+			// The durable transition did NOT land. Suppress the terminal metric/observer
+			// and return the recovery marker so the worker re-drives (never discards) — a
+			// terminal signal must never anchor to a state that was never persisted.
+			if d.logger != nil {
+				d.logger.ErrorContext(ctx, "urgent email: dead-letter state write failed; re-driving (no terminal signal)",
+					"notification_id", args.NotificationID, "channel", channel, "category", args.Category,
+					"reason", reason, "error", err.Error())
+			}
+			return fmt.Errorf("notify: urgent dead-letter unpersisted for %s: %w (send cause: %w)",
+				args.NotificationID, jobs.ErrUrgentDeadLetterUnpersisted, cause)
 		}
 		recordUrgentDeadLetter(ctx, args.Category)
 		if d.logger != nil {

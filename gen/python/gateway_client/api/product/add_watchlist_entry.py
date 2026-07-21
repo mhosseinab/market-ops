@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.watchlist_add_request import WatchlistAddRequest
 from ...models.watchlist_entry import WatchlistEntry
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorEnvelope | WatchlistEntry:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | WatchlistEntry:
     if response.status_code == 200:
         response_200 = WatchlistEntry.from_dict(response.json())
 
@@ -42,9 +40,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | WatchlistEntry]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | WatchlistEntry]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,7 +51,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: WatchlistAddRequest,
 ) -> Response[ErrorEnvelope | WatchlistEntry]:
     r"""Add a Confirmed owned product to the priority watchlist (EXT-007).
@@ -90,7 +86,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: WatchlistAddRequest,
 ) -> ErrorEnvelope | WatchlistEntry | None:
     r"""Add a Confirmed owned product to the priority watchlist (EXT-007).
@@ -120,7 +116,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: WatchlistAddRequest,
 ) -> Response[ErrorEnvelope | WatchlistEntry]:
     r"""Add a Confirmed owned product to the priority watchlist (EXT-007).
@@ -153,7 +149,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: WatchlistAddRequest,
 ) -> ErrorEnvelope | WatchlistEntry | None:
     r"""Add a Confirmed owned product to the priority watchlist (EXT-007).

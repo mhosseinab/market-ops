@@ -21,7 +21,17 @@ export function NeedsReview() {
   const reject = useIdentityDecision("/identity/reject");
   const defer = useIdentityDecision("/identity/defer");
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
-  const [note, setNote] = useState("");
+  // Note drafts are keyed by identity — the note is audit evidence that belongs
+  // to ONE candidate. A global draft would let A's text be submitted against B
+  // (cross-identity attribution, #83). The visible note is strictly the selected
+  // identity's own draft; an unselected/absent identity yields empty (fail-closed),
+  // never another candidate's text.
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const note = selectedId ? (drafts[selectedId] ?? "") : "";
+  function setNote(value: string) {
+    if (!selectedId) return;
+    setDrafts((prev) => ({ ...prev, [selectedId]: value }));
+  }
 
   const items = query.data?.items ?? [];
   const selected = items.find((i) => i.identityId === selectedId);

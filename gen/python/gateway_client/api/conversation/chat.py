@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.chat_turn_request import ChatTurnRequest
 from ...models.chat_unavailable import ChatUnavailable
 from ...models.error_envelope import ErrorEnvelope
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ChatUnavailable | ErrorEnvelope | str:
+def _parse_response(*, client: Client, response: httpx.Response) -> ChatUnavailable | ErrorEnvelope | str:
     if response.status_code == 200:
         response_200 = response.text
         return response_200
@@ -46,9 +44,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ChatUnavailable | ErrorEnvelope | str]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ChatUnavailable | ErrorEnvelope | str]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -59,7 +55,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient,
+    client: Client,
     body: ChatTurnRequest,
 ) -> Response[ChatUnavailable | ErrorEnvelope | str]:
     """Converse with the LLM plane over a Server-Sent Events stream.
@@ -102,7 +98,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient,
+    client: Client,
     body: ChatTurnRequest,
 ) -> ChatUnavailable | ErrorEnvelope | str | None:
     """Converse with the LLM plane over a Server-Sent Events stream.
@@ -140,7 +136,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient,
+    client: Client,
     body: ChatTurnRequest,
 ) -> Response[ChatUnavailable | ErrorEnvelope | str]:
     """Converse with the LLM plane over a Server-Sent Events stream.
@@ -181,7 +177,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient,
+    client: Client,
     body: ChatTurnRequest,
 ) -> ChatUnavailable | ErrorEnvelope | str | None:
     """Converse with the LLM plane over a Server-Sent Events stream.

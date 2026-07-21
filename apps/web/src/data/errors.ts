@@ -55,3 +55,12 @@ export function classifyStatus(status?: number): ErrorClass {
 export function asGatewayError(error: unknown): GatewayError | null {
   return error instanceof GatewayError ? error : null;
 }
+
+// An UNAUTHENTICATED failure (no valid session): a 401 from any cookie-gated
+// endpoint. This is the single predicate the auth lifecycle keys off (issue
+// #168) — a retry is suppressed and the browser is routed to the login screen.
+// A 403 is authorization (a valid session lacking a right), NOT an auth-lifecycle
+// failure, so it is deliberately excluded: it stays a normal, localized error.
+export function isUnauthenticated(error: unknown): boolean {
+  return error instanceof GatewayError && error.status === 401;
+}

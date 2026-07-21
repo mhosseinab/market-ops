@@ -119,12 +119,20 @@ func NewStaticKillSwitch(global bool, disabledAccounts []uuid.UUID) ChatKillSwit
 // free text with authority.
 var errChatAccountMismatch = errors.New("chat: request account contradicts stored conversation context")
 
+// errChatStoreUnavailable marks a continuation whose authoritative stored account
+// could not be resolved because the durability store is unavailable/unwired (issue
+// #27). It forces a fail-closed denial rather than a request-account fallback; it is
+// a diagnostic, never surfaced as free text with authority.
+var errChatStoreUnavailable = errors.New("chat: conversation store unavailable for authoritative account resolution")
+
 // chatAccountDecision is the resolved input to the per-account kill switch for a
-// turn: the account the switch is evaluated against, and whether the request
-// contradicts the stored conversation context.
+// turn: the account the switch is evaluated against, whether the request contradicts
+// the stored conversation context, and whether the turn must be denied outright
+// because authoritative context could not be resolved.
 type chatAccountDecision struct {
 	account  uuid.UUID // authoritative account (uuid.Nil = the no-account context)
 	mismatch bool      // request account contradicts stored conversation context
+	deny     bool      // continuation without authoritative stored resolution — fail closed
 }
 
 // authoritativeChatAccount picks the account the kill switch is evaluated against
@@ -134,12 +142,20 @@ type chatAccountDecision struct {
 //     under the caller's org. Its value (possibly the no-account nil) GOVERNS; a
 //     request account that differs is a mismatch; an omitted request inherits it
 //     so a disabled account cannot be bypassed by dropping the optional field.
-//   - otherwise (a new conversation, or a continuation with no durability store to
-//     resolve against): the request account governs and there is no mismatch.
+//   - a continuation whose authoritative stored account could NOT be resolved (the
+//     durability store is unavailable/unwired or errored) DENIES the turn: it must
+//     never fall back to the request-supplied account, because that would let an
+//     account kill switch be bypassed by omitting or substituting the account
+//     (issue #27 reopen residual — fail closed, never a permissive fallback).
+//   - otherwise (a NEW conversation with no stored context yet): the request account
+//     governs and there is no mismatch.
 //
 // It is pure so the safety-critical decision is unit-tested independent of DB.
-func authoritativeChatAccount(requestAccount, storedAccount *uuid.UUID, resolvedStored bool) chatAccountDecision {
+func authoritativeChatAccount(requestAccount, storedAccount *uuid.UUID, resolvedStored, continuation bool) chatAccountDecision {
 	if !resolvedStored {
+		if continuation {
+			return chatAccountDecision{deny: true}
+		}
 		return chatAccountDecision{account: derefUUID(requestAccount)}
 	}
 	stored := derefUUID(storedAccount)
@@ -232,8 +248,11 @@ func (s *gatewayServer) Chat(
 	// optional field. For a continuation we load the STORED conversation's account
 	// under the caller's org; a request that omits the account inherits it (so a
 	// disabled account cannot be bypassed by dropping the field) and a request that
-	// contradicts it is rejected. If the stored context cannot be resolved for an
-	// account-bound continuation we FAIL CLOSED to the account-disabled state.
+	// contradicts it is rejected. If the stored context cannot be resolved for a
+	// continuation — the store errors OR no durability store is wired — we FAIL CLOSED
+	// to the account-disabled state and NEVER fall back to the request account (issue
+	// #27 reopen residual): a store failure can never let an account kill switch be
+	// bypassed by omitting or substituting the request account.
 	continuation := req.Body.ConversationId != nil
 	var storedAccount *uuid.UUID
 	resolvedStored := false
@@ -253,7 +272,17 @@ func (s *gatewayServer) Chat(
 		resolvedStored = true
 	}
 
-	decision := authoritativeChatAccount(req.Body.MarketplaceAccountId, storedAccount, resolvedStored)
+	decision := authoritativeChatAccount(req.Body.MarketplaceAccountId, storedAccount, resolvedStored, continuation)
+	if decision.deny {
+		// A continuation whose authoritative stored account could not be resolved
+		// because no durability store is wired (store unavailable): FAIL CLOSED. We
+		// must not evaluate the per-account kill switch against the request-supplied
+		// account — omitting or substituting it would otherwise bypass an account
+		// disablement (issue #27 reopen residual). A store that IS wired but errors is
+		// already denied above; this covers the storeless path with the same outcome.
+		s.logChatPersist(ctx, "account-context-store-unavailable", *req.Body.ConversationId, errChatStoreUnavailable)
+		return chatUnavailable(gateway.KillSwitchAccount), nil
+	}
 	if decision.mismatch {
 		// A request that contradicts stored conversation context cannot override it
 		// (identity/tenant quarantine): reject, never proxy.

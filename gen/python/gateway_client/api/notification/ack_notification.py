@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.notification_ack_request import NotificationAckRequest
 from ...models.notification_ack_result import NotificationAckResult
@@ -29,9 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> ErrorEnvelope | NotificationAckResult:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | NotificationAckResult:
     if response.status_code == 200:
         response_200 = NotificationAckResult.from_dict(response.json())
 
@@ -42,9 +40,7 @@ def _parse_response(
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | NotificationAckResult]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | NotificationAckResult]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -55,7 +51,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: NotificationAckRequest,
 ) -> Response[ErrorEnvelope | NotificationAckResult]:
     """Acknowledge (mark read) one in-app notification.
@@ -89,7 +85,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: NotificationAckRequest,
 ) -> ErrorEnvelope | NotificationAckResult | None:
     """Acknowledge (mark read) one in-app notification.
@@ -118,7 +114,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: NotificationAckRequest,
 ) -> Response[ErrorEnvelope | NotificationAckResult]:
     """Acknowledge (mark read) one in-app notification.
@@ -150,7 +146,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: NotificationAckRequest,
 ) -> ErrorEnvelope | NotificationAckResult | None:
     """Acknowledge (mark read) one in-app notification.

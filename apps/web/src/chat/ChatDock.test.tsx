@@ -1,5 +1,5 @@
-import { en, faIR } from "@market-ops/locale";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { createI18n, en, faIR } from "@market-ops/locale";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ApprovalCardView } from "../data/types";
@@ -7,6 +7,7 @@ import { approvalCardAwaiting, CARD_ID, dailyBriefing, EVENT_ID } from "../test/
 import { BASE, sseResponse } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
+import type { ConversationLocalePreparer } from "./conversationLocale";
 import type { ChatStreamEvent, ChatTurnRequest } from "./types";
 
 // S29 chat-dock component tests against MSW + a mocked SSE `/chat` stream. They
@@ -288,6 +289,137 @@ describe("ChatDock — sends the ACTIVE locale with every turn (LOC-001)", () =>
     await sendComposer("hi");
     await waitFor(() => expect(bodies.length).toBe(1));
     expect(bodies[0]?.locale).toBe("en");
+  });
+
+  it("follows an app locale change while unbound and closed before sending the first turn", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    let releaseResponse: (() => void) | undefined;
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        bodies.push((await request.json()) as ChatTurnRequest);
+        await new Promise<void>((resolve) => {
+          releaseResponse = resolve;
+        });
+        return sseResponse([
+          {
+            kind: "conversation",
+            conversationId: "conv-1",
+            localeTag: "en",
+            localeVersion: 1,
+          },
+          { kind: "final", envelope: { sections: [], evidence: [] } },
+        ]);
+      }),
+    );
+
+    renderRoute("/today");
+    expect(screen.queryByTestId("chat-dock")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText(faIR["app.langName.en"]));
+
+    await screen.findByText(en["route.today.title"], { selector: ".top-bar__title" });
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("lang", "en"));
+    expect(document.documentElement).toHaveAttribute("dir", "ltr");
+
+    fireEvent.click(screen.getByLabelText(en["topbar.chat.toggle"]));
+    const dock = await screen.findByTestId("chat-dock");
+    expect(dock).toHaveAttribute("lang", "en");
+    expect(dock).toHaveAttribute("dir", "ltr");
+    expect(dock).toHaveTextContent(en["chat.title"]);
+    expect(dock).not.toHaveTextContent(faIR["chat.title"]);
+
+    await sendComposer("first turn");
+    await waitFor(() => expect(bodies).toHaveLength(1));
+    expect(bodies[0]?.locale).toBe("en");
+    expect(screen.queryByTestId("chat-msg-assistant")).toBeInTheDocument();
+
+    await act(async () => releaseResponse?.());
+  });
+
+  it("renders terminal copy from the gateway locale without changing the selected app locale", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    let releaseLocale: (() => void) | undefined;
+    const prepareLocale: ConversationLocalePreparer = (locale) =>
+      new Promise((resolve) => {
+        releaseLocale = () => resolve({ locale, instance: createI18n({ lng: locale }) });
+      });
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        bodies.push((await request.json()) as ChatTurnRequest);
+        return sseResponse([
+          {
+            kind: "conversation",
+            conversationId: "conv-1",
+            localeTag: "fa-IR",
+            localeVersion: 1,
+          },
+          {
+            kind: "failure",
+            failure: { code: "TOOL_TIMEOUT", message: "machine diagnostic" },
+          },
+        ]);
+      }),
+    );
+    renderRoute("/today", { locale: "en", conversationLocalePreparer: prepareLocale });
+    fireEvent.click(await screen.findByLabelText(en["topbar.chat.toggle"]));
+    await sendComposer("DKP-42");
+
+    await waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]?.locale).toBe("en");
+
+    // The gateway locale frame arrived, but its catalog is deliberately still
+    // preparing. No terminal UI may paint in the prior (English) chat locale.
+    await waitFor(() => expect(releaseLocale).toBeTypeOf("function"));
+    expect(screen.queryByTestId("chat-failure")).not.toBeInTheDocument();
+    expect(
+      screen.getByText(en["route.today.title"], { selector: ".top-bar__title" }),
+    ).toBeVisible();
+    expect(document.documentElement).toHaveAttribute("lang", "en");
+    expect(document.documentElement).toHaveAttribute("dir", "ltr");
+
+    await act(async () => releaseLocale?.());
+    const failure = await screen.findByTestId("chat-failure");
+    expect(failure).toHaveTextContent(faIR["chat.failure.title"]);
+    expect(failure).toHaveTextContent(faIR["chat.failure.toolTimeout"]);
+    expect(failure).not.toHaveTextContent(en["chat.failure.title"]);
+    expect(screen.getByTestId("chat-dock")).toHaveAttribute("data-conversation-locale", "fa-IR");
+    expect(screen.getByTestId("chat-dock")).toHaveAttribute("lang", "fa");
+    expect(screen.getByTestId("chat-dock")).toHaveAttribute("dir", "rtl");
+    expect(
+      screen.getByText(en["route.today.title"], { selector: ".top-bar__title" }),
+    ).toBeVisible();
+    expect(document.documentElement).toHaveAttribute("lang", "en");
+    expect(document.documentElement).toHaveAttribute("dir", "ltr");
+  });
+
+  it("fails closed before terminal rendering when the gateway echoes an unsupported locale", async () => {
+    server.use(
+      http.post(`${BASE}/chat`, () =>
+        sseResponse([
+          {
+            kind: "conversation",
+            conversationId: "conv-1",
+            // Deliberately violate the generated closed enum at runtime. The SSE
+            // decoder receives untrusted JSON, so compile-time typing is not a
+            // sufficient boundary check.
+            localeTag: "de" as "en",
+            localeVersion: 1,
+          },
+          {
+            kind: "failure",
+            failure: { code: "TOOL_TIMEOUT", message: "machine diagnostic" },
+          },
+        ]),
+      ),
+    );
+    renderRoute("/today", { locale: "en" });
+    fireEvent.click(await screen.findByLabelText(en["topbar.chat.toggle"]));
+    await sendComposer("DKP-42");
+
+    await screen.findByTestId("chat-transport-failure");
+    expect(screen.queryByTestId("chat-failure")).not.toBeInTheDocument();
+    expect(screen.getByTestId("chat-dock")).toHaveAttribute("data-conversation-locale", "en");
+    expect(document.documentElement).toHaveAttribute("lang", "en");
+    expect(document.documentElement).toHaveAttribute("dir", "ltr");
   });
 
   it("Persian digits, Latin digits, technical ids, and neutral text NEVER change the sent locale", async () => {

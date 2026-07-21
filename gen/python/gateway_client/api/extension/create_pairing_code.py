@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.pairing_code import PairingCode
 from ...types import Response
@@ -19,7 +19,7 @@ def _get_kwargs() -> dict[str, Any]:
     return _kwargs
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorEnvelope | PairingCode:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | PairingCode:
     if response.status_code == 201:
         response_201 = PairingCode.from_dict(response.json())
 
@@ -30,9 +30,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | PairingCode]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | PairingCode]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -43,7 +41,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient,
+    client: Client,
 ) -> Response[ErrorEnvelope | PairingCode]:
     """Mint a short-lived extension pairing code (EXT-001).
 
@@ -72,7 +70,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient,
+    client: Client,
 ) -> ErrorEnvelope | PairingCode | None:
     """Mint a short-lived extension pairing code (EXT-001).
 
@@ -97,7 +95,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient,
+    client: Client,
 ) -> Response[ErrorEnvelope | PairingCode]:
     """Mint a short-lived extension pairing code (EXT-001).
 
@@ -124,7 +122,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient,
+    client: Client,
 ) -> ErrorEnvelope | PairingCode | None:
     """Mint a short-lived extension pairing code (EXT-001).
 

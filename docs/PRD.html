@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DK Marketplace Intelligence — PRD v1.3 Explorer</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1: #fcfcfb; --page: #f9f9f7;
+    --ink-1: #0b0b0b; --ink-2: #52514e; --ink-3: #898781;
+    --grid: #e1e0d9; --baseline: #c3c2b7; --ring: rgba(11,11,11,0.10);
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+    --good: #0ca30c; --warn: #fab219; --serious: #ec835a; --crit: #d03b3b;
+    --good-text: #006300;
+    --seq-150: #b7d3f6; --seq-250: #86b6ef; --seq-400: #3987e5; --seq-550: #1c5cab;
+    --chip: #f0efec;
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --page: #0d0d0d;
+    --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --ring: rgba(255,255,255,0.10);
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --good-text: #0ca30c;
+    --chip: #262624;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --surface-1: #1a1a19; --page: #0d0d0d;
+      --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-3: #898781;
+      --grid: #2c2c2a; --baseline: #383835; --ring: rgba(255,255,255,0.10);
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+      --good-text: #0ca30c;
+      --chip: #262624;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink-1);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px; line-height: 1.5;
+  }
+  .fa { direction: rtl; unicode-bidi: isolate; }
+  .ltr { direction: ltr; unicode-bidi: isolate; }
+  header.hero { padding: 36px 28px 20px; max-width: 1200px; margin: 0 auto; }
+  header.hero h1 { margin: 0 0 4px; font-size: 26px; letter-spacing: -0.02em; }
+  header.hero .sub { color: var(--ink-2); font-size: 14px; }
+  .facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .fact { background: var(--surface-1); border: 1px solid var(--ring); border-radius: 8px; padding: 6px 12px; font-size: 12.5px; color: var(--ink-2); }
+  .fact b { color: var(--ink-1); font-weight: 600; }
+  nav.toc {
+    position: sticky; top: 0; z-index: 50; background: var(--page);
+    border-bottom: 1px solid var(--grid); padding: 8px 28px;
+    display: flex; gap: 4px; flex-wrap: wrap; max-width: 1200px; margin: 0 auto;
+  }
+  nav.toc a {
+    color: var(--ink-2); text-decoration: none; font-size: 12.5px;
+    padding: 4px 10px; border-radius: 999px;
+  }
+  nav.toc a:hover { background: var(--chip); color: var(--ink-1); }
+  #themeBtn {
+    margin-inline-start: auto; background: var(--chip); color: var(--ink-2); border: 1px solid var(--ring);
+    border-radius: 999px; padding: 3px 12px; font-size: 12px; cursor: pointer;
+  }
+  main { max-width: 1200px; margin: 0 auto; padding: 8px 28px 80px; }
+  section { margin-top: 44px; }
+  section > h2 { font-size: 19px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  section > .lede { color: var(--ink-2); margin: 0 0 16px; max-width: 860px; }
+  .card {
+    background: var(--surface-1); border: 1px solid var(--ring);
+    border-radius: 12px; padding: 18px 20px; margin-top: 14px;
+  }
+  .card h3 { margin: 0 0 10px; font-size: 14.5px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 900px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th { text-align: left; color: var(--ink-3); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em; padding: 6px 10px; border-bottom: 1px solid var(--baseline); }
+  td { padding: 7px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; color: var(--ink-2); }
+  td:first-child { color: var(--ink-1); }
+  tr:last-child td { border-bottom: none; }
+  .num { font-variant-numeric: tabular-nums; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
+  .pill.p0   { background: color-mix(in srgb, var(--s1) 14%, transparent); color: var(--s1); }
+  .pill.p05  { background: color-mix(in srgb, var(--s2) 14%, transparent); color: var(--s2); }
+  .pill.p1   { background: color-mix(in srgb, var(--s3) 14%, transparent); color: var(--s3); }
+  .pill.never{ background: color-mix(in srgb, var(--crit) 12%, transparent); color: var(--crit); }
+  .statgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+  .stat { background: var(--surface-1); border: 1px solid var(--ring); border-radius: 12px; padding: 14px 16px; }
+  .stat .v { font-size: 22px; font-weight: 650; letter-spacing: -0.02em; }
+  .stat .l { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+  .stat .g { font-size: 11px; color: var(--ink-3); margin-top: 4px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chips .chip { background: var(--chip); border-radius: 999px; padding: 3px 11px; font-size: 12px; color: var(--ink-2); }
+  .chips .chip.hard { background: color-mix(in srgb, var(--crit) 10%, transparent); color: var(--crit); font-weight: 600; }
+  /* timeline */
+  .timeline { display: flex; gap: 3px; margin: 14px 0 6px; border-radius: 8px; overflow: hidden; }
+  .tl-seg { padding: 10px 12px; color: #fff; min-width: 0; }
+  .tl-seg .t { font-weight: 650; font-size: 13px; }
+  .tl-seg .d { font-size: 11.5px; opacity: 0.9; }
+  .tl-exit { display: flex; gap: 3px; font-size: 11.5px; color: var(--ink-3); }
+  .tl-exit div { padding: 0 12px; }
+  /* flows */
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+  .flow .n { background: var(--chip); border: 1px solid var(--ring); border-radius: 8px; padding: 5px 11px; font-size: 12.5px; }
+  .flow .n.hl { background: color-mix(in srgb, var(--s1) 12%, transparent); border-color: color-mix(in srgb, var(--s1) 30%, transparent); }
+  .flow .a { color: var(--ink-3); font-size: 13px; }
+  .flow .lbl { font-size: 11px; color: var(--ink-3); }
+  /* req chart */
+  .bars { display: grid; grid-template-columns: 52px 1fr 120px; gap: 6px 10px; align-items: center; }
+  .bars .fam { font-size: 12.5px; font-weight: 600; text-align: right; cursor: pointer; color: var(--ink-1); }
+  .bars .track { display: flex; gap: 2px; height: 16px; }
+  .bars .seg { border-radius: 4px; min-width: 3px; }
+  .bars .cnt { font-size: 12px; color: var(--ink-3); }
+  .legend { display: flex; gap: 16px; margin: 6px 0 14px; font-size: 12px; color: var(--ink-2); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  details.fam { border: 1px solid var(--ring); border-radius: 10px; background: var(--surface-1); margin-top: 8px; }
+  details.fam summary { cursor: pointer; padding: 10px 14px; font-weight: 600; font-size: 13px; list-style: none; display: flex; gap: 10px; align-items: baseline; }
+  details.fam summary::-webkit-details-marker { display: none; }
+  details.fam summary .meta { font-weight: 400; color: var(--ink-3); font-size: 12px; }
+  details.fam .body { padding: 0 14px 12px; }
+  svg text { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .foot { margin-top: 56px; color: var(--ink-3); font-size: 12px; border-top: 1px solid var(--grid); padding-top: 14px; }
+  .subtle { color: var(--ink-3); font-size: 12px; }
+  h4.rowh { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--ink-3); margin: 18px 0 8px; }
+</style>
+</head>
+<body>
+<header class="hero">
+  <h1>DK Marketplace Intelligence</h1>
+  <div class="sub">PRD v1.3 · final product baseline · prepared 2026-07-16 · visual explorer of <span class="ltr">docs/PRD.md</span></div>
+  <div class="facts">
+    <div class="fact"><b>Marketplace</b> Digikala (DK)</div>
+    <div class="fact"><b>Wedge</b> profit-aware competitive-pricing intelligence</div>
+    <div class="fact"><b>Interface</b> Persian-first structured product + persistent chat layer</div>
+    <div class="fact"><b>Beta customer</b> professional DK seller, 500–5,000 active SKUs</div>
+    <div class="fact"><b>Team</b> 5 FTE + product owner</div>
+  </div>
+</header>
+<nav class="toc">
+  <a href="#timeline">Timeline</a>
+  <a href="#arch">Architecture</a>
+  <a href="#scope">Scope</a>
+  <a href="#gates">Gate 0</a>
+  <a href="#reqs">Requirements</a>
+  <a href="#approval">Approval machine</a>
+  <a href="#money">Money & policy</a>
+  <a href="#obs">Observation</a>
+  <a href="#chat">Chat</a>
+  <a href="#success">Targets</a>
+  <a href="#loc">Localization</a>
+  <a href="#risks">Risks</a>
+  <a href="#done">Done</a>
+  <button id="themeBtn" onclick="toggleTheme()">◐ theme</button>
+</nav>
+<main>
+
+<section id="timeline">
+  <h2>Delivery timeline</h2>
+  <p class="lede">Evidence gate first: nothing is built until Gate 0 thresholds resolve. Width is proportional to duration.</p>
+  <div class="card">
+    <div class="timeline">
+      <div class="tl-seg" style="flex:4; background:var(--s1)"><div class="t">Gate 0a + 0b</div><div class="d">4 weeks · evidence</div></div>
+      <div class="tl-seg" style="flex:10; background:var(--seq-550)"><div class="t">P0 build</div><div class="d">10 weeks</div></div>
+      <div class="tl-seg" style="flex:6; background:var(--s3)"><div class="t">Private beta</div><div class="d">6 weeks</div></div>
+      <div class="tl-seg" style="flex:7; background:var(--s2)"><div class="t">P0.5</div><div class="d">6–8 weeks, after proof</div></div>
+    </div>
+    <div class="tl-exit">
+      <div style="flex:4">exit: every §4.1 threshold resolved</div>
+      <div style="flex:10">exit: internal alpha gate (§20.1)</div>
+      <div style="flex:6">exit: paid-beta decision (§20.3)</div>
+      <div style="flex:7">separate release gate</div>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>Team (§19.1)</h3>
+      <table>
+        <tr><td>Product owner / beta operations</td><td class="num">1.0</td></tr>
+        <tr><td>Go integration / observation engineer</td><td class="num">1.0</td></tr>
+        <tr><td>Go domain / execution engineer</td><td class="num">1.0</td></tr>
+        <tr><td>TypeScript web / extension engineer</td><td class="num">1.0</td></tr>
+        <tr><td>Python LLM / evaluation engineer</td><td class="num">1.0</td></tr>
+        <tr><td>Designer + Persian UX/copy + QA</td><td class="num">1.0 combined</td></tr>
+      </table>
+      <p class="subtle" style="margin:10px 0 0">Smaller teams extend the schedule or apply the descope order — never silently shrink P0.</p>
+    </div>
+    <div class="card">
+      <h3>Roles (§2.2)</h3>
+      <table>
+        <thead><tr><th>Role</th><th>Authority</th></tr></thead>
+        <tr><td>Owner / GM</td><td>Connect account; manage users; set hard floors & approval permissions; approve price actions</td></tr>
+        <tr><td>Operator</td><td>Investigate, simulate, prepare, approve within Owner-defined permissions</td></tr>
+        <tr><td>Internal operator</td><td>Read operational state; manage recovery queues; cannot change seller commercial rules</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="arch">
+  <h2>Architecture (§19.2, §19.3)</h2>
+  <p class="lede">Two coordinated interfaces over one deterministic core. The LLM plane holds a read + Draft-only credential and no database access — chat never owns financial logic, approval authority, or execution state.</p>
+  <div class="card" style="overflow-x:auto">
+    <svg viewBox="0 0 980 300" width="100%" style="min-width:760px; max-width:980px; display:block; margin:0 auto">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/>
+        </marker>
+      </defs>
+      <g font-size="12.5" fill="var(--ink-1)">
+        <!-- UI -->
+        <rect x="20" y="110" width="170" height="56" rx="9" fill="var(--chip)" stroke="var(--ring)"/>
+        <text x="105" y="133" text-anchor="middle" font-weight="600">React SPA (Vite 8)</text>
+        <text x="105" y="151" text-anchor="middle" fill="var(--ink-2)">+ MV3 extension</text>
+        <!-- GW -->
+        <rect x="250" y="110" width="150" height="56" rx="9" fill="color-mix(in srgb, var(--s1) 12%, transparent)" stroke="color-mix(in srgb, var(--s1) 35%, transparent)"/>
+        <text x="325" y="133" text-anchor="middle" font-weight="600">Go API gateway</text>
+        <text x="325" y="151" text-anchor="middle" fill="var(--ink-2)">SSE, no WebSocket</text>
+        <!-- Core -->
+        <rect x="460" y="42" width="180" height="66" rx="9" fill="color-mix(in srgb, var(--s1) 12%, transparent)" stroke="color-mix(in srgb, var(--s1) 35%, transparent)"/>
+        <text x="550" y="66" text-anchor="middle" font-weight="600">Go deterministic core</text>
+        <text x="550" y="83" text-anchor="middle" fill="var(--ink-2)" font-size="11">money · identity · events · policy</text>
+        <text x="550" y="97" text-anchor="middle" fill="var(--ink-2)" font-size="11">approval · execution · audit</text>
+        <!-- LLM -->
+        <rect x="460" y="180" width="180" height="56" rx="9" fill="color-mix(in srgb, var(--s2) 12%, transparent)" stroke="color-mix(in srgb, var(--s2) 40%, transparent)"/>
+        <text x="550" y="203" text-anchor="middle" font-weight="600">Python LLM plane</text>
+        <text x="550" y="221" text-anchor="middle" fill="var(--ink-2)" font-size="11">FastAPI · no DB credential</text>
+        <!-- PG -->
+        <rect x="740" y="20" width="200" height="48" rx="9" fill="var(--chip)" stroke="var(--ring)"/>
+        <text x="840" y="41" text-anchor="middle" font-weight="600">PostgreSQL 18 + River</text>
+        <text x="840" y="57" text-anchor="middle" fill="var(--ink-2)" font-size="11">sqlc · partitioned observations</text>
+        <!-- DK connector -->
+        <rect x="740" y="86" width="200" height="40" rx="9" fill="var(--chip)" stroke="var(--ring)"/>
+        <text x="840" y="110" text-anchor="middle" font-weight="600">DK seller connector (Route A)</text>
+        <!-- Route C -->
+        <rect x="740" y="144" width="200" height="40" rx="9" fill="var(--chip)" stroke="var(--ring)"/>
+        <text x="840" y="168" text-anchor="middle" font-weight="600">Route C observer → DK public</text>
+        <!-- Models -->
+        <rect x="740" y="202" width="200" height="40" rx="9" fill="var(--chip)" stroke="var(--ring)"/>
+        <text x="840" y="226" text-anchor="middle" font-weight="600">Qualified model providers</text>
+        <!-- edges -->
+        <g stroke="var(--ink-3)" fill="none" stroke-width="1.4" marker-end="url(#arr)">
+          <line x1="190" y1="138" x2="246" y2="138"/>
+          <path d="M400,124 C430,110 430,90 456,80"/>
+          <path d="M400,152 C430,168 430,192 456,204"/>
+          <path d="M640,62 C690,56 690,48 736,44"/>
+          <line x1="640" y1="93" x2="736" y2="102"/>
+          <path d="M640,100 C700,116 690,150 736,160"/>
+          <line x1="640" y1="217" x2="736" y2="220"/>
+        </g>
+        <g stroke="var(--s2)" fill="none" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)">
+          <path d="M460,224 C390,248 330,210 322,170"/>
+        </g>
+        <text x="368" y="248" font-size="10.5" fill="var(--s2)">read + Draft-only credential</text>
+      </g>
+    </svg>
+  </div>
+  <div class="grid3">
+    <div class="card"><h3>Deterministic plane</h3><p class="subtle" style="margin:0">Go owns all money, identity, event, policy, approval, execution, reconciliation, audit, and scheduling. Monorepo: go, python, web, extension, contracts. Go OpenAPI is the contract source; Python/TS clients are generated with a CI drift check.</p></div>
+    <div class="card"><h3>Model plane rules</h3><p class="subtle" style="margin:0">Model/provider selection is configuration; Gate 0a picks the cheapest pair clearing every threshold. If the provider degrades, chat falls back to suggested prompts + screens — never to an unqualified model. Failure: one automatic retry, then deep-link.</p></div>
+    <div class="card"><h3>Deploy & observe</h3><p class="subtle" style="margin:0">Docker Compose on one production VPS + isolated backup, Caddy ingress, OpenTelemetry with Grafana/Loki/Tempo. Route C: Go HTTP mainline; chromedp only if Gate 0 proves rendering necessary — else the wedge does not launch.</p></div>
+  </div>
+</section>
+
+<section id="scope">
+  <h2>Scope ladder</h2>
+  <p class="lede">P0 proves one connector, one locale, one region, one model configuration. Generalization waits for a second marketplace to demonstrate it.</p>
+  <div class="grid3" id="scopeCols"></div>
+  <div class="grid2">
+    <div class="card">
+      <h3>Non-goals for P0 (§4.5)</h3>
+      <div class="chips" id="nonGoals"></div>
+    </div>
+    <div class="card">
+      <h3>Descope order under slip &gt; 2 weeks (§4.6)</h3>
+      <ol id="descope" style="margin:0; padding-inline-start:20px; color:var(--ink-2); font-size:13px"></ol>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Never cut — under any deadline <span class="pill never">invariants</span></h3>
+    <div class="chips" id="neverCut"></div>
+  </div>
+</section>
+
+<section id="gates">
+  <h2>Gate 0 — evidence before build (§4.1)</h2>
+  <p class="lede">Four weeks, technical and market tracks in parallel. Every row is a validation-gated parameter: until verified, the dependent capability stays disabled — no inference fills the gap.</p>
+  <div class="card">
+    <h3>Gate 0a — technical exit thresholds</h3>
+    <table id="gate0a"></table>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>Gate 0b — market exits</h3>
+      <ul style="margin:0; padding-inline-start:18px; color:var(--ink-2); font-size:13px">
+        <li>≥ 6 of 8 interviewed sellers rank the problem top-three (else stop or narrow)</li>
+        <li>≥ 5 signed beta commitments at explicit tested price; ≥ 3 grant production access</li>
+        <li>≥ 4 of 8 complete the prototype's top-event decision unaided</li>
+        <li>Two beta categories confirmed by data availability & competition frequency</li>
+        <li>Two-day competitive scan finds no DK-focused product with materially better data access and comparable guardrails</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Statement discipline (§0)</h3>
+      <table>
+        <tr><td>Verified external fact</td><td>backed by a named source in §0.1</td></tr>
+        <tr><td>Product decision</td><td>chosen behavior or scope commitment</td></tr>
+        <tr><td>Product target</td><td>measurable release threshold, not a current claim</td></tr>
+        <tr><td>Validation-gated parameter</td><td>measured only with production access; pass/fail consequence pre-decided</td></tr>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="reqs">
+  <h2>Deterministic requirements — 120 IDs across 18 families</h2>
+  <p class="lede">Bar length = requirement count per family; segments split by release. Click a family row or expand below for every ID with its one-line requirement.</p>
+  <div class="card">
+    <div class="legend">
+      <span><i style="background:var(--s1)"></i>P0 — 106</span>
+      <span><i style="background:var(--s2)"></i>P0.5 — 11</span>
+      <span><i style="background:var(--s3)"></i>P1 — 3</span>
+    </div>
+    <div class="bars" id="reqBars"></div>
+  </div>
+  <div id="famDetails"></div>
+</section>
+<section id="approval">
+  <h2>Approval state machine (§8.4)</h2>
+  <p class="lede">One action path for chat and screens. Free text never approves — only a structured control bound to action ID, parameter version, context version, and expiry. Unknown external result is neither success nor failure: it stays Pending Reconciliation until current state is read.</p>
+  <div class="card" style="overflow-x:auto">
+    <svg viewBox="0 0 1120 330" width="100%" style="min-width:900px; display:block">
+      <defs>
+        <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--ink-3)"/>
+        </marker>
+      </defs>
+      <g font-size="12" fill="var(--ink-1)">
+        <!-- nodes -->
+        <g>
+          <rect x="16" y="128" width="86" height="34" rx="8" fill="color-mix(in srgb, var(--s1) 12%, transparent)" stroke="color-mix(in srgb, var(--s1) 35%, transparent)"/><text x="59" y="149" text-anchor="middle" font-weight="600">Draft</text>
+          <rect x="16" y="228" width="86" height="34" rx="8" fill="color-mix(in srgb, var(--crit) 10%, transparent)" stroke="color-mix(in srgb, var(--crit) 30%, transparent)"/><text x="59" y="249" text-anchor="middle">Blocked</text>
+          <rect x="150" y="128" width="128" height="34" rx="8" fill="var(--chip)" stroke="var(--ring)"/><text x="214" y="149" text-anchor="middle">ReadyForReview</text>
+          <rect x="326" y="128" width="160" height="34" rx="8" fill="var(--chip)" stroke="var(--ring)"/><text x="406" y="149" text-anchor="middle">AwaitingConfirmation</text>
+          <rect x="362" y="26" width="86" height="32" rx="8" fill="var(--chip)" stroke="var(--ring)"/><text x="405" y="46" text-anchor="middle">Expired</text>
+          <rect x="362" y="238" width="100" height="34" rx="8" fill="color-mix(in srgb, var(--s2) 12%, transparent)" stroke="color-mix(in srgb, var(--s2) 40%, transparent)"/><text x="412" y="259" text-anchor="middle">Invalidated</text>
+          <rect x="534" y="128" width="92" height="34" rx="8" fill="color-mix(in srgb, var(--good) 12%, transparent)" stroke="color-mix(in srgb, var(--good) 35%, transparent)"/><text x="580" y="149" text-anchor="middle" font-weight="600">Approved</text>
+          <rect x="674" y="128" width="104" height="34" rx="8" fill="var(--chip)" stroke="var(--ring)"/><text x="726" y="149" text-anchor="middle">Revalidating</text>
+          <rect x="826" y="128" width="90" height="34" rx="8" fill="var(--chip)" stroke="var(--ring)"/><text x="871" y="149" text-anchor="middle">Executing</text>
+          <rect x="982" y="22" width="120" height="32" rx="8" fill="color-mix(in srgb, var(--good) 12%, transparent)" stroke="color-mix(in srgb, var(--good) 35%, transparent)"/><text x="1042" y="42" text-anchor="middle" font-weight="600">Accepted</text>
+          <rect x="982" y="92" width="120" height="32" rx="8" fill="var(--chip)" stroke="var(--ring)"/><text x="1042" y="112" text-anchor="middle">Rejected</text>
+          <rect x="964" y="170" width="152" height="44" rx="8" fill="color-mix(in srgb, var(--warn) 14%, transparent)" stroke="color-mix(in srgb, var(--warn) 45%, transparent)"/><text x="1040" y="188" text-anchor="middle">Pending</text><text x="1040" y="203" text-anchor="middle">Reconciliation</text>
+          <rect x="982" y="248" width="120" height="32" rx="8" fill="color-mix(in srgb, var(--crit) 10%, transparent)" stroke="color-mix(in srgb, var(--crit) 30%, transparent)"/><text x="1042" y="268" text-anchor="middle">Failed</text>
+        </g>
+        <!-- edges -->
+        <g stroke="var(--ink-3)" fill="none" stroke-width="1.3" marker-end="url(#arr2)">
+          <line x1="102" y1="145" x2="146" y2="145"/>
+          <path d="M59,162 L59,224"/>
+          <line x1="278" y1="145" x2="322" y2="145"/>
+          <line x1="486" y1="145" x2="530" y2="145"/>
+          <path d="M406,128 L406,62"/>
+          <path d="M410,162 L411,234"/>
+          <line x1="626" y1="145" x2="670" y2="145"/>
+          <path d="M726,162 C700,220 520,252 466,254"/>
+          <line x1="778" y1="145" x2="822" y2="145"/>
+          <path d="M916,134 C940,110 950,56 978,42"/>
+          <path d="M916,140 C940,130 950,112 978,108"/>
+          <path d="M916,152 C936,160 940,176 960,184"/>
+          <path d="M916,158 C940,190 950,246 978,260"/>
+          <path d="M1054,170 C1070,132 1070,80 1054,58"/>
+          <path d="M1026,214 C1010,226 1010,236 1026,246"/>
+        </g>
+        <g stroke="var(--s2)" fill="none" stroke-width="1.3" stroke-dasharray="5 4" marker-end="url(#arr2)">
+          <path d="M362,262 C220,300 70,240 59,166"/>
+        </g>
+        <!-- edge labels -->
+        <g font-size="10" fill="var(--ink-3)">
+          <text x="124" y="136" text-anchor="middle">validates</text>
+          <text x="63" y="196" text-anchor="start">data/policy blocker</text>
+          <text x="300" y="136" text-anchor="middle">opened</text>
+          <text x="508" y="136" text-anchor="middle">bound control</text>
+          <text x="412" y="92" text-anchor="start">expiry</text>
+          <text x="418" y="200" text-anchor="start">version changed</text>
+          <text x="800" y="136" text-anchor="middle">gates pass</text>
+          <text x="636" y="235" text-anchor="middle">a gate changed</text>
+          <text x="946" y="192" text-anchor="end" fill="var(--warn)">unknown result</text>
+          <text x="1108" y="140" text-anchor="end">reconciled</text>
+          <text x="180" y="292" text-anchor="middle" fill="var(--s2)">recalculated → new version</text>
+        </g>
+      </g>
+    </svg>
+    <p class="subtle" style="margin:8px 0 0">Rollback is a new recommendation + approval with its own action ID — never an automatic inverse write (EXE-004). Duplicate confirmations reject; retry is blocked while any item is unreconciled.</p>
+  </div>
+</section>
+
+<section id="money">
+  <h2>Money, contribution & policy (§9)</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>Money representation</h3>
+      <div class="flow"><span class="n hl ltr">Money { mantissa: int64, currency: ISO-4217, exponent: int8 }</span></div>
+      <ul style="margin:8px 0 0; padding-inline-start:18px; color:var(--ink-2); font-size:13px">
+        <li>No floating point ever enters a money path; rates are fixed-point basis points</li>
+        <li>Arithmetic only via Money methods; mixed currency/exponent rejects</li>
+        <li>Raw marketplace text/value/unit preserved separately as evidence</li>
+        <li>Ambiguous source unit → <b>quarantine</b>, never inference</li>
+        <li>No cross-currency conversion in P0; static lint bans raw integer math in money/margin/policy/card packages</li>
+        <li>Toman display only through the verified, versioned IR region transform; inexact transforms also show the exact source-unit amount</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Policy order — later rules cannot override earlier ones</h3>
+      <div class="flow" id="policyOrder"></div>
+      <p class="subtle">Default movement cap 5%, cooldown 60 min — P0 accounts may only tighten. No action may cross zero contribution.</p>
+      <h3 style="margin-top:16px">Contribution model</h3>
+      <p class="subtle" style="margin:0">net proceeds − COGS − commission − fulfillment − seller-funded shipping − packaging − seller-funded promotion − variable ads − expected returns. Only <b>Complete</b> readiness can drive an executable recommendation; Partial shows analysis only; Stale/Missing block.</p>
+    </div>
+  </div>
+</section>
+
+<section id="obs">
+  <h2>Observation strategy (§10)</h2>
+  <div class="grid3">
+    <div class="card"><h3>Route A — seller connector</h3><p class="subtle" style="margin:0">Owned catalog/offers and verified DK-native signals. Freshness per connector capability. Every capability starts <b>Unknown</b>; Unknown never enables dependent UI.</p></div>
+    <div class="card"><h3>Route C — server observation</h3><p class="subtle" style="margin:0">Same-record public offers for confirmed targets. Carries <b>all</b> P0 competitor freshness promises. Concurrency, jitter, budgets, backoff, circuit breakers, kill switches enforced.</p></div>
+    <div class="card"><h3>Route B — extension</h3><p class="subtle" style="margin:0">Passive + on-demand capture; opt-in bounded watchlist refresh. Corroboration only — no independent SLA. B/C agreement raises confidence but is not independent truth.</p></div>
+  </div>
+  <div class="grid2">
+    <div class="card">
+      <h3>Quality states → allowed use</h3>
+      <table id="quality"></table>
+    </div>
+    <div class="card">
+      <h3>Freshness & caps</h3>
+      <div class="statgrid">
+        <div class="stat"><div class="v num">60 min</div><div class="l">priority cadence</div><div class="g">during operating window · 90% target</div></div>
+        <div class="stat"><div class="v num">6 h</div><div class="l">standard cadence</div><div class="g">90% target</div></div>
+        <div class="stat"><div class="v num">24 h</div><div class="l">background cadence</div><div class="g">90% target</div></div>
+        <div class="stat"><div class="v num">200</div><div class="l">max priority targets / account</div><div class="g">effective cap = min(200, measured Route C capacity)</div></div>
+        <div class="stat"><div class="v num">50</div><div class="l">Gate 0 starting targets</div><div class="g">&lt; 50 viable ⇒ wedge no-go</div></div>
+        <div class="stat"><div class="v num">10 min</div><div class="l">JIT refresh deadline</div><div class="g">Supported evidence must refresh before execution</div></div>
+      </div>
+      <p class="subtle" style="margin:10px 0 0">If capacity falls: reduce target count before widening freshness. No category, seller, substitute, or ID-enumeration crawl. Drift pauses extraction; recovery needs green fixtures + canary + manual sample.</p>
+    </div>
+  </div>
+</section>
+
+<section id="chat">
+  <h2>Conversational layer (§8, §12)</h2>
+  <p class="lede">Chat is not a seventh product area. One active context per conversation, visible as a chip; ambiguity always produces a picker before any card exists. If chat dies, every P0 workflow still works on screens.</p>
+  <div class="grid2">
+    <div class="card">
+      <h3>Administration levels</h3>
+      <table id="adminLevels"></table>
+    </div>
+    <div class="card">
+      <h3>Intent classes & containment</h3>
+      <div class="chips" id="intents"></div>
+      <ul style="margin:12px 0 0; padding-inline-start:18px; color:var(--ink-2); font-size:13px">
+        <li>Only <b>Prepare Action</b> can create a Draft; no model tool can approve, execute, confirm results, or write guardrails/permissions (registry-tested)</li>
+        <li>Model cannot calculate authoritative price/contribution or override any gate</li>
+        <li>Every numeric financial value comes from engine outputs; responses fail closed on missing evidence</li>
+        <li>Eval set before beta: 630 cases · ≥90% intent, ≥95% context, <b>100%</b> adversarial approval containment, ≥95% factual support</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section id="success">
+  <h2>Success model (§5)</h2>
+  <p class="lede"><b>North star — WVRA:</b> weekly value-realizing accounts completing ≥ 1 platform-recommended, margin-safe action on Confirmed identity, Complete cost, fresh evidence. Write mode needs a reconciled terminal result; recommend-only needs a matching owned-price observation within 24 h. Message count is an anti-metric.</p>
+  <div class="statgrid" id="targets"></div>
+</section>
+
+<section id="loc">
+  <h2>Localization boundary (§11)</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3>Architecture</h3>
+      <ul style="margin:0; padding-inline-start:18px; color:var(--ink-2); font-size:13px">
+        <li>One UI locale (fa-IR) and one region (IR) over a <b>locale-neutral core</b> — no locale/calendar/currency/direction branch in core logic (LOC-001)</li>
+        <li>Versioned locale pack: catalog, direction, digit families, number format, calendar, collation, plurals, prompt/eval assets</li>
+        <li>Region config: currency, verified source-unit mapping, display transform, timezone, business days, connector binding</li>
+        <li>Persian/Latin digits normalize before calculation; Jalali is a display calendar over UTC storage; Latin identifiers are bidi-isolated</li>
+        <li>Pseudo-locale + copy-lint are CI gates; missing keys fall back to English + telemetry</li>
+        <li>A new locale/region must require only pack + config + connector binding — zero core diff (LOC-010)</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>Canonical state glossary (fa-IR) — the single copy source</h3>
+      <table id="glossary"></table>
+    </div>
+  </div>
+</section>
+
+<section id="risks">
+  <h2>Risk register (§21) — every risk has a pre-decided response</h2>
+  <div class="card"><table id="riskTable"></table></div>
+</section>
+
+<section id="done">
+  <h2>Release gates (§20)</h2>
+  <div class="grid3">
+    <div class="card"><h3>Internal alpha</h3><ul style="margin:0;padding-inline-start:18px;color:var(--ink-2);font-size:12.5px"><li>All P0 requirement tests pass; Gate 0 thresholds stay green</li><li>Screens-only kill-switch journey passes</li><li>Adversarial approval suite contains 100%</li><li>RTL/bidi, Jalali, pseudo-locale, pseudo-currency, fallback pass</li><li>No Unknown capability enables a control</li><li>Runbooks + analytics match source records</li></ul></div>
+    <div class="card"><h3>Private beta</h3><ul style="margin:0;padding-inline-start:18px;color:var(--ink-2);font-size:12.5px"><li>5 production accounts connected</li><li>≥ 70% of each pilot assortment Complete & observation-ready</li><li>One-week priority-freshness soak passes</li><li>Writes verified or account visibly recommend-only</li><li>Briefing ≥ 95% during soak; P75 economics support tested price</li></ul></div>
+    <div class="card"><h3>Paid beta / GA</h3><ul style="margin:0;padding-inline-start:18px;color:var(--ink-2);font-size:12.5px"><li>WVRA ≥ 3 of 5 for four consecutive weeks</li><li>Precision, freshness, sync, grounding, context, safety targets pass</li><li>Zero unresolved sev-1 identity/money/policy/execution defects</li><li>≥ 70% gross margin at P75; ≥ 3 partners accept paid price</li><li>Support load sustainable without hidden concierge work</li></ul></div>
+  </div>
+  <div class="card">
+    <h3>Autopilot stays off (P1 proof gate, §19.4)</h3>
+    <p class="subtle" style="margin:0">≥ 500 approved human actions · zero guardrail breaches · ≥ 95% reconciled success · ≥ 90% policy agreement on a labeled set · explicit account + SKU-group opt-in · independent pause control. Chat may report and pause autopilot; it can never enable it.</p>
+  </div>
+  <div class="foot">Generated from <span class="ltr">docs/PRD.md</span> v1.3 (final-product-baseline, prepared 2026-07-16). The PRD is read-only; a gap or contradiction escalates to the product owner — it is never improvised in code.</div>
+</section>
+</main>
+<script>
+function toggleTheme(){
+  const r=document.documentElement;
+  const dark = r.getAttribute('data-theme')==='dark' || (!r.getAttribute('data-theme') && matchMedia('(prefers-color-scheme: dark)').matches);
+  r.setAttribute('data-theme', dark ? 'light' : 'dark');
+}
+
+/* ---------- data (verbatim structure from PRD v1.3) ---------- */
+const SCOPE = [
+  {title:'P0 — private beta', cls:'p0', items:['1 org, 1 DK account, Owner + Operator','Seller OpenAPI connection, token/scope health, catalog & owned-offer sync','Owned-SKU workspace + confirmed public-record mapping','Manual/CSV costs; versioned contribution profiles & readiness','Route C same-record observation; 6 quality states, 3 freshness tiers','MV3 extension: passive/on-demand capture, overlay, history, watchlist, bounded refresh','5 event types + dedup, severity, materiality, priority, expiry','Profit-aware recommendations & deterministic simulations','Individual + bulk approval on screens; individual approval in chat','Writes only after write gate; else recommend-only','Reconciliation, audit, 7-day outcome window','Today · Products · Market · Actions · Settings · Operations','In-app + daily email + daily chat briefing','Persian UI, Jalali display, RTL, mixed-script input','Read-only listing & image diagnostics']},
+  {title:'P0.5', cls:'p05', items:['Multi-account organizations','Chat bulk approval (CHAT-052/053)','Level-3 guardrail changes in chat (CHAT-063)','Competitor URL watch targets (cannot drive execution)','Automated match suggestions w/ human confirm','Saved pricing strategies & outcome reports','Grounded title/description drafts w/ field diff','Technical image correction, immutable originals','Shared saved investigations','English UI locale pack']},
+  {title:'P1 and later', cls:'p1', items:['Guarded autopilot after §19.4 proof gate','Inventory-aware pricing, promotion, ads, finance, returns, Q&A','Substitute-product intelligence','Content publishing & bulk campaigns','Generative media (IMG-103 gates)','Agency portfolio views','Second marketplace connector — only then generalize']}
+];
+const NONGOALS = ['Autonomous repricing','Bulk approval via chat','Guardrail writes via chat','Typed-phrase confirmation','Voice / push notifications','Arbitrary crawling & enumeration','Browser automation beyond overlay','Product/content/media publication','Accounting-grade P&L','2nd marketplace / locale / region'];
+const DESCOPE = ['Entire extension (incl. bounded scheduling) → P0.5','Chat Level-2 writes → P0.5','Chat simulation → P0.5','Structured bulk approval → P0.5','Listing/image diagnostics → P0.5','Daily email → P0.5 (in-app + chat briefing stay)','Individual chat approval → P0.5','Marketplace writes → recommend-only'];
+const NEVERCUT = ['money correctness','identity quarantine','evidence quality states','event deduplication','policy order','approval versioning','idempotency','reconciliation','audit','free-text containment','screens-only fallback','localization boundary'];
+const GATE0A = [
+  ['Identity','≥ 99% precision on labeled mappings','No P0 build'],
+  ['Price/currency','100% correct on action-eligible values in ≥ 200 snapshots','No price recommendation or write'],
+  ['Money unit','Source unit + conversion contract confirmed on all sampled endpoints','All margin/action paths stay blocked'],
+  ['Margin','Engine matches ≥ 30 settlement examples within rounding rule','No executable recommendation'],
+  ['Observation','Route C supports calculated cap within block/cost budgets','Lower cap; < 50 targets viable ⇒ no-go'],
+  ['Write','Request, idempotency, response, reconciliation pass','Recommend-only P0'],
+  ['Chat intent','≥ 90% macro accuracy per class','Drop free-form preparation; keep suggested prompts + read-only chat'],
+  ['Context resolution','≥ 95% accuracy; 100% containment on ambiguous action cases','Remove chat approval'],
+  ['Approval containment','100% of adversarial free-text causes no transition','Remove chat approval'],
+  ['Localization','All LOC P0 tests pass','No beta'],
+  ['Unit economics','≥ 70% gross margin at tested price, measured P75 use','Reprice, narrow, or stop']
+];
+const FAMS = [
+ {f:'ACC', name:'Account & connector', mod:'Connector, account, permissions', reqs:[
+  ['ACC-001','Connect/refresh/inspect/disconnect one DK account; per-capability status + last-verified; Unknown never enables UI','p0'],
+  ['ACC-002','One Owner/Operator permission matrix shared by chat and screens','p0'],
+  ['ACC-003','Connector failures expose affected capabilities + recovery action; no fake healthy state','p0'],
+  ['ACC-004','Initial import handles 5,000 SKUs; 95% finish ≤ 4 h','p0'],
+  ['ACC-005','Idempotent, reconciled incremental sync; P95 ≤ 15 min; zero duplicate canonical records','p0']]},
+ {f:'CAT', name:'Catalog & identity', mod:'Catalog, identity', reqs:[
+  ['CAT-001','Product/Variant/Listing/Owned Offer stay separate canonical entities with stable native IDs','p0'],
+  ['CAT-002','≤ 1 active public Market Product Identity per variant; Needs Review/Rejected/Obsolete cannot drive execution','p0']]},
+ {f:'CST', name:'Costs', mod:'Cost profile, margin', reqs:[
+  ['CST-001','CSV import with mapping preview + per-row dispositions; nothing commits pre-confirmation','p0'],
+  ['CST-002','Effective-dated, component-versioned cost profiles; history reproduces exact version used','p0'],
+  ['CST-003','Readiness = Complete/Partial/Stale/Missing; only Complete drives executable recommendations','p0']]},
+ {f:'LST', name:'Listing diagnostics', mod:'Diagnostics', reqs:[
+  ['LST-001','Read-only title/description/image diagnostics naming field + rule; nothing generated or published','p0']]},
+ {f:'OBS', name:'Observation', mod:'Scheduler, Route B/C, observation', reqs:[
+  ['OBS-001','Confirmed mapping auto-creates a target; none exists for unconfirmed identity','p0'],
+  ['OBS-002','Every observation carries full evidence schema (route, parser version, unit, dedup key…); incomplete rejects','p0'],
+  ['OBS-003','Quality ∈ {Verified, Supported, Unverified, Conflicted, Stale, Unavailable} with fixture-tested transitions','p0'],
+  ['OBS-004','Historical values never silently become current; expired values render with age','p0'],
+  ['OBS-005','Route B: passive, on-demand, bounded scheduled capture — attributed, shared budget','p0'],
+  ['OBS-006','Route C: concurrency, jitter, budgets, backoff, circuit breakers, kill switches (fault-tested)','p0'],
+  ['OBS-007','Route stop disables only dependent capability; no relabeling old values current','p0'],
+  ['OBS-008','Dedup without losing route evidence; replay creates no duplicate current offer','p0'],
+  ['OBS-009','Supported evidence needs JIT refresh ≤ 10 min, in budget, within tolerance — else execution blocks','p0']]},
+ {f:'EVT', name:'Events', mod:'Event engine, prioritization', reqs:[
+  ['EVT-001','5 types: winning lost/challenged · competitor price move · seller-count move · suppression/boundary · below-floor','p0'],
+  ['EVT-002','Category materiality thresholds are versioned config; event reproduces its version','p0'],
+  ['EVT-003','Dedup within type-specific window; repeats update the open record','p0'],
+  ['EVT-004','Today rank = exposure × confidence × urgency, all three exposed','p0'],
+  ['EVT-005','Unknown impact stays unknown; relevance feedback stored','p0']]},
+ {f:'PRC', name:'Recommendation', mod:'Margin, policy, recommendation', reqs:[
+  ['PRC-001','Full payload: objective, prices, contributions, range, inputs, evidence, age, quality, readiness, assumptions, blockers, expiry','p0'],
+  ['PRC-002','Block on unconfirmed identity, incomplete cost, ambiguous unit, unusable evidence, unknown boundary, permission/policy failure','p0'],
+  ['PRC-003','Policy order boundary → floor → cap → cooldown → strategy → objective; later never overrides earlier','p0'],
+  ['PRC-004','Default cap 5% / cooldown 60 min; stricter-only in P0','p0']]},
+ {f:'APR', name:'Approval', mod:'Approval, selection set', reqs:[
+  ['APR-001','Previews bind exact action/selection, evidence, policy, parameter versions; any change invalidates','p0']]},
+ {f:'EXE', name:'Execution', mod:'Execution, connector, reconciliation', reqs:[
+  ['EXE-001','Confirmation revalidates identity, price, costs, unit, boundary, evidence/JIT, guardrails, permission, expiry','p0'],
+  ['EXE-002','Stable idempotency keys, single execution record; zero duplicate external writes','p0'],
+  ['EXE-003','External state ∈ {Accepted, Rejected, Pending Reconciliation, Failed}; unknown ⇒ Pending; no retry unreconciled','p0'],
+  ['EXE-004','Rollback = new recommendation + approval, never an automatic inverse write','p0'],
+  ['EXE-005','Recommend-only: Awaiting External Execution / Externally Executed (match ≤ 24 h) / Lapsed','p0']]},
+ {f:'AUD', name:'Audit', mod:'Audit', reqs:[
+  ['AUD-001','Full actor/context/evidence/version/card/write/reconciliation record; reproducible without transcript','p0']]},
+ {f:'NOT', name:'Notifications', mod:'Notifications', reqs:[
+  ['NOT-001','In-app + daily email share event IDs; execution/safety failures bypass digest delay','p0']]},
+ {f:'OPS', name:'Operations', mod:'Operations', reqs:[
+  ['OPS-001','Context signals (stock, sales) are evidence, never silent policy changes','p0'],
+  ['OPS-002','Queues for mapping, collector, parser, connector, reconciliation; every blocked journey has a queue + runbook','p0']]},
+ {f:'OUT', name:'Outcomes', mod:'Outcome', reqs:[
+  ['OUT-001','Every reconciled action opens a 7-day window; result + confidence computed or Not Measurable','p0']]},
+ {f:'CHAT', name:'Conversational', mod:'Orchestrator, cards, shared services', reqs:[
+  ['CHAT-001','Persistent dock on all 6 areas; contextual entry with correct chip','p0'],
+  ['CHAT-002','All operational values originate in typed service responses','p0'],
+  ['CHAT-003','Registry exposes read + Draft-only tools; nothing moves past Draft','p0'],
+  ['CHAT-004','Envelope separates facts, DK signals, config, calculations, inference, missing data, recommendation','p0'],
+  ['CHAT-005','Evidence refs + capture times; ≥ 98% grounding; fails closed','p0'],
+  ['CHAT-006','Every data-bearing answer deep-links to matching structured state','p0'],
+  ['CHAT-007','Ambiguity produces a picker before card creation','p0'],
+  ['CHAT-008','90-day searchable history; pinned investigations persist; audit independent','p0'],
+  ['CHAT-009','Kill switch leaves screens fully functional','p0'],
+  ['CHAT-010','Briefing matches Today ranking; ≥ 95% generation','p0'],
+  ['CHAT-011','Canonical briefing questions ≥ 95% correct counts','p0'],
+  ['CHAT-012','Exposure totals only from margin engine; unknown renders unknown','p0'],
+  ['CHAT-020','Product/market answers carry evidence, quality, freshness, as-of; ≥ 95% support','p0'],
+  ['CHAT-021','Comparisons show both values, delta, both timestamps','p0'],
+  ['CHAT-022','State explanations use canonical catalog keys','p0'],
+  ['CHAT-023','Inline tables cap at 20 rows; larger summarizes + deep-links','p0'],
+  ['CHAT-030','Recommendations byte-match the recommendation service payload','p0'],
+  ['CHAT-031','Explanations render all 8: evidence, freshness, quality, readiness, assumptions, guardrails, level, expiry','p0'],
+  ['CHAT-032','Simulations call real engines, labeled non-executable, never carry approval control','p0'],
+  ['CHAT-033','Conversational filters = deterministic query params = screen results','p0'],
+  ['CHAT-040','Approval card carries 14 required fields, each populated or reasoned-unavailable','p0'],
+  ['CHAT-041','Only structured control approves; ≥ 50 adversarial messages cause zero transitions','p0'],
+  ['CHAT-042','Confirmation re-verifies context/card/evidence/price/cost/boundary/permission versions','p0'],
+  ['CHAT-043','Status rendered from platform events; history equals action record','p0'],
+  ['CHAT-044','Card price edits create a new version; old control invalidates','p0'],
+  ['CHAT-045','Duplicate confirmations rejected; zero duplicate executions','p0'],
+  ['CHAT-050','Bulk filters show counts, impact, movement, exclusions = bulk screen','p0'],
+  ['CHAT-051','Bulk handoff creates exact versioned selection set, no re-query drift','p0'],
+  ['CHAT-052','Bulk approval card binds counts/impact/exclusions/confirm to one set version','p05'],
+  ['CHAT-053','"Approve remaining N" resolves only against visible set version','p05'],
+  ['CHAT-060','Level-1 admin values match Settings and name scope','p0'],
+  ['CHAT-061','Level-2 = before/after/scope/consequence/confirm/audit; expired proposals inert','p0'],
+  ['CHAT-062','No Level-3 write tool exists in P0 (registry test)','p0'],
+  ['CHAT-063','Level-3 write: Owner permission, scope preview, structured confirm, audit','p05'],
+  ['CHAT-064','Permissions equal screen path (shared matrix test)','p0'],
+  ['CHAT-070','Blockers byte-match policy engine order and reasons','p0'],
+  ['CHAT-071','Guided resolution: one blocker at a time; single-value COGS journey completes in chat','p0'],
+  ['CHAT-072','Refresh requests consume route budgets; no value changes without new observation','p0'],
+  ['CHAT-073','Execution queries match action records','p0'],
+  ['CHAT-074','Retry blocked while unreconciled','p0'],
+  ['CHAT-080','Persian/English/mixed input + shorthand; ≥ 90% intent accuracy','p0'],
+  ['CHAT-081','Persian and Latin digits normalize identically','p0'],
+  ['CHAT-082','Ambiguous money unit triggers clarification; never reaches calculation or card','p0'],
+  ['CHAT-083','RTL cards isolate LTR SKUs/URLs/brands; zero bidi corruption','p0'],
+  ['CHAT-084','Canonical state catalog across chat/screens/email','p0'],
+  ['CHAT-085','Error copy: what, why, next step; ≤ 2 sentences median','p0']]},
+ {f:'LOC', name:'Localization', mod:'Locale, region, renderer', reqs:[
+  ['LOC-001','No locale/calendar/currency/direction branch in core (static scan + pseudo-locale)','p0'],
+  ['LOC-002','Catalog keys with named slots; inline-copy lint','p0'],
+  ['LOC-003','Native Persian operator reviews all P0 copy pre-beta','p0'],
+  ['LOC-004','Missing key → English fallback + telemetry; never raw key/blank/crash','p0'],
+  ['LOC-005','Logical start/end layout; RTL + forced-LTR visual suites','p0'],
+  ['LOC-006','Jalali + Gregorian share UTC storage; conversion/leap/boundary tests','p0'],
+  ['LOC-007','Declared digit families normalize before calculation','p0'],
+  ['LOC-008','Money rendering = Money + versioned region config; non-IRR needs no engine change','p0'],
+  ['LOC-009','Cross-currency rejects; pseudo-currency passes end-to-end','p0'],
+  ['LOC-010','New locale/region = pack + config + binding only; zero core diff','p0'],
+  ['LOC-011','Pseudo-localization in CI; broken surfaces fail the build','p0'],
+  ['LOC-012','Conversation/card/audit/analytics carry locale, region, calendar, currency context','p0']]},
+ {f:'EXT', name:'Extension', mod:'MV3 extension, scheduler', reqs:[
+  ['EXT-001','Pair via short-lived code; only capture/overlay credential stored; revocation blocks upload','p0'],
+  ['EXT-002','Passive capture during explicit browsing; allow-listed schema; idempotent offline retry','p0'],
+  ['EXT-003','On-demand refresh ≤ 10 s normal network','p0'],
+  ['EXT-004','Recognize Confirmed owned product; Needs Review never joins commercial data','p0'],
+  ['EXT-005','Overlay = Market view values (offers, seller count, lowest qualifying, freshness, quality)','p0'],
+  ['EXT-006','Price history from observation store; gaps stay gaps, nothing synthetic','p0'],
+  ['EXT-007','Add Confirmed product to watchlist; server enforces cap; audited','p0'],
+  ['EXT-008','Deep-links to product/events/chat with correct context chip','p0'],
+  ['EXT-009','Popup: account, toggle, last upload, queue, degradation; visible kill-switch state','p0'],
+  ['EXT-010','Overlay-only DOM effect; no automated navigation/click/form input','p0'],
+  ['EXT-012','Opt-in bounded scheduled refresh, server-allocated; no DK credential attached; circuit stops ≤ 1 cycle','p0'],
+  ['EXT-011','User-supplied competitor URL watch; cannot drive execution','p05'],
+  ['EXT-013','Trigger grounded content draft in app; no DK DOM write','p05'],
+  ['EXT-014','Trigger technical image correction; originals immutable','p05'],
+  ['EXT-016','Show one-line existing recommendation; no approval control in extension','p05'],
+  ['EXT-015','Generate media under IMG-103 gates','p1']]},
+ {f:'CNT', name:'Content', mod:'Draft, diagnostic, connector', reqs:[
+  ['CNT-101','Title/description drafts from listing + verified facts; unsupported claims block','p05'],
+  ['CNT-102','Field-level before/after diff with rationale; per-field accept/reject','p05'],
+  ['CNT-103','Publish only via Supported capability + Level-4 approval, fully audited','p1']]},
+ {f:'IMG', name:'Images', mod:'Asset, diagnostic, connector', reqs:[
+  ['IMG-101','Detect technical issues via versioned rules (dimensions, aspect, format, duplicates, background)','p05'],
+  ['IMG-102','Deterministic corrections; immutable originals; before/after approval','p05'],
+  ['IMG-103','Lifestyle/infographic assets only from verified facts + approved templates','p1']]}
+];
+const QUALITY = [
+  ['Verified','fresh + corroborated by 2nd path or official signal','Yes','Yes','Yes, if all gates pass'],
+  ['Supported','one fresh path + consistent history','Yes','Yes','Only after JIT refresh'],
+  ['Unverified','below schema/unit/parser/identity threshold','Warning','No','No'],
+  ['Conflicted','routes disagree outside tolerance','Conflict details','No','No'],
+  ['Stale','past freshness deadline','Age only','No','No'],
+  ['Unavailable','no usable current value','State only','No','No']
+];
+const ADMIN = [
+  ['1 · Read','Connection status, cost readiness, strategy','Answer with evidence'],
+  ['2 · Reversible config','Notification time, watchlist, tier, single cost value','Before/after/scope/consequence card + structured confirm + audit'],
+  ['3 · Commercial guardrail','Floor, movement cap, strategy, approval permission','Explain + deep-link to Settings; no chat write tool in P0'],
+  ['4 · Marketplace mutation','Individual price change','Full approval card, revalidation, idempotent execution, reconciliation']
+];
+const INTENTS = ['Question','Simulation','Prepare Action ⇢ Draft only','Review Action','Approve Action','Confirm Result','Administration','Navigation'];
+const TARGETS = [
+  ['5','production accounts connected',''],
+  ['≤ 1 day','pilot activation','first prioritized event after catalog + costs ready'],
+  ['≤ 15 min','median daily review','per active operator'],
+  ['3 of 5','WVRA accounts','four consecutive weeks'],
+  ['≥ 99%','identity precision','labeled mappings'],
+  ['100%','price/currency correctness','action-eligible audit sample'],
+  ['≥ 85%','event precision','material + correctly typed'],
+  ['≥ 90%','priority freshness ≤ 60 min','standard ≤ 6 h · background ≤ 24 h'],
+  ['≥ 99%','scheduled sync success','excluding confirmed outages'],
+  ['0','guardrail bypasses','floor, boundary, permission, context, stale-card'],
+  ['0','duplicate writes',''],
+  ['≥ 95%','briefing generation','active-account business days'],
+  ['3 of 5','accounts using chat','3 distinct sessions/week by week 4'],
+  ['≥ 98%','chat grounding','valid evidence references'],
+  ['< 1%','unsupported answers','< 2% incorrect context'],
+  ['< 3 s','P95 chat first token','read-only completion < 10 s'],
+  ['≥ 70%','gross margin','tested price at measured P75 usage'],
+  ['3 of 5','partners accept paid price','']
+];
+const GLOSSARY = [
+  ['Verified','تاییدشده'],['Supported','پشتیبانی‌شده'],['Unverified','تاییدنشده'],
+  ['Conflicted','متناقض'],['Stale','قدیمی‌شده'],['Unavailable','در دسترس نیست'],
+  ['Blocked','مسدود'],['Awaiting confirmation','در انتظار تایید نهایی'],['Executing','در حال اجرا'],
+  ['Accepted by {marketplace}','تاییدشده توسط {marketplace}'],['Rejected','رد شده'],
+  ['Pending Reconciliation','در انتظار تطبیق'],['Failed','ناموفق'],['Expired','منقضی‌شده'],['Simulation','شبیه‌سازی']
+];
+const RISKS = [
+  ['Route C cannot sustain coverage','measured cap < 50 targets/account','No-go for wedge; extension cannot carry the SLA'],
+  ['Public payload changes','parser canary / distribution shift','Pause route; mark stale/unavailable; fixture + canary recovery'],
+  ['Identity joins unsafe','precision < 99% or corrections rising','Expand quarantine; no automatic mapping'],
+  ['Cost completion neglected','< 70% of pilot SKUs Complete','Guided cost workflow; pause affected recommendations'],
+  ['Events noisy','precision < 85% or briefing opens decline','Tighten materiality; cap briefing; tune per category'],
+  ['Price write unreliable','unknown/duplicate/mismatched outcomes','Recommend-only mode'],
+  ['Chat context unsafe','incorrect context ≥ 2%','Disable chat approval; screens only'],
+  ['Free-text bypass appears','any containment failure','Disable chat approval immediately; fix; rerun full suite'],
+  ['Model cost breaks package','P75 gross margin < 70%','Shorter composition, structured answers, hard budgets, reprice'],
+  ['Money semantics drift','unit/value distribution anomaly','Quarantine all affected money; block margin/action'],
+  ['Localization erodes','copy / pseudo-locale lint failure','Merge blocked'],
+  ['Attribution weak','concurrent-change rate rises','Lower confidence; no causal claim'],
+  ['Small team, full schedule','critical-path slip > 2 weeks','Extend schedule or apply descope order']
+];
+
+/* ---------- renderers ---------- */
+const $=id=>document.getElementById(id);
+const esc=s=>s.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+$('scopeCols').innerHTML = SCOPE.map(c=>`<div class="card"><h3><span class="pill ${c.cls}">${c.title}</span></h3><ul style="margin:8px 0 0; padding-inline-start:18px; color:var(--ink-2); font-size:12.5px">${c.items.map(i=>`<li>${esc(i)}</li>`).join('')}</ul></div>`).join('');
+$('nonGoals').innerHTML = NONGOALS.map(n=>`<span class="chip">${esc(n)}</span>`).join('');
+$('descope').innerHTML = DESCOPE.map(d=>`<li>${esc(d)}</li>`).join('');
+$('neverCut').innerHTML = NEVERCUT.map(n=>`<span class="chip hard">${esc(n)}</span>`).join('');
+$('gate0a').innerHTML = '<thead><tr><th>Gate</th><th>Pass threshold</th><th>Failure consequence</th></tr></thead>'+GATE0A.map(r=>`<tr><td><b>${r[0]}</b></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join('');
+const RELCOLOR={p0:'var(--s1)',p05:'var(--s2)',p1:'var(--s3)'};
+const RELNAME={p0:'P0',p05:'P0.5',p1:'P1'};
+const maxN=Math.max(...FAMS.map(f=>f.reqs.length));
+$('reqBars').innerHTML = FAMS.map(f=>{
+  const c={p0:0,p05:0,p1:0}; f.reqs.forEach(r=>c[r[2]]++);
+  const total=f.reqs.length, w=total/maxN*100;
+  const segs=['p0','p05','p1'].filter(k=>c[k]).map(k=>`<div class="seg" style="background:${RELCOLOR[k]}; width:${c[k]/total*100}%" title="${RELNAME[k]}: ${c[k]}"></div>`).join('');
+  const split=['p0','p05','p1'].filter(k=>c[k]).map(k=>`${c[k]} ${RELNAME[k]}`).join(' · ');
+  return `<div class="fam" onclick="document.getElementById('fam-${f.f}').open=true; document.getElementById('fam-${f.f}').scrollIntoView({behavior:'smooth',block:'center'})">${f.f}</div><div><div class="track" style="width:${w}%">${segs}</div></div><div class="cnt num">${total} · ${split}</div>`;
+}).join('');
+$('famDetails').innerHTML = FAMS.map(f=>`<details class="fam" id="fam-${f.f}"><summary>${f.f} — ${f.name} <span class="meta">${f.reqs.length} requirement${f.reqs.length>1?'s':''} · ${esc(f.mod)}</span></summary><div class="body"><table>${f.reqs.map(r=>`<tr><td class="ltr" style="white-space:nowrap">${r[0]}</td><td>${esc(r[1])}</td><td><span class="pill ${r[2]}">${RELNAME[r[2]]}</span></td></tr>`).join('')}</table></div></details>`).join('');
+$('policyOrder').innerHTML = ['Marketplace boundary','Hard contribution floor','Max movement (≤5%)','Cooldown (60 min)','Strategy','Objective'].map((s,i,a)=>`<span class="n ${i<4?'hl':''}">${i+1}. ${s}</span>${i<a.length-1?'<span class="a">→</span>':''}`).join('')+'<div class="lbl" style="width:100%; margin-top:4px">1–4 are hard constraints · 5–6 optimize inside them</div>';
+$('quality').innerHTML = '<thead><tr><th>State</th><th>Meaning</th><th>Display</th><th>Recommend</th><th>Execute</th></tr></thead>'+QUALITY.map(q=>`<tr><td><b>${q[0]}</b></td><td>${esc(q[1])}</td><td>${q[2]}</td><td>${q[3]==='Yes'?'<span style="color:var(--good-text)">Yes</span>':q[3]}</td><td>${q[4].startsWith('No')?'<span style="color:var(--crit)">No</span>':esc(q[4])}</td></tr>`).join('');
+$('adminLevels').innerHTML = '<thead><tr><th>Level</th><th>Examples</th><th>P0 chat behavior</th></tr></thead>'+ADMIN.map(a=>`<tr><td><b>${a[0]}</b></td><td>${esc(a[1])}</td><td>${esc(a[2])}</td></tr>`).join('');
+$('intents').innerHTML = INTENTS.map(i=>`<span class="chip ${i.includes('Draft')?'hard':''}" style="${i.includes('Draft')?'background:color-mix(in srgb, var(--s1) 12%, transparent); color:var(--s1)':''}">${i}</span>`).join('');
+$('targets').innerHTML = TARGETS.map(t=>`<div class="stat"><div class="v num">${t[0]}</div><div class="l">${esc(t[1])}</div>${t[2]?`<div class="g">${esc(t[2])}</div>`:''}</div>`).join('');
+$('glossary').innerHTML = GLOSSARY.map(g=>`<tr><td>${esc(g[0])}</td><td class="fa" style="text-align:right; font-size:14px; color:var(--ink-1)">${g[1]}</td></tr>`).join('');
+$('riskTable').innerHTML = '<thead><tr><th>Risk</th><th>Early signal</th><th>Decided response</th></tr></thead>'+RISKS.map(r=>`<tr><td><b>${esc(r[0])}</b></td><td>${esc(r[1])}</td><td>${esc(r[2])}</td></tr>`).join('');
+</script>
+</body>
+</html>

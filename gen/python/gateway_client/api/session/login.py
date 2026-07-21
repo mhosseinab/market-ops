@@ -3,7 +3,7 @@ from typing import Any
 
 import httpx
 
-from ...client import AuthenticatedClient, Client
+from ...client import Client
 from ...models.error_envelope import ErrorEnvelope
 from ...models.login_request import LoginRequest
 from ...models.session_info import SessionInfo
@@ -29,7 +29,7 @@ def _get_kwargs(
     return _kwargs
 
 
-def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Response) -> ErrorEnvelope | SessionInfo:
+def _parse_response(*, client: Client, response: httpx.Response) -> ErrorEnvelope | SessionInfo:
     if response.status_code == 200:
         response_200 = SessionInfo.from_dict(response.json())
 
@@ -45,9 +45,7 @@ def _parse_response(*, client: AuthenticatedClient | Client, response: httpx.Res
     return response_default
 
 
-def _build_response(
-    *, client: AuthenticatedClient | Client, response: httpx.Response
-) -> Response[ErrorEnvelope | SessionInfo]:
+def _build_response(*, client: Client, response: httpx.Response) -> Response[ErrorEnvelope | SessionInfo]:
     return Response(
         status_code=HTTPStatus(response.status_code),
         content=response.content,
@@ -58,7 +56,7 @@ def _build_response(
 
 def sync_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: LoginRequest,
 ) -> Response[ErrorEnvelope | SessionInfo]:
     """Authenticate a user and open a server-side session.
@@ -92,7 +90,7 @@ def sync_detailed(
 
 def sync(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: LoginRequest,
 ) -> ErrorEnvelope | SessionInfo | None:
     """Authenticate a user and open a server-side session.
@@ -121,7 +119,7 @@ def sync(
 
 async def asyncio_detailed(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: LoginRequest,
 ) -> Response[ErrorEnvelope | SessionInfo]:
     """Authenticate a user and open a server-side session.
@@ -153,7 +151,7 @@ async def asyncio_detailed(
 
 async def asyncio(
     *,
-    client: AuthenticatedClient | Client,
+    client: Client,
     body: LoginRequest,
 ) -> ErrorEnvelope | SessionInfo | None:
     """Authenticate a user and open a server-side session.

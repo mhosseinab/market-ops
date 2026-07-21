@@ -35,6 +35,33 @@ func (q *Queries) GetBriefingByAccountDay(ctx context.Context, arg GetBriefingBy
 	return i, err
 }
 
+const getLatestBriefingBeforeDay = `-- name: GetLatestBriefingBeforeDay :one
+SELECT id, marketplace_account_id, business_day, generated_at FROM briefings
+WHERE marketplace_account_id = $1 AND business_day < $2
+ORDER BY business_day DESC
+LIMIT 1
+`
+
+type GetLatestBriefingBeforeDayParams struct {
+	MarketplaceAccountID uuid.UUID
+	BusinessDay          pgtype.Date
+}
+
+// Bounded provenance lookup for the briefing-failure surface (#119). The upper
+// bound is exclusive: a failed request for today can only surface an earlier,
+// actually stored briefing and can never relabel the requested day as history.
+func (q *Queries) GetLatestBriefingBeforeDay(ctx context.Context, arg GetLatestBriefingBeforeDayParams) (Briefing, error) {
+	row := q.db.QueryRow(ctx, getLatestBriefingBeforeDay, arg.MarketplaceAccountID, arg.BusinessDay)
+	var i Briefing
+	err := row.Scan(
+		&i.ID,
+		&i.MarketplaceAccountID,
+		&i.BusinessDay,
+		&i.GeneratedAt,
+	)
+	return i, err
+}
+
 const insertBriefing = `-- name: InsertBriefing :one
 
 INSERT INTO briefings (marketplace_account_id, business_day, generated_at)

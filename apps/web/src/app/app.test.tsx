@@ -11,7 +11,9 @@ afterEach(() => {
 });
 
 function renderApp(path: string) {
-  const router = createAppRouter(createMemoryHistory({ initialEntries: [path] }));
+  // Default (singleton) query client — the same one Providers uses below — so the
+  // router auth gate and the screen hooks share one session cache entry.
+  const router = createAppRouter(undefined, createMemoryHistory({ initialEntries: [path] }));
   return render(
     <Providers initialLocale={DEFAULT_LOCALE}>
       <RouterProvider router={router} />
