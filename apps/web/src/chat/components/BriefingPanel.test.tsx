@@ -274,6 +274,88 @@ describe("BriefingPanel — #119 no fabricated last-briefing date on failure", (
     expect(screen.getByRole("button", { name: en["action.retry"] })).toBeInTheDocument();
   });
 
+  it.each([
+    ["null response", null],
+    ["empty object", {}],
+    ["null briefing", { state: "available", provenance: "stored_briefing", briefing: null }],
+    [
+      "invalid business day",
+      {
+        state: "available",
+        provenance: "stored_briefing",
+        briefing: { ...dailyBriefing, businessDay: "not-a-date" },
+      },
+    ],
+    [
+      "invalid generated timestamp",
+      {
+        state: "available",
+        provenance: "stored_briefing",
+        briefing: { ...dailyBriefing, generatedAt: "not-an-instant" },
+      },
+    ],
+    [
+      "impossible generated timestamp",
+      {
+        state: "available",
+        provenance: "stored_briefing",
+        briefing: { ...dailyBriefing, generatedAt: "2026-02-30T06:15:00Z" },
+      },
+    ],
+    [
+      "mismatched marketplace account",
+      {
+        state: "available",
+        provenance: "stored_briefing",
+        briefing: {
+          ...dailyBriefing,
+          marketplaceAccountId: "99999999-9999-4999-8999-999999999999",
+        },
+      },
+    ],
+    [
+      "same business day as the exclusive bound",
+      {
+        state: "available",
+        provenance: "stored_briefing",
+        briefing: { ...dailyBriefing, businessDay: requestedDay },
+      },
+    ],
+    [
+      "business day after the exclusive bound",
+      {
+        state: "available",
+        provenance: "stored_briefing",
+        briefing: { ...dailyBriefing, businessDay: "2026-07-21" },
+      },
+    ],
+    [
+      "available state with none provenance",
+      { state: "available", provenance: "none", briefing: dailyBriefing },
+    ],
+    [
+      "never-generated state with stored provenance",
+      { state: "never_generated", provenance: "stored_briefing" },
+    ],
+    [
+      "never-generated state carrying a briefing",
+      { state: "never_generated", provenance: "none", briefing: dailyBriefing },
+    ],
+  ])("%s maps malformed latest provenance to lookup unavailable", async (_label, payload) => {
+    server.use(
+      http.get(`${BASE}/briefing`, () => HttpResponse.error()),
+      http.get(`${BASE}/briefing/latest`, () => HttpResponse.json(payload)),
+    );
+
+    const { container } = renderPanel("en");
+
+    const unknown = await screen.findByTestId("briefing-failure-unknown");
+    expect(unknown).toHaveAttribute("data-provenance-state", "unavailable");
+    expect(unknown).toHaveTextContent(en["chat.briefing.failure.lookupUnavailable"]);
+    expect(container.textContent ?? "").not.toContain("2026");
+    expect(screen.queryByTestId("briefing-failure-known")).toBeNull();
+  });
+
   it("retries the current briefing read without replacing failure with empty data", async () => {
     let attempts = 0;
     server.use(
