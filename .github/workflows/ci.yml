@@ -112,7 +112,10 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version-file: services/core/go.mod
-          cache: false
+          # Separate stable key for actionlint's Go module graph. Using the core
+          # go.sum key can restore an exact cache that lacks actionlint; setup-go
+          # then correctly skips saving additions to that already-matched key.
+          cache-dependency-path: tools/ci/actionlint.version
       - name: actionlint
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
 
@@ -434,8 +437,8 @@ jobs:
       # Chromium is required for the kill-switch journey's Playwright run.
       - run: pnpm --filter web exec playwright install --with-deps chromium
       # --- S32 in-container Go + uv cache -------------------------------------
-      # The compose stack builds core/mockdk + installs goose/river with `go`, and
-      # runs `uv sync`, INSIDE stock golang/python containers whose caches are
+      # The compose stack builds core/mockdk/seede2e + installs goose/river with
+      # `go`, and runs `uv sync` inside containers whose caches are
       # thrown away by the `down -v` between the suite's three stack bring-ups —
       # ~66% of this job is that repeated compile/download (see run 29774545327).
       # deploy/compose.test.cache.yml bind-mounts a SHARED host cache into those
@@ -446,9 +449,11 @@ jobs:
       # the `docker compose` interpolation all inherit the same paths.
       - name: point the integration stack at a shared host-side Go + uv cache
         run: |
-          echo "MARKET_OPS_COMPOSE_EXTRA_FILE=deploy/compose.test.cache.yml" >> "$GITHUB_ENV"
-          echo "MARKET_OPS_GO_CACHE_DIR=${RUNNER_TEMP}/int-gocache" >> "$GITHUB_ENV"
-          echo "MARKET_OPS_UV_CACHE_DIR=${RUNNER_TEMP}/int-uvcache" >> "$GITHUB_ENV"
+          {
+            echo "MARKET_OPS_COMPOSE_EXTRA_FILE=deploy/compose.test.cache.yml"
+            echo "MARKET_OPS_GO_CACHE_DIR=${RUNNER_TEMP}/int-gocache"
+            echo "MARKET_OPS_UV_CACHE_DIR=${RUNNER_TEMP}/int-uvcache"
+          } >> "$GITHUB_ENV"
           mkdir -p "${RUNNER_TEMP}/int-gocache/mod" "${RUNNER_TEMP}/int-gocache/build" "${RUNNER_TEMP}/int-uvcache"
       - name: restore the integration Go build + module cache
         uses: actions/cache/restore@v6

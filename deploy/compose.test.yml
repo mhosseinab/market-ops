@@ -107,6 +107,14 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        export GOBIN=/gocache/bin/go1.25-goose3.27.2-river0.40.0 &&
+        mkdir -p "$$GOBIN" && export PATH="$$GOBIN:$$PATH" &&
+        if [ ! -x "$$GOBIN/goose" ]; then
+          go install github.com/pressly/goose/v3/cmd/goose@v3.27.2
+        fi &&
+        if [ ! -x "$$GOBIN/river" ]; then
+          go install github.com/riverqueue/river/cmd/river@v0.40.0
+        fi &&
         task db:reset &&
         (cd services/core && go run ./cmd/seede2e)
     environment:

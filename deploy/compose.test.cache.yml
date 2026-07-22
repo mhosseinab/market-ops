@@ -3,17 +3,18 @@
 # `.cache/integration`; CI overrides those paths with RUNNER_TEMP directories that
 # actions/cache restores and saves across runs.
 #
-# Why this exists: compose.test.yml builds core/mockdk and installs goose/river with
-# `go run`/`go install`, and syncs the LLM plane with `uv sync`, INSIDE stock
-# golang:1.25 / python:3.13-slim containers whose GOCACHE/GOMODCACHE/uv cache live
-# on the container's own throwaway filesystem. run_all.sh brings the stack up THREE
+# Why this exists: compose.test.yml builds core/mockdk/seede2e and installs
+# goose/river with `go run`/`go install`, and syncs the LLM plane with `uv sync`,
+# inside containers whose GOCACHE/GOMODCACHE/GOBIN/uv cache would otherwise live
+# on throwaway filesystems. run_all.sh brings the stack up THREE
 # times (kill-switch → scenarios 2-5 → cold-start) with `docker compose down -v`
 # between them, so every bring-up re-downloads every Go module, recompiles the core
 # + goose + river from scratch, and re-runs `uv sync` from an empty cache. On the
 # S32 job that repeated work is ~66% of the run (run 29774545327: migrate ~243s +
 # core ~138s across the three bring-ups; images pull in ~17s and are NOT the cost).
 #
-# This overlay bind-mounts a SHARED, host-side Go + uv cache into those services.
+# This overlay bind-mounts a SHARED, host-side Go + uv cache into those services;
+# the migration service also persists its versioned Goose/River binaries there.
 # Host bind mounts (unlike named/anonymous volumes) survive `down -v`, so the
 # second and third bring-ups reuse the first's compiled objects WITHIN one job, and
 # ci.yml wraps the same host dirs in actions/cache so they warm across runs too. The
@@ -44,6 +45,7 @@ services:
     volumes:
       - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/mod:/gocache/mod
       - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/build:/gocache/build
+      - ${MARKET_OPS_GO_CACHE_DIR:?ci.yml integration job must export MARKET_OPS_GO_CACHE_DIR}/bin:/gocache/bin
 
   core:
     environment:
