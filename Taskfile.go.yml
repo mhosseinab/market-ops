@@ -18,14 +18,17 @@ tasks:
       # via GOTOOLCHAIN=auto instead of failing "go.work lists go <older>".
       # Members: the core module plus the generated Go modules it consumes
       # (gen/go server stubs, gen/dkgo DK Seller client) — monorepo §2.
-      - go work init ./services/core ./gen/go ./gen/dkgo
-      - go work edit -go=1.25.12
+      - GOTOOLCHAIN=auto go work init ./services/core ./gen/go ./gen/dkgo
+      - GOTOOLCHAIN=auto go work edit -go=1.26
 
   sync:
     desc: Sync the go workspace.
     deps: [init]
     cmds:
-      - go work sync
+      # Keep pre-existing local workspaces aligned when the repository's
+      # minimum Go version changes; init is intentionally skipped once present.
+      - GOTOOLCHAIN=auto go work edit -go=1.26
+      - GOTOOLCHAIN=auto go work sync
 
   build:
     desc: Build the Go core binary into services/core/bin/core.
@@ -38,14 +41,14 @@ tasks:
     generates:
       - bin/core
     cmds:
-      - go build -o bin/core ./cmd/core
+      - GOTOOLCHAIN=auto go build -o bin/core ./cmd/core
 
   test:
     desc: Run Go tests with the race detector.
     deps: [init]
     dir: services/core
     cmds:
-      - go test ./... -race
+      - GOTOOLCHAIN=auto go test ./... -race
 
   lint:
     desc: Run golangci-lint per module with GOWORK=off.
@@ -61,5 +64,5 @@ tasks:
     env:
       GOWORK: off
     cmds:
-      - go mod tidy
+      - GOTOOLCHAIN=auto go mod tidy
       - git diff --exit-code go.mod go.sum

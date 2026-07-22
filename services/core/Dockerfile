@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.18.0
 
-FROM --platform=$BUILDPLATFORM golang:1.25.12-bookworm@sha256:ea341baa9bd5ba6784f6d7161ace70544349a6242d54d34a0fbfd2c4d51c9d58 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS build
 
 ARG TARGETARCH
 ARG TARGETOS

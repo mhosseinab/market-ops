@@ -35,7 +35,7 @@ fi
 # sessions route all GitHub operations through the GitHub MCP tools
 # (the command's ENVIRONMENT FALLBACKS section covers this).
 
-# Go helpers (Go 1.25.12 itself auto-downloads via GOTOOLCHAIN=auto).
+# Go helpers (Go 1.26 itself auto-downloads via GOTOOLCHAIN=auto).
 if ! have golangci-lint; then
   GCI=https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh
   curl -fsSL "$GCI" -o /tmp/golangci.sh

@@ -32,7 +32,7 @@ tasks:
     env:
       GOWORK: off
     cmds:
-      - go run {{.OAPI_CODEGEN}} --config config.yaml "{{.GATEWAY_SPEC}}"
+      - GOTOOLCHAIN=auto go run {{.OAPI_CODEGEN}} --config config.yaml "{{.GATEWAY_SPEC}}"
 
   gen:ts:
     desc: Generate the TypeScript schema types (openapi-typescript) into gen/ts.
@@ -61,8 +61,8 @@ tasks:
         set -euo pipefail
         tmp="$(mktemp -t dk-normalized.XXXXXX.yml)"
         trap 'rm -f "$tmp"' EXIT
-        ( cd "{{.ROOT_DIR}}/contracts/tools/dknormalize" && GOWORK=off go run . "{{.DK_FROZEN_SPEC}}" "$tmp" )
-        ( cd "{{.ROOT_DIR}}/gen/dkgo" && GOWORK=off go run {{.OAPI_CODEGEN}} --config config.yaml "$tmp" )
+        ( cd "{{.ROOT_DIR}}/contracts/tools/dknormalize" && GOWORK=off GOTOOLCHAIN=auto go run . "{{.DK_FROZEN_SPEC}}" "$tmp" )
+        ( cd "{{.ROOT_DIR}}/gen/dkgo" && GOWORK=off GOTOOLCHAIN=auto go run {{.OAPI_CODEGEN}} --config config.yaml "$tmp" )
 
   drift:
     desc: Regenerate gen/ and fail if it drifts from its contract source.

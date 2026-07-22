@@ -1,4 +1,4 @@
-FROM golang:1.25
+FROM golang:1.26
 
 RUN apt-get update -qq && \
     apt-get install -y -qq --no-install-recommends postgresql-client curl >/dev/null && \

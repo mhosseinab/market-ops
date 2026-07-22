@@ -1,6 +1,6 @@
 module github.com/mhosseinab/market-ops/gen/dkgo
 
-go 1.24.7
+go 1.26
 
 require github.com/oapi-codegen/runtime v1.6.0
 

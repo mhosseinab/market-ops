@@ -148,7 +148,7 @@ services:
   # is developed against the mock, never live DK (CLAUDE.md). Runs via `go run`
   # off the mounted repo; no custom image needed. Fault modes via MOCKDK_MODE.
   mockdk:
-    image: golang:1.25
+    image: golang:1.26
     working_dir: /src/services/core
     command: ["go", "run", "./cmd/mockdk"]
     environment:

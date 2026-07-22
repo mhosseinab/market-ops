@@ -1,6 +1,6 @@
 module github.com/mhosseinab/market-ops/services/core
 
-go 1.25.12
+go 1.26
 
 require (
 	github.com/getkin/kin-openapi v0.142.0

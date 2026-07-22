@@ -44,7 +44,7 @@ services:
       start_period: 10s
 
   mockdk:
-    image: golang:1.25
+    image: golang:1.26
     working_dir: /src/services/core
     command: ["go", "run", "./cmd/mockdk"]
     environment:
@@ -107,7 +107,7 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        export GOBIN=/gocache/bin/go1.25-goose3.27.2-river0.40.0 &&
+        export GOBIN=/gocache/bin/go1.26-goose3.27.2-river0.40.0 &&
         mkdir -p "$$GOBIN" && export PATH="$$GOBIN:$$PATH" &&
         if [ ! -x "$$GOBIN/goose" ]; then
           go install github.com/pressly/goose/v3/cmd/goose@v3.27.2
@@ -191,7 +191,7 @@ services:
 
   # --- Go core (gateway + domain), run against the mounted repo. -------------
   core:
-    image: golang:1.25
+    image: golang:1.26
     working_dir: /src/services/core
     # seede2e now runs inside `migrate` (see its comment above) — atomically
     # with `task db:reset`, so it re-fires on EVERY schema reset regardless of
