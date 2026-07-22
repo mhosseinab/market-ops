@@ -166,6 +166,18 @@ for s in run_all.sh run_killswitch_journey.sh run_coldstart_llm_unhealthy_journe
   fi
 done
 
+if grep -q 'declare -A' "$src_dir/run_all.sh"; then
+  fail "bash3-no-associative-arrays" "run_all.sh uses declare -A, which macOS Bash 3 does not support"
+else
+  echo "ok   [bash3-no-associative-arrays]"
+fi
+
+if grep -q 'result_for' "$src_dir/run_all.sh"; then
+  fail "summary-no-helper-lookup" "run_all.sh summary still depends on the result_for helper"
+else
+  echo "ok   [summary-no-helper-lookup]"
+fi
+
 if [ "$failures" -ne 0 ]; then
   echo "env_preservation_test: $failures case(s) failed" >&2
   exit 1

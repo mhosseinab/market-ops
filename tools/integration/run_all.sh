@@ -50,12 +50,25 @@ COMPOSE="docker compose --env-file $COMPOSE_ENV_FILE -f deploy/compose.test.yml 
 echo "== compose overlay: $MARKET_OPS_COMPOSE_EXTRA_FILE =="
 echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
 
-declare -A RESULT
+RESULT_1=MISSING
+RESULT_2=MISSING
+RESULT_3=MISSING
+RESULT_4=MISSING
+RESULT_5=MISSING
+RESULT_6=MISSING
 FAILED=0
 
 report() {
-  local name="$1" status="$2"
-  RESULT["$name"]="$status"
+  local scenario="$1" status="$2"
+  case "$scenario" in
+    1) RESULT_1="$status" ;;
+    2) RESULT_2="$status" ;;
+    3) RESULT_3="$status" ;;
+    4) RESULT_4="$status" ;;
+    5) RESULT_5="$status" ;;
+    6) RESULT_6="$status" ;;
+    *) echo "unknown integration scenario: $scenario" >&2; return 2 ;;
+  esac
   if [ "$status" != "PASS" ]; then FAILED=1; fi
 }
 
@@ -74,9 +87,9 @@ echo "### 1/6 kill-switch journey (CHAT-009) ###"
 # `compose up` still resolve the same credential; this orchestrator's own trap
 # removes it at the end.
 if bash tools/integration/run_killswitch_journey.sh; then
-  report "1. kill-switch journey (CHAT-009)" "PASS"
+  report 1 "PASS"
 else
-  report "1. kill-switch journey (CHAT-009)" "FAIL"
+  report 1 "FAIL"
 fi
 
 # --- bring the stack back up (with the LLM plane LIVE) for scenarios 2-5 ---
@@ -87,19 +100,17 @@ echo "### bringing the stack up (LLM plane live) for scenarios 2-5 ###"
 if ! $COMPOSE up -d --wait postgres mockdk llm core nginx; then
   echo "== compose up --wait failed; dumping llm/core/mockdk/migrate logs for diagnosis =="
   $COMPOSE logs llm core mockdk migrate || true
-  report "2. adversarial containment replay (CHAT-041/045)" "FAIL"
-  report "3. §16 edge-case fixtures" "FAIL"
-  report "4. permission parity (CHAT-064)" "FAIL"
-  report "5. system duplicate-write (EXE-002)" "FAIL"
+  report 2 "FAIL"
+  report 3 "FAIL"
+  report 4 "FAIL"
+  report 5 "FAIL"
   echo
   echo "=== S32 test:integration — per-scenario report ==="
-  for name in "1. kill-switch journey (CHAT-009)" \
-              "2. adversarial containment replay (CHAT-041/045)" \
-              "3. §16 edge-case fixtures" \
-              "4. permission parity (CHAT-064)" \
-              "5. system duplicate-write (EXE-002)"; do
-    printf '%-55s %s\n' "$name" "${RESULT[$name]:-MISSING}"
-  done
+  printf '%-55s %s\n' "1. kill-switch journey (CHAT-009)" "$RESULT_1"
+  printf '%-55s %s\n' "2. adversarial containment replay (CHAT-041/045)" "$RESULT_2"
+  printf '%-55s %s\n' "3. §16 edge-case fixtures" "$RESULT_3"
+  printf '%-55s %s\n' "4. permission parity (CHAT-064)" "$RESULT_4"
+  printf '%-55s %s\n' "5. system duplicate-write (EXE-002)" "$RESULT_5"
   exit 1
 fi
 DATABASE_URL="postgres://market_ops:market_ops@localhost:5432/market_ops?sslmode=disable"
@@ -113,12 +124,12 @@ if uv run --group dev python3 tools/integration/replay_adversarial.py \
     --account-id 00000000-0000-0000-0000-000000000003 \
     --fuzz 3 \
     --report /tmp/s32_adversarial_report.json; then
-  report "2. adversarial containment replay (CHAT-041/045)" "PASS"
+  report 2 "PASS"
 else
   echo "== adversarial replay failed; dumping core/migrate logs for diagnosis =="
   $COMPOSE logs core migrate || true
   echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
-  report "2. adversarial containment replay (CHAT-041/045)" "FAIL"
+  report 2 "FAIL"
 fi
 
 # --- scenarios 3-5: Go system tests against the compose Postgres ----------
@@ -131,23 +142,23 @@ fi
 # mapped test is skipped rather than run. It reports one line per §16 row.
 echo "### 3/6 §16 edge-case gate (manifest-driven, issue #164) ###"
 if (cd services/core && GOWORK=off go run ./cmd/section16gate); then
-  report "3. §16 edge-case fixtures" "PASS"
+  report 3 "PASS"
 else
-  report "3. §16 edge-case fixtures" "FAIL"
+  report 3 "FAIL"
 fi
 
 echo "### 4/6 permission parity (CHAT-064) ###"
 if (cd services/core && GOWORK=off go test ./internal/httpapi/... -run 'TestPermissionParity' -v); then
-  report "4. permission parity (CHAT-064)" "PASS"
+  report 4 "PASS"
 else
-  report "4. permission parity (CHAT-064)" "FAIL"
+  report 4 "FAIL"
 fi
 
 echo "### 5/6 system duplicate-write (EXE-002) ###"
 if (cd services/core && GOWORK=off go test ./internal/httpapi/... -run 'TestSystemDuplicateWrite' -race -v); then
-  report "5. system duplicate-write (EXE-002)" "PASS"
+  report 5 "PASS"
 else
-  report "5. system duplicate-write (EXE-002)" "FAIL"
+  report 5 "FAIL"
 fi
 
 # --- scenario 6: cold-start LLM-unhealthy isolation (brings up its OWN stack) ---
@@ -160,20 +171,18 @@ echo "### tearing the (llm-live) stack down before the cold-start scenario ###"
 $COMPOSE down -v >/dev/null 2>&1 || true
 echo "### 6/6 cold-start LLM-unhealthy isolation (CHAT-009) ###"
 if bash tools/integration/run_coldstart_llm_unhealthy_journey.sh; then
-  report "6. cold-start LLM-unhealthy isolation (CHAT-009)" "PASS"
+  report 6 "PASS"
 else
-  report "6. cold-start LLM-unhealthy isolation (CHAT-009)" "FAIL"
+  report 6 "FAIL"
 fi
 
 echo
 echo "=== S32 test:integration — per-scenario report ==="
-for name in "1. kill-switch journey (CHAT-009)" \
-            "2. adversarial containment replay (CHAT-041/045)" \
-            "3. §16 edge-case fixtures" \
-            "4. permission parity (CHAT-064)" \
-            "5. system duplicate-write (EXE-002)" \
-            "6. cold-start LLM-unhealthy isolation (CHAT-009)"; do
-  printf '%-55s %s\n' "$name" "${RESULT[$name]:-MISSING}"
-done
+printf '%-55s %s\n' "1. kill-switch journey (CHAT-009)" "$RESULT_1"
+printf '%-55s %s\n' "2. adversarial containment replay (CHAT-041/045)" "$RESULT_2"
+printf '%-55s %s\n' "3. §16 edge-case fixtures" "$RESULT_3"
+printf '%-55s %s\n' "4. permission parity (CHAT-064)" "$RESULT_4"
+printf '%-55s %s\n' "5. system duplicate-write (EXE-002)" "$RESULT_5"
+printf '%-55s %s\n' "6. cold-start LLM-unhealthy isolation (CHAT-009)" "$RESULT_6"
 
 exit $FAILED
