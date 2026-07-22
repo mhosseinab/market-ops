@@ -67,6 +67,11 @@
       "family": "domain",
       "source": "internal/execution/telemetry.go"
     },
+    "execution.crash_recoveries": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/execution/telemetry.go"
+    },
     "execution.pending_reconciliation_current": {
       "type": "gauge",
       "family": "domain",
@@ -88,6 +93,11 @@
       "source": "internal/analytics/telemetry.go"
     },
     "analytics.tenant_rejections": {
+      "type": "counter",
+      "family": "analytics",
+      "source": "internal/analytics/telemetry.go"
+    },
+    "analytics.entity_rejections": {
       "type": "counter",
       "family": "analytics",
       "source": "internal/analytics/telemetry.go"
