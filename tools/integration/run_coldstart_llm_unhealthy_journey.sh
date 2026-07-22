@@ -30,6 +30,8 @@ cd "$ROOT_DIR"
 
 export SEEDE2E_PASSWORD="${SEEDE2E_PASSWORD:-s32-integration-owner-password}"
 export SEEDE2E_EMAIL="${SEEDE2E_EMAIL:-owner@dev.local}"
+# shellcheck source=tools/integration/configure_cache.sh
+source "$ROOT_DIR/tools/integration/configure_cache.sh"
 
 BASE="http://localhost:8888"
 COOKIE_JAR="$(mktemp)"
@@ -53,14 +55,8 @@ else
   chmod 600 "$COMPOSE_ENV_FILE"
   printf 'SEEDE2E_EMAIL=%s\nSEEDE2E_PASSWORD=%s\n' "$SEEDE2E_EMAIL" "$SEEDE2E_PASSWORD" > "$COMPOSE_ENV_FILE"
 fi
-COMPOSE="docker compose --env-file $COMPOSE_ENV_FILE -f deploy/compose.test.yml"
-# CI-only Go/uv caching overlay — see run_all.sh for the full rationale. Appended
-# only when MARKET_OPS_COMPOSE_EXTRA_FILE is set (ci.yml integration job); this must
-# use the SAME overlay+cache dirs as run_all.sh so all three bring-ups share one cache.
-if [ -n "${MARKET_OPS_COMPOSE_EXTRA_FILE:-}" ]; then
-  COMPOSE="$COMPOSE -f $MARKET_OPS_COMPOSE_EXTRA_FILE"
-fi
-echo "== compose overlay: ${MARKET_OPS_COMPOSE_EXTRA_FILE:-none} =="
+COMPOSE="docker compose --env-file $COMPOSE_ENV_FILE -f deploy/compose.test.yml -f $MARKET_OPS_COMPOSE_EXTRA_FILE"
+echo "== compose overlay: $MARKET_OPS_COMPOSE_EXTRA_FILE =="
 echo "== seeded owner: email=${SEEDE2E_EMAIL} password_len=${#SEEDE2E_PASSWORD} (value never logged) =="
 
 # Unconditional teardown on the way out (success OR failure); see

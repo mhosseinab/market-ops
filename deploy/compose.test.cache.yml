@@ -1,9 +1,7 @@
-# deploy/compose.test.cache.yml — CI-ONLY caching overlay for the S32 integration
-# stack (deploy/compose.test.yml). A bare local `task test:integration` NEVER uses
-# it: it is merged in (`-f compose.test.yml -f compose.test.cache.yml`) ONLY when
-# tools/integration/run_all.sh and its child journey scripts see
-# MARKET_OPS_COMPOSE_EXTRA_FILE pointing here — which only the ci.yml `integration`
-# job sets. Unset ⇒ base stack only, behavior byte-for-byte unchanged.
+# deploy/compose.test.cache.yml — persistent caching overlay for the S32 integration
+# stack (deploy/compose.test.yml). Local runs use ignored paths under
+# `.cache/integration`; CI overrides those paths with RUNNER_TEMP directories that
+# actions/cache restores and saves across runs.
 #
 # Why this exists: compose.test.yml builds core/mockdk and installs goose/river with
 # `go run`/`go install`, and syncs the LLM plane with `uv sync`, INSIDE stock

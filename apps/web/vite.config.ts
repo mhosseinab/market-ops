@@ -82,6 +82,7 @@ export default defineConfig(({ mode }) => ({
   },
   build: {
     sourcemap: false,
+    chunkSizeWarningLimit: 1000,
   },
   test: {
     environment: "jsdom",

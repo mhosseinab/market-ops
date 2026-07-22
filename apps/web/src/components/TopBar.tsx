@@ -72,6 +72,7 @@ export function TopBar() {
       <button
         type="button"
         className="top-bar__control"
+        data-testid="chat-toggle"
         aria-label={t("topbar.chat.toggle")}
         onClick={toggleChat}
       >

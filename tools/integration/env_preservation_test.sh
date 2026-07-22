@@ -36,7 +36,8 @@ make_skeleton() {
   mkdir -p "$root/tools/integration" "$root/apps/web" "$root/services/core" \
            "$root/deploy" "$root/bin" "$root/tmp"
   cp "$src_dir"/run_all.sh "$src_dir"/run_killswitch_journey.sh \
-     "$src_dir"/run_coldstart_llm_unhealthy_journey.sh "$root/tools/integration/"
+     "$src_dir"/run_coldstart_llm_unhealthy_journey.sh \
+     "$src_dir"/configure_cache.sh "$root/tools/integration/"
   # replay_adversarial.py is invoked (via a stubbed `uv`) but never read here.
   : >"$root/tools/integration/replay_adversarial.py"
 

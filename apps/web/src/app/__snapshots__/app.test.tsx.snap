@@ -136,6 +136,7 @@ exports[`app shell boots RTL, fa-IR > matches the RTL shell snapshot 1`] = `
       <button
         aria-label="دستیار گفتگو"
         class="top-bar__control"
+        data-testid="chat-toggle"
         type="button"
       >
         ◧

@@ -453,4 +453,5 @@ tasks:
       as a CI job on merges to dk-p0/main, not per-PR (dk-p0-monorepo.md §7).
       Prints a per-scenario PASS/FAIL report; exit 0 only if all five pass.
     cmds:
+      - bash tools/integration/cache_config_test.sh
       - bash tools/integration/run_all.sh

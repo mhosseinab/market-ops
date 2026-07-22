@@ -87,7 +87,9 @@ services:
   # immediately followed by a password set, regardless of whether `core`
   # itself gets recreated on that particular `up`.
   migrate:
-    image: golang:1.25
+    build:
+      context: ../
+      dockerfile: deploy/migrate.Dockerfile
     working_dir: /src
     # Share the postgres container's network namespace so this one-shot reaches
     # the DB over genuine loopback (127.0.0.1 below), NOT the cross-container
@@ -105,11 +107,6 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        apt-get update -qq && apt-get install -y -qq --no-install-recommends postgresql-client curl >/dev/null &&
-        mkdir -p /tmp/gobin && export PATH="/tmp/gobin:$$PATH" && export GOBIN=/tmp/gobin &&
-        go install github.com/pressly/goose/v3/cmd/goose@v3.27.2 &&
-        go install github.com/riverqueue/river/cmd/river@v0.40.0 &&
-        curl -sSL https://taskfile.dev/install.sh | sh -s -- -b /tmp/gobin &&
         task db:reset &&
         (cd services/core && go run ./cmd/seede2e)
     environment:

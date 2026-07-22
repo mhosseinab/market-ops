@@ -28,8 +28,7 @@ test("chat dock is reachable in one interaction and shows the containment footno
   page,
 }) => {
   await page.goto("/today");
-  // Toggle the dock from the TopBar (the chat control is the last one).
-  const toggle = page.locator("button.top-bar__control").last();
+  const toggle = page.getByTestId("chat-toggle");
   await toggle.click();
   const dock = page.getByTestId("chat-dock");
   await expect(dock).toBeVisible();
@@ -50,7 +49,7 @@ test("free-text 'approve it' changes nothing; screens-only fallback stays functi
     page.getByTestId("today-no-action").or(page.getByTestId("today-queue")),
   ).toBeVisible();
 
-  const toggle = page.locator("button.top-bar__control").last();
+  const toggle = page.getByTestId("chat-toggle");
   await toggle.click();
   await expect(page.getByTestId("chat-dock")).toBeVisible();
 
