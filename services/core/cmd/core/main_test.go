@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -122,5 +123,93 @@ func TestDigestSentEvent_IsAcceptedByTheEmitterContract(t *testing.T) {
 	ev := digestSentEvent(digestSent(), uuid.New(), envelopeData(time.Now().UTC()))
 	if err := analytics.NewEmitter(nil).Emit(t.Context(), ev); err != nil {
 		t.Fatalf("the production digest event was rejected by the emitter: %v", err)
+	}
+}
+
+// mainSourcePath is the production wiring this guard covers.
+const mainSourcePath = "main.go"
+
+// stripLineComments removes whole-line `//` comments so the PROSE in main.go (which
+// explains the analytics wiring at length, and names the very identifiers this guard
+// looks for) can never stand in for the wiring itself. Mirrors the shape of
+// stripSQLComments in internal/analytics/analytics_appendonly_test.go.
+func stripLineComments(src string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(src, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "//") {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+// callArgs returns the text between the parenthesis at src[open] and its MATCHING
+// close paren, so a call's body can be inspected without matching a later, unrelated
+// `)`. Comments must already be stripped.
+func callArgs(t *testing.T, src string, open int) string {
+	t.Helper()
+	if open < 0 || open >= len(src) || src[open] != '(' {
+		t.Fatalf("callArgs: index %d is not an opening paren", open)
+	}
+	depth := 0
+	for i := open; i < len(src); i++ {
+		switch src[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				return src[open+1 : i]
+			}
+		}
+	}
+	t.Fatal("callArgs: unbalanced parentheses in main.go")
+	return ""
+}
+
+// TestDigestServiceIsWiredToTheAnalyticsEmitter is the PRODUCTION-WIRING guard for the
+// one §18 family this PR lands (issue #111 acceptance criterion 6, review finding G2:
+// "tests fail when a family or cost source is removed from production wiring"; PD-4
+// scopes that criterion per landed sub-step, and the daily-digest producer is this
+// step's real production consumer).
+//
+// Why it exists: a reviewer replaced the whole `.WithObserver(func(ctx, sent){…})`
+// block with a bare `notify.NewDigestService(pool, mailer, resolver)` and neutralized
+// the unused emitter binding — `go test ./... -count=1` in services/core returned exit
+// 0 with the ENTIRE suite green. The §18 briefing family silently stops being produced
+// in production and nothing notices, because the other cmd/core tests exercise
+// digestSentEvent as a PURE FUNCTION and stop one step short of the wiring, so coverage
+// looks complete while the connection is unguarded. main_test.go's own doc comment
+// asserts "the daily-digest producer is the one §18 family wired in production"; this
+// test is what makes that assertion true rather than aspirational.
+//
+// It is a SOURCE-level guard (no refactor of run(), which is not independently
+// testable) matching the repo precedent in
+// internal/analytics/analytics_appendonly_test.go.
+func TestDigestServiceIsWiredToTheAnalyticsEmitter(t *testing.T) {
+	raw, err := os.ReadFile(mainSourcePath)
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := stripLineComments(string(raw))
+
+	svc := strings.Index(src, "NewDigestService(")
+	if svc < 0 {
+		t.Fatal("main.go no longer constructs the digest service; the §18 briefing family has no production producer (issue #111 acceptance criterion 6)")
+	}
+	rel := strings.Index(src[svc:], ".WithObserver(")
+	if rel < 0 {
+		t.Fatal("the digest service in main.go has no .WithObserver(...): the §18 briefing family is no longer PRODUCED in production, so no daily_digest_sent event is ever emitted (issue #111 acceptance criterion 6)")
+	}
+	open := svc + rel + len(".WithObserver(") - 1
+	body := callArgs(t, src, open)
+
+	if !strings.Contains(body, "digestSentEvent(") {
+		t.Fatal("the digest observer no longer builds its event via digestSentEvent(...): the producer contract pinned by the other tests in this file is not the one running in production")
+	}
+	if !strings.Contains(body, ".Emit(") {
+		t.Fatal("the digest observer no longer calls Emit(...) on the analytics emitter: the event is built and then dropped, so the §18 briefing family reads flat zero in production (issue #111 acceptance criterion 6)")
 	}
 }

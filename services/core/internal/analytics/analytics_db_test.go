@@ -340,8 +340,10 @@ func TestEmit_DuplicateDedupKeySuppressedAtDB(t *testing.T) {
 // TestInsertAnalyticsEvent_EmptyDedupKeyRejectedAtDB is the STRUCTURAL half of the
 // event-deduplication never-cut (§4.6, issue #111 review finding F1). The emitter
 // rejects an unkeyed event (ErrMissingDedupKey), but migration 0045 claims the
-// guarantee holds "for every writer, including a future out-of-band one" — so the
-// EMPTY key must be rejected by the DATABASE, not merely by this service.
+// guarantee is "STRUCTURAL for KEYED rows ... for every writer, including a future
+// out-of-band one" — and an EMPTY-string key IS a keyed row as far as the partial
+// index is concerned, so it must be rejected by the DATABASE, not merely by this
+// service.
 //
 // Without the CHECK constraint, ” IS NOT NULL, so ” falls INSIDE the partial unique
 // index: the first ” row wins that account's single ” slot forever and every later

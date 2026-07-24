@@ -242,23 +242,47 @@ func TestEmit_EntityScopeNoOwnershipOracle(t *testing.T) {
 // TestEmit_EntityScopeInfraErrorSurfacesRaw proves a genuine infrastructure error from
 // the resolver (NOT a not-found) is surfaced as-is, WITHOUT the tenant-reject signal,
 // so a DB hiccup is never misreported as a tenant-integrity rejection.
+//
+// It also pins the OBSERVABILITY half of that branch (issue #111 review finding G3).
+// The resolver is the THIRD emit-failure call site, and it was the only one no test
+// asserted: a reviewer deleted just this em.tel.emitFailure(ctx) — leaving the insert
+// and account-lookup sites intact — and the whole services/core suite stayed green,
+// while README.md states the guarantee unconditionally. That is the F3 failure mode (a
+// comment is not a guard). A lost event MUST be metered on analytics.emit_failures, or
+// a resolver outage is indistinguishable from an idle pipe (every analytics series flat
+// at zero, which is also what "nothing was due" looks like) and no alert can fire. It
+// must NOT be metered as an entity rejection: a tenant-integrity reject and an
+// infrastructure outage are different incidents with different runbooks.
 func TestEmit_EntityScopeInfraErrorSurfacesRaw(t *testing.T) {
 	orgA, accountA := uuid.New(), uuid.New()
 	boom := errors.New("connection reset")
 	r := &fakeEntityResolver{err: boom}
-	em, fs := ownedEmitter(orgA, accountA, r)
+	fs := &fakeStore{owner: map[uuid.UUID]uuid.UUID{accountA: orgA}}
 
-	env := tenantEnvelope(orgA, accountA)
-	env.Entity = uuid.New()
-	err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked", DedupKey: recRankedKey})
-	if !errors.Is(err, boom) {
-		t.Fatalf("infra error: got %v, want wrapped %v", err, boom)
-	}
-	if errors.Is(err, ErrEntityScope) {
-		t.Fatalf("infra error misreported as ErrEntityScope: %v", err)
-	}
+	got := collectEntityMetrics(t, fs, r, func(em *Emitter) {
+		env := tenantEnvelope(orgA, accountA)
+		env.Entity = uuid.New()
+		err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked", DedupKey: recRankedKey})
+		if !errors.Is(err, boom) {
+			t.Fatalf("infra error: got %v, want wrapped %v", err, boom)
+		}
+		if errors.Is(err, ErrEntityScope) {
+			t.Fatalf("infra error misreported as ErrEntityScope: %v", err)
+		}
+	})
+
 	if len(fs.inserted) != 0 {
 		t.Fatalf("infra-error emit persisted %d rows, want 0", len(fs.inserted))
+	}
+	dps := got["analytics.emit_failures"]
+	if len(dps) != 1 || dps[0].Value != 1 {
+		t.Fatalf("analytics.emit_failures datapoints = %v, want exactly one value 1 — a resolver INFRASTRUCTURE failure loses the event, and an unmetered loss makes an outage indistinguishable from an idle pipe (issue #111)", dps)
+	}
+	if n := len(got["analytics.entity_rejections"]); n != 0 {
+		t.Fatalf("a resolver infrastructure failure incremented analytics.entity_rejections (%d datapoints), want 0 — an outage is not a tenant-integrity rejection", n)
+	}
+	if n := len(got["analytics.events"]); n != 0 {
+		t.Fatalf("a lost event incremented analytics.events (%d datapoints), want 0", n)
 	}
 }
 

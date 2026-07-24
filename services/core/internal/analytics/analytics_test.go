@@ -80,6 +80,60 @@ func TestEmit_RejectsMissingDedupKey(t *testing.T) {
 	}
 }
 
+// TestEmit_RejectsDedupKeyWithEmptySegment is the EVENT-DEDUPLICATION fail-closed
+// negative for a MALFORMED key (§4.6 never-cut, issue #111 review finding G1). F6
+// closed the zero-PART call by making one part required in the signature; the same
+// hazard is still reachable through the ZERO VALUE of that string field:
+// DedupKey(FamilyBriefing, "daily_digest_sent", "") returns
+// "briefing:daily_digest_sent:", which is NON-EMPTY (so it passes the ErrMissingDedupKey
+// check and the DB's length(dedup_key) > 0 CHECK) yet is an account-wide CONSTANT per
+// (family, name). The first such event would win the account's slot and every later,
+// genuinely different, business fact would be suppressed forever while the call site
+// looked perfectly keyed — F6's "deduplicates everything" failure mode reached through a
+// nullable/optional source column.
+//
+// Emit therefore fails CLOSED on any empty ':'-separated segment, so a producer wiring
+// an optional identifier into a key is rejected loudly instead of silently muting its
+// own family.
+func TestEmit_RejectsDedupKeyWithEmptySegment(t *testing.T) {
+	cases := map[string]string{
+		"empty required part":  DedupKey(FamilyBriefing, "daily_digest_sent", ""),
+		"empty trailing part":  DedupKey(FamilyExecution, "execution_attempted", "action-1", ""),
+		"empty interior part":  DedupKey(FamilyExecution, "execution_attempted", "", "attempt-2"),
+		"hand-built trailing":  "briefing:daily_digest_sent:",
+		"hand-built leading":   ":daily_digest_sent:digest-1",
+		"hand-built interior":  "briefing::digest-1",
+		"only the delimiters":  ":::",
+		"single delimiter key": ":",
+	}
+	em := NewEmitter(nil)
+	for name, key := range cases {
+		t.Run(name, func(t *testing.T) {
+			ev := Event{Envelope: fullEnvelope(), Family: FamilyBriefing, Name: "generated", DedupKey: key}
+			err := em.Emit(t.Context(), ev)
+			if !errors.Is(err, ErrMalformedDedupKey) {
+				t.Fatalf("Emit accepted malformed dedup key %q: %v — an empty segment makes the key a per-(account,family,name) CONSTANT that suppresses every later event", key, err)
+			}
+		})
+	}
+}
+
+// TestEmit_AcceptsWellFormedDedupKey is the paired positive for the segment guard:
+// requiring non-empty segments must not reject the keys real producers build.
+func TestEmit_AcceptsWellFormedDedupKey(t *testing.T) {
+	em := NewEmitter(nil)
+	for _, key := range []string{
+		DedupKey(FamilyBriefing, "daily_digest_sent", uuid.NewString()),
+		DedupKey(FamilyExecution, "execution_attempted", "action-1", "attempt-2"),
+		"single-segment-key",
+	} {
+		ev := Event{Envelope: fullEnvelope(), Family: FamilyBriefing, Name: "generated", DedupKey: key}
+		if err := em.Emit(t.Context(), ev); err != nil {
+			t.Fatalf("Emit rejected the well-formed key %q: %v", key, err)
+		}
+	}
+}
+
 // TestDedupKey_StableAndNamespaced pins the shared key builder: the same inputs
 // always yield the same key (a retry must reproduce it byte-for-byte), the key is
 // namespaced by family+name so two families cannot collide within one account, and

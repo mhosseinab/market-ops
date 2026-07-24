@@ -32,6 +32,8 @@ The `Emitter` handles the persistence and metric incrementation for events.
 
 A missing key is rejected (`ErrMissingDedupKey`), never defaulted: an unkeyed event would be a silent opt-out of the deduplication invariant, and a freshly generated per-call key would deduplicate nothing while appearing to. The **empty** key is rejected by the database too (`analytics_events_dedup_key_nonempty` CHECK): `''` is not `NULL`, so without that constraint it would sit *inside* the partial unique index and one account's first `''` row would silently suppress every later `''` row — real data loss wearing the deduplication invariant's uniform.
 
+A **malformed** key — non-empty overall but with an empty `:`-separated segment, e.g. `"briefing:daily_digest_sent:"` — is rejected too (`ErrMalformedDedupKey`). It is what `DedupKey` returns when its required identifying part is the zero value of a nullable/optional source column, and it passes *both* the `ErrMissingDedupKey` check and the database's non-empty CHECK while being a **constant** per `(account, family, name)`: the first such event would win the account's slot and every later, genuinely different, business fact would be suppressed forever. An unkeyed event deduplicates nothing; a constant key deduplicates everything, which is strictly worse. Note the `:` delimiter is *documented* but not yet *escaped* — `DedupKey(f, n, "a:b")` still collides with `DedupKey(f, n, "a", "b")`; committed-row identifiers never contain `:`, and escaping is follow-on work.
+
 **Precisely what is enforced where.** The database structurally guarantees, for *every* writer, that (1) two rows in one account cannot share a non-null `dedup_key` and (2) no row's key is empty. It does **not** require a row to be keyed at all: a `NULL` key is outside the partial index and is not deduplicated. That residual is closed only at the service boundary — `Emit`'s `ErrMissingDedupKey` — which binds this Go core and nothing else; an out-of-band writer inserting `NULL` is not structurally prevented. Making the column `NOT NULL` is the follow-on hardening. No backfill value is ever fabricated for an unkeyed row.
 
 ## Constraints
@@ -53,7 +55,9 @@ flowchart TD
     ValFam -->|No| ErrFam[ErrInvalidFamily]
     ValFam -->|Yes| ValKey{"Dedup Key<br/>Present?"}
     ValKey -->|No| ErrKey[ErrMissingDedupKey]
-    ValKey -->|Yes| Store{"Has Store?"}
+    ValKey -->|Yes| ValSeg{"Every ':' Segment<br/>Non-Empty?"}
+    ValSeg -->|No| ErrSeg[ErrMalformedDedupKey]
+    ValSeg -->|Yes| Store{"Has Store?"}
     
     Store -->|No| OTel[telemetry.event]
     Store -->|Yes| ResolveOrg[resolveOwnerOrg]

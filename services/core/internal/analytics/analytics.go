@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -151,6 +152,20 @@ var ErrInvalidCostKind = errors.New("analytics: invalid cost kind")
 // only for rows written before the key existed (migration 0045).
 var ErrMissingDedupKey = errors.New("analytics: event has no deduplication key")
 
+// ErrMalformedDedupKey is returned when a deduplication key is non-empty but has an
+// EMPTY ':'-separated segment (issue #111 review finding G1). It is the sibling
+// failure of ErrMissingDedupKey and the same never-cut invariant (§4.6): a key such
+// as "briefing:daily_digest_sent:" — what DedupKey returns when its required part is
+// the ZERO VALUE of a nullable/optional source column — is non-empty, so it survives
+// both the ErrMissingDedupKey check and the storage-level length(dedup_key) > 0 CHECK,
+// yet it is a CONSTANT per (account, family, name). The first event to use it would
+// win the account's slot and every later, genuinely different, business fact would be
+// suppressed forever while the call site looked perfectly keyed. That is strictly
+// worse than no key at all: an unkeyed event deduplicates nothing, a constant key
+// deduplicates everything. A producer whose identifying part can be empty must fail
+// LOUDLY here, never mute its own family silently.
+var ErrMalformedDedupKey = errors.New("analytics: deduplication key has an empty segment")
+
 // ErrCrossTenant is returned when an event envelope pairs an organization with a
 // marketplace account that organization does NOT own (issue #125, §18 envelope +
 // §4.6 tenant-integrity never-cut). The §18 envelope must identify ONE coherent
@@ -232,6 +247,13 @@ type Event struct {
 // suppressed forever, while the call site looked perfectly keyed. That is the mirror
 // image of the per-call-UUID hazard: one deduplicates nothing, the other deduplicates
 // everything. The identifying part must come from the committed business row.
+//
+// PARTS MUST ALSO BE NON-EMPTY. Requiring one part in the signature does not stop a
+// caller passing the ZERO VALUE of a nullable/optional column, which yields
+// "family:name:" — non-empty, so it survives both Emit's ErrMissingDedupKey check and
+// the storage-level non-empty CHECK, while still being the account-wide constant
+// described above. Emit therefore rejects any key with an empty ':'-separated segment
+// (ErrMalformedDedupKey); a producer whose identifier can be absent must not emit.
 //
 // PARTS MUST NOT CONTAIN ':' — it is the unescaped delimiter, so ["a:b"] and
 // ["a","b"] produce the SAME key and would silently suppress each other. Committed
@@ -349,6 +371,20 @@ func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 	}
 	if ev.DedupKey == "" {
 		return fmt.Errorf("%w: %s/%s", ErrMissingDedupKey, ev.Family, ev.Name)
+	}
+	// A non-empty key with an EMPTY segment is a per-(account, family, name) CONSTANT
+	// and would suppress every later event of that family forever (ErrMalformedDedupKey,
+	// issue #111 G1). It is the zero-value path into the hazard the required builder part
+	// closed at the signature: an identifying part sourced from a nullable/optional column
+	// yields "family:name:" — non-empty, so neither the check above nor the storage-level
+	// length(dedup_key) > 0 CHECK catches it. Fail closed HERE, at the one boundary every
+	// producer crosses, rather than trusting ~10 upcoming call sites to be careful.
+	if strings.Contains(ev.DedupKey, ":") {
+		for _, segment := range strings.Split(ev.DedupKey, ":") {
+			if segment == "" {
+				return fmt.Errorf("%w: %s/%s: %q", ErrMalformedDedupKey, ev.Family, ev.Name, ev.DedupKey)
+			}
+		}
 	}
 	attrs, err := marshalAttributes(ev.Attributes)
 	if err != nil {
