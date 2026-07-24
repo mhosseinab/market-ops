@@ -6,8 +6,8 @@ import type { ObservationTarget, ObservedOffer } from "../data/types";
 import {
   bulkValid,
   offer,
-  readinessComplete,
   RECOMMENDATION_ID,
+  readinessComplete,
   selectionPreview,
   target,
   VARIANT_ID,
@@ -185,9 +185,12 @@ describe("Bulk approval (journey 3 — SERVER-minted selection set, APR-001 at s
     let confirmCalls = 0;
     server.use(
       http.post(`${BASE}/selection-sets/preview`, () =>
-        HttpResponse.json({ code: "APPROVAL_ERROR", message: "selection set not found" }, {
-          status: 404,
-        }),
+        HttpResponse.json(
+          { code: "APPROVAL_ERROR", message: "selection set not found" },
+          {
+            status: 404,
+          },
+        ),
       ),
       http.post(`${BASE}/approvals/bulk/confirm`, () => {
         confirmCalls += 1;

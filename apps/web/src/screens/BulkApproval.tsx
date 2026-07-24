@@ -312,7 +312,7 @@ export function BulkApproval() {
     const byRecommendation = new Map<string, { variantId: string; recommendationId: string }>();
     for (const c of candidates) {
       if (c.readinessFailed || c.disposition === undefined || c.disposition === "blocked") continue;
-      if (!included(candidateKey(c)) || !c.recommendationId) continue;
+      if (excluded.has(candidateKey(c)) || !c.recommendationId) continue;
       byRecommendation.set(c.recommendationId, {
         variantId: c.target.variantId,
         recommendationId: c.recommendationId,
@@ -427,7 +427,9 @@ export function BulkApproval() {
       // on is explicitly "not in the selection set", never an assumed success.
       render: (c) => {
         if (!result?.valid) return <LtrToken text="—" />;
-        const item = c.recommendationId ? resultByRecommendation.get(c.recommendationId) : undefined;
+        const item = c.recommendationId
+          ? resultByRecommendation.get(c.recommendationId)
+          : undefined;
         if (!item) {
           return (
             <span className="muted" data-testid="result-excluded">
