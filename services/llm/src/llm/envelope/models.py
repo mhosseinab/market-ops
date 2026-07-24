@@ -22,7 +22,7 @@ from pydantic import (
     field_validator,
 )
 
-from llm.flows.deep_links import validate_recovery_route
+from llm.flows.deep_links import SCREENS_FALLBACK, validate_recovery_route
 
 # ISO-4217 alpha-3 currency code (LTR technical identifier).
 CurrencyCode = Annotated[str, StringConstraints(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")]
@@ -169,6 +169,16 @@ class TurnFailure(BaseModel):
         if v is None:
             return v
         return validate_recovery_route(v)
+
+
+def screens_failure(code: str, message: str) -> TurnFailure:
+    """The §12.4 structured failure carrying the canonical screens-only deep link.
+
+    One factory shared by every fail-closed seam in the turn (the orchestrator's
+    hard bounds and the context-resolution node), so a failure can never reach a
+    client without the deterministic recovery route (issue #56).
+    """
+    return TurnFailure(code=code, message=message, deep_link=SCREENS_FALLBACK)
 
 
 class StreamEventKind(StrEnum):

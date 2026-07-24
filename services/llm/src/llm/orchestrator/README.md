@@ -12,12 +12,15 @@ This module provides the core conversation turn orchestration and leaf agent exe
 ## How It Works
 
 ### Orchestration (`graph.py`)
-The conversation turn is modeled as a `TurnGraph`. The graph state (`TurnState`) strictly uses JSON-safe data types (no framework types or agents) because there is no durable checkpointer. The graph implements a single node workflow:
-1. **Classification and Containment**: Before any agent or tool runs, the message's intent is classified. 
+The conversation turn is modeled as a `TurnGraph`. The graph state (`TurnState`) strictly uses JSON-safe data types (no framework types or agents) because there is no durable checkpointer. The graph is three nodes — `contain` → `resolve_context` → `agent` — wired with conditional edges so the topology mirrors the ordering the invariants require:
+1. **Classification and Containment** (`contain`): Before any context, agent or tool work, the message's intent is classified.
    - Unclassifiable intents immediately yield a structured failure.
    - Approval/confirmation attempts yield a guidance response and immediately short-circuit.
-2. **Agent Execution**: If the intent is tool-capable, the message is routed to the leaf agent.
-3. **Structured Mapping**: Exceptions and timeouts are caught and deterministically mapped to structured `TurnFailure` objects.
+2. **Deterministic Context Resolution** (`resolve_context`, see `context_node.py`): The turn's single subject is settled by the pure resolver (`llm.contextres`, PRD §8.1). `RESOLVED` puts the active chip on `TurnState`; `PICKER` terminates the turn in the canonical structured picker card (CHAT-007 — no agent, no tokens, no card, no Draft); `NOT_FOUND` (including every scope-mismatch / missing-provenance reason) fails closed. A subject is never guessed. The turn's `RequestScope` comes ONLY from the request's authenticated identity — the tenant fields inside the context payload are untrusted data validated against it.
+3. **Agent Execution** (`agent`): Only a turn with a settled subject is routed to the leaf agent.
+4. **Structured Mapping**: Exceptions and timeouts are caught and deterministically mapped to structured `TurnFailure` objects.
+
+Note: the deterministic per-intent flow dispatcher (briefing / investigation / simulation / prepare-action / monitoring) is **not** wired here — it is sub-scope 108c of issue #108, which also supplies the gateway-backed `CandidatePort`.
 
 ### Leaf Agents (`agent.py`)
 Leaf agents are constructed using LangChain's `create_agent`. They act strictly as explainers and drafters; they never make decisions or confirm actions. The agent binds only a specified subset of tools from the `ToolRegistry` and outputs a strongly-typed `AssistantAnswer`.

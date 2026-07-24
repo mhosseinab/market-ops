@@ -22,6 +22,7 @@ from __future__ import annotations
 import hmac
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -29,10 +30,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from llm.config import ProviderKind, Settings, load_settings
+from llm.contextres.ports import CandidatePort, NoCandidatePort
+from llm.contextres.turn import TurnContext
 from llm.envelope.models import ChatStreamEvent, StreamEventKind
 from llm.intents.classifier import IntentClassifier
 from llm.intents.keyword_mock import default_keyword_intent
-from llm.metrics import ContainmentMetrics
+from llm.metrics import ContainmentMetrics, ContextResolutionMetrics
 from llm.observability import configure_observability
 from llm.orchestrator.agent import build_agent
 from llm.orchestrator.graph import TurnGraph, TurnState, build_turn_graph
@@ -42,7 +45,24 @@ from llm.tools.registry import ToolRegistry, build_registry
 
 
 class ChatRequest(BaseModel):
-    """A conversation turn from the gateway. Free text carries no authority."""
+    """A conversation turn from the gateway. Free text carries no authority.
+
+    ``organization_id`` + ``marketplace_account_id`` are the turn's AUTHENTICATED
+    scope: the gateway asserts them under the inbound bearer credential (issue
+    #167) from the user's session, and they are the ONLY source of the context
+    resolver's :class:`~llm.contextres.models.RequestScope`. The tenant fields
+    carried inside :attr:`context` are untrusted DATA validated against that
+    scope — never the scope itself (PRD §12, §4.6 identity quarantine).
+
+    ``extra="ignore"`` is retained DELIBERATELY at this level: the gateway is a
+    co-evolving producer that already sends top-level keys this plane does not
+    model (``locale``, and more as the contract grows additively), and rejecting
+    them would break every turn on an additive producer change. That tolerance
+    stops at the context payload: :class:`~llm.contextres.turn.TurnContext` is
+    ``extra="forbid"``, so a misspelled or unknown key INSIDE ``context`` is
+    rejected rather than silently dropped. Dropping it would silently lose the
+    turn's subject — the precise defect this payload exists to prevent.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -51,6 +71,9 @@ class ChatRequest(BaseModel):
     marketplace_account_id: str | None = None
     user_id: str | None = None
     organization_id: str | None = None
+    # The gateway's authoritative bound context (CHAT-007). Read-only business
+    # data: it carries no approval authority and never advances an action.
+    context: TurnContext | None = None
 
 
 class AppState:
@@ -61,6 +84,12 @@ class AppState:
         self.observability = configure_observability(settings)
         self.registry: ToolRegistry = build_registry()
         self.metrics = ContainmentMetrics()
+        self.resolution_metrics = ContextResolutionMetrics()
+        # Candidate supply for explicit entity references. The production default
+        # is the fail-closed stub: it supplies NOTHING, so an explicit reference
+        # resolves to a structured picker or NOT_FOUND — never a guessed subject.
+        # The gateway-backed read implementation is sub-scope 108c of issue #108.
+        self.candidate_port: CandidatePort = NoCandidatePort()
         # The agent model (answers) and the classifier model are separate roles.
         # In production both resolve to the SAME configured OpenAI-compatible
         # endpoint; with the mock they carry different deterministic scripts so a
@@ -72,7 +101,12 @@ class AppState:
         classifier_model = build_chat_model(settings, mock_script=_classifier_mock_script(settings))
         self.classifier = IntentClassifier(classifier_model)
         self.turn_graph: TurnGraph = build_turn_graph(
-            self.agent, settings, self.classifier, self.metrics
+            self.agent,
+            settings,
+            self.classifier,
+            self.metrics,
+            candidate_port=self.candidate_port,
+            resolution_metrics=self.resolution_metrics,
         )
 
 
@@ -183,6 +217,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+def _turn_context_state(context: TurnContext | None) -> dict[str, Any] | None:
+    """Project the validated context onto JSON-safe graph state, as-of stamped.
+
+    Graph state holds JSON-safe business data ONLY — never a pydantic instance.
+
+    The as-of instant is stamped HERE from the server clock and ALWAYS overrides
+    any client-supplied ``now``: a turn's freshness is not something a caller may
+    assert. A back-dated ``now`` would move every "today/this week" boundary and
+    let a historical window read as the current one (§12.3: never claim current
+    state from stale evidence). Stamping once at the transport also keeps the
+    resolver pure — it never reads a clock — so a turn's time resolution is
+    reproducible from graph state alone.
+    """
+    if context is None:
+        return None
+    return context.model_copy(update={"now": _utc_now()}).model_dump(mode="json")
+
+
+def _utc_now() -> str:
+    """The turn's as-of instant (RFC 3339 UTC), read once at the boundary."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 async def _stream_turn(state: AppState, req: ChatRequest) -> AsyncIterator[str]:
     """Yield SSE frames for a turn: conversation, token(s), final | failure.
 
@@ -198,8 +255,11 @@ async def _stream_turn(state: AppState, req: ChatRequest) -> AsyncIterator[str]:
 
     turn_state: TurnState = {
         "message": req.message,
+        # The AUTHENTICATED scope of the turn (never taken from `context`).
+        "organization_id": req.organization_id,
         "marketplace_account_id": req.marketplace_account_id,
         "conversation_id": conversation_id,
+        "turn_context": _turn_context_state(req.context),
     }
     async for chunk in state.turn_graph.astream_turn(turn_state):
         if chunk.kind == "token" and chunk.token is not None:

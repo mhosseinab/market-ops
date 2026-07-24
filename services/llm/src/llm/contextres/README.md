@@ -27,6 +27,14 @@ The resolution logic is driven by the `resolve()` pure function inside `resolver
 4. **Time Range Parsing:** Named calendar periods ("today", "این هفته") or rolling windows ("last N days") are resolved to their explicit start and end UTC bounds based on the provided timezone and week-start configurations, entirely independent of the phrase's locale language.
 5. **Output (`Resolution`):** Returns the final state, containing either the resolved `ContextChip`, a list of `PickerOption`s, or a machine-readable error `reason`.
 
+## Production seams (issue #108, sub-scope 108b)
+
+The pure resolver is reached from the live `/chat` turn through three collaborators:
+
+* **`turn.py` — the wire adapter.** `TurnContext` is the typed, `extra="forbid"` payload the Go gateway puts on a turn (`services/core/internal/httpapi/chat.go`): the single active chip (`kind` + its bound identifiers), explicit `references`, the `time_phrase`, and the account's calendar DATA (`business_timezone`, `week_starts_on`). `ContextKind` is the WIRE enum (`product`, `event`, …, matching the gateway's `ConversationContextKind`); `ContextKind.to_context_type()` / `context_kind_for()` are its total bijection with the domain `ContextType`. An unknown or misspelled key is rejected, never dropped — dropping it would silently lose the turn's subject.
+* **`ports.py` — the candidate-supply seam.** `CandidatePort` is a read-only Protocol with exactly one lookup method and no create/write/approve/execute/confirm method, mirroring `llm.flows.ports.DraftPort`. The production default `NoCandidatePort` is an explicitly-planned stub that supplies nothing, so an explicit reference resolves to a structured picker or `NOT_FOUND` — never a guessed subject. **The gateway-backed implementation is sub-scope 108c of issue #108.**
+* **`llm.orchestrator.context_node` — the live node.** Runs AFTER free-text containment and BEFORE the agent, builds the `RequestScope` from the turn's AUTHENTICATED identity only, and maps the outcome: `RESOLVED` → the chip lands on `TurnState`; `PICKER` → the turn terminates in the canonical `{id, label, contextKind}` picker card (`llm.envelope.contract.PickerCard`); `NOT_FOUND` → the §12.4 structured failure + deep link. Every outcome emits `llm_context_resolution_total` with the resolver's own stable reason token.
+
 ## Constraints
 * **Pure Functions:** No I/O, no network calls, no model invocation, and no local clock reads. `now` is explicitly injected.
 * **Tenant Quarantine (PRD §12, §4.6):** Identifiers from an active context or a candidate MUST carry provenance (`organization_id` and `account_id`) that exactly matches the request scope. Missing provenance or mismatches immediately fail closed.

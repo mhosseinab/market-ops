@@ -21,7 +21,9 @@ from dataclasses import dataclass, field
 
 # Stable metric/log identifiers (shared schema; locale-neutral).
 FREE_TEXT_CONTAINMENT_METRIC = "llm_free_text_containment_total"
+CONTEXT_RESOLUTION_METRIC = "llm_context_resolution_total"
 _LOGGER = logging.getLogger("llm.containment")
+_RESOLUTION_LOGGER = logging.getLogger("llm.contextres")
 
 
 @dataclass
@@ -51,5 +53,43 @@ class ContainmentMetrics:
                 "intent": intent,
                 "disposition": "guidance_only",
                 "transitions": 0,
+            },
+        )
+
+
+@dataclass
+class ContextResolutionMetrics:
+    """In-process counters for the deterministic context-resolution boundary.
+
+    Context resolution decides whether a turn has ONE unambiguous subject
+    (``resolved``), must render the structured picker (``picker``), or fails
+    closed (``not_found``) — plus ``skipped`` when the turn carried no context at
+    all. That boundary enforces quarantine-over-inference (§4.6), so it MUST be
+    observable: telemetry has to distinguish a contained ambiguity from a
+    silently-guessed subject.
+
+    ``by_outcome`` counts the resolution kinds; ``by_reason`` counts the
+    resolver's OWN stable reason tokens (``organization_scope_mismatch``,
+    ``ambiguous_reference_card``, ``missing_context_version``, …) — the existing
+    machine vocabulary, never an invented synonym. Both are locale-neutral
+    machine tokens. No message text, no tenant identifier, no entity id and no
+    Persian copy is ever recorded here (CLAUDE.md observability).
+    """
+
+    total: int = 0
+    by_outcome: dict[str, int] = field(default_factory=dict)
+    by_reason: dict[str, int] = field(default_factory=dict)
+
+    def record_resolution(self, outcome: str, reason: str) -> None:
+        """Increment the counters and emit the structured log for one resolution."""
+        self.total += 1
+        self.by_outcome[outcome] = self.by_outcome.get(outcome, 0) + 1
+        self.by_reason[reason] = self.by_reason.get(reason, 0) + 1
+        _RESOLUTION_LOGGER.info(
+            "context_resolution",
+            extra={
+                "metric": CONTEXT_RESOLUTION_METRIC,
+                "outcome": outcome,
+                "reason": reason,
             },
         )
