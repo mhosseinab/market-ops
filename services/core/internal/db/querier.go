@@ -657,17 +657,53 @@ type Querier interface {
 	ListAnalyticsEventsByFamily(ctx context.Context, arg ListAnalyticsEventsByFamilyParams) ([]AnalyticsEvent, error)
 	// The append-only lifecycle history for a card, in occurrence order (AUD-001).
 	ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) ([]ApprovalCardState, error)
-	// Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
-	// (greatest) version per lineage, newest first. The unfiltered read: every
-	// current lineage head for the account. A deterministic id tie-break keeps
-	// ordering stable across rows sharing a created_at (stable keyset paging).
+	// Grouped multi-row actions queue for an account (PD-3 item 5, S37), newest
+	// first. The authoritative projection is PD-4 rule (1) for issue #106:
+	//
+	//     current lineage heads  UNION  card versions that carry an execution
+	//
+	// The second branch is what keeps EXE-005 / OUT-001 / AUD-001 visibility intact.
+	// The domain may legitimately mint a NEWER Draft on the SAME action lineage after
+	// an action was executed (recommendation.EditPrice preserves action_id), so a
+	// greatest-version-only read silently dropped the older TERMINAL card version —
+	// and with it the common action API visibility, audit selection, and outcome
+	// discovery for the DEFAULT (recommend-only, writes dark) execution mode. An
+	// execution-bearing card version stays addressable forever.
+	//
+	// "Carries an execution" spans BOTH modes: a write action_executions row or an
+	// EXE-005 recommend_only_actions row, matched on the EXACT card version each was
+	// bound to (never on the lineage), so a newer version never inherits an older
+	// version's execution.
+	//
+	// The union is expressed as a disjunctive predicate over a single scan of
+	// approval_cards, which deduplicates by construction: a lineage whose current
+	// head is ITSELF execution-bearing satisfies both branches and still yields
+	// exactly ONE row (its primary key appears once).
+	//
+	// This is a pure READ over append-only history: it never rewrites, collapses,
+	// merges, or re-stamps a past card version — each projected version keeps its
+	// own version and its own parameter/context versions (approval versioning is
+	// never-cut, §4.6).
+	//
+	// Tenant scoping (marketplace_account_id, issue #102) applies to BOTH branches:
+	// a foreign account's executed card is never projected here. A deterministic id
+	// tie-break keeps ordering stable across rows sharing a created_at (stable
+	// keyset paging).
 	ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error)
-	// Actions queue narrowed to a single §8.4 state (issue #142). The state
-	// predicate is AUTHORITATIVE and runs on the current (greatest-version) lineage
-	// head BEFORE ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered
-	// newest-N prefix, so an older matching head is never hidden behind newer
-	// non-matching ones. Tenant scoping (marketplace_account_id) is unchanged and
-	// the id tie-break keeps paging stable across equal created_at.
+	// Actions queue narrowed to a single §8.4 state (issue #142), over the SAME
+	// PD-4 rule (1) projection as the unfiltered read (issue #106): current lineage
+	// heads UNION execution-bearing card versions.
+	//
+	// The state predicate is AUTHORITATIVE and runs on the UNIONED set BEFORE
+	// ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered newest-N
+	// prefix, so an older matching row (head or executed version) is never hidden
+	// behind newer non-matching ones. A recommend-only executed card version stays
+	// Approved by design (execution.Service.recordRecommendOnly), so it remains
+	// reachable under state=approved even once its lineage head has moved on to a
+	// newer Draft.
+	//
+	// Tenant scoping (marketplace_account_id) is unchanged on both branches and the
+	// id tie-break keeps paging stable across equal created_at.
 	ListApprovalCardsByAccountAndState(ctx context.Context, arg ListApprovalCardsByAccountAndStateParams) ([]ApprovalCard, error)
 	// The complete append-only audit trail for an action, in occurrence order. This
 	// is the reproduction read (AUD-001): it joins NOTHING in the conversation tables,

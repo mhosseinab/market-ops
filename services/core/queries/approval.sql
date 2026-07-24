@@ -83,32 +83,76 @@ WHERE card_id = $1
 ORDER BY occurred_at, id;
 
 -- name: ListApprovalCardsByAccount :many
--- Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
--- (greatest) version per lineage, newest first. The unfiltered read: every
--- current lineage head for the account. A deterministic id tie-break keeps
--- ordering stable across rows sharing a created_at (stable keyset paging).
-SELECT latest.* FROM (
-    SELECT DISTINCT ON (ac.lineage_id) ac.*
-    FROM approval_cards ac
-    WHERE ac.marketplace_account_id = $1
-    ORDER BY ac.lineage_id, ac.version DESC
-) latest
-ORDER BY latest.created_at DESC, latest.id DESC
+-- Grouped multi-row actions queue for an account (PD-3 item 5, S37), newest
+-- first. The authoritative projection is PD-4 rule (1) for issue #106:
+--
+--     current lineage heads  UNION  card versions that carry an execution
+--
+-- The second branch is what keeps EXE-005 / OUT-001 / AUD-001 visibility intact.
+-- The domain may legitimately mint a NEWER Draft on the SAME action lineage after
+-- an action was executed (recommendation.EditPrice preserves action_id), so a
+-- greatest-version-only read silently dropped the older TERMINAL card version —
+-- and with it the common action API visibility, audit selection, and outcome
+-- discovery for the DEFAULT (recommend-only, writes dark) execution mode. An
+-- execution-bearing card version stays addressable forever.
+--
+-- "Carries an execution" spans BOTH modes: a write action_executions row or an
+-- EXE-005 recommend_only_actions row, matched on the EXACT card version each was
+-- bound to (never on the lineage), so a newer version never inherits an older
+-- version's execution.
+--
+-- The union is expressed as a disjunctive predicate over a single scan of
+-- approval_cards, which deduplicates by construction: a lineage whose current
+-- head is ITSELF execution-bearing satisfies both branches and still yields
+-- exactly ONE row (its primary key appears once).
+--
+-- This is a pure READ over append-only history: it never rewrites, collapses,
+-- merges, or re-stamps a past card version — each projected version keeps its
+-- own version and its own parameter/context versions (approval versioning is
+-- never-cut, §4.6).
+--
+-- Tenant scoping (marketplace_account_id, issue #102) applies to BOTH branches:
+-- a foreign account's executed card is never projected here. A deterministic id
+-- tie-break keeps ordering stable across rows sharing a created_at (stable
+-- keyset paging).
+SELECT ac.* FROM approval_cards ac
+WHERE ac.marketplace_account_id = $1
+  AND (
+      ac.version = (
+          SELECT max(head.version) FROM approval_cards head
+          WHERE head.lineage_id = ac.lineage_id
+      )
+      OR EXISTS (SELECT 1 FROM action_executions ae WHERE ae.card_id = ac.id)
+      OR EXISTS (SELECT 1 FROM recommend_only_actions ro WHERE ro.card_id = ac.id)
+  )
+ORDER BY ac.created_at DESC, ac.id DESC
 LIMIT $2;
 
 -- name: ListApprovalCardsByAccountAndState :many
--- Actions queue narrowed to a single §8.4 state (issue #142). The state
--- predicate is AUTHORITATIVE and runs on the current (greatest-version) lineage
--- head BEFORE ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered
--- newest-N prefix, so an older matching head is never hidden behind newer
--- non-matching ones. Tenant scoping (marketplace_account_id) is unchanged and
--- the id tie-break keeps paging stable across equal created_at.
+-- Actions queue narrowed to a single §8.4 state (issue #142), over the SAME
+-- PD-4 rule (1) projection as the unfiltered read (issue #106): current lineage
+-- heads UNION execution-bearing card versions.
+--
+-- The state predicate is AUTHORITATIVE and runs on the UNIONED set BEFORE
+-- ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered newest-N
+-- prefix, so an older matching row (head or executed version) is never hidden
+-- behind newer non-matching ones. A recommend-only executed card version stays
+-- Approved by design (execution.Service.recordRecommendOnly), so it remains
+-- reachable under state=approved even once its lineage head has moved on to a
+-- newer Draft.
+--
+-- Tenant scoping (marketplace_account_id) is unchanged on both branches and the
+-- id tie-break keeps paging stable across equal created_at.
 SELECT ac.* FROM approval_cards ac
 WHERE ac.marketplace_account_id = $1
   AND ac.state = $2
-  AND ac.version = (
-      SELECT max(ac2.version) FROM approval_cards ac2
-      WHERE ac2.lineage_id = ac.lineage_id
+  AND (
+      ac.version = (
+          SELECT max(head.version) FROM approval_cards head
+          WHERE head.lineage_id = ac.lineage_id
+      )
+      OR EXISTS (SELECT 1 FROM action_executions ae WHERE ae.card_id = ac.id)
+      OR EXISTS (SELECT 1 FROM recommend_only_actions ro WHERE ro.card_id = ac.id)
   )
 ORDER BY ac.created_at DESC, ac.id DESC
 LIMIT $3;

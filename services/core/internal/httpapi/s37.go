@@ -191,6 +191,15 @@ func (s *gatewayServer) ListActions(
 	// link-only discovery. The overlay is best-effort context: when execution is
 	// unconfigured the list still returns the approval cards (fail open on the read
 	// enrichment, never on the authoritative card state).
+	//
+	// The overlay is keyed by the EXACT (actionId, cardId) pair, never by action id
+	// alone. An action lineage may hold SEVERAL card versions — the domain mints a
+	// newer Draft on the same action id after an execution (PD-4 rule 1), and the
+	// projection returns the executed version AND that newer head. Keying by action
+	// id alone would stamp the executed version's terminal overlay onto the fresh
+	// pre-execution Draft: a false "already executed" claim on a card that has
+	// written nothing. A pre-execution card version therefore carries NO overlay
+	// fields at all.
 	overlay := map[uuid.UUID]execution.UnifiedAction{}
 	if s.execution != nil {
 		// Scope the overlay to the caller's own account (issue #102): the account id
@@ -205,13 +214,15 @@ func (s *gatewayServer) ListActions(
 			return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
 		}
 		for _, u := range unified {
-			overlay[u.ActionID] = u
+			overlay[u.CardID] = u
 		}
 	}
 	items := make([]gateway.ActionSummary, 0, len(rows))
 	for _, r := range rows {
 		summary := toActionSummary(r)
-		if u, ok := overlay[r.ActionID]; ok {
+		// Both keys must match: the card id addresses the exact version, and the
+		// action id confirms the execution belongs to this card's action.
+		if u, ok := overlay[r.ID]; ok && u.ActionID == r.ActionID {
 			applyExecutionOverlay(&summary, u)
 		}
 		items = append(items, summary)

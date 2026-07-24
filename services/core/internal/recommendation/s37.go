@@ -85,16 +85,25 @@ const (
 	maxActionsLimit     int32 = 500
 )
 
-// ListActions returns the account's actions queue: the current (greatest)
-// version per lineage, newest first, bounded by limit (PD-3 item 5). A
-// non-empty stateFilter narrows to that exact §8.4 state; empty returns every
-// state.
+// ListActions returns the account's actions queue, newest first, bounded by
+// limit (PD-3 item 5). A non-empty stateFilter narrows to that exact §8.4 state;
+// empty returns every state.
 //
-// The state predicate is AUTHORITATIVE and applied in SQL, on the current
-// lineage head, BEFORE LIMIT (issue #142) — a page bounds MATCHING rows, never
-// an unfiltered newest-N prefix, so an older matching head is never hidden
-// behind newer non-matching ones. Tenant scoping stays account-scoped exactly
-// as before; the account arg is resolved upstream.
+// The projection is PD-4 rule (1) for issue #106: current lineage heads UNION
+// card versions that carry an execution (write action_executions OR EXE-005
+// recommend_only_actions), deduplicated by card id. A terminal executed card
+// version therefore stays visible through the common action API even after the
+// domain mints a newer Draft on the same action lineage — preserving EXE-005 /
+// OUT-001 / AUD-001 visibility for the DEFAULT (recommend-only) execution mode.
+//
+// The state predicate is AUTHORITATIVE and applied in SQL, over the UNIONED set,
+// BEFORE LIMIT (issue #142) — a page bounds MATCHING rows, never an unfiltered
+// newest-N prefix, so an older matching row is never hidden behind newer
+// non-matching ones. Tenant scoping stays account-scoped on BOTH branches; the
+// account arg is resolved upstream.
+//
+// It is a pure read over append-only history: no card version is rewritten,
+// collapsed, or re-stamped (approval versioning is never-cut, §4.6).
 func (s *Service) ListActions(ctx context.Context, account uuid.UUID, stateFilter string, limit int32) ([]db.ApprovalCard, error) {
 	if limit <= 0 {
 		limit = defaultActionsLimit
