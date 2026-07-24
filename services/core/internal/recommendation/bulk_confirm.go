@@ -45,9 +45,15 @@ const (
 	// BulkItemAuthorized — the member's live control was activated THIS call:
 	// Approved + exactly one execution intent enqueued.
 	BulkItemAuthorized BulkItemState = "authorized"
-	// BulkItemAlreadyAuthorized — an idempotent replay: the member's card was
-	// already Approved by a prior confirmation, so no second authorization/intent is
-	// created. This is the resume-safe terminal for an already-processed member.
+	// BulkItemAlreadyAuthorized — an idempotent replay: the member's structured
+	// control was already ACTIVATED by a prior confirmation, so no second
+	// authorization/intent is created. The outcome is SEALED — it is reported for a
+	// card that is Approved AND for one that has since advanced downstream
+	// (Revalidating, Executing, or a terminal external result: Accepted, Rejected,
+	// PendingReconciliation, Failed). This is the resume-safe terminal for an
+	// already-processed member; re-attempting a member whose EXECUTION failed is the
+	// reconciliation-gated /actions retry path's decision, never a second bulk
+	// authorization.
 	BulkItemAlreadyAuthorized BulkItemState = "already_authorized"
 	// BulkItemExcluded — a blocked or warning member: never approvable in bulk, so it
 	// is reported and skipped, never executed.
@@ -258,10 +264,25 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrNoControl):
-			// Not control-bearing. An already-Approved card is a prior authorization
+			// Not control-bearing. The authorization outcome is SEALED: any card whose
+			// structured control was already ACTIVATED is a prior authorization
 			// (idempotent replay / resume) — report already_authorized and NEVER
-			// re-dispatch. Any other non-control state fails closed as invalidated.
-			if card.State == string(approval.StateApproved) {
+			// re-authorize or re-dispatch. The predicate is the §8.4 machine's own
+			// domain knowledge (approval.StateHasAuthorized), so a member that
+			// legitimately ADVANCED past Approved (Revalidating, Executing, or a
+			// terminal external result) is no longer mislabelled invalidated /
+			// not_control_bearing — the issue #90 blocker-2 defect, which also blocked
+			// a resume from retrying the members that were still eligible.
+			//
+			// Retrying a member whose EXECUTION failed is deliberately NOT this seam's
+			// job: it stays already_authorized here, and re-attempting it goes through
+			// the reconciliation-gated retry path (execution.Retry — an unknown result
+			// must reconcile first, only a definitively Failed action is eligible,
+			// EXE-003 / §16). A bulk resume is never a back door around that gate.
+			// Only states that were NEVER authorized, or whose authorization was voided
+			// (Invalidated, Expired, Blocked, or a pre-activation state), fail closed
+			// as invalidated below.
+			if approval.StateHasAuthorized(approval.State(card.State)) {
 				item.State = BulkItemAlreadyAuthorized
 				item.Reason = "already_authorized"
 				return
