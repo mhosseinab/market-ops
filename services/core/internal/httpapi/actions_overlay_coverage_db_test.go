@@ -197,6 +197,63 @@ func listActionsWithLimit(t *testing.T, srv *http.Server, token, account string,
 	return out
 }
 
+// printPtr renders a *T as its VALUE (fmt prints a bare hex address for a
+// pointer-to-string, which makes a failure message unreadable).
+func printPtr[T any](p *T) any {
+	if p == nil {
+		return "<nil>"
+	}
+	return *p
+}
+
+// assertRecommendOnlyOverlay asserts a projected row's overlay faithfully mirrors
+// its DURABLE recommend_only_actions row:
+//
+//   - mode is recommend_only and the row carries NO write externalState (a
+//     recommend-only action never makes a write claim — never-cut);
+//   - canonicalState is exactly the canonical mapping of the projected
+//     recommend-only state (no invented or defaulted canonical state);
+//   - the projected recommend-only state equals the durable state — or is
+//     awaiting while the durable row has since become terminal.
+//
+// The last clause exists because recommend_only_actions state is GLOBALLY mutable
+// during a test run: the EXE-005 reconciler batch (ListAwaitingRecommendOnlyActions)
+// is account-unscoped, so a reconciler pass in ANOTHER package's test — running
+// concurrently against the same database, with a clock past the 24h window — lapses
+// every awaiting action, including this fixture's. Recommend-only transitions are
+// one-way (awaiting → externally_executed | lapsed), so "durable row still awaiting
+// ⇒ the projection must have said awaiting" stays a sound, strict assertion, while
+// a concurrent resolution can no longer masquerade as a projection bug.
+func assertRecommendOnlyOverlay(t *testing.T, q *db.Queries, item gateway.ActionSummary, actionID uuid.UUID) {
+	t.Helper()
+	if item.ExecutionMode == nil || *item.ExecutionMode != gateway.ExecutionMode(execution.ModeRecommendOnly) {
+		t.Fatalf("card %s executionMode = %v; want recommend_only", item.Id, printPtr(item.ExecutionMode))
+	}
+	// A recommend-only action NEVER carries a write externalState.
+	if item.ExternalState != nil {
+		t.Fatalf("recommend-only card %s carries write externalState %v — a false write claim (never-cut)", item.Id, *item.ExternalState)
+	}
+	if item.RecommendOnlyState == nil {
+		t.Fatalf("card %s carries no recommendOnlyState", item.Id)
+	}
+	got := execution.RecommendOnlyState(*item.RecommendOnlyState)
+
+	row, err := q.GetRecommendOnlyAction(context.Background(), actionID)
+	if err != nil {
+		t.Fatalf("read durable recommend-only row for action %s: %v", actionID, err)
+	}
+	durable := execution.RecommendOnlyState(row.State)
+	if got != durable && got != execution.StateAwaitingExternalExecution {
+		t.Fatalf("card %s recommendOnlyState = %q; durable row is %q (only a pre-resolution %q reading is also acceptable)",
+			item.Id, got, durable, execution.StateAwaitingExternalExecution)
+	}
+	if item.CanonicalState == nil ||
+		*item.CanonicalState != gateway.ActionCanonicalState(execution.Canonical(execution.ModeRecommendOnly, string(got))) {
+		t.Fatalf("card %s canonicalState = %v; want %q for recommend-only state %q",
+			item.Id, printPtr(item.CanonicalState), execution.Canonical(execution.ModeRecommendOnly, string(got)), got)
+	}
+}
+
 // TestListActions_OverlayCoversEveryReturnedPageRow is the issue #106 F1
 // regression: EVERY execution-bearing row on the returned page must carry its
 // execution overlay, at ANY limit.
@@ -219,22 +276,16 @@ func TestListActions_OverlayCoversEveryReturnedPageRow(t *testing.T) {
 		t.Fatalf("GET /actions?limit=%d returned %d rows; want %d", limit, len(items), limit)
 	}
 
+	actionOf := map[uuid.UUID]uuid.UUID{}
+	for _, c := range f.cards {
+		actionOf[c.ID] = c.ActionID
+	}
 	for _, item := range items {
 		if item.ExecutionMode == nil || item.CanonicalState == nil {
 			t.Fatalf("card %s is recommend-only TRACKED but came back with executionMode=%v canonicalState=%v — the queue renders it as a pre-execution card, a false 'not executed yet' claim about an AwaitingExternalExecution action (EXE-005, §4.6). Overlay coverage must be structural: fetch the overlay for the EXACT ids of the returned page.",
-				item.Id, item.ExecutionMode, item.CanonicalState)
+				item.Id, printPtr(item.ExecutionMode), printPtr(item.CanonicalState))
 		}
-		if *item.ExecutionMode != gateway.ExecutionMode(execution.ModeRecommendOnly) {
-			t.Fatalf("card %s executionMode = %v; want recommend_only", item.Id, *item.ExecutionMode)
-		}
-		if item.RecommendOnlyState == nil ||
-			*item.RecommendOnlyState != gateway.RecommendOnlyState(execution.StateAwaitingExternalExecution) {
-			t.Fatalf("card %s recommendOnlyState = %v; want awaiting_external_execution", item.Id, item.RecommendOnlyState)
-		}
-		// A recommend-only action NEVER carries a write externalState.
-		if item.ExternalState != nil {
-			t.Fatalf("recommend-only card %s carries write externalState %v — a false write claim (never-cut)", item.Id, *item.ExternalState)
-		}
+		assertRecommendOnlyOverlay(t, q, item, actionOf[item.Id])
 	}
 
 	// The page itself is still the newest-by-created_at prefix (ordering unchanged).

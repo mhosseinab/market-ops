@@ -235,20 +235,9 @@ func TestListActions_ExecutedCardVisibleAndOverlayBoundToExactCard(t *testing.T)
 		t.Fatalf("GET /actions omitted the current Draft head %s", f.head.ID)
 	}
 
-	// The executed version carries its own overlay.
-	if executed.ExecutionMode == nil || *executed.ExecutionMode != gateway.ExecutionMode(execution.ModeRecommendOnly) {
-		t.Fatalf("executed card executionMode = %v; want recommend_only", executed.ExecutionMode)
-	}
-	if executed.CanonicalState == nil || *executed.CanonicalState != gateway.ActionCanonicalState(execution.CanonicalAwaiting) {
-		t.Fatalf("executed card canonicalState = %v; want awaiting", executed.CanonicalState)
-	}
-	if executed.RecommendOnlyState == nil || *executed.RecommendOnlyState != gateway.RecommendOnlyState(execution.StateAwaitingExternalExecution) {
-		t.Fatalf("executed card recommendOnlyState = %v; want awaiting_external_execution", executed.RecommendOnlyState)
-	}
-	// NEVER a write claim on a recommend-only action.
-	if executed.ExternalState != nil {
-		t.Fatalf("recommend-only action carries write externalState %v — a false write claim (never-cut)", *executed.ExternalState)
-	}
+	// The executed version carries its own overlay, faithfully mirroring the
+	// durable recommend-only row (and NEVER a write claim — never-cut).
+	assertRecommendOnlyOverlay(t, q, executed, f.executed.ActionID)
 
 	// The pre-execution Draft head carries NO overlay at all: the overlay is bound
 	// to the exact card version, not to the shared action lineage.
