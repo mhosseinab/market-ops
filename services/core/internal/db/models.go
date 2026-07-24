@@ -819,6 +819,12 @@ type SelectionSet struct {
 	MembershipFingerprint   []byte
 }
 
+type SelectionSetLineage struct {
+	LineageID            uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	CreatedAt            time.Time
+}
+
 type SelectionSetMember struct {
 	ID                   uuid.UUID
 	SelectionSetID       uuid.UUID

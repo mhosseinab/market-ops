@@ -179,6 +179,18 @@ func (s *Service) PreviewBulkSelection(ctx context.Context, account, lineage uui
 		return PreviewResult{}, err
 	}
 
+	// Tenant isolation (issue #90, §4.6): claim-or-verify the lineage→account
+	// ownership WHILE HOLDING the lineage lock and BEFORE any version is minted. A
+	// refresh of a lineage owned by another account fails closed here
+	// (ErrLineageNotOwned) — it can neither append a version into the victim's
+	// lineage (which would invalidate the victim's live bound confirmation) nor plant
+	// a row that a later confirmation could resolve. The database enforces the same
+	// rule one layer down (migration 0045's composite FK), so this guard is the typed,
+	// observable, non-oracle surface of an invariant that holds regardless.
+	if err := s.claimLineageOwnership(ctx, q, "preview_bulk_selection", lineage, account); err != nil {
+		return PreviewResult{}, err
+	}
+
 	// The membership_fingerprint is computed inside sealSelectionVersion from the
 	// resolved views + aggregate BEFORE any member write, then the version and its
 	// exact membership are inserted and sealed.

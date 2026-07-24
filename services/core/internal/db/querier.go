@@ -90,6 +90,18 @@ type Querier interface {
 	// code is strictly single-use; a second claim matches no row. Returns the row
 	// (with credential id + expiry) only when the claim succeeds.
 	ClaimPairingCode(ctx context.Context, arg ClaimPairingCodeParams) (ExtensionPairing, error)
+	// Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
+	// within a lineage: a set change is a new version. A bulk approval binds ONE
+	// version, so any set/evidence change (a new version) invalidates it. No
+	// UPDATE/DELETE — the current set is the greatest version per lineage.
+	// BULK-PROTOCOL DESIGN RECORD (b) — lineage→account ownership claim.
+	// Claims a lineage for an account INSERT-ONCE (issue #90). ON CONFLICT DO NOTHING,
+	// never DO UPDATE: ownership is immutable, so an already-owned lineage is left
+	// exactly as it is and the caller then READS the owner (GetSelectionSetLineage) in
+	// the SAME transaction under the held per-lineage advisory lock. Claim-then-read is
+	// race-free: two accounts racing on one lineage serialize on the lock, the loser
+	// reads the winner's row and fails closed (ErrLineageNotOwned).
+	ClaimSelectionSetLineage(ctx context.Context, arg ClaimSelectionSetLineageParams) error
 	// §16 offer disappearance: close the current offer with an END TIME. The last raw
 	// price is left intact — it is NEVER converted to a zero price. Availability
 	// becomes 'disappeared' and quality 'unavailable'.
@@ -460,6 +472,10 @@ type Querier interface {
 	// from a missing one (no existence oracle) and is never disclosed.
 	GetRecommendationForAccount(ctx context.Context, arg GetRecommendationForAccountParams) (Recommendation, error)
 	GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error)
+	// The authoritative owner of a selection-set lineage. Exactly one row per lineage
+	// for its whole life (migration 0045); the composite FK on selection_sets makes any
+	// version under a different account unconstructable at the DATABASE.
+	GetSelectionSetLineage(ctx context.Context, lineageID uuid.UUID) (SelectionSetLineage, error)
 	// Resolve a live session to its principal (user + role + organization). Rows
 	// at/after expiry are excluded, so an expired cookie fails closed.
 	GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error)
@@ -613,14 +629,19 @@ type Querier interface {
 	// nothing and the service surfaces a not-found — no existence oracle, still
 	// append-only (EVT-005).
 	InsertRelevanceFeedbackForOrg(ctx context.Context, arg InsertRelevanceFeedbackForOrgParams) (EventRelevanceFeedback, error)
-	// Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
-	// within a lineage: a set change is a new version. A bulk approval binds ONE
-	// version, so any set/evidence change (a new version) invalidates it. No
-	// UPDATE/DELETE — the current set is the greatest version per lineage.
 	// membership_fingerprint is the canonical hash of the exact membership + aggregate
 	// computed by the atomic create BEFORE any write. It is set once at INSERT and never
 	// UPDATEd (selection_sets is append-only), so a version's fingerprint is immutable —
 	// binding the version at confirm transitively binds this fingerprint (issue #91).
+	//
+	// BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING.
+	// Versions are monotonic ONLY WITHIN one lineage: the next version is
+	// MAX(version)+1 over the rows of THIS lineage AND THIS account (the account
+	// predicate is defense in depth — migration 0045's composite FK already guarantees
+	// every row of a lineage shares one account). Version numbers from DIFFERENT
+	// lineages are NOT comparable and must never be ordered, ranged, or diffed against
+	// one another: "v3" is meaningful only as "(lineage L, version 3)". A bulk
+	// confirmation therefore binds the PAIR (lineage, version), never a bare version.
 	InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error)
 	// marketplace_account_id is the tenant key (issue #102): it MUST equal the owning
 	// selection_set's account and — enforced by migration 0025's composite FKs and the

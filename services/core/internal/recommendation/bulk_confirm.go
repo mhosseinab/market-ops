@@ -87,25 +87,45 @@ type BulkConfirmOutcome struct {
 }
 
 // ConfirmBulkSelection confirms a bulk approval bound to ONE exact selection-set
-// version and durably authorizes each executable member (issue #90, CHAT-052).
+// version and durably authorizes each executable member (issue #90, CHAT-052). It is
+// the AUTHORITATIVE, account-scoped confirmation entry point: `account` is the
+// caller's own resolved marketplace account (threaded down from
+// ConfirmBulkSelectionForOrg, never taken from request input), and there is NO
+// unscoped variant — a bulk confirmation cannot be reached without naming the tenant
+// it is predicated on.
 //
-// It first binds the version: the confirmation is valid ONLY when boundVersion is
-// the current (greatest) version of the lineage. Because membership is immutable per
-// version (#91), binding the version transitively binds the EXACT membership,
-// dispositions, and aggregate the operator reviewed — a stale bound version
-// authorizes NOTHING (fail closed). When valid, it walks the bound version's sealed
-// members and, for each EXECUTABLE member, authorizes its live card through the SAME
-// individual §8.4 confirm path (so every control-bearing / authoritative-current /
-// expiry / tenant gate applies and bulk can bypass none of them). Blocked and
-// warning members are reported excluded and never execute. Each executable member is
-// authorized in its OWN transaction (inside ConfirmIndividual), so one member's
-// failure never rolls back another's authorization — partial failure is durable and
-// a resume retries only the still-eligible members.
-func (s *Service) ConfirmBulkSelection(ctx context.Context, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (BulkConfirmOutcome, error) {
-	q := db.New(s.pool)
-	current, err := q.GetCurrentSelectionSet(ctx, lineage)
+// Version binding is decided INSIDE one transaction that holds the per-lineage lock
+// (issue #90 blocker 1): the lock is taken first, then the ACCOUNT-SCOPED current
+// version is read, then the bound version's sealed membership is snapshotted — so a
+// concurrent refresh can neither interleave between the read and the membership
+// snapshot nor let a foreign lineage resolve. A lineage that is not the caller's
+// matches no row and yields pgx.ErrNoRows: indistinguishable from a missing lineage
+// (no existence oracle), with no read of foreign members and no side effect.
+//
+// The confirmation is valid ONLY when boundVersion is the current (greatest) version
+// of the lineage. Because membership is immutable per version (#91), binding the
+// version transitively binds the EXACT membership, dispositions, and aggregate the
+// operator reviewed — a stale bound version authorizes NOTHING (fail closed). When
+// valid, it walks the bound version's sealed members and, for each EXECUTABLE member,
+// authorizes its live card through the SAME individual §8.4 confirm path (so every
+// control-bearing / authoritative-current / expiry / tenant gate applies and bulk can
+// bypass none of them). Blocked and warning members are reported excluded and never
+// execute.
+//
+// The binding transaction COMMITS (releasing the lineage lock) before the member loop
+// runs: each executable member is then authorized in its OWN transaction (inside
+// ConfirmIndividual), so one member's failure never rolls back another's authorization
+// — partial failure is durable and a resume retries only the still-eligible members.
+// Holding the selection-lineage lock across the loop is deliberately avoided: the loop
+// acquires a second pooled connection per member, and nesting that under a held lock
+// would couple a tenant-isolation lock to pool availability. Nothing is weakened by
+// releasing it — each member's own confirm re-verifies its own APR-001 binding under
+// its own card-lineage lock, so a member superseded after the snapshot still fails
+// closed.
+func (s *Service) ConfirmBulkSelection(ctx context.Context, account, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (BulkConfirmOutcome, error) {
+	current, members, err := s.bindSelectionVersion(ctx, account, lineage, boundVersion)
 	if err != nil {
-		return BulkConfirmOutcome{}, err // pgx.ErrNoRows ⇒ unknown lineage (404 at transport).
+		return BulkConfirmOutcome{}, err
 	}
 	out := BulkConfirmOutcome{
 		Lineage:        lineage,
@@ -118,11 +138,6 @@ func (s *Service) ConfirmBulkSelection(ctx context.Context, lineage uuid.UUID, b
 		return out, nil
 	}
 	out.Valid = true
-
-	members, err := q.ListSelectionSetMembers(ctx, current.ID)
-	if err != nil {
-		return BulkConfirmOutcome{}, err
-	}
 	out.Items = make([]BulkItemResult, 0, len(members))
 	authorizedAny := false
 	for _, m := range members {
@@ -149,6 +164,52 @@ func (s *Service) ConfirmBulkSelection(ctx context.Context, lineage uuid.UUID, b
 	// pending execution authorization — never a bare "the version was valid" signal.
 	out.ExecutionPending = authorizedAny
 	return out, nil
+}
+
+// bindSelectionVersion resolves, in ONE transaction under the per-lineage lock, the
+// caller's ACCOUNT-SCOPED current selection-set version and (when the bound version
+// is that current version) its sealed membership. Taking the lock BEFORE the read is
+// what makes the binding decision atomic against a concurrent refresh: a refresh that
+// already holds the lock is waited on, so the confirmation can never bind a version
+// that a committed refresh has already superseded. The transaction is read-only — it
+// writes nothing — and commits before any member is authorized.
+//
+// A lineage owned by another account matches no row (GetCurrentSelectionSetForAccount)
+// and returns pgx.ErrNoRows, the same as a missing lineage: no disclosure, no foreign
+// member read, no side effect.
+func (s *Service) bindSelectionVersion(ctx context.Context, account, lineage uuid.UUID, boundVersion int32) (db.SelectionSet, []db.SelectionSetMember, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return db.SelectionSet{}, nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	q := db.New(tx)
+
+	if err := q.LockApprovalLineage(ctx, lineage); err != nil {
+		return db.SelectionSet{}, nil, err
+	}
+	current, err := q.GetCurrentSelectionSetForAccount(ctx, db.GetCurrentSelectionSetForAccountParams{
+		LineageID:            lineage,
+		MarketplaceAccountID: account,
+	})
+	if err != nil {
+		return db.SelectionSet{}, nil, err // pgx.ErrNoRows ⇒ unknown OR foreign lineage (404 at transport).
+	}
+	if current.Version != boundVersion {
+		// Stale: do not read the members of a version the caller is not bound to.
+		if err := tx.Commit(ctx); err != nil {
+			return db.SelectionSet{}, nil, err
+		}
+		return current, nil, nil
+	}
+	members, err := q.ListSelectionSetMembers(ctx, current.ID)
+	if err != nil {
+		return db.SelectionSet{}, nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.SelectionSet{}, nil, err
+	}
+	return current, members, nil
 }
 
 // authorizeBulkMember resolves an executable member's live approval card and

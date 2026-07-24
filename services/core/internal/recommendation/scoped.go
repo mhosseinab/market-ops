@@ -151,34 +151,28 @@ func (s *Service) PreviewBulkSelectionForOrg(ctx context.Context, organizationID
 // exact selection-set version (issue #90) ONLY when the selection-set lineage belongs
 // to the caller's account (issue #102).
 //
-// The authoritative per-item flow in ConfirmBulkSelection (#90) derives the tenant
-// from the selection set itself and enforces per-MEMBER tenant integrity (a member
-// card from a different account than the set is rejected as account_mismatch). It
-// does NOT, however, gate the SET against the CALLER: it resolves the lineage through
-// the unscoped GetCurrentSelectionSet, so a caller who merely possesses a foreign
-// lineage id could otherwise confirm another tenant's bulk selection. This variant
-// closes that gap the same way the other #102 *ForOrg operations do: it resolves the
-// caller's account and predicates the lineage lookup on it (via the account-scoped
-// GetCurrentSelectionSetForAccount) BEFORE any authorization. A lineage owned by
+// It resolves the caller's OWN marketplace account from the authenticated
+// organization and THREADS it into ConfirmBulkSelection, which predicates its
+// authoritative current-version read on that account (GetCurrentSelectionSetForAccount)
+// INSIDE the confirmation transaction, under the per-lineage lock. A lineage owned by
 // another account matches no row and yields pgx.ErrNoRows — indistinguishable from a
-// missing lineage (no existence oracle), with no read of foreign members and no
-// side effect. Because a selection set's marketplace_account_id is immutable within a
-// lineage (selection_sets is append-only), this pre-check is airtight; #90's
-// ConfirmBulkSelection then runs unchanged, so its version binding, per-item
-// authorization, idempotency, and per-member account_mismatch rejection are preserved
-// exactly (not weakened).
+// missing lineage (no existence oracle), with no read of foreign members and no side
+// effect.
+//
+// This replaced an earlier version-agnostic PRE-CHECK on the pool, outside any
+// transaction, whose doc-comment claimed to be "airtight" because a selection set's
+// marketplace_account_id is immutable within a lineage. That premise was UNENFORCED
+// (issue #90 blocker 1): nothing bound a lineage_id to one marketplace_account_id, so
+// an attacker could plant a self-owned row inside the victim's lineage, satisfy the
+// pre-check, and then have the (then unscoped) authoritative read hand back the
+// victim's members. The premise is now TRUE and DB-enforced — migration 0045's
+// selection_set_lineages ownership row plus the composite FK on selection_sets — and
+// the read that acts on it is account-scoped and inside the locked transaction, so
+// neither layer relies on the other.
 func (s *Service) ConfirmBulkSelectionForOrg(ctx context.Context, organizationID, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (BulkConfirmOutcome, error) {
 	account, err := s.accountForOrg(ctx, organizationID)
 	if err != nil {
 		return BulkConfirmOutcome{}, err
 	}
-	// Ownership gate: authorize BEFORE any read of the set's members or any write.
-	// A foreign/missing lineage → uniform pgx.ErrNoRows (404 at transport).
-	if _, err := db.New(s.pool).GetCurrentSelectionSetForAccount(ctx, db.GetCurrentSelectionSetForAccountParams{
-		LineageID:            lineage,
-		MarketplaceAccountID: account,
-	}); err != nil {
-		return BulkConfirmOutcome{}, err
-	}
-	return s.ConfirmBulkSelection(ctx, lineage, boundVersion, now, actor)
+	return s.ConfirmBulkSelection(ctx, account, lineage, boundVersion, now, actor)
 }

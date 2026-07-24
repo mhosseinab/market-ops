@@ -152,10 +152,20 @@ func (s *gatewayServer) PreviewSelectionSet(
 	}
 	result, err := s.approval.PreviewBulkSelectionForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, lineage, req.Body.Name, criteria, members)
 	if err != nil {
-		if errors.Is(err, recommendation.ErrUnknownMember) || errors.Is(err, recommendation.ErrAccountNotFound) {
-			// A foreign account or an unknown/mismatched member are indistinguishable
-			// to the caller (no existence oracle) — both are a uniform not-found.
-			return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
+		if errors.Is(err, recommendation.ErrUnknownMember) ||
+			errors.Is(err, recommendation.ErrAccountNotFound) ||
+			errors.Is(err, recommendation.ErrLineageNotOwned) {
+			// A foreign account, an unknown/mismatched member, and a selection-set
+			// LINEAGE owned by another tenant (issue #90 blocker 1) are all
+			// indistinguishable to the caller — one uniform not-found. Surfacing the
+			// ownership rejection distinctly would be an existence oracle for another
+			// tenant's lineage ids; it is observable to OPERATORS through the
+			// tenant-isolation counter + structured log, never to the caller.
+			//
+			// The BODY is uniform too, not just the status: the three causes return the
+			// SAME envelope byte-for-byte, so response text cannot be used to
+			// distinguish "this lineage belongs to someone else" from "no such member".
+			return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 404, Body: selectionNotFoundErr()}, nil
 		}
 		return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 	}
@@ -759,6 +769,16 @@ func toSelectionSetPreviewResult(r recommendation.PreviewResult) gateway.Selecti
 func ptrMoneyAmount(m money.Money) *gateway.MoneyAmount {
 	v := toMoneyAmount(m)
 	return &v
+}
+
+// selectionNotFoundErr is the UNIFORM not-found envelope for the selection-set
+// preview: an unknown/mismatched member, a foreign marketplace account, and a
+// selection-set lineage owned by another tenant (issue #90) are indistinguishable
+// to the caller. One fixed message means the response body is not an existence
+// oracle for another tenant's lineage or member ids; the distinction is recorded
+// for operators in the tenant-isolation telemetry instead.
+func selectionNotFoundErr() gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "APPROVAL_ERROR", Message: "selection set not found"}
 }
 
 func guardrailErr(err error) gateway.ErrorEnvelope {
