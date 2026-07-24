@@ -97,6 +97,15 @@ type ChatTurn struct {
 	// or foreign tenant; filling it from the request would make that check a tautology
 	// and silently delete the guard. uuid.Nil / nil mean "no provenance recorded" and
 	// are emitted as ABSENT, never as a placeholder — provenance is never manufactured.
+	// NOTE for consumers and future refactors: on today's gateway path
+	// ContextOrganizationID always COINCIDES with the turn's scope OrganizationID by
+	// construction, because BeginTurn either creates the conversation under the
+	// principal's org or loads it via the org-filtered GetConversationForOrg; the
+	// organization half of the consumer's scope check is therefore defence-in-depth
+	// against a future non-org-filtered read, NOT an independent discriminator, and
+	// the ACCOUNT half is the load-bearing one. Nothing downstream (including 108c's
+	// GatewayReadPort / per-intent binding) may treat the organization comparison as
+	// tenant authorization, and no refactor may fold these two fields together.
 	ContextOrganizationID       uuid.UUID
 	ContextMarketplaceAccountID *uuid.UUID
 	// Locale is the conversation's AUTHORITATIVE bound locale (LOC-001, issue #120):

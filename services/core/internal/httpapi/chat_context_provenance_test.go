@@ -66,11 +66,17 @@ func TestHTTPLLMChatContextPayloadCarriesTenantProvenance108F1(t *testing.T) {
 	storedOrg := uuid.New()
 	storedAccount := uuid.New()
 	entity := "v-42"
+	// The turn's SCOPE organization is deliberately DISTINCT from the bound
+	// context's provenance organization. Passing the same uuid for both would make
+	// this test blind to a producer that emits turn.OrganizationID (the request
+	// scope) as the chip's provenance — the exact identity-quarantine trap that
+	// turns the consumer's scope comparison into a tautology (§4.6).
+	scopeOrg := uuid.New()
 
 	svc := NewHTTPLLMChat(plane.URL, "draft-only-token")
 	body, err := svc.StartTurn(context.Background(), ChatTurn{
 		UserID:                      uuid.New(),
-		OrganizationID:              storedOrg,
+		OrganizationID:              scopeOrg,
 		Message:                     "why?",
 		Context:                     &conversation.ContextBinding{Kind: "product", EntityID: &entity, Version: 1},
 		ContextOrganizationID:       storedOrg,
@@ -83,7 +89,10 @@ func TestHTTPLLMChatContextPayloadCarriesTenantProvenance108F1(t *testing.T) {
 
 	bound := contextPayload(t, got)
 	if bound["organization_id"] != storedOrg.String() {
-		t.Errorf("context.organization_id = %v, want %s", bound["organization_id"], storedOrg)
+		t.Errorf("context.organization_id = %v, want stored provenance %s", bound["organization_id"], storedOrg)
+	}
+	if bound["organization_id"] == scopeOrg.String() {
+		t.Errorf("context.organization_id was emitted from the turn's SCOPE org %s; provenance must come from the bound context, not the request scope (manufactured provenance, §4.6)", scopeOrg)
 	}
 	if bound["account_id"] != storedAccount.String() {
 		t.Errorf("context.account_id = %v, want %s", bound["account_id"], storedAccount)
