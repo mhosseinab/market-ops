@@ -115,6 +115,12 @@ export function CostImport() {
   // never became the source, so the failure must be visible rather than silent
   // (design/STATE_MATRIX.md error state); it clears on the next source change.
   const [fileUnreadable, setFileUnreadable] = useState(false);
+  // A chosen file is still being read. Until it lands, `csv`/`filename` still
+  // hold the PREVIOUS source while the seller believes the new file is loaded,
+  // so previewing here would preview (and then commit) the old source under the
+  // new file's name. The read boundary gets its own loading state and gates
+  // Preview (design/STATE_MATRIX.md; §4.6 money-adjacent).
+  const [reading, setReading] = useState(false);
   const preview = useCostImportPreview();
   const commit = useCostImportCommit();
 
@@ -133,6 +139,10 @@ export function CostImport() {
   // before its asynchronous read resolves, not after.
   function invalidatePreview() {
     setFileUnreadable(false);
+    // A newly designated source also ends any read boundary the seller has
+    // moved on from: the superseded read is discarded on resolve and must not be
+    // the one to clear this flag, or Preview would stay disabled forever.
+    setReading(false);
     preview.reset();
     commit.reset();
   }
@@ -164,13 +174,15 @@ export function CostImport() {
     // against a source the seller has already replaced (CST-001; §4.6 — a stale
     // card is never left clickable, #79).
     invalidatePreview();
+    setReading(true);
     let text: string;
     try {
       text = await file.text();
     } catch {
       // A superseded read's failure is irrelevant — a newer selection already
-      // owns the source. Only the current selection reports its own failure.
+      // owns the source, and only that selection may clear the read boundary.
       if (generation !== sourceGeneration.current) return;
+      setReading(false);
       // Fail closed and VISIBLE: the unread file never becomes the source (the
       // previous text keeps its own filename, so the preview audit still follows
       // the source actually being sent) and the preview stays invalidated.
@@ -178,6 +190,7 @@ export function CostImport() {
       return;
     }
     if (generation !== sourceGeneration.current) return;
+    setReading(false);
     applySource(text, file.name);
   }
 
@@ -213,10 +226,33 @@ export function CostImport() {
             data-testid="cost-file"
             onChange={(e) => {
               const file = e.target.files?.[0];
+              // Clear the control on EVERY pick. Per the HTML Standard's
+              // file-upload picker algorithm, re-selecting the same path is not a
+              // selection change, so the browser fires no `change` — the stated
+              // recovery from a read failure would silently do nothing, and a
+              // file edited on disk and re-picked would leave the PREVIOUS
+              // batch's confirm control live (the exact window #79 forbids). A
+              // failure-path-only reset would fix the first and miss the second.
+              e.target.value = "";
               if (file) void onFile(file);
             }}
           />
         </label>
+        {/* Clearing the control also blanks its native filename display, so the
+            designated source is rendered from state — a technical identifier,
+            LTR-isolated inside the RTL card. */}
+        {filename ? (
+          <p className="muted" data-testid="cost-file-current">
+            {t("cost.file.current")} <LtrToken text={filename} />
+          </p>
+        ) : null}
+        {/* Read boundary in flight: the source on screen is still the previous
+            one, so this is a loading state, not a ready state. */}
+        {reading ? (
+          <p className="muted" role="status" data-testid="cost-file-reading">
+            {t("cost.file.reading")}
+          </p>
+        ) : null}
         {/* The chosen file could not be read: no retry control, because a file
             input cannot be re-read without a fresh pick — the stated recovery is
             to choose the file again (never a dead control). */}
@@ -237,12 +273,15 @@ export function CostImport() {
           type="button"
           className="btn btn--primary"
           data-testid="cost-preview"
-          disabled={preview.isPending || csv.trim() === ""}
+          disabled={preview.isPending || reading || csv.trim() === ""}
           onClick={() => {
             // A new preview always begins with a fresh confirm control: reset any
             // prior commit result so a completed import (bound to an older batch)
             // never lingers over a freshly previewed batch (issue #79, acceptance
-            // 4). This subsumes the source-change reset in changeSource.
+            // 4). This subsumes the source-change reset in changeSource. The
+            // read-failure alert also clears here, or a valid batch would render
+            // beneath a live "file could not be read" alert.
+            setFileUnreadable(false);
             commit.reset();
             preview.mutate({ csv, ...(filename ? { filename } : {}) });
           }}
@@ -259,6 +298,9 @@ export function CostImport() {
             guidanceKey="cost.preview.error"
             onDismiss={() => preview.reset()}
             onRetry={() => {
+              // Same rule as the Preview control: a re-run starts from a clean
+              // read-failure state.
+              setFileUnreadable(false);
               commit.reset();
               preview.mutate({ csv, ...(filename ? { filename } : {}) });
             }}

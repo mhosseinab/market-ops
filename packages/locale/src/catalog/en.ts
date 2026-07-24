@@ -415,6 +415,8 @@ export const en: Catalog = {
   "cost.confirm": "Confirm {count} valid rows",
   "cost.duplicateBlock": "{count} duplicate rows must be resolved before confirm.",
   "cost.committed": "{count} rows committed.",
+  "cost.file.current": "Chosen file",
+  "cost.file.reading": "Reading the chosen file…",
   "cost.file.error": "The chosen file could not be read. Choose the file again.",
   "cost.preview.error": "Previewing the file failed. Your file is kept; you can try again.",
   "cost.commit.error":
