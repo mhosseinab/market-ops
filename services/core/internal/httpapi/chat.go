@@ -88,6 +88,17 @@ type ChatTurn struct {
 	// never infers the bound entity from free text when a binding is present; it
 	// carries no approval authority.
 	Context *conversation.ContextBinding
+	// ContextOrganizationID / ContextMarketplaceAccountID are the bound context's
+	// TENANT PROVENANCE: the organization and marketplace account the conversation
+	// (and therefore its context binding) is PERSISTED under. They are read from the
+	// stored conversation row — NEVER copied from the inbound request's authenticated
+	// scope (§4.6 identity quarantine, PRD §12). The LLM plane validates this
+	// provenance against the turn's authenticated scope and fails closed on an absent
+	// or foreign tenant; filling it from the request would make that check a tautology
+	// and silently delete the guard. uuid.Nil / nil mean "no provenance recorded" and
+	// are emitted as ABSENT, never as a placeholder — provenance is never manufactured.
+	ContextOrganizationID       uuid.UUID
+	ContextMarketplaceAccountID *uuid.UUID
 	// Locale is the conversation's AUTHORITATIVE bound locale (LOC-001, issue #120):
 	// the exact validated wire locale, resolved and versioned by the gateway. It is
 	// handed to the LLM plane as read-only pass-through business data so the response
@@ -362,6 +373,12 @@ func (s *gatewayServer) Chat(
 		conversationID = conv.ID
 		turn.ConversationID = &conv.ID
 		turn.Context = conv.Context
+		// Tenant provenance for the bound context comes from the PERSISTED
+		// conversation row (conv), not from the request principal or the request's
+		// optional account field: the consumer's scope check only means something if
+		// the two are independently sourced (§4.6 identity quarantine, PRD §12).
+		turn.ContextOrganizationID = conv.OrganizationID
+		turn.ContextMarketplaceAccountID = conv.MarketplaceAccountID
 		boundLocale = conv.Locale
 		if conv.Locale != nil {
 			turn.Locale = conv.Locale.Locale
@@ -595,6 +612,18 @@ func (h *httpLLMChat) StartTurn(ctx context.Context, turn ChatTurn) (io.ReadClos
 		}
 		if turn.Context.EntityID != nil {
 			bound["entity_id"] = *turn.Context.EntityID
+		}
+		// The bound context's TENANT PROVENANCE, read from the persisted conversation
+		// (never the inbound request scope). The LLM plane validates it against the
+		// turn's authenticated scope and fails closed on an absent or foreign tenant.
+		// Absent provenance is OMITTED — never a zero-uuid placeholder — so the
+		// consumer quarantines with a precise reason instead of comparing a
+		// manufactured value (§4.6 identity quarantine, PRD §12).
+		if turn.ContextOrganizationID != uuid.Nil {
+			bound["organization_id"] = turn.ContextOrganizationID.String()
+		}
+		if turn.ContextMarketplaceAccountID != nil {
+			bound["account_id"] = turn.ContextMarketplaceAccountID.String()
 		}
 		payload["context"] = bound
 	}
