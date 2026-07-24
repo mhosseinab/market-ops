@@ -139,7 +139,10 @@ const ITEM_STATE_META: Record<BulkApprovalItemState, { tone: string; labelKey: M
 
 // The item states that mean the SERVER durably authorized the member. The post-confirm
 // summary counts these, never a locally reconstructed number.
-const AUTHORIZED_ITEM_STATES: readonly BulkApprovalItemState[] = ["authorized", "already_authorized"];
+const AUTHORIZED_ITEM_STATES: readonly BulkApprovalItemState[] = [
+  "authorized",
+  "already_authorized",
+];
 
 // Named cell (Products.tsx pattern): single-element render. The observed raw price
 // (LTR evidence) when present, else an explicit unavailable node — never blanked.
