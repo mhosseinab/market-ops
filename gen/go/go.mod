@@ -3,7 +3,7 @@ module github.com/mhosseinab/market-ops/gen/go
 go 1.26
 
 require (
-	github.com/getkin/kin-openapi v0.142.0
+	github.com/getkin/kin-openapi v0.144.0
 	github.com/oapi-codegen/runtime v1.6.0
 )
 
