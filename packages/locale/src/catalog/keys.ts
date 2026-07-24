@@ -443,6 +443,7 @@ export const MESSAGE_KEYS = [
   "cost.confirm",
   "cost.duplicateBlock",
   "cost.committed",
+  "cost.file.error",
   "cost.preview.error",
   "cost.commit.error",
   "cost.single.error",

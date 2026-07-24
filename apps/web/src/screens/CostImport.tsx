@@ -111,6 +111,10 @@ export function CostImport() {
   // textarea edit) advances it; an async file read binds to the generation live
   // at pick time so a superseded read can be dropped on resolve (see onFile).
   const sourceGeneration = useRef(0);
+  // A chosen file that could NOT be read. The file control names a file that
+  // never became the source, so the failure must be visible rather than silent
+  // (design/STATE_MATRIX.md error state); it clears on the next source change.
+  const [fileUnreadable, setFileUnreadable] = useState(false);
   const preview = useCostImportPreview();
   const commit = useCostImportCommit();
 
@@ -124,16 +128,27 @@ export function CostImport() {
   // result bound to it): the previewed batch id no longer matches what would be
   // committed, so it must not stay committable (CST-001; §4.6 — a stale card is
   // never left clickable). Resetting the mutations removes the preview section
-  // and its commit control until a fresh preview is requested.
+  // and its commit control until a fresh preview is requested. Callers invoke
+  // this the INSTANT the seller designates a new source — a file pick invalidates
+  // before its asynchronous read resolves, not after.
+  function invalidatePreview() {
+    setFileUnreadable(false);
+    preview.reset();
+    commit.reset();
+  }
+
+  function applySource(text: string, name?: string) {
+    setCsv(text);
+    setFilename(name);
+    invalidatePreview();
+  }
+
   function changeSource(text: string, name?: string) {
     // A new authoritative source: advance the generation so any file read still
     // in flight (or a slower read from an earlier pick) is superseded and will be
     // discarded when it resolves.
     sourceGeneration.current += 1;
-    setCsv(text);
-    setFilename(name);
-    preview.reset();
-    commit.reset();
+    applySource(text, name);
   }
 
   async function onFile(file: File) {
@@ -143,9 +158,27 @@ export function CostImport() {
     // overwrite the newer parse (fail closed; import-boundary correctness, #79).
     sourceGeneration.current += 1;
     const generation = sourceGeneration.current;
-    const text = await file.text();
+    // Invalidate NOW, at pick time — not when the read resolves. During the read
+    // the file control already names the new file, so leaving the previous
+    // batch's confirm control live would let an obsolete financial batch commit
+    // against a source the seller has already replaced (CST-001; §4.6 — a stale
+    // card is never left clickable, #79).
+    invalidatePreview();
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      // A superseded read's failure is irrelevant — a newer selection already
+      // owns the source. Only the current selection reports its own failure.
+      if (generation !== sourceGeneration.current) return;
+      // Fail closed and VISIBLE: the unread file never becomes the source (the
+      // previous text keeps its own filename, so the preview audit still follows
+      // the source actually being sent) and the preview stays invalidated.
+      setFileUnreadable(true);
+      return;
+    }
     if (generation !== sourceGeneration.current) return;
-    changeSource(text, file.name);
+    applySource(text, file.name);
   }
 
   const columns: readonly Column<CostImportRow>[] = [
@@ -184,6 +217,14 @@ export function CostImport() {
             }}
           />
         </label>
+        {/* The chosen file could not be read: no retry control, because a file
+            input cannot be re-read without a fresh pick — the stated recovery is
+            to choose the file again (never a dead control). */}
+        {fileUnreadable ? (
+          <p className="blocker-note" role="alert" data-testid="cost-file-error">
+            {t("cost.file.error")}
+          </p>
+        ) : null}
         <textarea
           className="field__input ltr"
           data-testid="cost-csv"
