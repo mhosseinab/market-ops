@@ -39,12 +39,19 @@ The validator reads two structures from the ledger and fails closed:
      - ``release-gate``          belongs to a later human-gated step (S34/S35),
                                  not part of an already-``passed`` step's Verify.
 
-Two failure classes, both fail closed:
-  * a ``passed`` step carrying a ``pending-mandatory`` gate (the issue #19 bug);
+Three failure classes, all fail closed:
+  * a ``passed`` step carrying a ``pending-mandatory`` gate (the issue #19 bug),
+    matched on the CANONICAL status token so a respelling (``Passed``) cannot
+    silently disable the rule;
   * ledger/registry drift: an unknown gate state, a gate for a step absent from
     the status table, or a ``- S<N>:`` bullet in the human "Deferred verification
     gate" section with no corresponding ``GATE`` row (an unclassified deferral
-    could otherwise hide an unverified ``passed``).
+    could otherwise hide an unverified ``passed``);
+  * **absent** evidence: a step transitioning to ``passed`` OUT of an
+    outstanding-verification state (``verify-pending``/``blocked``) with no
+    ``satisfied`` GATE row. Evidence that is missing is not evidence that is
+    good — without this, the rule above was bypassable by simply DELETING the
+    contradicting gate row (see ``testdata/erased_evidence.md``).
 
 3. The machine-checked **transition log**, a comment block (issue #20)::
 
@@ -93,6 +100,16 @@ KNOWN_STATES = {
 }
 # Only these states forbid a `passed` status.
 BLOCKS_PASSED = {"pending-mandatory"}
+# Gate states that count as POSITIVE evidence that a step's mandatory
+# verification actually completed successfully. `deferred-progress-gate` and
+# `release-gate` deliberately do NOT count: they classify an item as being
+# outside the step's mandatory Verify, which is a reason the step never had an
+# outstanding mandatory gate — not proof that a gated verification ran.
+SATISFYING_GATES = {"satisfied"}
+# States that mean "this step's mandatory verification is still outstanding".
+# Leaving one of them for `passed` is exactly the moment the plan's
+# verification-and-unlock rule bites, so it requires positive evidence.
+OUTSTANDING_VERIFICATION_STATES = {"verify_pending", "blocked"}
 
 STEP_RE = re.compile(r"^S\d+$")
 GATE_RE = re.compile(r"^GATE\s+(S\d+)\s*\|\s*([A-Za-z-]+)\s*\|")
@@ -324,6 +341,49 @@ def validate_parity(
     return violations
 
 
+def validate_unlock_evidence(
+    gates: dict[str, list[tuple[str, str]]],
+    transitions: list[tuple[str, str, str]],
+) -> list[str]:
+    """Require POSITIVE evidence for a step that leaves an outstanding state.
+
+    The first remediation of issue #19 rejected `passed` only when a
+    contradicting ``pending-mandatory`` GATE row was PRESENT. That makes the
+    enforcement bypassable by DELETION: erase the gate row and the deferred
+    bullet, flip the status, and the record validates clean — mandatory
+    verification evidence is then ABSENT rather than negative, which the issue
+    names as an equally-rejectable condition.
+
+    The transition log is the deletion-resistant anchor. Parity already requires
+    a producing transition for every non-initial table state, so a step cannot
+    reach `passed` out of `verify-pending`/`blocked` without leaving a TXN row
+    behind. That row is the trigger: it demands a `satisfied` gate carrying the
+    evidence that the previously-outstanding mandatory verification actually ran.
+
+    Keyed on the transition rather than on step identity, so it applies
+    consistently to ALL steps, present and future. A step that went straight
+    `pending -> passed` never declared an outstanding mandatory gate and is
+    governed by the existing Rule 1 / Rule 2 pair instead.
+    """
+    violations: list[str] = []
+    for step, prev, new in transitions:
+        if new != "passed" or prev not in OUTSTANDING_VERIFICATION_STATES:
+            continue
+        entries = gates.get(step, [])
+        if not any(state in SATISFYING_GATES for state, _ in entries):
+            present = ", ".join(sorted({state for state, _ in entries})) or "none"
+            violations.append(
+                f"{step}: transition '{prev} -> passed' claims a previously "
+                f"outstanding MANDATORY verification is now complete, but the "
+                f"verification-gate registry holds no `satisfied` GATE row for "
+                f"{step} (gate rows present: {present}). Mandatory verification "
+                f"evidence is ABSENT, which never satisfies a dependency gate — "
+                f"record the executed checks as `GATE {step} | satisfied | "
+                f"<evidence>` or keep {step} at '{prev}'."
+            )
+    return violations
+
+
 def validate(text: str) -> list[str]:
     """Return a list of violation strings (empty == valid)."""
     violations: list[str] = []
@@ -344,7 +404,10 @@ def validate(text: str) -> list[str]:
                 f"{step}: gate declared but step is absent from the status table."
             )
             continue
-        status = statuses[step]
+        # Spelling is data, not identity: `Passed`/`passed` are one state, so the
+        # rule must key on the canonical token the parity replay already uses.
+        # Comparing the raw cell let a one-character edit silently disable this.
+        status = canon_state(statuses[step])
         for state, note in entries:
             if state in BLOCKS_PASSED and status == "passed":
                 violations.append(
@@ -366,6 +429,10 @@ def validate(text: str) -> list[str]:
     # Rule 3 — transition-log ⇄ status-table parity (issue #20). The replay
     # derives per-step state from the ordered log and must match the table.
     violations.extend(validate_parity(statuses, transitions))
+
+    # Rule 4 — leaving an outstanding-verification state for `passed` requires
+    # POSITIVE evidence, so erasing a gate row cannot launder an unverified step.
+    violations.extend(validate_unlock_evidence(gates, transitions))
 
     return violations
 

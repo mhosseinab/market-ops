@@ -30,6 +30,11 @@ PARITY_UNLOGGED="$HERE/testdata/parity_unlogged.md"
 PARITY_ILLEGAL="$HERE/testdata/parity_illegal.md"
 PARITY_DIVERGENCE="$HERE/testdata/parity_divergence.md"
 PARITY_REOPENED="$HERE/testdata/parity_reopened.md"
+# Issue #19 second remediation: `passed` claimed with ABSENT evidence, and the
+# casing bypass of the gate rule.
+ERASED_EVIDENCE="$HERE/testdata/erased_evidence.md"
+CASE_VARIANT="$HERE/testdata/case_variant.md"
+GATE_SATISFIED="$HERE/testdata/gate_satisfied.md"
 LEDGER="$REPO_ROOT/docs/implementation/dk-p0-progress.md"
 
 fail=0
@@ -84,7 +89,31 @@ expect_exit "accepts parity-holds fixture" 0 \
 expect_exit "accepts reopened/regressed cycles" 0 \
   python3 "$VALIDATOR" --file "$PARITY_REOPENED"
 
-# 8. The real, now-reconciled orchestration ledger MUST be accepted (parity
+# --- Issue #19 (second remediation): evidence must be PRESENT, not just -------
+# --- not-negative. The first remediation rejected `passed` only when a
+# --- `pending-mandatory` GATE row was present to contradict it, so the
+# --- enforcement could be bypassed by DELETING the evidence, or by respelling
+# --- the status token. Both are the same defect class the issue names.
+
+# 9. NEGATIVE: a step leaving an outstanding-verification state (`verify-pending`
+#    / `blocked`) for `passed` with its GATE row and deferred bullet DELETED —
+#    i.e. mandatory verification evidence simply ABSENT — MUST be rejected.
+expect_exit "rejects passed with ABSENT evidence (gate row erased)" 1 \
+  python3 "$VALIDATOR" --file "$ERASED_EVIDENCE"
+
+# 10. NEGATIVE: the gate rule must key on the canonical status, not the raw
+#     string — `Passed` is the same state as `passed` and MUST be rejected
+#     identically when a pending-mandatory gate contradicts it.
+expect_exit "rejects casing bypass (Passed + pending-mandatory)" 1 \
+  python3 "$VALIDATOR" --file "$CASE_VARIANT"
+
+# 11. POSITIVE (anti-over-rejection): the legitimate exit from an outstanding
+#     verification state — the gate flipped to `satisfied` with its evidence —
+#     MUST be accepted. This is the shape S2 takes once its runtime Verify runs.
+expect_exit "accepts verify-pending -> passed WITH a satisfied gate" 0 \
+  python3 "$VALIDATOR" --file "$GATE_SATISFIED"
+
+# 12. The real, now-reconciled orchestration ledger MUST be accepted (parity
 #    holds: every non-initial table state has a producing, legal transition).
 expect_exit "accepts the real reconciled ledger" 0 \
   python3 "$VALIDATOR" --file "$LEDGER"
