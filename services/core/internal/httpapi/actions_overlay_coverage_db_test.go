@@ -49,16 +49,49 @@ type overlayGapFixture struct {
 	cards []db.ApprovalCard
 }
 
+// unlapsableApprovalHorizon is how far into the future an overlay fixture's
+// recommend-only approval instant is dated so the fixture is UN-LAPSABLE by any
+// concurrent reconciler pass, and the projection assertion can stay a STRICT
+// equality against the durable row.
+//
+// recommend_only_actions state is GLOBALLY mutable during a test run: the EXE-005
+// matcher batch (ListAwaitingRecommendOnlyActions) is account-unscoped, so another
+// package's reconciler test running RunOnce with a clock past the window (e.g.
+// internal/execution jobs_db_test.go / unify_recommend_only_db_test.go at
+// ApprovedAt+25h) sweeps EVERY awaiting action in the shared database, this
+// fixture's included, and can land between the projection read and the durable
+// read-back.
+//
+// The lapse deadline is derived by execution.Match from approved_at + the 24h match
+// window CONSTANT — NOT from the window_expires_at column (which is stored evidence
+// the matcher does not read). So the un-lapsable knob is approved_at, not
+// window_expires_at: dating the approval far enough ahead puts the derived deadline
+// beyond any concurrent +25h clock, leaving the row awaiting for the whole run.
+// window_expires_at stays the honest approved_at+24h so the stored row is exactly
+// what production would write.
+const unlapsableApprovalHorizon = 30 * 24 * time.Hour
+
 // seedOverlayGapAccount seeds org → account → product → variant → recommendation
 // and then n single-version approval cards, each driven to Approved through the
 // REAL §8.4 state machine and tracked recommend-only through the SAME production
 // query the execution service uses (InsertRecommendOnlyAction, which leaves the
-// card Approved).
+// card Approved). Its approval instants are un-lapsable (see
+// unlapsableApprovalHorizon).
 //
 // approved_at runs OPPOSITE to created_at: the FIRST card created gets the NEWEST
 // approved_at. Everything is produced by production queries — no fabricated row
 // the SQL could not produce.
 func seedOverlayGapAccount(t *testing.T, pool *pgxpool.Pool, q *db.Queries, n int) overlayGapFixture {
+	t.Helper()
+	return seedOverlayGapAccountApprovedAt(t, pool, q, n, time.Now().UTC().Add(unlapsableApprovalHorizon))
+}
+
+// seedOverlayGapAccountApprovedAt is seedOverlayGapAccount with an explicit
+// approval instant for the newest recommend-only row, so a fixture can also be
+// seeded with an ALREADY-EXPIRED window (the deliberate-lapse projection fixture).
+func seedOverlayGapAccountApprovedAt(
+	t *testing.T, pool *pgxpool.Pool, q *db.Queries, n int, approvedBase time.Time,
+) overlayGapFixture {
 	t.Helper()
 	ctx := context.Background()
 
@@ -105,7 +138,6 @@ func seedOverlayGapAccount(t *testing.T, pool *pgxpool.Pool, q *db.Queries, n in
 	}
 
 	rec := recommendation.NewService(pool)
-	approvedBase := time.Now().UTC()
 	cards := make([]db.ApprovalCard, 0, n)
 	for i := 0; i < n; i++ {
 		actionID := uuid.New()
@@ -213,17 +245,15 @@ func printPtr[T any](p *T) any {
 //     recommend-only action never makes a write claim — never-cut);
 //   - canonicalState is exactly the canonical mapping of the projected
 //     recommend-only state (no invented or defaulted canonical state);
-//   - the projected recommend-only state equals the durable state — or is
-//     awaiting while the durable row has since become terminal.
+//   - the projected recommend-only state equals the durable state EXACTLY.
 //
-// The last clause exists because recommend_only_actions state is GLOBALLY mutable
-// during a test run: the EXE-005 reconciler batch (ListAwaitingRecommendOnlyActions)
-// is account-unscoped, so a reconciler pass in ANOTHER package's test — running
-// concurrently against the same database, with a clock past the 24h window — lapses
-// every awaiting action, including this fixture's. Recommend-only transitions are
-// one-way (awaiting → externally_executed | lapsed), so "durable row still awaiting
-// ⇒ the projection must have said awaiting" stays a sound, strict assertion, while
-// a concurrent resolution can no longer masquerade as a projection bug.
+// The equality is STRICT (no "an awaiting reading is also acceptable" escape): a
+// relaxed clause would pass a hypothetical projection that hardcoded
+// awaiting_external_execution, i.e. exactly the false "still tracking" claim this
+// test exists to prevent (EXE-005, §4.6). Concurrent-resolution flake is removed at
+// the SOURCE instead — the fixtures' approval instants are un-lapsable
+// (unlapsableApprovalHorizon), so no foreign reconciler pass can move the durable
+// row mid-test, and a divergence is therefore always a real projection bug.
 func assertRecommendOnlyOverlay(t *testing.T, q *db.Queries, item gateway.ActionSummary, actionID uuid.UUID) {
 	t.Helper()
 	if item.ExecutionMode == nil || *item.ExecutionMode != gateway.ExecutionMode(execution.ModeRecommendOnly) {
@@ -243,9 +273,8 @@ func assertRecommendOnlyOverlay(t *testing.T, q *db.Queries, item gateway.Action
 		t.Fatalf("read durable recommend-only row for action %s: %v", actionID, err)
 	}
 	durable := execution.RecommendOnlyState(row.State)
-	if got != durable && got != execution.StateAwaitingExternalExecution {
-		t.Fatalf("card %s recommendOnlyState = %q; durable row is %q (only a pre-resolution %q reading is also acceptable)",
-			item.Id, got, durable, execution.StateAwaitingExternalExecution)
+	if got != durable {
+		t.Fatalf("card %s recommendOnlyState = %q; durable row is %q", item.Id, got, durable)
 	}
 	if item.CanonicalState == nil ||
 		*item.CanonicalState != gateway.ActionCanonicalState(execution.Canonical(execution.ModeRecommendOnly, string(got))) {
@@ -292,6 +321,58 @@ func TestListActions_OverlayCoversEveryReturnedPageRow(t *testing.T) {
 	newest := f.cards[len(f.cards)-1].ID
 	if items[0].Id != newest {
 		t.Fatalf("page[0] = %s; want the newest card %s (page ordering must not change)", items[0].Id, newest)
+	}
+}
+
+// TestListActions_ProjectsTerminalLapsedRecommendOnlyState proves the overlay is
+// faithful for a TERMINAL recommend-only state, not only for awaiting: an action
+// the EXE-005 reconciler LAPSED is projected as lapsed / canonical lapsed at the
+// HTTP boundary, with NO write externalState.
+//
+// Without this fixture every httpapi projection fixture is awaiting-only, so a
+// projection that hardcoded awaiting_external_execution would satisfy them all
+// while telling the queue a closed action is still tracking — a false "still
+// pending" claim (EXE-005; §4.6 no false execution claim).
+//
+// The lapse is produced by the PRODUCTION reconciler (RunOnce), not by a hand-written
+// state row. The fixture is dated with an ALREADY-EXPIRED window and the reconciler
+// runs on its DEFAULT real clock, so the pass lapses this fixture deliberately while
+// leaving normally-dated awaiting rows elsewhere in the shared database untouched.
+func TestListActions_ProjectsTerminalLapsedRecommendOnlyState(t *testing.T) {
+	pool, q := newIntegrationPool(t)
+	// Approved 25h ago: the derived 24h match deadline has already passed at the
+	// reconciler's real-now clock.
+	f := seedOverlayGapAccountApprovedAt(t, pool, q, 1, time.Now().UTC().Add(-25*time.Hour))
+	srv := overlayGapServer(t, pool, f, "tok-owner")
+	card := f.cards[0]
+
+	if _, err := execution.NewRecommendOnlyReconciler(pool, nil).RunOnce(context.Background()); err != nil {
+		t.Fatalf("reconciler RunOnce: %v", err)
+	}
+	durable, err := q.GetRecommendOnlyAction(context.Background(), card.ActionID)
+	if err != nil {
+		t.Fatalf("read durable recommend-only row: %v", err)
+	}
+	if durable.State != string(execution.StateLapsed) {
+		t.Fatalf("fixture setup: durable state = %q; want lapsed (the deliberate terminal state)", durable.State)
+	}
+
+	items := listActionsWithLimit(t, srv, "tok-owner", f.account.String(), 50).Items
+	var got *gateway.ActionSummary
+	for i := range items {
+		if items[i].Id == card.ID {
+			got = &items[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("lapsed card %s absent from the actions page (%d rows)", card.ID, len(items))
+	}
+	assertRecommendOnlyOverlay(t, q, *got, card.ActionID)
+	if *got.RecommendOnlyState != gateway.RecommendOnlyState(execution.StateLapsed) {
+		t.Fatalf("card %s recommendOnlyState = %q; want lapsed", card.ID, *got.RecommendOnlyState)
+	}
+	if *got.CanonicalState != gateway.ActionCanonicalState(execution.CanonicalLapsed) {
+		t.Fatalf("card %s canonicalState = %q; want %q", card.ID, *got.CanonicalState, execution.CanonicalLapsed)
 	}
 }
 
