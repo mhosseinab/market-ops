@@ -318,6 +318,45 @@ func TestListActions_ForeignAccountIsUniformNotFound(t *testing.T) {
 	}
 }
 
+// TestListActions_FailsClosedWithoutExecutionPlane is the observability/
+// fail-closed negative for the widened projection (§4.6: no silent fallback).
+//
+// The list now contains execution-bearing card versions whose mode and canonical
+// state come ENTIRELY from the execution overlay. With the execution plane
+// unwired, every executed row would render with no overlay — indistinguishable
+// from a pre-execution card, i.e. a terminal executed action silently displayed
+// as "not executed yet". That is exactly the misleading degradation the never-cut
+// rules forbid, so the route fails closed with the same structured 503 every other
+// execution-dependent route returns, rather than serving a half-truthful queue.
+func TestListActions_FailsClosedWithoutExecutionPlane(t *testing.T) {
+	pool, q := newIntegrationPool(t)
+	f := seedActionsProjection(t, pool, q)
+
+	fa := newFakeAuth()
+	fa.principals["tok-owner"] = auth.Principal{
+		UserID: uuid.New(), OrganizationID: f.org, Email: "owner@x.io",
+		Role: perm.RoleOwner, ExpiresAt: time.Now().Add(time.Hour).UTC(),
+	}
+	// Approval wired, execution DELIBERATELY absent.
+	srv := NewServer(":0", BuildInfo{}, testLogger(),
+		WithAuth(fa), WithApproval(recommendation.NewService(pool)), WithCookieSecure(false))
+
+	req := httptest.NewRequest(http.MethodGet, "/actions?marketplaceAccountId="+f.account.String(), nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "tok-owner"})
+	res := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusServiceUnavailable {
+		t.Fatalf("unwired execution plane: status = %d, want 503 (fail closed) — a queue that cannot label execution state must not be served, body = %s",
+			res.Code, res.Body.String())
+	}
+	// NEGATIVE: no action rows are disclosed on the fail-closed path.
+	var list gateway.ActionList
+	if err := json.Unmarshal(res.Body.Bytes(), &list); err == nil && len(list.Items) > 0 {
+		t.Fatalf("fail-closed response leaked %d action rows", len(list.Items))
+	}
+}
+
 func summaryIDs(items []gateway.ActionSummary) []uuid.UUID {
 	out := make([]uuid.UUID, 0, len(items))
 	for _, i := range items {

@@ -170,6 +170,16 @@ func (s *gatewayServer) ListActions(
 	if s.approval == nil {
 		return gateway.ListActionsdefaultJSONResponse{StatusCode: 503, Body: approvalUnavailableErr()}, nil
 	}
+	// FAIL CLOSED on an unwired execution plane (§4.6: no silent fallback). Since
+	// the projection includes execution-bearing card versions (PD-4 rule 1), a row's
+	// mode and canonical state come ENTIRELY from the execution overlay — without it
+	// a TERMINAL executed action would render exactly like a pre-execution card, i.e.
+	// a queue that silently claims nothing has been executed. A half-truthful queue
+	// is worse than none, so this returns the SAME structured 503 every other
+	// execution-dependent route returns rather than degrading in place.
+	if s.execution == nil {
+		return gateway.ListActionsdefaultJSONResponse{StatusCode: 503, Body: executionUnavailableErr()}, nil
+	}
 	var stateFilter string
 	if req.Params.State != nil {
 		stateFilter = string(*req.Params.State)
@@ -188,9 +198,7 @@ func (s *gatewayServer) ListActions(
 	}
 	// Overlay the execution mode + canonical state per action (issue #106) so the
 	// list groups write AND recommend-only modes by canonical state without deep-
-	// link-only discovery. The overlay is best-effort context: when execution is
-	// unconfigured the list still returns the approval cards (fail open on the read
-	// enrichment, never on the authoritative card state).
+	// link-only discovery.
 	//
 	// The overlay is keyed by the EXACT (actionId, cardId) pair, never by action id
 	// alone. An action lineage may hold SEVERAL card versions — the domain mints a
@@ -200,22 +208,21 @@ func (s *gatewayServer) ListActions(
 	// pre-execution Draft: a false "already executed" claim on a card that has
 	// written nothing. A pre-execution card version therefore carries NO overlay
 	// fields at all.
-	overlay := map[uuid.UUID]execution.UnifiedAction{}
-	if s.execution != nil {
-		// Scope the overlay to the caller's own account (issue #102): the account id
-		// was already validated by ListActionsForOrg above, so a foreign id can only
-		// surface here as ErrAccountNotFound — mapped to the same uniform not-found,
-		// never another tenant's projection or a 500.
-		unified, err := s.execution.ListUnifiedByAccountForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, limit)
-		if err != nil {
-			if errors.Is(err, execution.ErrAccountNotFound) {
-				return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
-			}
-			return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
+	//
+	// Scope the overlay to the caller's own account (issue #102): the account id was
+	// already validated by ListActionsForOrg above, so a foreign id can only surface
+	// here as ErrAccountNotFound — mapped to the same uniform not-found, never
+	// another tenant's projection or a 500.
+	unified, err := s.execution.ListUnifiedByAccountForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, limit)
+	if err != nil {
+		if errors.Is(err, execution.ErrAccountNotFound) {
+			return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
 		}
-		for _, u := range unified {
-			overlay[u.CardID] = u
-		}
+		return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
+	}
+	overlay := make(map[uuid.UUID]execution.UnifiedAction, len(unified))
+	for _, u := range unified {
+		overlay[u.CardID] = u
 	}
 	items := make([]gateway.ActionSummary, 0, len(rows))
 	for _, r := range rows {
