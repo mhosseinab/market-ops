@@ -44,10 +44,24 @@ type ExecutionRunners struct {
 	// day per account, generated from the Today ranking). A nil runner registers a
 	// no-op worker (fail closed).
 	BriefingGenerate RunOnceFunc
-	// DigestGenerate is the NOT-001 daily email-digest fan-out (once per business
-	// day per account, batching the day's non-bypass notifications). A nil runner
-	// registers a no-op worker (fail closed).
+	// DigestGenerate is the NOT-001 daily email-digest FAN-OUT (issue #124): it sends
+	// nothing itself — it records one durable (account, business_day) delivery row per
+	// account and enqueues a per-account job for it, and it re-enqueues every
+	// nonterminal row of any historical day (owned recovery). A nil runner registers a
+	// no-op worker (fail closed).
 	DigestGenerate RunOnceFunc
+	// DigestAccount is the durable per-(account, business_day) digest consumer (issue
+	// #124). It drives ONE account's digest for ONE pinned business day, with its own
+	// retry budget and dead-letter, on its own bounded queue — so one tenant's
+	// unsendable recipient, unknown locale, render error, or SMTP failure can never
+	// block, delay, or abort an independent tenant's scheduled delivery. A nil runner
+	// fails CLOSED (the worker retries rather than silently dropping a committed
+	// delivery row); production wires it whenever a mail sender is configured.
+	DigestAccount DigestAccountFunc
+	// DigestAccountTimeout bounds one per-account attempt. Zero takes the default; any
+	// value is clamped into [DigestAccountMinTimeout, DigestAccountMaxTimeout] so the
+	// advertised bounded fan-out cannot be configured away.
+	DigestAccountTimeout time.Duration
 	// MarketEventProduce is the EVT-001..005 runtime producer pass: it turns
 	// committed observation/catalog/margin transitions into detector inputs and
 	// records their candidates idempotently, so a running core actually produces
@@ -114,6 +128,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewDigestWorker(runners.DigestGenerate, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register digest worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewDigestAccountWorker(runners.DigestAccount, runners.DigestAccountTimeout, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register digest-account worker: %w", err)
 	}
 	if err := river.AddWorkerSafely(workers, NewMarketEventProduceWorker(runners.MarketEventProduce, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register market-event producer worker: %w", err)
@@ -196,6 +213,12 @@ func periodicJobs() []*river.PeriodicJob {
 	}
 }
 
+// DigestAccountMaxConcurrency bounds concurrent per-account digest deliveries. It is
+// deliberately smaller than the default queue's capacity: the digest is the lowest
+// priority in the load-shedding order, and its work is I/O-bound on an external relay.
+// Exported so a test can assert the bound is actually enforced rather than assumed.
+const DigestAccountMaxConcurrency = 3
+
 // NewClient constructs the River client over a pgx pool with the default queue
 // enabled. A nil workers registry yields an insert-only client (no queues), for
 // callers that enqueue but do not process. When workers are present the periodic
@@ -206,6 +229,14 @@ func NewClient(pool *pgxpool.Pool, workers *river.Workers, logger *slog.Logger) 
 		cfg.Workers = workers
 		cfg.Queues = map[string]river.QueueConfig{
 			river.QueueDefault: {MaxWorkers: 5},
+			// Per-account digest delivery runs on its OWN bounded queue (issue #124).
+			// The digest is advisory UI in the load-shedding order (approval path >
+			// audit append > reconciliation > observations > advisory UI), so it must
+			// never be able to consume capacity the approval, audit-adjacent, and
+			// urgent-email paths depend on. Isolating the queue caps the blast radius of
+			// poison accounts to these slots; each attempt additionally carries a bounded
+			// work deadline, so even more poison accounts than slots cannot hold them.
+			QueueDigestAccount: {MaxWorkers: DigestAccountMaxConcurrency},
 		}
 		cfg.PeriodicJobs = periodicJobs()
 	}

@@ -151,3 +151,119 @@ RETURNING *;
 SELECT * FROM notification_digest_items
 WHERE digest_id = $1
 ORDER BY id;
+
+-- --- Per-(account, business_day) digest delivery-state projection (issue #124) ------
+--
+-- The DURABLE per-account/day work record that isolates one tenant's digest failure
+-- from every other tenant. (marketplace_account_id, business_day) is the stable
+-- idempotency key; the state machine below is the ONLY mutable surface (the digest
+-- header + items stay append-only). Every transition is GUARDED on its source state,
+-- so a duplicate/concurrent drive matches nothing and is an idempotent no-op — a
+-- retry or a recovery re-enqueue can never resend a digest.
+
+-- name: EnsureDigestDelivery :one
+-- Opens the durable delivery row for (account, business_day). ON CONFLICT DO NOTHING
+-- on the idempotency key: a re-discovery inserts nothing and returns no row (the
+-- caller treats pgx.ErrNoRows as "already tracked" and reads the existing row). The
+-- caller enqueues the per-account job in the SAME transaction (transactional enqueue),
+-- so a committed work record always has a driving job and a rollback discards both.
+INSERT INTO notification_digest_deliveries (marketplace_account_id, business_day)
+VALUES ($1, $2)
+ON CONFLICT (marketplace_account_id, business_day) DO NOTHING
+RETURNING *;
+
+-- name: GetDigestDelivery :one
+-- Reads the durable delivery row so the worker can make its idempotent decision (a
+-- terminal state → no-op, no duplicate digest).
+SELECT * FROM notification_digest_deliveries
+WHERE marketplace_account_id = $1 AND business_day = $2;
+
+-- name: MarkDigestDeliverySending :one
+-- pending → sending: the send is about to be INITIATED and its outcome becomes
+-- unknown until the relay answers. Committed BEFORE the SMTP conversation starts, so a
+-- crash mid-send leaves the ambiguous marker instead of a resend hazard. Guarded on
+-- 'pending' so a concurrent drive claims it at most once.
+UPDATE notification_digest_deliveries
+SET delivery_state = 'sending', attempts = attempts + 1, updated_at = $3, last_reason = NULL, last_status_code = 0
+WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'pending'
+RETURNING *;
+
+-- name: MarkDigestDeliveryDelivered :one
+-- sending → delivered: the relay ACCEPTED the message and this write landed. The sole
+-- success transition; guarded on 'sending' so a re-drive after delivery matches nothing
+-- (idempotent no-op — zero resend).
+UPDATE notification_digest_deliveries
+SET delivery_state = 'delivered', updated_at = $3, finalized_at = $3, last_reason = NULL, last_status_code = 0
+WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'sending'
+RETURNING *;
+
+-- name: ReleaseDigestDeliveryToPending :one
+-- sending → pending: the relay DEFINITIVELY did not accept the message (a typed SMTP
+-- response, or a failure before any DATA was written), so a retry cannot duplicate it.
+-- Releasing the ambiguous marker is only ever driven by a definitive non-acceptance —
+-- an UNKNOWN outcome stays 'sending' and is never released. last_reason is a bounded
+-- machine token; last_status_code is the numeric relay code (0 when none).
+UPDATE notification_digest_deliveries
+SET delivery_state = 'pending', updated_at = $3, last_reason = $4, last_status_code = $5
+WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'sending'
+RETURNING *;
+
+-- name: MarkDigestDeliverySkipped :one
+-- pending → skipped: the day had nothing sendable (no eligible notification, or every
+-- eligible row was isolated by the closed message-schema check). Terminal and OBSERVED
+-- — not a failure, and never a silent drop.
+UPDATE notification_digest_deliveries
+SET delivery_state = 'skipped', updated_at = $3, finalized_at = $3, last_reason = $4, last_status_code = 0
+WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'pending'
+RETURNING *;
+
+-- name: MarkDigestDeliveryDeadLetter :one
+-- pending → dead_letter: a PERMANENT failure that definitively did NOT deliver
+-- (unsendable target, unsupported locale, render error, permanent relay rejection, or
+-- exhausted attempts before any send). An OBSERVABLE terminal state; it does NOT mark
+-- the digest delivered (no false "delivered"). Guarded on 'pending'.
+UPDATE notification_digest_deliveries
+SET delivery_state = 'dead_letter', updated_at = $3, finalized_at = $3, last_reason = $4, last_status_code = $5
+WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'pending'
+RETURNING *;
+
+-- name: MarkDigestDeliveryUnconfirmed :one
+-- sending → unconfirmed: TERMINAL AMBIGUOUS. The send was initiated but acceptance
+-- could never be established (connection lost after DATA, process crash, or exhausted
+-- attempts while still ambiguous). It does NOT claim delivery, and the row is never
+-- re-driven: zero resend outranks a speculative re-send repair (idempotency is
+-- never-cut; a duplicate delivery must never create a duplicate product event).
+UPDATE notification_digest_deliveries
+SET delivery_state = 'unconfirmed', updated_at = $3, finalized_at = $3, last_reason = $4, last_status_code = $5
+WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'sending'
+RETURNING *;
+
+-- name: BumpDigestDeliveryAttempt :one
+-- Records a TRANSIENT failed attempt while the row stays pending (attempts + bounded
+-- reason), so a retry is observable without a state transition. Guarded on 'pending'.
+UPDATE notification_digest_deliveries
+SET attempts = attempts + 1, updated_at = $3, last_reason = $4, last_status_code = $5
+WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'pending'
+RETURNING *;
+
+-- name: ListNonterminalDigestDeliveries :many
+-- The OWNED RECOVERY source (issue #124 / PD-4): every NONTERMINAL (account, day)
+-- delivery row, of ANY historical business day, rediscovered directly from this table
+-- and re-enqueued by the fan-out pass. It deliberately consults NO River state: River's
+-- completion/snooze write and the terminal projection write share the same PostgreSQL
+-- dependency, so a correlated outage can leave a job `running` at its final attempt
+-- (the rescuer then DISCARDS it) while the row is still nonterminal. Recovery anchored
+-- here survives that window, and it survives day advancement because business_day is
+-- pinned on the row rather than recomputed.
+--
+-- A 'sending' row is only rediscovered once it is STALE (updated_at older than the
+-- cutoff), so a live in-flight attempt is never raced by a recovery re-enqueue. The
+-- LIMIT bounds the pass (§17 bounded reads / backpressure: the recovery queue never
+-- grows unbounded in one tick). Oldest work first.
+SELECT * FROM notification_digest_deliveries
+WHERE (
+        delivery_state = 'pending'
+        OR (delivery_state = 'sending' AND updated_at < sqlc.arg(stale_before)::timestamptz)
+      )
+ORDER BY business_day, updated_at, id
+LIMIT sqlc.arg(row_limit);

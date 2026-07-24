@@ -56,6 +56,9 @@ type Querier interface {
 	// UNIQUE(window_id)).
 	AppendOutcomeResult(ctx context.Context, arg AppendOutcomeResultParams) (OutcomeResult, error)
 	// Records a TRANSIENT failed attempt while the row stays pending (attempts + bounded
+	// reason), so a retry is observable without a state transition. Guarded on 'pending'.
+	BumpDigestDeliveryAttempt(ctx context.Context, arg BumpDigestDeliveryAttemptParams) (NotificationDigestDelivery, error)
+	// Records a TRANSIENT failed attempt while the row stays pending (attempts + bounded
 	// last_error), so a retry is observable without a state transition. Guarded by
 	// delivery_state = 'pending'.
 	BumpUrgentOutboxAttempt(ctx context.Context, arg BumpUrgentOutboxAttemptParams) (NotificationUrgentOutbox, error)
@@ -292,6 +295,20 @@ type Querier interface {
 	EngageGlobalKillSwitch(ctx context.Context, arg EngageGlobalKillSwitchParams) error
 	// Stop Route C for one target. Idempotent per target.
 	EngageTargetKillSwitch(ctx context.Context, arg EngageTargetKillSwitchParams) error
+	// --- Per-(account, business_day) digest delivery-state projection (issue #124) ------
+	//
+	// The DURABLE per-account/day work record that isolates one tenant's digest failure
+	// from every other tenant. (marketplace_account_id, business_day) is the stable
+	// idempotency key; the state machine below is the ONLY mutable surface (the digest
+	// header + items stay append-only). Every transition is GUARDED on its source state,
+	// so a duplicate/concurrent drive matches nothing and is an idempotent no-op — a
+	// retry or a recovery re-enqueue can never resend a digest.
+	// Opens the durable delivery row for (account, business_day). ON CONFLICT DO NOTHING
+	// on the idempotency key: a re-discovery inserts nothing and returns no row (the
+	// caller treats pgx.ErrNoRows as "already tracked" and reads the existing row). The
+	// caller enqueues the per-account job in the SAME transaction (transactional enqueue),
+	// so a committed work record always has a driving job and a rollback discards both.
+	EnsureDigestDelivery(ctx context.Context, arg EnsureDigestDeliveryParams) (NotificationDigestDelivery, error)
 	// Lifecycle expiry sweep (§15.1): open|updated events past their expiry deadline
 	// become 'expired'. Like resolution this frees the dedup_key. Evidence is left
 	// intact; expiry is a lifecycle transition, not a delete.
@@ -387,6 +404,9 @@ type Querier interface {
 	// never bind or probe a foreign selection set.
 	GetCurrentSelectionSetForAccount(ctx context.Context, arg GetCurrentSelectionSetForAccountParams) (SelectionSet, error)
 	GetDigestByAccountDay(ctx context.Context, arg GetDigestByAccountDayParams) (NotificationDigest, error)
+	// Reads the durable delivery row so the worker can make its idempotent decision (a
+	// terminal state → no-op, no duplicate digest).
+	GetDigestDelivery(ctx context.Context, arg GetDigestDeliveryParams) (NotificationDigestDelivery, error)
 	// The digest recipient for an account: the organization's owner user email,
 	// falling back to the earliest user when no owner role exists. Returns no row when
 	// the organization has no users (the digest is then unsendable — fail closed).
@@ -822,6 +842,20 @@ type Querier interface {
 	// variant/product so the row carries SKU (supplier_code), variant + product title,
 	// and the native-id evidence a reviewer needs to confirm/reject/defer.
 	ListNeedsReviewQueue(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListNeedsReviewQueueRow, error)
+	// The OWNED RECOVERY source (issue #124 / PD-4): every NONTERMINAL (account, day)
+	// delivery row, of ANY historical business day, rediscovered directly from this table
+	// and re-enqueued by the fan-out pass. It deliberately consults NO River state: River's
+	// completion/snooze write and the terminal projection write share the same PostgreSQL
+	// dependency, so a correlated outage can leave a job `running` at its final attempt
+	// (the rescuer then DISCARDS it) while the row is still nonterminal. Recovery anchored
+	// here survives that window, and it survives day advancement because business_day is
+	// pinned on the row rather than recomputed.
+	//
+	// A 'sending' row is only rediscovered once it is STALE (updated_at older than the
+	// cutoff), so a live in-flight attempt is never raced by a recovery re-enqueue. The
+	// LIMIT bounds the pass (§17 bounded reads / backpressure: the recovery queue never
+	// grows unbounded in one tick). Oldest work first.
+	ListNonterminalDigestDeliveries(ctx context.Context, arg ListNonterminalDigestDeliveriesParams) ([]NotificationDigestDelivery, error)
 	// The in-app notification feed for an account, newest first, BOUNDED by a keyset
 	// cursor (§17 bounded reads). Deterministic order is (created_at DESC, id DESC);
 	// the row-value comparison (created_at, id) < (cursor_created_at, cursor_id) reads
@@ -957,6 +991,30 @@ type Querier interface {
 	// duplicate rows, matches nothing and returns no row — the service treats that as
 	// a refusal (no silent re-commit, no commit over an unresolved conflict).
 	MarkCostImportBatchCommitted(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
+	// pending → dead_letter: a PERMANENT failure that definitively did NOT deliver
+	// (unsendable target, unsupported locale, render error, permanent relay rejection, or
+	// exhausted attempts before any send). An OBSERVABLE terminal state; it does NOT mark
+	// the digest delivered (no false "delivered"). Guarded on 'pending'.
+	MarkDigestDeliveryDeadLetter(ctx context.Context, arg MarkDigestDeliveryDeadLetterParams) (NotificationDigestDelivery, error)
+	// sending → delivered: the relay ACCEPTED the message and this write landed. The sole
+	// success transition; guarded on 'sending' so a re-drive after delivery matches nothing
+	// (idempotent no-op — zero resend).
+	MarkDigestDeliveryDelivered(ctx context.Context, arg MarkDigestDeliveryDeliveredParams) (NotificationDigestDelivery, error)
+	// pending → sending: the send is about to be INITIATED and its outcome becomes
+	// unknown until the relay answers. Committed BEFORE the SMTP conversation starts, so a
+	// crash mid-send leaves the ambiguous marker instead of a resend hazard. Guarded on
+	// 'pending' so a concurrent drive claims it at most once.
+	MarkDigestDeliverySending(ctx context.Context, arg MarkDigestDeliverySendingParams) (NotificationDigestDelivery, error)
+	// pending → skipped: the day had nothing sendable (no eligible notification, or every
+	// eligible row was isolated by the closed message-schema check). Terminal and OBSERVED
+	// — not a failure, and never a silent drop.
+	MarkDigestDeliverySkipped(ctx context.Context, arg MarkDigestDeliverySkippedParams) (NotificationDigestDelivery, error)
+	// sending → unconfirmed: TERMINAL AMBIGUOUS. The send was initiated but acceptance
+	// could never be established (connection lost after DATA, process crash, or exhausted
+	// attempts while still ambiguous). It does NOT claim delivery, and the row is never
+	// re-driven: zero resend outranks a speculative re-send repair (idempotency is
+	// never-cut; a duplicate delivery must never create a duplicate product event).
+	MarkDigestDeliveryUnconfirmed(ctx context.Context, arg MarkDigestDeliveryUnconfirmedParams) (NotificationDigestDelivery, error)
 	// OBS-004 expiry sweep on the derived current view: any live offer past its
 	// freshness deadline becomes Stale (renders age-only, never satisfies a
 	// current-data gate — that decision is in the domain). Closed offers are left as
@@ -1031,6 +1089,12 @@ type Querier interface {
 	// Transition NeedsReview -> Rejected and deactivate. A rejected mapping never
 	// feeds an executable path and frees the variant for a fresh candidate later.
 	RejectIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
+	// sending → pending: the relay DEFINITIVELY did not accept the message (a typed SMTP
+	// response, or a failure before any DATA was written), so a retry cannot duplicate it.
+	// Releasing the ambiguous marker is only ever driven by a definitive non-acceptance —
+	// an UNKNOWN outcome stays 'sending' and is never released. last_reason is a bounded
+	// machine token; last_status_code is the numeric relay code (0 when none).
+	ReleaseDigestDeliveryToPending(ctx context.Context, arg ReleaseDigestDeliveryToPendingParams) (NotificationDigestDelivery, error)
 	RenameOrganization(ctx context.Context, arg RenameOrganizationParams) (Organization, error)
 	// Reopen a Confirmed mapping on a merge/split/redirect/variant-conflict signal
 	// (§16). Guarded WHERE state='confirmed' AND active so only a live Confirmed

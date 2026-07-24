@@ -65,6 +65,14 @@ func (m *captureMailer) Send(_ context.Context, msg notify.Message) error {
 	return nil
 }
 
+// messages returns a race-free snapshot of everything sent so far (the concurrent
+// fan-out tests read it while workers are still running).
+func (m *captureMailer) messages() []notify.Message {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]notify.Message(nil), m.sent...)
+}
+
 // fixedResolver returns a deterministic digest target for every account.
 type fixedResolver struct{ target notify.Target }
 
