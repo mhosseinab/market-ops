@@ -182,6 +182,21 @@ var ErrDigestTerminalUnpersisted = errors.New("jobs: digest terminal state write
 // materially delayed.
 const digestTerminalRedriveBackoff = 30 * time.Second
 
+// DigestTerminalRedriveWindow CAPS the snooze re-drive. river.JobSnooze deliberately
+// does NOT consume an attempt, so an uncapped re-drive would park and re-run forever,
+// permanently holding one of the few digest slots for a single stuck account/day and
+// masking the outage as ordinary queue latency. Past this window the worker stops
+// snoozing and returns the failure normally: the bounded per-account retry budget then
+// applies and the job is ultimately DISCARDED (River's dead-letter) with a distinct
+// bounded reason. The durable row stays nonterminal, so the OWNED recovery pass — which
+// consults no River state — remains the repair path.
+const DigestTerminalRedriveWindow = 15 * time.Minute
+
+// ErrDigestTerminalRedriveWindowElapsed marks a terminal-write failure that outlived the
+// bounded re-drive window. It is a DISTINCT bounded reason so a permanently stuck
+// account/day is visible as its own condition rather than as endless snoozing.
+var ErrDigestTerminalRedriveWindowElapsed = errors.New("jobs: digest terminal re-drive window elapsed; releasing the slot (owned recovery still owns repair)")
+
 // DigestAccountWorker claims one durable per-account digest intent and runs the
 // injected delivery. River guarantees at-least-once delivery + durable retry; the
 // injected runner is idempotent on the (account, business_day) delivery row, so the
@@ -241,6 +256,14 @@ func (w *DigestAccountWorker) Work(ctx context.Context, job *river.Job[DigestAcc
 	// attempt, dropping the repair obligation while no terminal signal was ever emitted.
 	// Snooze instead — a bounded park that does NOT consume the attempt.
 	if errors.Is(err, ErrDigestTerminalUnpersisted) {
+		if redriveWindowElapsed(job) {
+			if w.logger != nil {
+				w.logger.ErrorContext(ctx, "digest account: terminal re-drive window elapsed; releasing the slot (owned recovery still owns repair)",
+					"job_id", job.ID, "account_id", job.Args.Account, "business_day", job.Args.BusinessDay,
+					"redrive_window", DigestTerminalRedriveWindow.String())
+			}
+			return fmt.Errorf("%w: %w", ErrDigestTerminalRedriveWindowElapsed, err)
+		}
 		if w.logger != nil {
 			w.logger.WarnContext(ctx, "digest account: terminal state unpersisted; snoozing to re-drive (recovery anchored)",
 				"job_id", job.ID, "account_id", job.Args.Account, "business_day", job.Args.BusinessDay)
@@ -248,6 +271,17 @@ func (w *DigestAccountWorker) Work(ctx context.Context, job *river.Job[DigestAcc
 		return river.JobSnooze(digestTerminalRedriveBackoff)
 	}
 	return err
+}
+
+// redriveWindowElapsed reports whether this job has been snoozing past the bounded
+// re-drive window. It is measured from the job's own creation, because a snooze does not
+// advance the attempt counter and therefore leaves no other bound. A hand-built job in a
+// unit test (no JobRow) never elapses.
+func redriveWindowElapsed(job *river.Job[DigestAccountArgs]) bool {
+	if job.JobRow == nil || job.CreatedAt.IsZero() {
+		return false
+	}
+	return time.Since(job.CreatedAt) > DigestTerminalRedriveWindow
 }
 
 // EnqueueDigestAccountTx enqueues one durable per-account digest intent inside the

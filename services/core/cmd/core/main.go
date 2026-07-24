@@ -720,7 +720,10 @@ func startJobPipeline(ctx context.Context, logger *slog.Logger, pool *pgxpool.Po
 		return nil, nil, err
 	}
 	return func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// Wait out River's soft-stop window so a bounded in-flight attempt can drain
+		// before its context is cancelled; a shorter budget here would cut the graceful
+		// stop short and reintroduce the mid-send kill on every deploy.
+		stopCtx, cancel := context.WithTimeout(context.Background(), jobs.StopGrace)
 		defer cancel()
 		_ = client.Stop(stopCtx)
 	}, client, nil

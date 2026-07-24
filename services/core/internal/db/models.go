@@ -489,6 +489,7 @@ type NotificationDigestDelivery struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	FinalizedAt          pgtype.Timestamptz
+	Ambiguous            bool
 }
 
 type NotificationDigestItem struct {

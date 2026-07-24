@@ -991,6 +991,12 @@ type Querier interface {
 	// duplicate rows, matches nothing and returns no row — the service treats that as
 	// a refusal (no silent re-commit, no commit over an unresolved conflict).
 	MarkCostImportBatchCommitted(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
+	// Raises the AMBIGUITY marker on an in-flight send at the moment the exchange enters
+	// its genuinely ambiguous window (the body terminator is about to be written and the
+	// relay's verdict awaited). From here acceptance cannot be disproven, so a row
+	// abandoned after this point is finalized 'unconfirmed' and never resent. Guarded on
+	// 'sending': it can only ever narrow a live claim.
+	MarkDigestDeliveryAmbiguous(ctx context.Context, arg MarkDigestDeliveryAmbiguousParams) (NotificationDigestDelivery, error)
 	// pending → dead_letter: a PERMANENT failure that definitively did NOT deliver
 	// (unsendable target, unsupported locale, render error, permanent relay rejection, or
 	// exhausted attempts before any send). An OBSERVABLE terminal state; it does NOT mark
@@ -1000,20 +1006,37 @@ type Querier interface {
 	// success transition; guarded on 'sending' so a re-drive after delivery matches nothing
 	// (idempotent no-op — zero resend).
 	MarkDigestDeliveryDelivered(ctx context.Context, arg MarkDigestDeliveryDeliveredParams) (NotificationDigestDelivery, error)
+	// ATTEMPT ACCOUNTING. `attempts` is incremented EXACTLY ONCE per attempt, by whichever
+	// write CONCLUDES that attempt (bump, delivered, skipped, dead_letter, unconfirmed).
+	// The mid-attempt transitions — the 'sending' claim and the release back to 'pending'
+	// after a definitive non-acceptance — deliberately do NOT increment: incrementing on
+	// both the claim and the concluding write made the column read roughly double the truth,
+	// which silently halves the apparent headroom of the bounded per-account retry budget.
 	// pending → sending: the send is about to be INITIATED and its outcome becomes
 	// unknown until the relay answers. Committed BEFORE the SMTP conversation starts, so a
-	// crash mid-send leaves the ambiguous marker instead of a resend hazard. Guarded on
+	// crash mid-send leaves an ambiguity marker instead of a resend hazard. Guarded on
 	// 'pending' so a concurrent drive claims it at most once.
+	//
+	// $4 is the AMBIGUITY marker this attempt starts with. A mailer that can report its
+	// post-DATA boundary starts DEFINITIVE (false) and is narrowed upward by
+	// MarkDigestDeliveryAmbiguous at the real boundary; a mailer that cannot report it
+	// starts true, so the whole exchange is treated conservatively as the ambiguous window.
+	//
+	// last_reason / last_status_code are PRESERVED across the claim: erasing them at the
+	// start of every retry destroyed the previous attempt's diagnosis, so a flapping
+	// tenant's history could not be read off its own row.
 	MarkDigestDeliverySending(ctx context.Context, arg MarkDigestDeliverySendingParams) (NotificationDigestDelivery, error)
 	// pending → skipped: the day had nothing sendable (no eligible notification, or every
 	// eligible row was isolated by the closed message-schema check). Terminal and OBSERVED
 	// — not a failure, and never a silent drop.
 	MarkDigestDeliverySkipped(ctx context.Context, arg MarkDigestDeliverySkippedParams) (NotificationDigestDelivery, error)
-	// sending → unconfirmed: TERMINAL AMBIGUOUS. The send was initiated but acceptance
-	// could never be established (connection lost after DATA, process crash, or exhausted
-	// attempts while still ambiguous). It does NOT claim delivery, and the row is never
-	// re-driven: zero resend outranks a speculative re-send repair (idempotency is
-	// never-cut; a duplicate delivery must never create a duplicate product event).
+	// sending → unconfirmed: TERMINAL AMBIGUOUS. The send was initiated, the exchange
+	// entered its post-DATA window, and acceptance could never be established (lost verdict,
+	// process crash, or exhausted attempts while still ambiguous). It does NOT claim
+	// delivery, and the row is never re-driven: zero resend outranks a speculative re-send
+	// repair (idempotency is never-cut; a duplicate delivery must never create a duplicate
+	// product event). Guarded on 'sending' AND on the durable ambiguity marker, so a row
+	// that provably never entered the window can NOT be written off as unconfirmed.
 	MarkDigestDeliveryUnconfirmed(ctx context.Context, arg MarkDigestDeliveryUnconfirmedParams) (NotificationDigestDelivery, error)
 	// OBS-004 expiry sweep on the derived current view: any live offer past its
 	// freshness deadline becomes Stale (renders age-only, never satisfies a
@@ -1090,10 +1113,11 @@ type Querier interface {
 	// feeds an executable path and frees the variant for a fresh candidate later.
 	RejectIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
 	// sending → pending: the relay DEFINITIVELY did not accept the message (a typed SMTP
-	// response, or a failure before any DATA was written), so a retry cannot duplicate it.
-	// Releasing the ambiguous marker is only ever driven by a definitive non-acceptance —
+	// response, or a failure before the body terminator was written), so a retry cannot
+	// duplicate it. Releasing the claim is only ever driven by a definitive non-acceptance —
 	// an UNKNOWN outcome stays 'sending' and is never released. last_reason is a bounded
-	// machine token; last_status_code is the numeric relay code (0 when none).
+	// machine token; last_status_code is the numeric relay code (0 when none). The ambiguity
+	// marker is cleared with the release: the next attempt starts its own window.
 	ReleaseDigestDeliveryToPending(ctx context.Context, arg ReleaseDigestDeliveryToPendingParams) (NotificationDigestDelivery, error)
 	RenameOrganization(ctx context.Context, arg RenameOrganizationParams) (Organization, error)
 	// Reopen a Confirmed mapping on a merge/split/redirect/variant-conflict signal

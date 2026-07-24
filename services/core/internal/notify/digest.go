@@ -106,6 +106,65 @@ type DigestAccountEnqueuer interface {
 // per-account attempt deadline, so recovery can never race a live in-flight send.
 const sendingStaleAfter = 15 * time.Minute
 
+// durableWriteTimeout bounds each DETACHED durable delivery-state write. It is short —
+// a single guarded UPDATE on an indexed key — so a dead database cannot hold a worker
+// slot past the attempt that spawned it.
+const durableWriteTimeout = 5 * time.Second
+
+// durableCtx derives the context every durable delivery transition runs on.
+//
+// It is DETACHED from the attempt's context (context.WithoutCancel) and separately
+// bounded. River wraps a job's Work context with the worker's Timeout, so when that
+// deadline fires mid-send the mailer reports a DEFINITIVE non-acceptance and the
+// follow-up state write would immediately fail on the already-dead context: the row
+// stranded in `sending`, the next drive wrote it off as terminally unconfirmed, and the
+// worker snoozed without consuming an attempt — a silent, permanent non-delivery on the
+// FIRST relay hang. Recording the outcome is the last thing an attempt owes, so it must
+// outlive the attempt's cancellation. River applies the same pattern to its own
+// completer (client.go: c.completer.Start(context.WithoutCancel(ctx))).
+func durableCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), durableWriteTimeout)
+}
+
+// Durable-transition wrappers. Every one runs its guarded UPDATE on a DETACHED, bounded
+// context (durableCtx) and reports whether the write actually LANDED, so a guard miss is
+// never mistaken for a persisted state and a cancelled attempt still records its verdict.
+func (s *DigestService) markDelivered(ctx context.Context, a uuid.UUID, d time.Time) (bool, error) {
+	wctx, cancel := durableCtx(ctx)
+	defer cancel()
+	return s.deliveries.MarkDelivered(wctx, a, d, s.now())
+}
+
+func (s *DigestService) markSkipped(ctx context.Context, a uuid.UUID, d time.Time, r DigestReason) (bool, error) {
+	wctx, cancel := durableCtx(ctx)
+	defer cancel()
+	return s.deliveries.MarkSkipped(wctx, a, d, r, s.now())
+}
+
+func (s *DigestService) markDeadLetter(ctx context.Context, a uuid.UUID, d time.Time, r DigestReason, code int32) (bool, error) {
+	wctx, cancel := durableCtx(ctx)
+	defer cancel()
+	return s.deliveries.MarkDeadLetter(wctx, a, d, r, code, s.now())
+}
+
+func (s *DigestService) markUnconfirmed(ctx context.Context, a uuid.UUID, d time.Time, r DigestReason, code int32) (bool, error) {
+	wctx, cancel := durableCtx(ctx)
+	defer cancel()
+	return s.deliveries.MarkUnconfirmed(wctx, a, d, r, code, s.now())
+}
+
+func (s *DigestService) releaseToPending(ctx context.Context, a uuid.UUID, d time.Time, r DigestReason, code int32) error {
+	wctx, cancel := durableCtx(ctx)
+	defer cancel()
+	return s.deliveries.ReleaseToPending(wctx, a, d, r, code, s.now())
+}
+
+func (s *DigestService) bumpAttempt(ctx context.Context, a uuid.UUID, d time.Time, r DigestReason, code int32) error {
+	wctx, cancel := durableCtx(ctx)
+	defer cancel()
+	return s.deliveries.BumpAttempt(wctx, a, d, r, code, s.now())
+}
+
 // recoveryBatchLimit bounds one recovery pass. The nonterminal backlog is re-driven
 // oldest-day-first in bounded batches, so a large backlog applies backpressure instead
 // of flooding the queue in a single tick (§17 bounded reads).
@@ -312,16 +371,34 @@ func (s *DigestService) deliverAccountDay(ctx context.Context, account uuid.UUID
 	}
 
 	if rec.State == DigestStateSending {
-		// A previous attempt INITIATED a send whose acceptance was never established
-		// (a lost relay response, or a crash between the claim and the verdict). The
-		// relay may already hold the message, so re-sending could duplicate a delivered
-		// digest. Finalize as the terminal AMBIGUOUS state instead: it does not claim
-		// delivery, and it is never re-driven.
-		if err := s.deliveries.MarkUnconfirmed(ctx, account, day, DigestReasonSendOutcomeUnknown, rec.StatusCode, s.now()); err != nil {
+		// A previous attempt was abandoned while holding the claim. The DURABLE ambiguity
+		// marker — not the state alone — decides what that means.
+		if !rec.Ambiguous {
+			// The attempt never entered the post-DATA window, so the relay provably holds
+			// nothing. Writing this off as terminally unconfirmed would claim "we may have
+			// delivered" for a KNOWN non-delivery and burn the account's retry budget.
+			// Release the claim and retry on this account's own budget.
+			if err := s.releaseToPending(ctx, account, day, DigestReasonSendNotInitiated, rec.StatusCode); err != nil {
+				return s.terminalUnpersisted(ctx, account, day, DigestReasonSendNotInitiated, err)
+			}
+			return s.failPending(ctx, account, day, DigestReasonSendNotInitiated, rec.StatusCode, false, lastAttempt,
+				fmt.Errorf("notify: digest attempt for %s/%s was abandoned before transmission; claim released for retry",
+					account, day.Format(time.DateOnly)))
+		}
+		// The attempt WAS inside the ambiguous window (a lost relay verdict, or a crash
+		// after the body terminator). The relay may already hold the message, so
+		// re-sending could duplicate a delivered digest. Finalize as the terminal
+		// AMBIGUOUS state: it does not claim delivery, and it is never re-driven.
+		ok, err := s.markUnconfirmed(ctx, account, day, DigestReasonSendOutcomeUnknown, rec.StatusCode)
+		if err != nil {
 			return s.terminalUnpersisted(ctx, account, day, DigestReasonSendOutcomeUnknown, err)
 		}
-		s.logDelivery(ctx, slog.LevelError, "digest finalized UNCONFIRMED: send acceptance could not be established (NOT delivered, never resent)",
-			account, day, OutcomeUnconfirmed, DigestReasonSendOutcomeUnknown, rec.StatusCode)
+		if !ok {
+			// A concurrent drive already finalized it. Idempotent no-op — and NO terminal
+			// signal, because this attempt persisted nothing.
+			return OutcomeNoop, "", nil
+		}
+		s.isolateAccount(ctx, account, day, OutcomeUnconfirmed, DigestReasonSendOutcomeUnknown, rec.StatusCode, nil)
 		return OutcomeUnconfirmed, DigestReasonSendOutcomeUnknown, nil
 	}
 
@@ -357,8 +434,12 @@ func (s *DigestService) deliverAccountDay(ctx context.Context, account uuid.UUID
 		if len(rows) > 0 {
 			reason = DigestReasonAllItemsIsolated
 		}
-		if err := s.deliveries.MarkSkipped(ctx, account, day, reason, s.now()); err != nil {
+		ok, err := s.markSkipped(ctx, account, day, reason)
+		if err != nil {
 			return s.terminalUnpersisted(ctx, account, day, reason, err)
+		}
+		if !ok {
+			return OutcomeNoop, "", nil
 		}
 		return OutcomeSkipped, reason, nil
 	}
@@ -384,10 +465,13 @@ func (s *DigestService) deliverAccountDay(ctx context.Context, account uuid.UUID
 		return s.failPending(ctx, account, day, DigestReasonClaimError, 0, false, lastAttempt, err)
 	}
 
-	// Commit the ambiguity marker BEFORE the SMTP conversation starts. A crash from
-	// here until the verdict therefore leaves `sending` — recoverable as terminal
-	// AMBIGUOUS — rather than a `pending` row a later pass would happily resend.
-	claimed, err := s.deliveries.MarkSending(ctx, account, day, s.now())
+	// Commit the claim BEFORE the SMTP conversation starts, carrying the ambiguity
+	// marker this attempt STARTS with. A mailer that reports its own post-DATA boundary
+	// starts DEFINITIVE and is narrowed at the real boundary; one that cannot starts
+	// AMBIGUOUS, so the whole exchange is treated conservatively and an abandoned send is
+	// never resent.
+	barrier, reportsBoundary := s.mailer.(BarrierMailer)
+	claimed, err := s.deliveries.MarkSending(ctx, account, day, s.now(), !reportsBoundary)
 	if err != nil {
 		return s.failPending(ctx, account, day, DigestReasonClaimError, 0, false, lastAttempt, err)
 	}
@@ -396,14 +480,21 @@ func (s *DigestService) deliverAccountDay(ctx context.Context, account uuid.UUID
 		return OutcomeNoop, "", nil
 	}
 
-	sendErr := s.mailer.Send(ctx, msg)
+	sendErr := s.send(ctx, barrier, account, day, msg)
 	if sendErr == nil {
-		if err := s.deliveries.MarkDelivered(ctx, account, day, s.now()); err != nil {
+		ok, err := s.markDelivered(ctx, account, day)
+		if err != nil {
 			// The mail is OUT but the terminal write failed. Emit NO delivered signal
 			// (never a signal for a state that was not persisted) and re-drive: the row
 			// stays `sending`, which the owned recovery pass rediscovers independently of
 			// River, and the re-drive finalizes it without resending.
 			return s.terminalUnpersisted(ctx, account, day, DigestReasonSendOutcomeUnknown, err)
+		}
+		if !ok {
+			// The guard MISSED: a concurrent drive already finalized the row, so this
+			// attempt persisted nothing. Report the no-op rather than a delivery the
+			// durable record does not show, and fire no analytics for it.
+			return OutcomeNoop, "", nil
 		}
 		if s.observer != nil {
 			s.observer(ctx, account, len(items))
@@ -415,8 +506,12 @@ func (s *DigestService) deliverAccountDay(ctx context.Context, account uuid.UUID
 	if ambiguous {
 		// Acceptance is UNKNOWN: the body was transmitted but no verdict arrived. Zero
 		// resend outranks a speculative repair, so finalize as terminal AMBIGUOUS.
-		if err := s.deliveries.MarkUnconfirmed(ctx, account, day, reason, code, s.now()); err != nil {
+		ok, err := s.markUnconfirmed(ctx, account, day, reason, code)
+		if err != nil {
 			return s.terminalUnpersisted(ctx, account, day, reason, err)
+		}
+		if !ok {
+			return OutcomeNoop, "", nil
 		}
 		s.isolateAccount(ctx, account, day, OutcomeUnconfirmed, reason, code, sendErr)
 		return OutcomeUnconfirmed, reason, nil
@@ -425,10 +520,40 @@ func (s *DigestService) deliverAccountDay(ctx context.Context, account uuid.UUID
 	// DEFINITIVE non-acceptance — the relay refused, or nothing was transmitted. The
 	// claim is safe to release, because a retry cannot duplicate a message the relay
 	// never accepted.
-	if err := s.deliveries.ReleaseToPending(ctx, account, day, reason, code, s.now()); err != nil {
+	if err := s.releaseToPending(ctx, account, day, reason, code); err != nil {
 		return s.terminalUnpersisted(ctx, account, day, reason, err)
 	}
 	return s.failPending(ctx, account, day, reason, code, permanent, lastAttempt, sendErr)
+}
+
+// send performs the relay conversation, recording the genuinely ambiguous post-DATA
+// window DURABLY at the moment the mailer reports it is about to be entered.
+//
+// The durable marker is what confines the terminal `unconfirmed` state to real
+// ambiguity: a send abandoned before the barrier provably delivered nothing and is
+// retried, while one abandoned after it is never resent. When the marker cannot be
+// written the barrier FAILS CLOSED — the mailer abandons the send before the window
+// opens, so an unresolvable outcome is never created.
+//
+// A mailer with no boundary to report already claimed the whole exchange as ambiguous at
+// MarkSending, so it sends unchanged.
+func (s *DigestService) send(ctx context.Context, barrier BarrierMailer, account uuid.UUID, day time.Time, msg Message) error {
+	if barrier == nil {
+		return s.mailer.Send(ctx, msg)
+	}
+	return barrier.SendReportingAmbiguity(ctx, msg, func(c context.Context) error {
+		wctx, cancel := durableCtx(c)
+		defer cancel()
+		ok, err := s.deliveries.MarkAmbiguous(wctx, account, day, s.now())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("notify: ambiguous window not recorded for %s/%s (claim no longer live)",
+				account, day.Format(time.DateOnly))
+		}
+		return nil
+	})
 }
 
 // failPending records a failed attempt on a row that is definitively NOT delivered.
@@ -448,13 +573,19 @@ func (s *DigestService) failPending(ctx context.Context, account uuid.UUID, day 
 		if !permanent {
 			terminal = DigestReasonAttemptsExhausted
 		}
-		if err := s.deliveries.MarkDeadLetter(ctx, account, day, terminal, code, s.now()); err != nil {
+		ok, err := s.markDeadLetter(ctx, account, day, terminal, code)
+		if err != nil {
 			return s.terminalUnpersisted(ctx, account, day, terminal, err)
+		}
+		if !ok {
+			// The guard missed: a concurrent drive already finalized the row. No terminal
+			// signal, because this attempt persisted nothing.
+			return OutcomeNoop, "", nil
 		}
 		s.isolateAccount(ctx, account, day, OutcomeDeadLetter, terminal, code, cause)
 		return OutcomeDeadLetter, terminal, nil
 	}
-	if err := s.deliveries.BumpAttempt(ctx, account, day, reason, code, s.now()); err != nil {
+	if err := s.bumpAttempt(ctx, account, day, reason, code); err != nil {
 		s.logDelivery(ctx, slog.LevelWarn, "digest attempt-bump write failed", account, day, OutcomeRetryableFailure, reason, code)
 	}
 	s.isolateAccount(ctx, account, day, OutcomeRetryableFailure, reason, code, cause)
@@ -610,8 +741,8 @@ func (s *DigestService) GenerateAll(ctx context.Context) (int, error) {
 }
 
 // RecoverNonterminal re-enqueues every nonterminal delivery row. It runs on every
-// fan-out pass and is also the operator-facing repair entry point named by the
-// digest-delivery runbook. It is the OWNED recovery mechanism required because River's
+// fan-out pass and is also the operator-facing repair entry point named by
+// runbooks/digest-delivery.md. It is the OWNED recovery mechanism required because River's
 // own durability shares the PostgreSQL
 // boundary that the terminal write depends on: when both fail together the job can be
 // discarded while the row stays nonterminal, and once the business day advances the
@@ -707,11 +838,18 @@ func (s *DigestService) generateEach(ctx context.Context, day time.Time, ids []u
 // inspect the original failure; it is deliberately NOT a log field.
 func (s *DigestService) isolateAccount(ctx context.Context, account uuid.UUID, day time.Time, outcome string, reason DigestReason, code int32, cause error) {
 	recordAccountFailure(ctx, reason)
+	// Both TERMINAL non-delivery outcomes signal identically and at the same severity,
+	// whichever route reached them: a digest that will never arrive is an ERROR, and it
+	// fires the metric, the log, and the typed observer exactly once.
 	level := slog.LevelWarn
 	msg := "digest account isolated: attempt failed (contained; other accounts unaffected)"
-	if outcome == OutcomeDeadLetter {
+	switch outcome {
+	case OutcomeDeadLetter:
 		level = slog.LevelError
 		msg = "digest DEAD-LETTERED (permanent failure; NOT delivered)"
+	case OutcomeUnconfirmed:
+		level = slog.LevelError
+		msg = "digest finalized UNCONFIRMED: send acceptance could not be established (NOT delivered, never resent)"
 	}
 	s.logDelivery(ctx, level, msg, account, day, outcome, reason, code)
 	if s.acctFail == nil {

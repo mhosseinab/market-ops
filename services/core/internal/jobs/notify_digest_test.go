@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/riverqueue/river"
+	"github.com/riverqueue/river/rivertype"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/jobs"
 )
@@ -116,6 +117,137 @@ func TestDigestAccountWorker_TerminalUnpersistedSnoozesInsteadOfDiscarding(t *te
 	}
 	if snooze.Duration <= 0 {
 		t.Fatalf("snooze duration = %s, want a bounded positive park", snooze.Duration)
+	}
+}
+
+// TestDigestAccountWorker_SnoozeIsCappedSoAStuckAccountReleasesItsSlot is the bound on
+// the park above. river.JobSnooze does NOT consume an attempt, so an uncapped re-drive
+// would re-run every backoff forever, holding one of the few digest slots for a single
+// stuck account/day and hiding a permanent failure as ordinary queue latency. Past the
+// bounded window the worker stops snoozing and returns a DISTINCT bounded failure, so the
+// per-account retry budget applies and the job is ultimately discarded — while the
+// durable row stays nonterminal for the owned recovery pass.
+func TestDigestAccountWorker_SnoozeIsCappedSoAStuckAccountReleasesItsSlot(t *testing.T) {
+	w := jobs.NewDigestAccountWorker(
+		func(context.Context, uuid.UUID, time.Time, bool) (string, error) {
+			return "terminal_unpersisted", errFmt(jobs.ErrDigestTerminalUnpersisted)
+		}, 0, nil)
+
+	// A job created well beyond the bounded re-drive window.
+	job := &river.Job[jobs.DigestAccountArgs]{
+		JobRow: &rivertype.JobRow{
+			ID:        7,
+			CreatedAt: time.Now().Add(-2 * jobs.DigestTerminalRedriveWindow),
+		},
+		Args: jobs.DigestAccountArgs{Account: uuid.New(), BusinessDay: "2026-03-11"},
+	}
+	err := w.Work(context.Background(), job)
+	var snooze *river.JobSnoozeError
+	if errors.As(err, &snooze) {
+		t.Fatal("the worker snoozed past the bounded re-drive window; one stuck account/day would hold a digest slot forever")
+	}
+	if !errors.Is(err, jobs.ErrDigestTerminalRedriveWindowElapsed) {
+		t.Fatalf("worker returned %v, want the distinct bounded %v", err, jobs.ErrDigestTerminalRedriveWindowElapsed)
+	}
+	// The original cause is still reachable, so the failing seam stays diagnosable.
+	if !errors.Is(err, jobs.ErrDigestTerminalUnpersisted) {
+		t.Fatal("the capped failure dropped its cause; the failing seam must stay nameable")
+	}
+}
+
+// TestDigestAccountWorker_SnoozesInsideTheRedriveWindow is the negative half: a FRESH
+// job still parks, so a transient database blip is ridden out rather than burning the
+// account's bounded retry budget.
+func TestDigestAccountWorker_SnoozesInsideTheRedriveWindow(t *testing.T) {
+	w := jobs.NewDigestAccountWorker(
+		func(context.Context, uuid.UUID, time.Time, bool) (string, error) {
+			return "terminal_unpersisted", errFmt(jobs.ErrDigestTerminalUnpersisted)
+		}, 0, nil)
+
+	job := &river.Job[jobs.DigestAccountArgs]{
+		JobRow: &rivertype.JobRow{ID: 8, CreatedAt: time.Now()},
+		Args:   jobs.DigestAccountArgs{Account: uuid.New(), BusinessDay: "2026-03-11"},
+	}
+	var snooze *river.JobSnoozeError
+	if err := w.Work(context.Background(), job); !errors.As(err, &snooze) {
+		t.Fatalf("a fresh job returned %v, want a JobSnooze inside the bounded re-drive window", err)
+	}
+}
+
+// TestNewClient_SoftStopGivesRunningJobsABoundedDrainWindow proves the graceful-stop
+// contract at the client boundary. Cancelling the context passed to Start — exactly what
+// SIGTERM does on every routine deploy — must NOT hard-cancel running job contexts
+// immediately; it must open a BOUNDED drain window first, so an attempt already talking
+// to the relay can finish instead of being killed mid-send. Without SoftStopTimeout
+// River treats a cancelled Start context as StopAndCancel (river v0.40 client.go).
+func TestNewClient_SoftStopGivesRunningJobsABoundedDrainWindow(t *testing.T) {
+	if jobs.StopGrace <= jobs.SoftStopTimeout {
+		t.Fatalf("StopGrace %s must exceed SoftStopTimeout %s, or the caller cuts the drain window short",
+			jobs.StopGrace, jobs.SoftStopTimeout)
+	}
+	ctx := context.Background()
+	pool := newPool(t)
+
+	entered := make(chan struct{})
+	survived := make(chan bool, 1)
+	workers, err := jobs.NewWorkers(nil, jobs.ExecutionRunners{
+		DigestAccount: func(c context.Context, _ uuid.UUID, _ time.Time, _ bool) (string, error) {
+			close(entered)
+			// Outlive an IMMEDIATE hard cancel, then report whether the context was
+			// still live — i.e. whether a drain window actually existed.
+			select {
+			case <-c.Done():
+				survived <- false
+			case <-time.After(jobs.SoftStopTimeout / 2):
+				survived <- true
+			}
+			return "noop", nil
+		},
+		DigestAccountTimeout: jobs.DigestAccountMaxTimeout,
+	})
+	if err != nil {
+		t.Fatalf("workers: %v", err)
+	}
+	client, err := jobs.NewClient(pool, workers, nil)
+	if err != nil {
+		t.Fatalf("client: %v", err)
+	}
+	startCtx, cancelStart := context.WithCancel(ctx)
+	defer cancelStart()
+	if err := client.Start(startCtx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), jobs.StopGrace)
+		defer cancel()
+		_ = client.Stop(stopCtx)
+	})
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := jobs.EnqueueDigestAccountTx(ctx, client, tx, uuid.New(), time.Now().UTC()); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	select {
+	case <-entered:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the digest attempt never started")
+	}
+	cancelStart() // the SIGTERM
+
+	select {
+	case ok := <-survived:
+		if !ok {
+			t.Fatal("cancelling the Start context hard-cancelled the running attempt immediately; a deploy would kill in-flight sends with no drain window")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("the attempt never reported whether it survived the stop")
 	}
 }
 

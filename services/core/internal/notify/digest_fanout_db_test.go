@@ -128,22 +128,36 @@ func (perAccountResolver) Resolve(_ context.Context, account uuid.UUID) (notify.
 
 func recipientFor(account uuid.UUID) string { return account.String() + "@tenant.test" }
 
-// quiesceDigestWork drains digest work left behind by earlier tests. The suite shares
-// one scratch database and the OWNED recovery pass is deliberately global (it re-drives
-// every nonterminal row in the database), so without this an earlier test's poison
-// backlog would occupy the digest queue and masquerade as the next test's starvation.
-// It touches only digest work.
-func quiesceDigestWork(t *testing.T, pool *pgxpool.Pool) {
+// quiesceDigestWork retires the digest work of the accounts a test CREATED, once that
+// test is done with it. The suite shares one scratch database and the OWNED recovery
+// pass is deliberately global (it re-drives every nonterminal row in the database), so
+// without this a finished test's poison backlog would occupy the digest queue and
+// masquerade as the next test's starvation.
+//
+// It is SCOPED to the named accounts on purpose. A blanket UPDATE over every pending or
+// sending delivery row — and a blanket DELETE of every digest job — would mutate rows
+// this test never created, including other packages' state under a parallel
+// `go test ./...`, and could mask a real stranded row as tidy cleanup.
+func quiesceDigestWork(t *testing.T, pool *pgxpool.Pool, accounts ...uuid.UUID) {
 	t.Helper()
+	if len(accounts) == 0 {
+		return
+	}
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx,
 		`UPDATE notification_digest_deliveries
 		    SET delivery_state = 'skipped', finalized_at = now(), updated_at = now()
-		  WHERE delivery_state IN ('pending', 'sending')`); err != nil {
+		  WHERE delivery_state IN ('pending', 'sending')
+		    AND marketplace_account_id = ANY($1)`, accounts); err != nil {
 		t.Fatalf("quiesce delivery rows: %v", err)
 	}
+	ids := make([]string, 0, len(accounts))
+	for _, a := range accounts {
+		ids = append(ids, a.String())
+	}
 	if _, err := pool.Exec(ctx,
-		`DELETE FROM river_job WHERE kind = $1`, jobs.DigestAccountArgs{}.Kind()); err != nil {
+		`DELETE FROM river_job WHERE kind = $1 AND args->>'account' = ANY($2)`,
+		jobs.DigestAccountArgs{}.Kind(), ids); err != nil {
 		t.Fatalf("quiesce digest jobs: %v", err)
 	}
 }
@@ -169,12 +183,12 @@ func newFanoutService(pool *pgxpool.Pool, m notify.Mailer, at time.Time) *notify
 
 // startFanoutRiver starts a real River client with a configurable per-account work
 // deadline, so the bounded-fan-out behaviour is exercised rather than asserted.
-func startFanoutRiver(t *testing.T, pool *pgxpool.Pool, svc *notify.DigestService, timeout time.Duration) *jobs.Client {
+func startFanoutRiver(t *testing.T, pool *pgxpool.Pool, svc *notify.DigestService, timeout time.Duration, accounts ...uuid.UUID) *jobs.Client {
 	t.Helper()
 	client := startDigestOnlyRiver(t, pool, svc, timeout)
 	t.Cleanup(func() {
 		stopRiver(t, client)
-		quiesceDigestWork(t, pool)
+		quiesceDigestWork(t, pool, accounts...)
 	})
 	return client
 }
@@ -187,7 +201,6 @@ func startFanoutRiver(t *testing.T, pool *pgxpool.Pool, svc *notify.DigestServic
 func TestFanOut_PoisonFirstAccountDoesNotBlockLaterAccounts(t *testing.T) {
 	ctx := context.Background()
 	pool := riverPool(t)
-	quiesceDigestWork(t, pool)
 
 	at := time.Date(2026, 5, 6, 8, 0, 0, 0, time.UTC)
 	day := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
@@ -198,7 +211,7 @@ func TestFanOut_PoisonFirstAccountDoesNotBlockLaterAccounts(t *testing.T) {
 	m.set(m.poison, recipientFor(poison), true)
 
 	svc := newFanoutService(pool, m, at)
-	startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout)
+	startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout, ids...)
 
 	// Enqueue in creation order: the poison account is FIRST, exactly as reported.
 	for _, id := range ids {
@@ -236,7 +249,6 @@ func TestFanOut_PoisonFirstAccountDoesNotBlockLaterAccounts(t *testing.T) {
 func TestFanOut_PoisonAccountsBeyondQueueCapacityCannotStarveWork(t *testing.T) {
 	ctx := context.Background()
 	pool := riverPool(t)
-	quiesceDigestWork(t, pool)
 
 	at := time.Date(2026, 5, 13, 8, 0, 0, 0, time.UTC)
 	day := time.Date(2026, 5, 12, 0, 0, 0, 0, time.UTC)
@@ -254,7 +266,7 @@ func TestFanOut_PoisonAccountsBeyondQueueCapacityCannotStarveWork(t *testing.T) 
 	}
 
 	svc := newFanoutService(pool, m, at)
-	startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout)
+	startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout, append(append([]uuid.UUID{}, poisonIDs...), healthyIDs...)...)
 
 	// Every poison account is enqueued FIRST, so they hold every digest slot.
 	for _, id := range append(append([]uuid.UUID{}, poisonIDs...), healthyIDs...) {
@@ -301,6 +313,120 @@ func TestFanOut_PoisonAccountsBeyondQueueCapacityCannotStarveWork(t *testing.T) 
 			t.Fatalf("hanging tenant %s recorded %d deliveries, want 0", p, got)
 		}
 	}
+
+	// DURABLE OUTCOME, not just the absence of a message. A relay that hangs until the
+	// attempt's work deadline elapses is a DEFINITIVE non-acceptance — nothing was
+	// transmitted — so the tenant must KEEP its retry budget and, once exhausted, reach
+	// the observable dead-letter state. Reaching `unconfirmed` here would mean the row
+	// claims "we may have delivered" for a provable non-delivery AND is never retried:
+	// the silent, terminal, first-hang non-delivery this test previously could not see.
+	for _, p := range poisonIDs {
+		switch state := deliveryState(t, pool, p, day); state {
+		case notify.DigestStateUnconfirmed:
+			t.Fatalf("hanging tenant %s was finalized %q; a deadline-timed-out send is DEFINITIVELY not delivered and must stay retryable",
+				p, state)
+		case notify.DigestStateDelivered:
+			t.Fatalf("hanging tenant %s was marked %q; nothing was ever transmitted", p, state)
+		case notify.DigestStatePending, notify.DigestStateSending, notify.DigestStateDeadLetter:
+			// Retrying on its own budget, mid-attempt, or terminally quarantined.
+		default:
+			t.Fatalf("hanging tenant %s is in unexpected state %q", p, state)
+		}
+	}
+}
+
+// TestDeliverAccountDay_HangingRelayOnTheFinalAttemptDeadLettersNeverUnconfirmed is F3's
+// terminal-state assertion, isolated from River's backoff schedule: once the bounded
+// retry budget is spent, a tenant whose relay hangs until the work deadline reaches the
+// OBSERVABLE dead-letter state — definitively not delivered — and never the ambiguous
+// terminal state, which would claim a possible delivery and forbid every future retry.
+func TestDeliverAccountDay_HangingRelayOnTheFinalAttemptDeadLettersNeverUnconfirmed(t *testing.T) {
+	pool, q := newPool(t)
+	account := seedAccount(t, q)
+
+	day := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
+	at := day.Add(30 * time.Hour)
+	insertNotifAt(t, pool, account, uuid.New(), "hang-"+uuid.NewString(), "v1", day.Add(2*time.Hour))
+
+	svc := digestFor(pool, newHangingMailer(), at)
+	if err := svc.EnsureDelivery(context.Background(), account, day, false); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	outcome, err := svc.DeliverAccountDay(ctx, account, day, true) // the FINAL attempt
+	if err != nil {
+		t.Fatalf("the final attempt must finish terminally, not error: %v", err)
+	}
+	if outcome != notify.OutcomeDeadLetter {
+		t.Fatalf("outcome = %q, want %q", outcome, notify.OutcomeDeadLetter)
+	}
+	if state := deliveryState(t, pool, account, day); state != notify.DigestStateDeadLetter {
+		t.Fatalf("state = %q, want %q (never %q — nothing was transmitted)",
+			state, notify.DigestStateDeadLetter, notify.DigestStateUnconfirmed)
+	}
+}
+
+// TestFanOut_RestartDuringAnInFlightSendLeavesNoSilentNonDelivery closes the gap the
+// existing restart test left: it restarted with NO worker running, so it only proved the
+// UNCLAIMED case. A real deploy stops River while attempts are IN FLIGHT, hard-cancelling
+// their contexts. The tenant caught mid-send must still record a durable, definitive
+// outcome, stay recoverable, and deliver exactly once after the restart — never be
+// stranded in `sending` and silently written off.
+func TestFanOut_RestartDuringAnInFlightSendLeavesNoSilentNonDelivery(t *testing.T) {
+	ctx := context.Background()
+	pool := riverPool(t)
+
+	at := time.Date(2026, 9, 20, 8, 0, 0, 0, time.UTC)
+	day := time.Date(2026, 9, 19, 0, 0, 0, 0, time.UTC)
+	ids := fanoutFixture(t, pool, day, 1)
+	account := ids[0]
+	t.Cleanup(func() { quiesceDigestWork(t, pool, ids...) })
+
+	// "Before the restart": the relay hangs, so the attempt is genuinely in flight when
+	// the process stops.
+	hang := newHangingMailer()
+	svc := newFanoutService(pool, hang, at)
+	client := startDigestOnlyRiver(t, pool, svc, jobs.DigestAccountMaxTimeout)
+	if err := svc.EnsureDelivery(ctx, account, day, true); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	hang.waitEntered(t)
+
+	// The restart, at its WORST: StopAndCancel is River's immediate hard stop, which
+	// cancels the in-flight job context outright — precisely what cancelling the Start
+	// context did on every SIGTERM before SoftStopTimeout was configured. Correctness may
+	// not depend on the drain window, so the hard case is the one asserted.
+	stopCtx, cancelStop := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelStop()
+	if err := client.StopAndCancel(stopCtx); err != nil {
+		t.Logf("stop and cancel: %v", err)
+	}
+
+	// The durable outcome must be recorded despite the cancellation: the row is released
+	// for retry, NOT stranded in `sending` and NOT written off as unconfirmed.
+	waitFor(t, 30*time.Second, "the interrupted attempt to record its definitive outcome", func() bool {
+		return deliveryState(t, pool, account, day) == notify.DigestStatePending
+	})
+
+	// "After the restart", with a healthy relay: the work is still outstanding and
+	// delivers exactly once for its ORIGINAL pinned day.
+	healthy := newScriptedMailer()
+	svc2 := newFanoutService(pool, healthy, at)
+	startFanoutRiver(t, pool, svc2, jobs.DigestAccountMinTimeout, ids...)
+	if _, err := svc2.RecoverNonterminal(ctx); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	waitFor(t, 45*time.Second, "the restarted process to deliver the interrupted tenant", func() bool {
+		return healthy.delivered(recipientFor(account)) == 1
+	})
+	waitFor(t, 30*time.Second, "the pinned day's row to reach its terminal delivered state", func() bool {
+		return deliveryState(t, pool, account, day) == notify.DigestStateDelivered
+	})
+	if got := healthy.delivered(recipientFor(account)); got != 1 {
+		t.Fatalf("the interrupted tenant was delivered %d times, want exactly 1", got)
+	}
 }
 
 // TestFanOut_OrderingDoesNotChangeDeliveryCompleteness proves completeness is
@@ -310,7 +436,6 @@ func TestFanOut_PoisonAccountsBeyondQueueCapacityCannotStarveWork(t *testing.T) 
 func TestFanOut_OrderingDoesNotChangeDeliveryCompleteness(t *testing.T) {
 	ctx := context.Background()
 	pool := riverPool(t)
-	quiesceDigestWork(t, pool)
 
 	// Each position runs as its own subtest so its River client is stopped before the
 	// next starts. Two concurrently running clients would both consume the digest queue,
@@ -318,7 +443,6 @@ func TestFanOut_OrderingDoesNotChangeDeliveryCompleteness(t *testing.T) {
 	// of the harness, not of the fan-out.
 	for i, poisonIdx := range []int{0, 1, 2} {
 		t.Run("poison_at_position_"+strconv.Itoa(poisonIdx), func(t *testing.T) {
-			quiesceDigestWork(t, pool)
 			at := time.Date(2026, 6, 2+i, 8, 0, 0, 0, time.UTC)
 			day := normalizeDay(at.AddDate(0, 0, -1))
 			ids := fanoutFixture(t, pool, day, 3)
@@ -327,7 +451,7 @@ func TestFanOut_OrderingDoesNotChangeDeliveryCompleteness(t *testing.T) {
 			m.set(m.poison, recipientFor(ids[poisonIdx]), true)
 
 			svc := newFanoutService(pool, m, at)
-			startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout)
+			startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout, ids...)
 			for _, id := range ids {
 				if err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
 					t.Fatalf("ensure: %v", err)
@@ -364,7 +488,6 @@ func normalizeDay(t time.Time) time.Time {
 func TestFanOut_FailedAccountRetriesWithoutResendingSuccessfulOnes(t *testing.T) {
 	ctx := context.Background()
 	pool := riverPool(t)
-	quiesceDigestWork(t, pool)
 
 	at := time.Date(2026, 6, 20, 8, 0, 0, 0, time.UTC)
 	day := time.Date(2026, 6, 19, 0, 0, 0, 0, time.UTC)
@@ -375,7 +498,7 @@ func TestFanOut_FailedAccountRetriesWithoutResendingSuccessfulOnes(t *testing.T)
 	m.set(m.failing, recipientFor(flapping), true)
 
 	svc := newFanoutService(pool, m, at)
-	startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout)
+	startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout, ids...)
 	for _, id := range ids {
 		if err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
 			t.Fatalf("ensure: %v", err)
@@ -413,7 +536,6 @@ func TestFanOut_FailedAccountRetriesWithoutResendingSuccessfulOnes(t *testing.T)
 func TestFanOut_RestartPreservesOutstandingWorkAndPinnedDay(t *testing.T) {
 	ctx := context.Background()
 	pool := riverPool(t)
-	quiesceDigestWork(t, pool)
 
 	at := time.Date(2026, 7, 3, 8, 0, 0, 0, time.UTC)
 	day := time.Date(2026, 7, 2, 0, 0, 0, 0, time.UTC)
@@ -439,7 +561,7 @@ func TestFanOut_RestartPreservesOutstandingWorkAndPinnedDay(t *testing.T) {
 	// yet the outstanding work must still finalize 2026-07-02.
 	later := at.AddDate(0, 0, 3)
 	svc2 := newFanoutService(pool, m, later)
-	startFanoutRiver(t, pool, svc2, jobs.DigestAccountMinTimeout)
+	startFanoutRiver(t, pool, svc2, jobs.DigestAccountMinTimeout, ids...)
 	if svc2.FinalizedBusinessDay().Equal(day) {
 		t.Fatal("test setup: the current finalized day must differ from the pinned day")
 	}

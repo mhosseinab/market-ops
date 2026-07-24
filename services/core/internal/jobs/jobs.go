@@ -219,12 +219,36 @@ func periodicJobs() []*river.PeriodicJob {
 // Exported so a test can assert the bound is actually enforced rather than assumed.
 const DigestAccountMaxConcurrency = 3
 
+// SoftStopTimeout is how long a graceful stop lets RUNNING jobs finish before River
+// cancels their contexts and escalates to a hard stop (River v0.40 river.Config).
+//
+// Without it, cancelling the context passed to Start — which is exactly what SIGTERM
+// does on every routine deploy — is equivalent to StopAndCancel: every in-flight job
+// context is hard-cancelled immediately. For the digest that meant up to
+// DigestAccountMaxConcurrency tenants having their attempt killed mid-send on every
+// restart. Correctness no longer depends on this (durable delivery transitions run on a
+// context detached from the attempt), but a bounded drain window turns a routine deploy
+// from "several tenants retry" into "several tenants finish".
+//
+// It is deliberately SHORT — far shorter than the per-account work deadline. No
+// realistic drain window finishes an attempt blocked on a hanging relay, so the window
+// exists to let the COMMON case (a healthy relay answering in milliseconds) finish
+// cleanly, not to wait out a poison tenant. Keeping the whole stop inside the process's
+// existing shutdown budget also means it survives a container runtime's default
+// stop-grace period instead of being SIGKILLed halfway through.
+const SoftStopTimeout = 6 * time.Second
+
+// StopGrace is how long a caller should wait for Stop to return. It exceeds
+// SoftStopTimeout so the escalation to a hard stop is observed rather than cut short by
+// the caller's own deadline.
+const StopGrace = SoftStopTimeout + 2*time.Second
+
 // NewClient constructs the River client over a pgx pool with the default queue
 // enabled. A nil workers registry yields an insert-only client (no queues), for
 // callers that enqueue but do not process. When workers are present the periodic
 // execution-plane jobs are scheduled.
 func NewClient(pool *pgxpool.Pool, workers *river.Workers, logger *slog.Logger) (*Client, error) {
-	cfg := &river.Config{Logger: logger}
+	cfg := &river.Config{Logger: logger, SoftStopTimeout: SoftStopTimeout}
 	if workers != nil {
 		cfg.Workers = workers
 		cfg.Queues = map[string]river.QueueConfig{

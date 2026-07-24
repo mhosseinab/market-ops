@@ -52,6 +52,11 @@ const (
 	ReasonSMTPTransientRejection SendReason = "smtp_transient_rejection"
 	// ReasonSMTPProtocolError — a protocol-level failure with no usable status code.
 	ReasonSMTPProtocolError SendReason = "smtp_protocol_error"
+	// ReasonWindowUnrecordable — the caller could not durably record the ambiguous
+	// post-DATA window, so the send was abandoned BEFORE entering it. Nothing was
+	// transmitted: DEFINITIVE and retryable (fail closed — never enter a window whose
+	// outcome could not later be resolved).
+	ReasonWindowUnrecordable SendReason = "send_window_unrecordable"
 )
 
 // SendReasons returns the closed reason set (stable order). It exists so a test can
@@ -60,7 +65,7 @@ func SendReasons() []SendReason {
 	return []SendReason{
 		ReasonSMTPNotConfigured, ReasonNoRecipient, ReasonSMTPDialFailed,
 		ReasonSMTPTimeout, ReasonSMTPConnectionLost, ReasonSMTPPermanentRejection,
-		ReasonSMTPTransientRejection, ReasonSMTPProtocolError,
+		ReasonSMTPTransientRejection, ReasonSMTPProtocolError, ReasonWindowUnrecordable,
 	}
 }
 
@@ -104,6 +109,30 @@ func (e *SendError) Permanent() bool {
 	}
 }
 
+// SendBarrier is invoked by a Mailer at the instant the exchange is about to enter its
+// genuinely AMBIGUOUS window — the body terminator is about to be written and the
+// relay's verdict awaited. Everything before that point is a DEFINITIVE non-acceptance:
+// the relay provably holds nothing, so the delivery may be retried without risking a
+// duplicate.
+//
+// The digest uses it to record the window DURABLY before entering it, which is what
+// confines the terminal `unconfirmed` state to genuine ambiguity. It returns an error
+// when the window could not be recorded; the Mailer MUST then abandon the send WITHOUT
+// entering the window (fail closed — never enter an unrecordable ambiguous window).
+type SendBarrier func(ctx context.Context) error
+
+// BarrierMailer is the OPTIONAL capability a Mailer implements when it can report its
+// post-DATA boundary precisely. A Mailer that does not implement it is treated
+// CONSERVATIVELY: the whole exchange counts as the ambiguous window, so an abandoned
+// send is never resent.
+type BarrierMailer interface {
+	Mailer
+	// SendReportingAmbiguity sends msg, invoking enter exactly once immediately before
+	// the exchange enters its ambiguous window. An error from enter aborts the send
+	// before the window is entered and is returned as a DEFINITIVE failure.
+	SendReportingAmbiguity(ctx context.Context, msg Message, enter SendBarrier) error
+}
+
 // smtpDefaultTimeout bounds a send when the caller supplied no deadline. A relay that
 // never answers must never hold a worker slot indefinitely (bounded fan-out: one
 // tenant's hanging relay cannot consume the digest queue's capacity).
@@ -140,6 +169,19 @@ func NewSMTPMailer(addr, from string) *SMTPMailer {
 // closed on an empty destination or an unconfigured mailer rather than dropping mail
 // silently, and it never lets relay response text escape.
 func (m *SMTPMailer) Send(ctx context.Context, msg Message) error {
+	return m.SendReportingAmbiguity(ctx, msg, func(context.Context) error { return nil })
+}
+
+// errAmbiguousWindowUnrecordable marks a send abandoned because the caller could not
+// durably record the ambiguous window. Nothing was transmitted, so it is DEFINITIVE.
+var errAmbiguousWindowUnrecordable = errors.New("notify: ambiguous send window could not be recorded")
+
+// SendReportingAmbiguity is Send with the post-DATA boundary reported to the caller. It
+// invokes enter exactly once, after the body has been written but BEFORE the terminator
+// is sent and the relay's verdict awaited — the only genuinely ambiguous point in the
+// exchange. If enter fails the send is abandoned right there, before the window opens,
+// so the delivery stays definitively retryable rather than becoming unresolvable.
+func (m *SMTPMailer) SendReportingAmbiguity(ctx context.Context, msg Message, enter SendBarrier) error {
 	if m.addr == "" || m.from == "" {
 		return &SendError{Reason: ReasonSMTPNotConfigured}
 	}
@@ -187,6 +229,12 @@ func (m *SMTPMailer) Send(ctx context.Context, msg Message) error {
 		// The body was not fully transmitted and the terminator was never written, so
 		// the relay cannot have accepted it: DEFINITIVE, not ambiguous.
 		return classifySend(ctx, err, false, ReasonSMTPConnectionLost)
+	}
+	// The ambiguous window is about to open. Report it BEFORE crossing the boundary so
+	// the caller can record it durably; if it cannot, abandon the send here — nothing has
+	// been accepted yet, so this is a DEFINITIVE, retryable non-acceptance.
+	if err := enter(ctx); err != nil {
+		return classifySend(ctx, errAmbiguousWindowUnrecordable, false, ReasonWindowUnrecordable)
 	}
 	// Closing the DATA writer sends the terminator AND reads the relay's final verdict.
 	// This is the only genuinely ambiguous point in the exchange.

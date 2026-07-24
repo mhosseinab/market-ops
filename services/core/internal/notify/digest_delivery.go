@@ -88,6 +88,11 @@ const (
 	// DigestReasonCanceled — the attempt's context was canceled or its deadline
 	// elapsed before the work completed.
 	DigestReasonCanceled DigestReason = "canceled"
+	// DigestReasonSendNotInitiated — a previous attempt was abandoned while holding the
+	// 'sending' claim but BEFORE the exchange entered its ambiguous post-DATA window.
+	// Nothing could have been accepted, so the claim is released and retried rather than
+	// written off as unconfirmed.
+	DigestReasonSendNotInitiated DigestReason = "send_not_initiated"
 )
 
 // DigestReasons returns the closed digest-reason set (stable order) so a test can pin
@@ -97,7 +102,7 @@ func DigestReasons() []DigestReason {
 		DigestReasonEmptyDay, DigestReasonAllItemsIsolated, DigestReasonUnsendableTarget,
 		DigestReasonResolveError, DigestReasonRenderError, DigestReasonQueryError,
 		DigestReasonClaimError, DigestReasonSendError, DigestReasonAttemptsExhausted,
-		DigestReasonSendOutcomeUnknown, DigestReasonCanceled,
+		DigestReasonSendOutcomeUnknown, DigestReasonCanceled, DigestReasonSendNotInitiated,
 	}
 }
 
@@ -112,6 +117,11 @@ type DigestDelivery struct {
 	Reason      string
 	StatusCode  int32
 	UpdatedAt   time.Time
+	// Ambiguous records whether the in-flight (or abandoned) send had entered its
+	// genuinely ambiguous post-DATA window. False means the relay provably holds
+	// nothing, so the claim is safe to release and retry; true means acceptance cannot
+	// be disproven, so the row finalizes 'unconfirmed' and is never resent.
+	Ambiguous bool
 }
 
 // Terminal reports whether the row has reached a state that must never be re-driven.
@@ -140,19 +150,33 @@ type DigestDeliveryStore interface {
 	Get(ctx context.Context, account uuid.UUID, day time.Time) (rec DigestDelivery, found bool, err error)
 	// MarkSending performs the guarded pending → sending claim. claimed=false means
 	// another drive already holds the claim (or the row is terminal) — an idempotent
-	// no-op, never a duplicate send.
-	MarkSending(ctx context.Context, account uuid.UUID, day time.Time, at time.Time) (claimed bool, err error)
-	// MarkDelivered performs the guarded sending → delivered transition.
-	MarkDelivered(ctx context.Context, account uuid.UUID, day time.Time, at time.Time) error
+	// no-op, never a duplicate send. ambiguous is the marker the attempt STARTS with:
+	// false when the mailer can report its own post-DATA boundary (the marker is then
+	// narrowed upward by MarkAmbiguous at the real boundary), true when it cannot and
+	// the whole exchange must be treated conservatively as the ambiguous window.
+	MarkSending(ctx context.Context, account uuid.UUID, day time.Time, at time.Time, ambiguous bool) (claimed bool, err error)
+	// MarkAmbiguous raises the ambiguity marker on a live 'sending' claim at the moment
+	// the exchange enters its genuinely ambiguous post-DATA window. applied=false means
+	// the claim is no longer live (a guard miss), which the caller must NOT treat as a
+	// recorded window.
+	MarkAmbiguous(ctx context.Context, account uuid.UUID, day time.Time, at time.Time) (applied bool, err error)
+	// MarkDelivered performs the guarded sending → delivered transition. applied=false
+	// is a guard MISS: the durable row did not change, so no delivered signal may fire.
+	MarkDelivered(ctx context.Context, account uuid.UUID, day time.Time, at time.Time) (applied bool, err error)
 	// ReleaseToPending performs the guarded sending → pending transition after a
 	// DEFINITIVE non-acceptance, so a retry cannot duplicate an accepted message.
 	ReleaseToPending(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) error
-	// MarkSkipped performs the guarded pending → skipped transition.
-	MarkSkipped(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, at time.Time) error
-	// MarkDeadLetter performs the guarded pending → dead_letter transition.
-	MarkDeadLetter(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) error
-	// MarkUnconfirmed performs the guarded sending → unconfirmed transition.
-	MarkUnconfirmed(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) error
+	// MarkSkipped performs the guarded pending → skipped transition. applied=false is a
+	// guard miss (no terminal signal may fire).
+	MarkSkipped(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, at time.Time) (applied bool, err error)
+	// MarkDeadLetter performs the guarded pending → dead_letter transition. applied=false
+	// is a guard miss (no terminal signal may fire).
+	MarkDeadLetter(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) (applied bool, err error)
+	// MarkUnconfirmed performs the guarded sending → unconfirmed transition. It is
+	// additionally guarded on the durable ambiguity marker, so a row that provably never
+	// entered the post-DATA window can never be written off as unconfirmed.
+	// applied=false is a guard miss (no terminal signal may fire).
+	MarkUnconfirmed(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) (applied bool, err error)
 	// BumpAttempt records a transient failed attempt while the row stays pending.
 	BumpAttempt(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) error
 	// ListNonterminal is the OWNED RECOVERY source: every nonterminal row of any
@@ -188,6 +212,7 @@ func toDelivery(row db.NotificationDigestDelivery) DigestDelivery {
 		Reason:      row.LastReason.String,
 		StatusCode:  row.LastStatusCode,
 		UpdatedAt:   row.UpdatedAt.UTC(),
+		Ambiguous:   row.Ambiguous,
 	}
 }
 
@@ -222,14 +247,11 @@ func (s *DBDigestDeliveryStore) Get(ctx context.Context, account uuid.UUID, day 
 	return toDelivery(row), true, nil
 }
 
-// MarkSending claims the row for a send. A guard miss (pgx.ErrNoRows) means another
-// drive holds the claim or the row is terminal: claimed=false, no error, no send.
-func (s *DBDigestDeliveryStore) MarkSending(ctx context.Context, account uuid.UUID, day time.Time, at time.Time) (bool, error) {
-	_, err := db.New(s.pool).MarkDigestDeliverySending(ctx, db.MarkDigestDeliverySendingParams{
-		MarketplaceAccountID: account,
-		BusinessDay:          digestDay(day),
-		UpdatedAt:            at.UTC(),
-	})
+// applied normalizes a guarded UPDATE result. pgx.ErrNoRows means the guard MATCHED
+// NOTHING — the durable row did not change — which every caller must distinguish from a
+// landed write, because a signal for a state that was never persisted is exactly the
+// failure the terminal-unpersisted path exists to prevent.
+func applied(err error) (bool, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -239,18 +261,38 @@ func (s *DBDigestDeliveryStore) MarkSending(ctx context.Context, account uuid.UU
 	return true, nil
 }
 
-// MarkDelivered performs the guarded sending → delivered transition. A guard miss is an
-// idempotent no-op (already finalized by a concurrent drive).
-func (s *DBDigestDeliveryStore) MarkDelivered(ctx context.Context, account uuid.UUID, day time.Time, at time.Time) error {
+// MarkSending claims the row for a send. A guard miss (pgx.ErrNoRows) means another
+// drive holds the claim or the row is terminal: claimed=false, no error, no send.
+func (s *DBDigestDeliveryStore) MarkSending(ctx context.Context, account uuid.UUID, day time.Time, at time.Time, ambiguous bool) (bool, error) {
+	_, err := db.New(s.pool).MarkDigestDeliverySending(ctx, db.MarkDigestDeliverySendingParams{
+		MarketplaceAccountID: account,
+		BusinessDay:          digestDay(day),
+		UpdatedAt:            at.UTC(),
+		Ambiguous:            ambiguous,
+	})
+	return applied(err)
+}
+
+// MarkAmbiguous raises the ambiguity marker on a live claim at the post-DATA boundary.
+func (s *DBDigestDeliveryStore) MarkAmbiguous(ctx context.Context, account uuid.UUID, day time.Time, at time.Time) (bool, error) {
+	_, err := db.New(s.pool).MarkDigestDeliveryAmbiguous(ctx, db.MarkDigestDeliveryAmbiguousParams{
+		MarketplaceAccountID: account,
+		BusinessDay:          digestDay(day),
+		UpdatedAt:            at.UTC(),
+	})
+	return applied(err)
+}
+
+// MarkDelivered performs the guarded sending → delivered transition. A guard miss
+// (applied=false) means the row was already finalized by a concurrent drive — an
+// idempotent no-op that must NOT be reported as a delivery this attempt landed.
+func (s *DBDigestDeliveryStore) MarkDelivered(ctx context.Context, account uuid.UUID, day time.Time, at time.Time) (bool, error) {
 	_, err := db.New(s.pool).MarkDigestDeliveryDelivered(ctx, db.MarkDigestDeliveryDeliveredParams{
 		MarketplaceAccountID: account,
 		BusinessDay:          digestDay(day),
 		UpdatedAt:            at.UTC(),
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	return err
+	return applied(err)
 }
 
 // ReleaseToPending performs the guarded sending → pending transition.
@@ -269,21 +311,18 @@ func (s *DBDigestDeliveryStore) ReleaseToPending(ctx context.Context, account uu
 }
 
 // MarkSkipped performs the guarded pending → skipped transition.
-func (s *DBDigestDeliveryStore) MarkSkipped(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, at time.Time) error {
+func (s *DBDigestDeliveryStore) MarkSkipped(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, at time.Time) (bool, error) {
 	_, err := db.New(s.pool).MarkDigestDeliverySkipped(ctx, db.MarkDigestDeliverySkippedParams{
 		MarketplaceAccountID: account,
 		BusinessDay:          digestDay(day),
 		UpdatedAt:            at.UTC(),
 		LastReason:           boundedReason(reason),
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	return err
+	return applied(err)
 }
 
 // MarkDeadLetter performs the guarded pending → dead_letter transition.
-func (s *DBDigestDeliveryStore) MarkDeadLetter(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) error {
+func (s *DBDigestDeliveryStore) MarkDeadLetter(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) (bool, error) {
 	_, err := db.New(s.pool).MarkDigestDeliveryDeadLetter(ctx, db.MarkDigestDeliveryDeadLetterParams{
 		MarketplaceAccountID: account,
 		BusinessDay:          digestDay(day),
@@ -291,14 +330,13 @@ func (s *DBDigestDeliveryStore) MarkDeadLetter(ctx context.Context, account uuid
 		LastReason:           boundedReason(reason),
 		LastStatusCode:       code,
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	return err
+	return applied(err)
 }
 
-// MarkUnconfirmed performs the guarded sending → unconfirmed transition.
-func (s *DBDigestDeliveryStore) MarkUnconfirmed(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) error {
+// MarkUnconfirmed performs the guarded sending → unconfirmed transition. The query is
+// additionally guarded on the ambiguity marker, so a definitively-not-transmitted row
+// yields applied=false rather than a false "we may have delivered".
+func (s *DBDigestDeliveryStore) MarkUnconfirmed(ctx context.Context, account uuid.UUID, day time.Time, reason DigestReason, code int32, at time.Time) (bool, error) {
 	_, err := db.New(s.pool).MarkDigestDeliveryUnconfirmed(ctx, db.MarkDigestDeliveryUnconfirmedParams{
 		MarketplaceAccountID: account,
 		BusinessDay:          digestDay(day),
@@ -306,10 +344,7 @@ func (s *DBDigestDeliveryStore) MarkUnconfirmed(ctx context.Context, account uui
 		LastReason:           boundedReason(reason),
 		LastStatusCode:       code,
 	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	return err
+	return applied(err)
 }
 
 // BumpAttempt records a transient failed attempt while the row stays pending.

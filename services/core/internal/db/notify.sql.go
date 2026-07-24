@@ -17,7 +17,7 @@ const bumpDigestDeliveryAttempt = `-- name: BumpDigestDeliveryAttempt :one
 UPDATE notification_digest_deliveries
 SET attempts = attempts + 1, updated_at = $3, last_reason = $4, last_status_code = $5
 WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'pending'
-RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
 `
 
 type BumpDigestDeliveryAttemptParams struct {
@@ -50,6 +50,7 @@ func (q *Queries) BumpDigestDeliveryAttempt(ctx context.Context, arg BumpDigestD
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }
@@ -170,7 +171,7 @@ const ensureDigestDelivery = `-- name: EnsureDigestDelivery :one
 INSERT INTO notification_digest_deliveries (marketplace_account_id, business_day)
 VALUES ($1, $2)
 ON CONFLICT (marketplace_account_id, business_day) DO NOTHING
-RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
 `
 
 type EnsureDigestDeliveryParams struct {
@@ -205,6 +206,7 @@ func (q *Queries) EnsureDigestDelivery(ctx context.Context, arg EnsureDigestDeli
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }
@@ -233,7 +235,7 @@ func (q *Queries) GetDigestByAccountDay(ctx context.Context, arg GetDigestByAcco
 }
 
 const getDigestDelivery = `-- name: GetDigestDelivery :one
-SELECT id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at FROM notification_digest_deliveries
+SELECT id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous FROM notification_digest_deliveries
 WHERE marketplace_account_id = $1 AND business_day = $2
 `
 
@@ -258,6 +260,7 @@ func (q *Queries) GetDigestDelivery(ctx context.Context, arg GetDigestDeliveryPa
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }
@@ -475,7 +478,7 @@ func (q *Queries) ListDigestItems(ctx context.Context, digestID uuid.UUID) ([]No
 }
 
 const listNonterminalDigestDeliveries = `-- name: ListNonterminalDigestDeliveries :many
-SELECT id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at FROM notification_digest_deliveries
+SELECT id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous FROM notification_digest_deliveries
 WHERE (
         delivery_state = 'pending'
         OR (delivery_state = 'sending' AND updated_at < $1::timestamptz)
@@ -522,6 +525,7 @@ func (q *Queries) ListNonterminalDigestDeliveries(ctx context.Context, arg ListN
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.FinalizedAt,
+			&i.Ambiguous,
 		); err != nil {
 			return nil, err
 		}
@@ -652,11 +656,49 @@ func (q *Queries) ListPendingDigestNotifications(ctx context.Context, arg ListPe
 	return items, nil
 }
 
+const markDigestDeliveryAmbiguous = `-- name: MarkDigestDeliveryAmbiguous :one
+UPDATE notification_digest_deliveries
+SET ambiguous = true, updated_at = $3
+WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'sending'
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
+`
+
+type MarkDigestDeliveryAmbiguousParams struct {
+	MarketplaceAccountID uuid.UUID
+	BusinessDay          pgtype.Date
+	UpdatedAt            time.Time
+}
+
+// Raises the AMBIGUITY marker on an in-flight send at the moment the exchange enters
+// its genuinely ambiguous window (the body terminator is about to be written and the
+// relay's verdict awaited). From here acceptance cannot be disproven, so a row
+// abandoned after this point is finalized 'unconfirmed' and never resent. Guarded on
+// 'sending': it can only ever narrow a live claim.
+func (q *Queries) MarkDigestDeliveryAmbiguous(ctx context.Context, arg MarkDigestDeliveryAmbiguousParams) (NotificationDigestDelivery, error) {
+	row := q.db.QueryRow(ctx, markDigestDeliveryAmbiguous, arg.MarketplaceAccountID, arg.BusinessDay, arg.UpdatedAt)
+	var i NotificationDigestDelivery
+	err := row.Scan(
+		&i.ID,
+		&i.MarketplaceAccountID,
+		&i.BusinessDay,
+		&i.DeliveryState,
+		&i.Attempts,
+		&i.LastReason,
+		&i.LastStatusCode,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.FinalizedAt,
+		&i.Ambiguous,
+	)
+	return i, err
+}
+
 const markDigestDeliveryDeadLetter = `-- name: MarkDigestDeliveryDeadLetter :one
 UPDATE notification_digest_deliveries
-SET delivery_state = 'dead_letter', updated_at = $3, finalized_at = $3, last_reason = $4, last_status_code = $5
+SET delivery_state = 'dead_letter', attempts = attempts + 1, updated_at = $3, finalized_at = $3,
+    last_reason = $4, last_status_code = $5
 WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'pending'
-RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
 `
 
 type MarkDigestDeliveryDeadLetterParams struct {
@@ -691,15 +733,17 @@ func (q *Queries) MarkDigestDeliveryDeadLetter(ctx context.Context, arg MarkDige
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }
 
 const markDigestDeliveryDelivered = `-- name: MarkDigestDeliveryDelivered :one
 UPDATE notification_digest_deliveries
-SET delivery_state = 'delivered', updated_at = $3, finalized_at = $3, last_reason = NULL, last_status_code = 0
+SET delivery_state = 'delivered', attempts = attempts + 1, updated_at = $3, finalized_at = $3,
+    ambiguous = false, last_reason = NULL, last_status_code = 0
 WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'sending'
-RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
 `
 
 type MarkDigestDeliveryDeliveredParams struct {
@@ -725,29 +769,52 @@ func (q *Queries) MarkDigestDeliveryDelivered(ctx context.Context, arg MarkDiges
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }
 
 const markDigestDeliverySending = `-- name: MarkDigestDeliverySending :one
+
 UPDATE notification_digest_deliveries
-SET delivery_state = 'sending', attempts = attempts + 1, updated_at = $3, last_reason = NULL, last_status_code = 0
+SET delivery_state = 'sending', ambiguous = $4, updated_at = $3
 WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'pending'
-RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
 `
 
 type MarkDigestDeliverySendingParams struct {
 	MarketplaceAccountID uuid.UUID
 	BusinessDay          pgtype.Date
 	UpdatedAt            time.Time
+	Ambiguous            bool
 }
 
+// ATTEMPT ACCOUNTING. `attempts` is incremented EXACTLY ONCE per attempt, by whichever
+// write CONCLUDES that attempt (bump, delivered, skipped, dead_letter, unconfirmed).
+// The mid-attempt transitions — the 'sending' claim and the release back to 'pending'
+// after a definitive non-acceptance — deliberately do NOT increment: incrementing on
+// both the claim and the concluding write made the column read roughly double the truth,
+// which silently halves the apparent headroom of the bounded per-account retry budget.
 // pending → sending: the send is about to be INITIATED and its outcome becomes
 // unknown until the relay answers. Committed BEFORE the SMTP conversation starts, so a
-// crash mid-send leaves the ambiguous marker instead of a resend hazard. Guarded on
+// crash mid-send leaves an ambiguity marker instead of a resend hazard. Guarded on
 // 'pending' so a concurrent drive claims it at most once.
+//
+// $4 is the AMBIGUITY marker this attempt starts with. A mailer that can report its
+// post-DATA boundary starts DEFINITIVE (false) and is narrowed upward by
+// MarkDigestDeliveryAmbiguous at the real boundary; a mailer that cannot report it
+// starts true, so the whole exchange is treated conservatively as the ambiguous window.
+//
+// last_reason / last_status_code are PRESERVED across the claim: erasing them at the
+// start of every retry destroyed the previous attempt's diagnosis, so a flapping
+// tenant's history could not be read off its own row.
 func (q *Queries) MarkDigestDeliverySending(ctx context.Context, arg MarkDigestDeliverySendingParams) (NotificationDigestDelivery, error) {
-	row := q.db.QueryRow(ctx, markDigestDeliverySending, arg.MarketplaceAccountID, arg.BusinessDay, arg.UpdatedAt)
+	row := q.db.QueryRow(ctx, markDigestDeliverySending,
+		arg.MarketplaceAccountID,
+		arg.BusinessDay,
+		arg.UpdatedAt,
+		arg.Ambiguous,
+	)
 	var i NotificationDigestDelivery
 	err := row.Scan(
 		&i.ID,
@@ -760,15 +827,17 @@ func (q *Queries) MarkDigestDeliverySending(ctx context.Context, arg MarkDigestD
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }
 
 const markDigestDeliverySkipped = `-- name: MarkDigestDeliverySkipped :one
 UPDATE notification_digest_deliveries
-SET delivery_state = 'skipped', updated_at = $3, finalized_at = $3, last_reason = $4, last_status_code = 0
+SET delivery_state = 'skipped', attempts = attempts + 1, updated_at = $3, finalized_at = $3,
+    last_reason = $4, last_status_code = 0
 WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'pending'
-RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
 `
 
 type MarkDigestDeliverySkippedParams struct {
@@ -800,15 +869,18 @@ func (q *Queries) MarkDigestDeliverySkipped(ctx context.Context, arg MarkDigestD
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }
 
 const markDigestDeliveryUnconfirmed = `-- name: MarkDigestDeliveryUnconfirmed :one
 UPDATE notification_digest_deliveries
-SET delivery_state = 'unconfirmed', updated_at = $3, finalized_at = $3, last_reason = $4, last_status_code = $5
-WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'sending'
-RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at
+SET delivery_state = 'unconfirmed', attempts = attempts + 1, updated_at = $3, finalized_at = $3,
+    last_reason = $4, last_status_code = $5
+WHERE marketplace_account_id = $1 AND business_day = $2
+  AND delivery_state = 'sending' AND ambiguous
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
 `
 
 type MarkDigestDeliveryUnconfirmedParams struct {
@@ -819,11 +891,13 @@ type MarkDigestDeliveryUnconfirmedParams struct {
 	LastStatusCode       int32
 }
 
-// sending → unconfirmed: TERMINAL AMBIGUOUS. The send was initiated but acceptance
-// could never be established (connection lost after DATA, process crash, or exhausted
-// attempts while still ambiguous). It does NOT claim delivery, and the row is never
-// re-driven: zero resend outranks a speculative re-send repair (idempotency is
-// never-cut; a duplicate delivery must never create a duplicate product event).
+// sending → unconfirmed: TERMINAL AMBIGUOUS. The send was initiated, the exchange
+// entered its post-DATA window, and acceptance could never be established (lost verdict,
+// process crash, or exhausted attempts while still ambiguous). It does NOT claim
+// delivery, and the row is never re-driven: zero resend outranks a speculative re-send
+// repair (idempotency is never-cut; a duplicate delivery must never create a duplicate
+// product event). Guarded on 'sending' AND on the durable ambiguity marker, so a row
+// that provably never entered the window can NOT be written off as unconfirmed.
 func (q *Queries) MarkDigestDeliveryUnconfirmed(ctx context.Context, arg MarkDigestDeliveryUnconfirmedParams) (NotificationDigestDelivery, error) {
 	row := q.db.QueryRow(ctx, markDigestDeliveryUnconfirmed,
 		arg.MarketplaceAccountID,
@@ -844,6 +918,7 @@ func (q *Queries) MarkDigestDeliveryUnconfirmed(ctx context.Context, arg MarkDig
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }
@@ -963,9 +1038,10 @@ func (q *Queries) MarkUrgentOutboxDelivered(ctx context.Context, arg MarkUrgentO
 
 const releaseDigestDeliveryToPending = `-- name: ReleaseDigestDeliveryToPending :one
 UPDATE notification_digest_deliveries
-SET delivery_state = 'pending', updated_at = $3, last_reason = $4, last_status_code = $5
+SET delivery_state = 'pending', updated_at = $3, ambiguous = false,
+    last_reason = $4, last_status_code = $5
 WHERE marketplace_account_id = $1 AND business_day = $2 AND delivery_state = 'sending'
-RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at
+RETURNING id, marketplace_account_id, business_day, delivery_state, attempts, last_reason, last_status_code, created_at, updated_at, finalized_at, ambiguous
 `
 
 type ReleaseDigestDeliveryToPendingParams struct {
@@ -977,10 +1053,11 @@ type ReleaseDigestDeliveryToPendingParams struct {
 }
 
 // sending → pending: the relay DEFINITIVELY did not accept the message (a typed SMTP
-// response, or a failure before any DATA was written), so a retry cannot duplicate it.
-// Releasing the ambiguous marker is only ever driven by a definitive non-acceptance —
+// response, or a failure before the body terminator was written), so a retry cannot
+// duplicate it. Releasing the claim is only ever driven by a definitive non-acceptance —
 // an UNKNOWN outcome stays 'sending' and is never released. last_reason is a bounded
-// machine token; last_status_code is the numeric relay code (0 when none).
+// machine token; last_status_code is the numeric relay code (0 when none). The ambiguity
+// marker is cleared with the release: the next attempt starts its own window.
 func (q *Queries) ReleaseDigestDeliveryToPending(ctx context.Context, arg ReleaseDigestDeliveryToPendingParams) (NotificationDigestDelivery, error) {
 	row := q.db.QueryRow(ctx, releaseDigestDeliveryToPending,
 		arg.MarketplaceAccountID,
@@ -1001,6 +1078,7 @@ func (q *Queries) ReleaseDigestDeliveryToPending(ctx context.Context, arg Releas
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.FinalizedAt,
+		&i.Ambiguous,
 	)
 	return i, err
 }

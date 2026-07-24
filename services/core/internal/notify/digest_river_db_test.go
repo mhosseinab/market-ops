@@ -69,23 +69,23 @@ func (f *faultyDeliveryStore) down() bool {
 	return f.armed
 }
 
-func (f *faultyDeliveryStore) MarkDelivered(ctx context.Context, a uuid.UUID, d time.Time, at time.Time) error {
+func (f *faultyDeliveryStore) MarkDelivered(ctx context.Context, a uuid.UUID, d time.Time, at time.Time) (bool, error) {
 	if f.down() {
-		return errTerminalWriteDown
+		return false, errTerminalWriteDown
 	}
 	return f.DigestDeliveryStore.MarkDelivered(ctx, a, d, at)
 }
 
-func (f *faultyDeliveryStore) MarkDeadLetter(ctx context.Context, a uuid.UUID, d time.Time, r notify.DigestReason, c int32, at time.Time) error {
+func (f *faultyDeliveryStore) MarkDeadLetter(ctx context.Context, a uuid.UUID, d time.Time, r notify.DigestReason, c int32, at time.Time) (bool, error) {
 	if f.down() {
-		return errTerminalWriteDown
+		return false, errTerminalWriteDown
 	}
 	return f.DigestDeliveryStore.MarkDeadLetter(ctx, a, d, r, c, at)
 }
 
-func (f *faultyDeliveryStore) MarkUnconfirmed(ctx context.Context, a uuid.UUID, d time.Time, r notify.DigestReason, c int32, at time.Time) error {
+func (f *faultyDeliveryStore) MarkUnconfirmed(ctx context.Context, a uuid.UUID, d time.Time, r notify.DigestReason, c int32, at time.Time) (bool, error) {
 	if f.down() {
-		return errTerminalWriteDown
+		return false, errTerminalWriteDown
 	}
 	return f.DigestDeliveryStore.MarkUnconfirmed(ctx, a, d, r, c, at)
 }
@@ -221,9 +221,11 @@ func TestRiver_CorrelatedTerminalWriteFailureRecoversWithZeroResend(t *testing.T
 	// The re-driven attempt finalizes the row WITHOUT resending: acceptance could not be
 	// established, so it becomes the terminal AMBIGUOUS state, which never claims
 	// delivery and is never re-driven again.
-	waitFor(t, 20*time.Second, "recovery to finalize the abandoned row", func() bool {
-		s := deliveryState(t, pool, account, day)
-		return s == notify.DigestStateUnconfirmed || s == notify.DigestStateDelivered
+	// Pinned, not disjunctive: the relay ALREADY accepted this message, so `unconfirmed`
+	// is the only reachable terminal state here. Accepting `delivered` as well would let
+	// a regression that resent (and then legitimately marked delivered) pass unnoticed.
+	waitFor(t, 20*time.Second, "recovery to finalize the abandoned row as terminal AMBIGUOUS", func() bool {
+		return deliveryState(t, pool, account, day) == notify.DigestStateUnconfirmed
 	})
 
 	// THE INVARIANT: exactly one delivery, across the failure, the discard, the
