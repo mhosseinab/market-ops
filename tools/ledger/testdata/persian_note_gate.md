@@ -9,12 +9,21 @@
 # This pins the deliberate choice of a UNICODE-aware letter/digit test
 # (`str.isalnum()` over any character) instead of an ASCII `[0-9A-Za-z]` test,
 # which would reject this row and push evidence notes into English.
+#
+# The S2 gate note below contains NO ASCII alphanumeric character — that is what
+# makes the pin discriminating rather than decorative. MEASURED: swapping the
+# content test for an ASCII `[0-9A-Za-z]` predicate makes this fixture exit 1,
+# while it exits 0 under the shipped Unicode-aware test. (An earlier revision
+# used the Latin word `healthy` inside the Persian note, which an ASCII predicate
+# would also have accepted — the fixture then exited 0 under BOTH predicates and
+# pinned nothing.) The S6 row keeps Latin text on purpose: S6 never entered an
+# outstanding-verification state, so Rule 4 never reads its note.
 
 ## ⚠️ Deferred verification gate (run before S36 sign-off)
 - S6: first push to GitHub — all CI jobs green.
 
 <!-- LEDGER-VERIFICATION-GATES:BEGIN
-GATE S2 | satisfied | راه‌اندازی کامل روی میزبان بدون محدودیت اجرا شد؛ همهٔ سرویس‌ها healthy، نسخهٔ پایگاه داده ۱۸ تأیید شد
+GATE S2 | satisfied | راه‌اندازی کامل روی میزبان بدون محدودیت اجرا شد؛ همهٔ سرویس‌ها سالم، نسخهٔ پایگاه داده ۱۸ تأیید شد
 GATE S6 | satisfied | first-GitHub-run CI green on 71aadfc; mandatory ci:local + actionlint passed
 LEDGER-VERIFICATION-GATES:END -->
 

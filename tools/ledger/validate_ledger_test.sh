@@ -46,6 +46,12 @@ PERSIAN_NOTE_GATE="$HERE/testdata/persian_note_gate.md"
 REGISTRY_COLLAPSED="$HERE/testdata/registry_collapsed_block.md"
 REGISTRY_TRUNCATED="$HERE/testdata/registry_truncated_block.md"
 TRANSITIONS_COLLAPSED="$HERE/testdata/transitions_collapsed_block.md"
+# Issue #19 cycle-3: the delimiter shapes reached by DELETING or REORDERING a
+# marker rather than joining two, and the invisible-but-alphanumeric note.
+REGISTRY_UNTERMINATED="$HERE/testdata/registry_unterminated_block.md"
+TRANSITIONS_UNTERMINATED="$HERE/testdata/transitions_unterminated_block.md"
+REGISTRY_OUT_OF_ORDER="$HERE/testdata/registry_out_of_order_block.md"
+FILLER_NOTE_GATE="$HERE/testdata/filler_note_gate.md"
 LEDGER="$REPO_ROOT/docs/implementation/dk-p0-progress.md"
 
 fail=0
@@ -157,6 +163,12 @@ expect_exit "rejects punctuation-only satisfied note ('-')" 1 \
 #     digits — MUST be accepted. The content test is Unicode-aware on purpose;
 #     an ASCII [0-9A-Za-z] test would reject this and force evidence into
 #     English. Locale is data, never a reason to reject a record.
+#     MEASURED (cycle-3): the fixture's S2 gate note carries no ASCII
+#     alphanumeric character, so it exits 1 under an ASCII-predicate variant of
+#     the validator and 0 here — the pin discriminates between the two
+#     predicates. An earlier revision left the Latin word `healthy` in the note,
+#     which BOTH predicates accepted, so the pin was inert and a future
+#     hardening to ASCII would have kept this suite green.
 expect_exit "accepts a legitimate Persian-script evidence note" 0 \
   python3 "$VALIDATOR" --file "$PERSIAN_NOTE_GATE"
 
@@ -178,12 +190,43 @@ expect_exit "rejects duplicated registry terminator (hidden gate row)" 1 \
 expect_exit "rejects collapsed transition-log delimiter (prose TXN rows)" 1 \
   python3 "$VALIDATOR" --file "$TRANSITIONS_COLLAPSED"
 
-# 19. The real, now-reconciled orchestration ledger MUST be accepted (parity
+# --- Issue #19 (cycle-3): the SAME out-of-block payload as cases 16-18, reached
+# --- by DELETING or REORDERING a marker instead of joining two. A delimiter
+# --- check that only counts duplicates ("at most once") accepted all three:
+# --- each exits 0 under the pre-fix validator, with the injected out-of-block
+# --- row proven load-bearing (removing it flips the file to exit 1).
+
+# 19. NEGATIVE: a registry block whose END marker is simply ABSENT stays open to
+#     EOF, so the injected out-of-block `GATE S2 | satisfied` row became S2's
+#     unlock evidence. MUST be rejected.
+expect_exit "rejects unterminated registry block (no END marker)" 1 \
+  python3 "$VALIDATOR" --file "$REGISTRY_UNTERMINATED"
+
+# 20. NEGATIVE: the transition-log twin — no TXN END marker, so prose TXN rows
+#     were replayed as logged history and parity "held". MUST be rejected.
+expect_exit "rejects unterminated transition-log block (no END marker)" 1 \
+  python3 "$VALIDATOR" --file "$TRANSITIONS_UNTERMINATED"
+
+# 21. NEGATIVE: both markers present exactly ONCE but END before BEGIN — marker
+#     counts alone do not make a block well formed; the terminator closes nothing
+#     and the opener runs to EOF. MUST be rejected.
+expect_exit "rejects out-of-order registry delimiters (END before BEGIN)" 1 \
+  python3 "$VALIDATOR" --file "$REGISTRY_OUT_OF_ORDER"
+
+# 22. NEGATIVE: a `satisfied` note built only from the invisible Hangul fillers
+#     U+115F/U+1160/U+3164/U+FFA0. They are Unicode category Lo, so `isalnum()`
+#     is True for each and the note passed the content test, yet it renders blank
+#     — indistinguishable in review from the empty note of case 11 and the
+#     zero-width note of case 13, which are both rejected. MUST be rejected.
+expect_exit "rejects invisible-letter-filler satisfied note (U+3164 et al)" 1 \
+  python3 "$VALIDATOR" --file "$FILLER_NOTE_GATE"
+
+# 23. The real, now-reconciled orchestration ledger MUST be accepted (parity
 #    holds: every non-initial table state has a producing, legal transition).
 expect_exit "accepts the real reconciled ledger" 0 \
   python3 "$VALIDATOR" --file "$LEDGER"
 
-# 20. INPUT ERROR: an unreadable ledger (here: a directory) is neither a clean
+# 24. INPUT ERROR: an unreadable ledger (here: a directory) is neither a clean
 #     run (0) nor a violation (1) — it MUST exit 2 with an actionable message,
 #     never an unhandled traceback.
 expect_exit "exits 2 on an unreadable ledger path (no traceback)" 2 \

@@ -55,9 +55,10 @@ Three failure classes, all fail closed:
     DELETING the contradicting gate row (``testdata/erased_evidence.md``), by
     routing around it through a longer legal chain
     (``testdata/hop_laundered.md``), or by writing a ``satisfied`` token with no
-    record behind it — empty (``testdata/empty_note_gate.md``), invisible
-    (``testdata/zwsp_note_gate.md``) or punctuation-only
-    (``testdata/placeholder_note_gate.md``).
+    record behind it — empty (``testdata/empty_note_gate.md``), invisible via a
+    format character (``testdata/zwsp_note_gate.md``) or via an
+    invisible-but-alphanumeric Hangul filler (``testdata/filler_note_gate.md``),
+    or punctuation-only (``testdata/placeholder_note_gate.md``).
 
     This rule does NOT cover, among other residuals, a step logged straight
     ``pending -> passed``, a ``passed -> reopened -> passed`` re-pass, or
@@ -123,6 +124,18 @@ SATISFYING_GATES = {"satisfied"}
 # Leaving one of them for `passed` is exactly the moment the plan's
 # verification-and-unlock rule bites, so it requires positive evidence.
 OUTSTANDING_VERIFICATION_STATES = {"verify_pending", "blocked"}
+# Codepoints that are Unicode LETTERS (category Lo) — so `str.isalnum()` is True
+# for them — but that render blank in every common font. A note built from these
+# is indistinguishable in review from an empty note, so they are stripped before
+# the evidence-content test. A fixed codepoint set, never a language branch.
+INVISIBLE_LETTER_FILLERS = frozenset(
+    {
+        "ᅟ",  # HANGUL CHOSEONG FILLER
+        "ᅠ",  # HANGUL JUNGSEONG FILLER
+        "ㅤ",  # HANGUL FILLER
+        "ﾠ",  # HALFWIDTH HANGUL FILLER
+    }
+)
 
 STEP_RE = re.compile(r"^S\d+$")
 GATE_RE = re.compile(r"^GATE\s+(S\d+)\s*\|\s*([A-Za-z-]+)\s*\|")
@@ -171,7 +184,7 @@ def canon_state(raw: str) -> str:
 
 
 def has_evidence_content(note: str) -> bool:
-    """True when a gate note carries at least one letter or digit in ANY script.
+    """True when a gate note carries at least one letter, digit or numeric char.
 
     A `satisfied` GATE row IS the evidence record, so the note must say
     something. `str.strip()` is not enough to test that: it removes Unicode
@@ -184,46 +197,83 @@ def has_evidence_content(note: str) -> bool:
     (CLAUDE.md §11): a real evidence note written in Persian, with Persian-Indic
     digits and ZWNJ inside words, is a genuine record and must be accepted. An
     ASCII test would reject it and push evidence notes into English, which is a
-    localization-boundary violation, not a safety gain.
+    localization-boundary violation, not a safety gain. MEASURED: a Persian-Indic
+    digit (`۵`) is accepted, exactly as that choice predicts; `testdata/
+    persian_note_gate.md` pins the accept and exits 1 under an ASCII variant.
 
-    This is a floor on FORM, not on truth: see `validate_unlock_evidence` for the
-    residual it does not close.
+    `isalnum()` alone is not a VISIBILITY test, though: the four Hangul fillers
+    in `INVISIBLE_LETTER_FILLERS` are category Lo (letters), so `isalnum()` is
+    True for each while all four render blank in every common font. They are
+    removed before the test, so a note built only from them is rejected like an
+    empty one — MEASURED on `testdata/filler_note_gate.md`. This is a fixed
+    codepoint set, not a language or phrasing branch: no note in any script is
+    affected by it.
+
+    What is closed, precisely: a `satisfied` note that is empty,
+    whitespace-only, made of U+200B/U+200C, made of these four fillers, or
+    punctuation/symbol-only. What is NOT closed: any other invisible or
+    confusable codepoint outside that set, and the note's TRUTH — this is a floor
+    on FORM only. See `validate_unlock_evidence` for the full residual list.
     """
-    return any(ch.isalnum() for ch in note)
+    visible = "".join(ch for ch in note if ch not in INVISIBLE_LETTER_FILLERS)
+    return any(ch.isalnum() for ch in visible)
 
 
 def check_block_delimiters(text: str, begin_mark: str, end_mark: str) -> list[str]:
-    """Fail closed when a machine-checked block's delimiters are not well formed.
+    """Fail closed unless each delimiter appears EXACTLY once, BEGIN before END.
 
-    The delimiters are structure, not prose. Two shapes previously fell open:
+    The delimiters are structure, not prose. `parse_gate_registry` and
+    `parse_transition_log` set `inside = True` on the BEGIN line and clear it only
+    on an END line, so any shape that leaves the block open runs it to EOF and
+    every `GATE`/`TXN` row in ordinary document body is honoured as a registry
+    row. Four shapes reach that same payload, all MEASURED as accepted (exit 0)
+    before this check counted them:
 
-    * BEGIN and END on ONE line — the scan tested BEGIN first and `continue`d, so
-      the block opened and never closed and every `GATE`/`TXN` row in the rest of
-      the document body was honoured as a registry row;
-    * a duplicated marker — any line merely CONTAINING the END token closed the
-      block, so a line of prose could silently truncate the registry and hide the
-      rows after it (a contradicting `pending-mandatory` row, for instance).
+    * BEGIN and END on ONE line (`testdata/registry_collapsed_block.md`,
+      `testdata/transitions_collapsed_block.md`);
+    * a MISSING END (`testdata/registry_unterminated_block.md`,
+      `testdata/transitions_unterminated_block.md`) — reached by deleting one
+      marker rather than joining two;
+    * END before BEGIN with both present exactly once
+      (`testdata/registry_out_of_order_block.md`) — marker COUNTS alone do not
+      make a block well formed;
+    * a duplicated marker (`testdata/registry_truncated_block.md`) — any line
+      merely CONTAINING the END token closes the block, so prose could silently
+      truncate the registry and hide the rows after it (a contradicting
+      `pending-mandatory` row, for instance).
 
-    Each marker must therefore appear on exactly one line, and never on the same
-    line as its partner.
+    So: `begin_mark` on exactly one line, `end_mark` on exactly one line, the
+    BEGIN line strictly before the END line, and never the same line. This is a
+    well-formedness check on the two delimiter tokens ONLY. It does not make the
+    block immutable, and it says nothing about the rows inside it.
     """
     errors: list[str] = []
     lines = text.splitlines()
-    begins = sum(1 for line in lines if begin_mark in line)
-    ends = sum(1 for line in lines if end_mark in line)
-    both = [line for line in lines if begin_mark in line and end_mark in line]
+    begin_lines = [i for i, line in enumerate(lines) if begin_mark in line]
+    end_lines = [i for i, line in enumerate(lines) if end_mark in line]
+    both = [lines[i] for i in begin_lines if i in set(end_lines)]
     if both:
         errors.append(
             f"{begin_mark} and {end_mark} appear on the SAME line "
             f"({both[0].strip()!r}) — a collapsed delimiter is not an open block "
             f"(fail closed)."
         )
-    if begins > 1:
-        errors.append(f"{begin_mark} appears on {begins} lines — it must appear exactly once.")
-    if ends > 1:
+    if len(begin_lines) != 1:
         errors.append(
-            f"{end_mark} appears on {ends} lines — it must appear exactly once; a "
-            f"duplicate terminator silently truncates the block."
+            f"{begin_mark} appears on {len(begin_lines)} lines — it must appear "
+            f"exactly once."
+        )
+    if len(end_lines) != 1:
+        errors.append(
+            f"{end_mark} appears on {len(end_lines)} lines — it must appear "
+            f"exactly once; a missing terminator leaves the block open to EOF and "
+            f"a duplicate one silently truncates it."
+        )
+    if len(begin_lines) == 1 and len(end_lines) == 1 and begin_lines[0] >= end_lines[0]:
+        errors.append(
+            f"{end_mark} (line {end_lines[0] + 1}) does not follow {begin_mark} "
+            f"(line {begin_lines[0] + 1}) — a terminator that precedes its opener "
+            f"closes nothing and leaves the block open to EOF (fail closed)."
         )
     return errors
 
@@ -446,12 +496,18 @@ def validate_unlock_evidence(
 
     The note requirement is a floor on the FORM of the record, and only that.
     MEASURED, not intended: it rejects a `satisfied` note that is empty,
-    whitespace-only, built from invisible format characters (U+200B, U+200C),
-    punctuation-only (`-`, `.`, `?`) or symbol-only; it ACCEPTS any note carrying
-    one letter or digit in any script — including `x`, `n/a`, `see above` and
-    `TBD, not run yet`. It removes the class where a state token stands in for a
-    record with nothing visible behind it. It cannot tell a thin note from a
-    false one; that residual is named below.
+    whitespace-only, built from the invisible format characters U+200B / U+200C,
+    built from the four invisible Hangul fillers U+115F / U+1160 / U+3164 /
+    U+FFA0 (`INVISIBLE_LETTER_FILLERS`), or punctuation/symbol-only (`-`, `.`,
+    `?`); it ACCEPTS any note carrying one letter, digit or numeric character in
+    any script — including `x`, `n/a`, `see above`, `TBD, not run yet`, `۵`,
+    `Ⅷ` and `①`.
+
+    Stated exactly: for the invisible-note class it closes the SIX codepoints
+    named above, which are the ones with a pinned fixture. It is NOT a general
+    invisibility test — any other blank-rendering or confusable codepoint outside
+    that set still passes, and no fixture claims otherwise. It cannot tell a thin
+    note from a false one; that residual is named below.
 
     What this rule does NOT guarantee (known residuals, deliberately in the open)
     ---------------------------------------------------------------------------
@@ -478,6 +534,20 @@ def validate_unlock_evidence(
       ``| **S2** |`` or ``| s2 |`` does not match the step-cell pattern and is
       invisible to all four rules. Widening those patterns is a separate,
       fixture-backed change.
+    * DUPLICATE status rows for one step are LAST-WINS
+      (``parse_status_table``: ``statuses[step] = status``, pre-existing and
+      untouched). MEASURED on ``testdata/erased_evidence.md`` (exit 1): append a
+      second ``| S2 | Dev stack | verify-pending | ... |`` row inside a trailing
+      HTML comment and drop the ``verify-pending -> passed`` TXN row, and the
+      machine reads ``verify-pending`` — parity holds, Rule 4 never fires, the
+      file exits 0 — while the rendered table a human reads still shows S2 as
+      ``passed``. The rendered table and the parsed table can disagree. Closing
+      this means rejecting duplicate step rows outright — a status-table schema
+      decision, not a tweak inside these rules.
+    * ``has_evidence_content`` accepts Nl/No numeric characters as content, not
+      only Ll/Lu letters and Nd digits: ``Ⅷ``, ``①`` and ``²`` are each accepted
+      (MEASURED). That is the intended Unicode-aware floor, but it means the
+      accepted set is wider than "letter or digit".
     * ``passed -> reopened -> passed`` (and the `regressed` twin) is likewise not
       covered: `reopened`/`regressed` are not outstanding-verification states, and
       the accepted ``testdata/parity_reopened.md`` fixture pins that as legal
@@ -487,8 +557,9 @@ def validate_unlock_evidence(
       needs stable item IDs on GATE rows (registry-schema change).
     * The rule reads the transition log, which is an ordinary file section. Its
       delimiters are now well-formedness-checked (`check_block_delimiters`), so a
-      collapsed or duplicated marker fails closed rather than silently widening
-      or truncating the block, but the section is still editable: it is
+      collapsed, duplicated, missing or out-of-order marker fails closed rather
+      than silently widening or truncating the block, but the section is still
+      editable: it is
       deletion-resistant only insofar as parity independently requires a
       producing transition for every non-initial table state; it is not an
       immutable history.
