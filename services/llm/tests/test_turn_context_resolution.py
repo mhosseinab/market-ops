@@ -489,32 +489,37 @@ def test_context_kind_round_trips_through_the_domain_type() -> None:
         assert context_kind_for(kind.to_context_type()) is kind
 
 
-def test_chat_request_parses_the_gateway_bound_context() -> None:
+def test_chat_request_carries_the_gateway_bound_context_through_verbatim() -> None:
+    """The transport is a pass-through; the RESOLVER is the context validator.
+
+    Typing ``context`` as a typed model here would make FastAPI reject a
+    malformed payload with a 422 before ``resolve_turn_context`` ever ran — the
+    gateway reads any non-2xx as ``provider_unavailable``, so a context contract
+    mismatch would surface as "LLM plane down" with NO §12.4 structured failure
+    and NO resolution telemetry. The payload therefore crosses the transport
+    verbatim and is validated where the fail-closed seam lives.
+    """
     from llm.app import ChatRequest
 
+    payload = {"kind": "product", "entity_id": "v1", "version": "3"}
     req = ChatRequest.model_validate(
         {
             "message": "hi",
             "organization_id": ORG,
             "marketplace_account_id": ACCOUNT,
             # Unknown TOP-LEVEL keys stay forward-compatible (the gateway sends
-            # `locale`, `user_id`, ...); an unknown key INSIDE context does not.
+            # `locale`, `user_id`, ...).
             "locale": "fa-IR",
-            "context": {"kind": "product", "entity_id": "v1", "version": "3"},
+            "context": payload,
         }
     )
-    assert req.context is not None
-    assert req.context.kind is ContextKind.PRODUCT
-    assert req.context.entity_id == "v1"
+    assert req.context == payload
 
 
-def test_chat_request_rejects_a_typo_inside_the_context_payload() -> None:
-    from llm.app import ChatRequest
-
+def test_turn_context_rejects_a_typo_inside_the_context_payload() -> None:
+    """``extra="forbid"`` holds: a misspelled key never silently loses the subject."""
     with pytest.raises(ValidationError):
-        ChatRequest.model_validate(
-            {"message": "hi", "context": {"kind": "product", "entty_id": "v1"}}
-        )
+        TurnContext.model_validate({"kind": "product", "entty_id": "v1"})
 
 
 # --- 8. the wired /chat surface ----------------------------------------------
@@ -591,13 +596,59 @@ def test_chat_endpoint_renders_the_structured_picker_for_an_ambiguous_turn() -> 
         assert "approval" not in json.dumps(f).lower()
 
 
+def test_chat_endpoint_fails_closed_on_an_unknown_context_key_instead_of_422(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """F2: an unknown context key produces the §12.4 failure FRAME, never a 422.
+
+    A 422 is read by the gateway (``services/core/internal/httpapi/chat.go``) as a
+    transport error and surfaces as ``provider_unavailable`` — "LLM plane down"
+    for a context contract mismatch, with no deep link and, worse, NO
+    ``llm_context_resolution_total`` event: the fail-closed seam would be
+    invisible in telemetry (CLAUDE.md: a fallback engaging without an emitted
+    event is always a bug).
+    """
+    app = create_app(mock_settings())
+    with TestClient(app) as client, caplog.at_level("INFO", logger="llm.contextres"):
+        resp = client.post(
+            "/chat",
+            json={
+                "message": QUESTION_MESSAGE,
+                "organization_id": ORG,
+                "marketplace_account_id": ACCOUNT,
+                # `transition` is a real near-term ADDITIVE gateway key
+                # (conversation.RequestedContext.Transition) the LLM plane does
+                # not read yet. It must fail closed, structurally — not 422.
+                "context": {
+                    "kind": "product",
+                    "version": 1,
+                    "entity_id": "v-1",
+                    "organization_id": ORG,
+                    "account_id": ACCOUNT,
+                    "transition": True,
+                },
+            },
+            headers=AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        frames = _frames(resp.text)
+
+    assert [f for f in frames if f["kind"] == "token"] == []  # zero tokens
+    failure = next(f for f in frames if f["kind"] == "failure")
+    assert failure["failure"]["code"] == "CONTEXT_MALFORMED"
+    assert failure["failure"]["deep_link"]
+    # ...and the seam is observable: the resolution event WAS emitted.
+    record = next(r for r in caplog.records if r.message == "context_resolution")
+    assert record.metric == CONTEXT_RESOLUTION_METRIC  # type: ignore[attr-defined]
+    assert record.outcome == "not_found"  # type: ignore[attr-defined]
+    assert record.reason == "turn_context_malformed"  # type: ignore[attr-defined]
+
+
 def test_chat_transport_overrides_a_client_supplied_as_of_instant() -> None:
     """Freshness is the server's to assert, never the caller's (§12.3)."""
     from llm.app import _turn_context_state
 
-    stamped = _turn_context_state(
-        TurnContext.model_validate({"kind": "product", "now": "1999-01-01T00:00:00Z"})
-    )
+    stamped = _turn_context_state({"kind": "product", "now": "1999-01-01T00:00:00Z"})
     assert stamped is not None
     assert stamped["now"] != "1999-01-01T00:00:00Z"
     assert stamped["now"].endswith("Z")
@@ -617,6 +668,157 @@ def test_chat_endpoint_still_answers_a_context_less_turn() -> None:
 
     assert any(f["kind"] == "final" for f in frames)
     assert not any(f["kind"] == "failure" for f in frames)
+
+
+# --- 8b. cross-boundary contract guard: the LITERAL gateway producer shape -----
+#
+# Every other test in this module hand-builds its context payload. That is how F1
+# shipped green: the suite invented a shape no producer emitted. These tests post
+# the payload `httpLLMChat.StartTurn` actually marshals
+# (`services/core/internal/httpapi/chat.go`, the `payload` / `bound` maps) and are
+# the contract guard between the two planes. Mirror the producer exactly:
+#   * top level: user_id, organization_id, message, conversation_id,
+#     marketplace_account_id (omitted when the turn has no account), locale;
+#   * context:   kind, version (a JSON **int** — conversation.ContextBinding.Version
+#                is int32), entity_id (omitted when unbound), and the tenant
+#                provenance organization_id / account_id read from the PERSISTED
+#                conversation row — OMITTED, never zero-valued, when unrecorded.
+# The gateway sends nothing else: no references, time_phrase, business_timezone,
+# week_starts_on, recommendation_version or now.
+
+GW_USER = "11111111-1111-4111-8111-111111111111"
+GW_ORG = "22222222-2222-4222-8222-222222222222"
+GW_ACCOUNT = "33333333-3333-4333-8333-333333333333"
+GW_CONVERSATION = "44444444-4444-4444-8444-444444444444"
+GW_OTHER_ORG = "55555555-5555-4555-8555-555555555555"
+
+
+def _gateway_turn(
+    *,
+    message: str = QUESTION_MESSAGE,
+    account: str | None = GW_ACCOUNT,
+    context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """The literal JSON `httpLLMChat.StartTurn` marshals for one turn."""
+    payload: dict[str, Any] = {
+        "user_id": GW_USER,
+        "organization_id": GW_ORG,
+        "message": message,
+        "conversation_id": GW_CONVERSATION,
+        "locale": "fa-IR",
+    }
+    if account is not None:
+        payload["marketplace_account_id"] = account
+    if context is not None:
+        payload["context"] = context
+    return payload
+
+
+def _gateway_bound_context(
+    *,
+    org: str | None = GW_ORG,
+    account: str | None = GW_ACCOUNT,
+    entity_id: str | None = "variant-1",
+) -> dict[str, Any]:
+    """The literal `bound` map, with provenance omitted when unrecorded."""
+    bound: dict[str, Any] = {"kind": "product", "version": 1}
+    if entity_id is not None:
+        bound["entity_id"] = entity_id
+    if org is not None:
+        bound["organization_id"] = org
+    if account is not None:
+        bound["account_id"] = account
+    return bound
+
+
+def test_gateway_payload_without_provenance_fails_closed() -> None:
+    """The PRE-fix producer shape (no tenant keys) must never resolve — this is
+    the guard that would have caught F1: 100% of context-bound turns died."""
+    app = create_app(mock_settings())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chat",
+            json=_gateway_turn(context=_gateway_bound_context(org=None, account=None)),
+            headers=AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        frames = _frames(resp.text)
+
+    assert [f for f in frames if f["kind"] == "token"] == []
+    failure = next(f for f in frames if f["kind"] == "failure")
+    assert failure["failure"]["code"] == "CONTEXT_NOT_FOUND"
+
+
+def test_gateway_payload_from_a_foreign_tenant_fails_closed() -> None:
+    """Stored provenance != authenticated scope: quarantine, never a relabel."""
+    app = create_app(mock_settings())
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chat",
+            json=_gateway_turn(context=_gateway_bound_context(org=GW_OTHER_ORG)),
+            headers=AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        frames = _frames(resp.text)
+
+    assert [f for f in frames if f["kind"] == "token"] == []
+    failure = next(f for f in frames if f["kind"] == "failure")
+    assert failure["failure"]["code"] == "CONTEXT_NOT_FOUND"
+    assert GW_OTHER_ORG not in json.dumps(failure)
+
+
+def test_gateway_payload_without_an_account_fails_closed_as_scope_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The no-account continuation, pinned with its precise reason token.
+
+    When the request omits ``marketplaceAccountId`` the turn's AUTHENTICATED
+    scope has no account, so a context-bound turn fails closed with
+    ``CONTEXT_SCOPE_MISSING`` / ``request_scope_missing`` EVEN THOUGH the stored
+    provenance is now correct. That is fail-closed and correct: the scope check
+    is only meaningful when both sides are independently sourced. Do not "fix"
+    it by loosening the check or manufacturing an account — it is a reported
+    follow-up, and this test pins today's behavior so the fix is deliberate.
+    """
+    app = create_app(mock_settings())
+    with TestClient(app) as client, caplog.at_level("INFO", logger="llm.contextres"):
+        resp = client.post(
+            "/chat",
+            json=_gateway_turn(
+                account=None,
+                context=_gateway_bound_context(account=None),
+            ),
+            headers=AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        frames = _frames(resp.text)
+
+    failure = next(f for f in frames if f["kind"] == "failure")
+    assert failure["failure"]["code"] == "CONTEXT_SCOPE_MISSING"
+    record = next(r for r in caplog.records if r.message == "context_resolution")
+    assert record.outcome == "not_found"  # type: ignore[attr-defined]
+    assert record.reason == "request_scope_missing"  # type: ignore[attr-defined]
+
+
+def test_gateway_payload_on_the_web_client_path_resolves(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The REAL browser path (the dock always sends ``marketplaceAccountId``):
+    a context-bound turn with matching stored provenance RESOLVES end to end."""
+    app = create_app(mock_settings())
+    with TestClient(app) as client, caplog.at_level("INFO", logger="llm.contextres"):
+        resp = client.post(
+            "/chat",
+            json=_gateway_turn(context=_gateway_bound_context()),
+            headers=AUTH_HEADERS,
+        )
+        assert resp.status_code == 200
+        frames = _frames(resp.text)
+
+    assert not [f for f in frames if f["kind"] == "failure"]
+    assert any(f["kind"] == "final" for f in frames)
+    record = next(r for r in caplog.records if r.message == "context_resolution")
+    assert record.outcome == "resolved"  # type: ignore[attr-defined]
 
 
 # --- 9. observability ---------------------------------------------------------

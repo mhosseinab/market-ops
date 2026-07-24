@@ -103,12 +103,25 @@ def _as_identifier(value: Any, field: str) -> str | None:  # noqa: ANN401
 
 
 class TurnContext(BaseModel):
-    """The authoritative context a single ``/chat`` turn carries.
+    """The context payload a single ``/chat`` turn may carry.
 
-    Everything the deterministic resolver needs that the gateway can supply:
-    the single active chip (``kind`` + its bound identifiers), the explicit
-    entity references the turn named, the turn's time phrase, and the account's
-    calendar DATA (timezone / week start — never a locale branch, PRD §11).
+    This is the READER's full contract, not a description of what arrives today.
+    What the Go gateway's ``httpLLMChat.StartTurn`` actually marshals as of
+    commit ``8650569`` (``services/core/internal/httpapi/chat.go``) is only:
+
+    * ``kind`` — the conversation's bound context kind;
+    * ``version`` — the binding version, a JSON **int** (``int32`` in Go);
+    * ``entity_id`` — present only when the binding is entity-bound;
+    * ``organization_id`` / ``account_id`` — the binding's TENANT PROVENANCE,
+      read from the persisted conversation row, and OMITTED (never zero-valued)
+      when the row records none.
+
+    ``now`` is stamped by this plane's HTTP transport, never by the producer.
+    ``references``, ``time_phrase``, ``business_timezone``, ``week_starts_on``
+    and ``recommendation_version`` are modelled and honored by the resolver but
+    NO producer populates them yet — they arrive with the gateway read seam
+    (issue #108 sub-scope 108c). Until then a turn resolves from its active chip
+    alone, and in-process/eval callers are their only source.
 
     Candidates are deliberately NOT on the wire: they are authoritative read
     results and arrive through :class:`~llm.contextres.ports.CandidatePort`.

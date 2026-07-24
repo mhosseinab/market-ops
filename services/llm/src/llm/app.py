@@ -31,7 +31,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from llm.config import ProviderKind, Settings, load_settings
 from llm.contextres.ports import CandidatePort, NoCandidatePort
-from llm.contextres.turn import TurnContext
 from llm.envelope.models import ChatStreamEvent, StreamEventKind
 from llm.intents.classifier import IntentClassifier
 from llm.intents.keyword_mock import default_keyword_intent
@@ -57,11 +56,19 @@ class ChatRequest(BaseModel):
     ``extra="ignore"`` is retained DELIBERATELY at this level: the gateway is a
     co-evolving producer that already sends top-level keys this plane does not
     model (``locale``, and more as the contract grows additively), and rejecting
-    them would break every turn on an additive producer change. That tolerance
-    stops at the context payload: :class:`~llm.contextres.turn.TurnContext` is
-    ``extra="forbid"``, so a misspelled or unknown key INSIDE ``context`` is
-    rejected rather than silently dropped. Dropping it would silently lose the
-    turn's subject — the precise defect this payload exists to prevent.
+    them would break every turn on an additive producer change.
+
+    :attr:`context` is deliberately UNTYPED here — the transport carries it
+    verbatim and :class:`~llm.contextres.turn.TurnContext` (still ``extra=
+    "forbid"``) validates it inside ``resolve_turn_context``. Typing it at this
+    boundary would make FastAPI reject a malformed payload with a 422 BEFORE the
+    resolver ran, and the gateway reads any non-2xx as a transport error
+    (``provider_unavailable``): a context contract mismatch would surface as "LLM
+    plane down" with no §12.4 structured failure, no screens-only deep link, and
+    — worst — no ``llm_context_resolution_total`` event, leaving the fail-closed
+    seam invisible in telemetry. Rejection still happens; it happens where it is
+    structured, observable and recoverable. A misspelled key inside ``context``
+    is still never silently dropped: dropping it would lose the turn's subject.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -73,7 +80,7 @@ class ChatRequest(BaseModel):
     organization_id: str | None = None
     # The gateway's authoritative bound context (CHAT-007). Read-only business
     # data: it carries no approval authority and never advances an action.
-    context: TurnContext | None = None
+    context: dict[str, Any] | None = None
 
 
 class AppState:
@@ -217,10 +224,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
-def _turn_context_state(context: TurnContext | None) -> dict[str, Any] | None:
-    """Project the validated context onto JSON-safe graph state, as-of stamped.
+def _turn_context_state(context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Project the gateway's raw context onto JSON-safe graph state, as-of stamped.
 
     Graph state holds JSON-safe business data ONLY — never a pydantic instance.
+    The payload is NOT validated here: ``resolve_turn_context`` owns that, so a
+    malformed context fails closed structurally instead of 422-ing the turn.
 
     The as-of instant is stamped HERE from the server clock and ALWAYS overrides
     any client-supplied ``now``: a turn's freshness is not something a caller may
@@ -232,7 +241,7 @@ def _turn_context_state(context: TurnContext | None) -> dict[str, Any] | None:
     """
     if context is None:
         return None
-    return context.model_copy(update={"now": _utc_now()}).model_dump(mode="json")
+    return {**context, "now": _utc_now()}
 
 
 def _utc_now() -> str:
