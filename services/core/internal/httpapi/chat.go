@@ -176,6 +176,16 @@ func authoritativeChatAccount(requestAccount, storedAccount *uuid.UUID, resolved
 	return chatAccountDecision{account: stored}
 }
 
+// optionalAccount is the inverse of derefUUID: it maps a resolved account back to
+// the optional wire field, emitting uuid.Nil (the no-account context) as ABSENT
+// rather than a zero-uuid placeholder (§4.6 quarantine over inference).
+func optionalAccount(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
+
 // derefUUID returns the pointed-to uuid, or uuid.Nil (the no-account context)
 // when the pointer is nil.
 func derefUUID(id *uuid.UUID) uuid.UUID {
@@ -310,10 +320,21 @@ func (s *gatewayServer) Chat(
 	}
 
 	turn := ChatTurn{
-		UserID:               p.UserID,
-		OrganizationID:       p.OrganizationID,
-		ConversationID:       req.Body.ConversationId,
-		MarketplaceAccountID: req.Body.MarketplaceAccountId,
+		UserID:         p.UserID,
+		OrganizationID: p.OrganizationID,
+		ConversationID: req.Body.ConversationId,
+		// The turn's SCOPE account is the one the gateway AUTHORITATIVELY resolved
+		// just above (decision.account) — never the raw optional request field
+		// (issue #108 G3, §4.6 identity quarantine). The stored conversation's
+		// account governs, a contradicting request account was already denied, and
+		// an omitted one inherits the stored value; forwarding the raw field instead
+		// would (a) make the LLM plane's scope-vs-provenance check degenerate on its
+		// account half, since both sides would trace back to the request, and (b)
+		// strip the account from every continuation that omits the optional field.
+		// uuid.Nil (the no-account context) is emitted as ABSENT, never as a zero
+		// placeholder, so the consumer sees absence and quarantines with a precise
+		// reason instead of comparing a manufactured value.
+		MarketplaceAccountID: optionalAccount(decision.account),
 		Message:              req.Body.Message,
 		// The validated wire locale is authoritative even when no durability store is
 		// wired: it is always handed to the LLM plane. When a store IS wired, the
