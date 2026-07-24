@@ -33,11 +33,15 @@ type ExecutionService interface {
 	// (404) through the common action read — while a foreign-account action stays a
 	// uniform not-found (pgx.ErrNoRows), never disclosed.
 	GetUnifiedActionForOrg(ctx context.Context, organizationID, actionID uuid.UUID) (execution.UnifiedAction, error)
-	// ListUnifiedByAccountForOrg projects both modes for the caller's OWN account so
-	// the actions list can overlay mode + canonical state (issue #106); a foreign
-	// account id is rejected with ErrAccountNotFound (issue #102), never another
-	// tenant's projection.
-	ListUnifiedByAccountForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]execution.UnifiedAction, error)
+	// ListUnifiedByCardIDsForOrg projects both modes for an EXPLICIT set of card
+	// versions so the actions list can overlay mode + canonical state onto the page
+	// it actually returned (issue #106 finding F1). The consumer asks by RETURNED
+	// CARD IDS, never by a separately-limited newest-N page: a by-account overlay
+	// orders by its own sort key and can miss a row the page contains, which would
+	// render a tracked action as "not executed" (EXE-005, §4.6 no silent fallback).
+	// A foreign account id is rejected with ErrAccountNotFound (issue #102), and
+	// the id set stays account-predicated — never another tenant's projection.
+	ListUnifiedByCardIDsForOrg(ctx context.Context, organizationID, account uuid.UUID, cardIDs []uuid.UUID) ([]execution.UnifiedAction, error)
 	// ListPendingReconciliationForOrg backs GET /ops/queues (PD-3 item 8, S37),
 	// scoped to the caller's account.
 	ListPendingReconciliationForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]db.ActionExecution, error)

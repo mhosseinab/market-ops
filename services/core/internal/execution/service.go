@@ -794,6 +794,56 @@ func (s *Service) ListUnifiedByAccount(ctx context.Context, account uuid.UUID, l
 	return out, nil
 }
 
+// ListUnifiedByCardIDs projects the executed / recommend-only actions bound to an
+// EXPLICIT set of approval card versions onto the common UnifiedAction view
+// (issue #106 finding F1).
+//
+// This is the read the actions list uses to overlay execution state onto the page
+// it actually returned. Because the card ids come FROM that page, coverage is
+// structural: every execution-bearing row on the page gets its overlay at any
+// limit. A separately-limited by-account projection cannot promise that — it
+// orders by its OWN sort key, so a row inside the page can fall outside it and
+// then render as a pre-execution card, a false "not executed" claim (EXE-005,
+// §4.6 no silent fallback).
+//
+// Both reads stay predicated on the account (issue #102): the caller-supplied id
+// set never becomes an unscoped read, so a foreign card id yields nothing.
+//
+// A write execution takes precedence over a recommend-only row for the SAME card
+// version, exactly as GetUnifiedAction resolves it: a stray recommend-only row
+// must never mask a real external write. It is a read; it advances no state.
+func (s *Service) ListUnifiedByCardIDs(ctx context.Context, account uuid.UUID, cardIDs []uuid.UUID) ([]UnifiedAction, error) {
+	if len(cardIDs) == 0 {
+		return nil, nil
+	}
+	q := db.New(s.pool)
+	execs, err := q.ListActionExecutionsByCardIDs(ctx, db.ListActionExecutionsByCardIDsParams{
+		MarketplaceAccountID: account, CardIds: cardIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ros, err := q.ListRecommendOnlyActionsByCardIDs(ctx, db.ListRecommendOnlyActionsByCardIDsParams{
+		MarketplaceAccountID: account, CardIds: cardIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	written := make(map[uuid.UUID]struct{}, len(execs))
+	out := make([]UnifiedAction, 0, len(execs)+len(ros))
+	for _, e := range execs {
+		written[e.CardID] = struct{}{}
+		out = append(out, unifiedFromExecution(e))
+	}
+	for _, r := range ros {
+		if _, hasWrite := written[r.CardID]; hasWrite {
+			continue
+		}
+		out = append(out, unifiedFromRecommendOnly(r))
+	}
+	return out, nil
+}
+
 // ListPendingReconciliation returns the account's action_executions still
 // awaiting reconciliation (PD-3 item 8, S37 Operations queue) — an unknown
 // external result that must resolve before any retry (EXE-003, never inferred).

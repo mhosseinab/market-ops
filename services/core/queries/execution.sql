@@ -150,6 +150,43 @@ WHERE marketplace_account_id = $1
 ORDER BY approved_at DESC
 LIMIT $2;
 
+-- name: ListActionExecutionsByCardIDs :many
+-- The write-mode action_executions rows bound to an EXPLICIT set of approval card
+-- versions (issue #106 finding F1). The actions list overlays execution state onto
+-- the cards it actually returned, so the overlay must be fetched for the EXACT ids
+-- of that page: a separately-limited "newest N" overlay reads a DIFFERENT sort key
+-- (ae.created_at) than the page (ac.created_at) and therefore does NOT cover it —
+-- an execution-bearing card inside the page but outside the overlay's own top-N
+-- would render as a pre-execution card, a false "not executed" claim (EXE-005,
+-- §4.6 no silent fallback). Keying on the returned ids makes coverage structural.
+--
+-- No LIMIT: the result is bounded by the caller-supplied id set, which is itself
+-- the already-bounded page (at most one execution row per card version).
+--
+-- Tenant scoping (issue #102) is NOT delegated to the id set: the caller-supplied
+-- ids are still predicated on the account through the bound approval_cards row
+-- (action_executions carries no account column of its own), so a foreign card id
+-- matches no row and discloses nothing. A pure SELECT.
+SELECT ae.*
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ac.marketplace_account_id = $1
+  AND ae.card_id = ANY(@card_ids::uuid[])
+ORDER BY ae.created_at DESC;
+
+-- name: ListRecommendOnlyActionsByCardIDs :many
+-- The recommend-only actions bound to an EXPLICIT set of approval card versions
+-- (issue #106 finding F1) — the recommend-only half of the same page-exact overlay
+-- as ListActionExecutionsByCardIDs, with the same reasoning and the same bound (at
+-- most one recommend-only action per card version).
+--
+-- recommend_only_actions carries its own account column, so the account predicate
+-- applies directly: a foreign card id matches no row (issue #102). A pure SELECT.
+SELECT * FROM recommend_only_actions
+WHERE marketplace_account_id = $1
+  AND card_id = ANY(@card_ids::uuid[])
+ORDER BY approved_at DESC;
+
 -- name: GetCurrentExecutionContext :one
 -- Server-side re-resolution for the Revalidating gate (EXE-001): the account,
 -- variant, and native variant id for a card's recommendation, PLUS the CURRENT

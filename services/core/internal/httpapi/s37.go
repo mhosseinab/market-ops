@@ -209,11 +209,27 @@ func (s *gatewayServer) ListActions(
 	// written nothing. A pre-execution card version therefore carries NO overlay
 	// fields at all.
 	//
+	// Coverage is STRUCTURAL, not coincidental (finding F1): the overlay is fetched
+	// for the EXACT card ids of the page just returned. A separately-limited
+	// by-account overlay reads a DIFFERENT table with a DIFFERENT sort key
+	// (execution created_at / recommend-only approved_at vs the page's card
+	// created_at), so an execution-bearing card version could land inside the page
+	// yet outside the overlay's own top-N and be emitted with NO overlay fields —
+	// which the queue renders as a pre-execution card, i.e. the same false "nothing
+	// has been executed" claim the fail-closed 503 above exists to prevent, reached
+	// through a different door. Asking by returned ids makes a miss impossible at
+	// any limit.
+	//
 	// Scope the overlay to the caller's own account (issue #102): the account id was
 	// already validated by ListActionsForOrg above, so a foreign id can only surface
 	// here as ErrAccountNotFound — mapped to the same uniform not-found, never
-	// another tenant's projection or a 500.
-	unified, err := s.execution.ListUnifiedByAccountForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, limit)
+	// another tenant's projection or a 500. The card id set is caller-derived but
+	// never an unscoped read: both overlay queries stay predicated on the account.
+	cardIDs := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		cardIDs = append(cardIDs, r.ID)
+	}
+	unified, err := s.execution.ListUnifiedByCardIDsForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, cardIDs)
 	if err != nil {
 		if errors.Is(err, execution.ErrAccountNotFound) {
 			return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
