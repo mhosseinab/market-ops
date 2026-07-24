@@ -2,6 +2,7 @@ package notify_test
 
 import (
 	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -215,7 +216,7 @@ func TestFanOut_PoisonFirstAccountDoesNotBlockLaterAccounts(t *testing.T) {
 
 	// Enqueue in creation order: the poison account is FIRST, exactly as reported.
 	for _, id := range ids {
-		if err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
+		if _, err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
 			t.Fatalf("ensure %s: %v", id, err)
 		}
 	}
@@ -270,7 +271,7 @@ func TestFanOut_PoisonAccountsBeyondQueueCapacityCannotStarveWork(t *testing.T) 
 
 	// Every poison account is enqueued FIRST, so they hold every digest slot.
 	for _, id := range append(append([]uuid.UUID{}, poisonIDs...), healthyIDs...) {
-		if err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
+		if _, err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
 			t.Fatalf("ensure %s: %v", id, err)
 		}
 	}
@@ -349,7 +350,7 @@ func TestDeliverAccountDay_HangingRelayOnTheFinalAttemptDeadLettersNeverUnconfir
 	insertNotifAt(t, pool, account, uuid.New(), "hang-"+uuid.NewString(), "v1", day.Add(2*time.Hour))
 
 	svc := digestFor(pool, newHangingMailer(), at)
-	if err := svc.EnsureDelivery(context.Background(), account, day, false); err != nil {
+	if _, err := svc.EnsureDelivery(context.Background(), account, day, false); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 
@@ -389,7 +390,7 @@ func TestFanOut_RestartDuringAnInFlightSendLeavesNoSilentNonDelivery(t *testing.
 	hang := newHangingMailer()
 	svc := newFanoutService(pool, hang, at)
 	client := startDigestOnlyRiver(t, pool, svc, jobs.DigestAccountMaxTimeout)
-	if err := svc.EnsureDelivery(ctx, account, day, true); err != nil {
+	if _, err := svc.EnsureDelivery(ctx, account, day, true); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	hang.waitEntered(t)
@@ -453,7 +454,7 @@ func TestFanOut_OrderingDoesNotChangeDeliveryCompleteness(t *testing.T) {
 			svc := newFanoutService(pool, m, at)
 			startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout, ids...)
 			for _, id := range ids {
-				if err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
+				if _, err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
 					t.Fatalf("ensure: %v", err)
 				}
 			}
@@ -500,7 +501,7 @@ func TestFanOut_FailedAccountRetriesWithoutResendingSuccessfulOnes(t *testing.T)
 	svc := newFanoutService(pool, m, at)
 	startFanoutRiver(t, pool, svc, jobs.DigestAccountMinTimeout, ids...)
 	for _, id := range ids {
-		if err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
+		if _, err := svc.EnsureDelivery(ctx, id, day, true); err != nil {
 			t.Fatalf("ensure: %v", err)
 		}
 	}
@@ -550,7 +551,7 @@ func TestFanOut_RestartPreservesOutstandingWorkAndPinnedDay(t *testing.T) {
 		t.Fatalf("client: %v", err)
 	}
 	svc.SetAccountEnqueuer(notify.NewDigestAccountDispatcher(insertOnly))
-	if err := svc.EnsureDelivery(ctx, account, day, true); err != nil {
+	if _, err := svc.EnsureDelivery(ctx, account, day, true); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if got := deliveryState(t, pool, account, day); got != notify.DigestStatePending {
@@ -612,7 +613,7 @@ func TestDeliverAccountDay_AttemptsTerminalFailuresAndLagAreObservable(t *testin
 		func(_ context.Context, _ uuid.UUID, d time.Time, outcome, reason string, lag time.Duration) {
 			seen = append(seen, record{d, outcome, reason, lag})
 		})
-	if err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
+	if _, err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if _, err := svc.DeliverAccountDay(ctx, account, day, false); err != nil {
@@ -657,12 +658,20 @@ func TestDigestReasons_AreAClosedBoundedSet(t *testing.T) {
 			t.Fatalf("reason %q is not a short bounded token", s)
 		}
 		for _, c := range s {
-			if !(c >= 'a' && c <= 'z') && c != '_' {
+			if (c < 'a' || c > 'z') && c != '_' {
 				t.Fatalf("reason %q contains %q; reasons are lower-snake LTR technical tokens only", s, c)
 			}
 		}
 		if strings.Contains(s, "@") {
 			t.Fatalf("reason %q looks like an address; recipients are never reasons", s)
 		}
+	}
+	// Every token an OPERATOR is instructed to write must be in the same closed set.
+	// runbooks/digest-delivery.md re-opens a fixed dead_letter row with this reason, and
+	// the column has no CHECK — so the vocabulary, not the database, is what keeps the
+	// closed-set claim true.
+	if !slices.Contains(notify.DigestReasons(), notify.DigestReasonOperatorRedrive) {
+		t.Fatalf("%q is written by the runbook's recovery step but is outside DigestReasons(); the runbook would contradict the closed-set claim",
+			notify.DigestReasonOperatorRedrive)
 	}
 }

@@ -238,10 +238,21 @@ const DigestAccountMaxConcurrency = 3
 // stop-grace period instead of being SIGKILLed halfway through.
 const SoftStopTimeout = 6 * time.Second
 
-// StopGrace is how long a caller should wait for Stop to return. It exceeds
-// SoftStopTimeout so the escalation to a hard stop is observed rather than cut short by
-// the caller's own deadline.
-const StopGrace = SoftStopTimeout + 2*time.Second
+// DurableStateWriteTimeout bounds each DETACHED durable state write a job performs after
+// its own context is gone (internal/notify uses it for every delivery transition). It
+// lives here, not in the consuming package, because the stop budget below is DERIVED
+// from it: a graceful stop must outlast both the drain window AND the detached write
+// that a drained attempt still owes, or the process exits while a verdict is in flight.
+// It is short — a single guarded UPDATE on an indexed key — so a dead database cannot
+// hold a worker slot past the attempt that spawned it.
+const DurableStateWriteTimeout = 5 * time.Second
+
+// StopGrace is how long a caller should wait for Stop to return. It is DERIVED, not
+// chosen: the drain window, plus the detached durable write a drained attempt still owes
+// (DurableStateWriteTimeout), plus slack for the hard-stop escalation itself. Choosing a
+// smaller number would cut the caller's wait short exactly when an attempt is recording
+// its terminal verdict, which is the one write that must not be lost.
+const StopGrace = SoftStopTimeout + DurableStateWriteTimeout + 2*time.Second
 
 // NewClient constructs the River client over a pgx pool with the default queue
 // enabled. A nil workers registry yields an insert-only client (no queues), for

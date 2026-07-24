@@ -93,6 +93,13 @@ const (
 	// Nothing could have been accepted, so the claim is released and retried rather than
 	// written off as unconfirmed.
 	DigestReasonSendNotInitiated DigestReason = "send_not_initiated"
+	// DigestReasonOperatorRedrive — an OPERATOR re-opened a terminal dead_letter row
+	// after fixing its cause (runbooks/digest-delivery.md, Recovery step 3). No code
+	// writes it; it lives here because last_reason has no CHECK constraint, so the
+	// operator-facing vocabulary and the code-facing one must be the SAME closed set —
+	// otherwise the runbook silently introduces an unbounded token into durable state
+	// and the reason metric label.
+	DigestReasonOperatorRedrive DigestReason = "operator_redrive"
 )
 
 // DigestReasons returns the closed digest-reason set (stable order) so a test can pin
@@ -103,6 +110,7 @@ func DigestReasons() []DigestReason {
 		DigestReasonResolveError, DigestReasonRenderError, DigestReasonQueryError,
 		DigestReasonClaimError, DigestReasonSendError, DigestReasonAttemptsExhausted,
 		DigestReasonSendOutcomeUnknown, DigestReasonCanceled, DigestReasonSendNotInitiated,
+		DigestReasonOperatorRedrive,
 	}
 }
 

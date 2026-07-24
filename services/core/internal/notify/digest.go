@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -108,8 +109,10 @@ const sendingStaleAfter = 15 * time.Minute
 
 // durableWriteTimeout bounds each DETACHED durable delivery-state write. It is short —
 // a single guarded UPDATE on an indexed key — so a dead database cannot hold a worker
-// slot past the attempt that spawned it.
-const durableWriteTimeout = 5 * time.Second
+// slot past the attempt that spawned it. It is owned by the jobs package because the
+// graceful-stop budget (jobs.StopGrace) is derived from it: the process must outlast the
+// detached write a drained attempt still owes.
+const durableWriteTimeout = jobs.DurableStateWriteTimeout
 
 // durableCtx derives the context every durable delivery transition runs on.
 //
@@ -124,6 +127,28 @@ const durableWriteTimeout = 5 * time.Second
 // completer (client.go: c.completer.Start(context.WithoutCancel(ctx))).
 func durableCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), durableWriteTimeout)
+}
+
+// barrierWriteCtx bounds the ONE durable write that runs while the relay is waiting: the
+// ambiguity marker at the post-DATA boundary.
+//
+// Every other durable transition happens after the exchange is over, so spending the
+// full durableWriteTimeout costs nothing. This one is different — the SMTP socket
+// deadline is already armed at the ATTEMPT's deadline, so a slow database here consumes
+// the relay's remaining budget and can turn a healthy send into a boundary timeout. It
+// therefore takes the SMALLER of durableWriteTimeout and half the attempt's remaining
+// budget, leaving the other half for the terminator and the verdict. A write that cannot
+// finish in that budget fails the barrier, which fails CLOSED (the send is abandoned
+// before the window opens and stays definitively retryable) rather than entering a
+// window the record could not describe.
+func barrierWriteCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	budget := durableWriteTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if half := time.Until(dl) / 2; half < budget {
+			budget = half
+		}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), budget)
 }
 
 // Durable-transition wrappers. Every one runs its guarded UPDATE on a DETACHED, bounded
@@ -293,7 +318,7 @@ func (s *DigestService) FinalizedBusinessDay() time.Time {
 // re-covers the SAME window (no duplicate send, no lost item). An empty day is a no-op.
 func (s *DigestService) GenerateForAccount(ctx context.Context, account uuid.UUID) (sent bool, err error) {
 	day := s.FinalizedBusinessDay()
-	if err := s.EnsureDelivery(ctx, account, day, false); err != nil {
+	if _, err := s.EnsureDelivery(ctx, account, day, false); err != nil {
 		return false, err
 	}
 	outcome, err := s.DeliverAccountDay(ctx, account, day, false)
@@ -378,6 +403,16 @@ func (s *DigestService) deliverAccountDay(ctx context.Context, account uuid.UUID
 			// nothing. Writing this off as terminally unconfirmed would claim "we may have
 			// delivered" for a KNOWN non-delivery and burn the account's retry budget.
 			// Release the claim and retry on this account's own budget.
+			//
+			// CARRY-FORWARD (issue #124 review): this release is guarded on state + marker
+			// only — it carries NO liveness or claim-token check. It is unreachable against
+			// a LIVE attempt today because River's ByArgs uniqueness admits one in-flight
+			// job per (account, day), recovery only re-drives `sending` rows after
+			// sendingStaleAfter (15m) which exceeds the maximum attempt timeout (5m), and
+			// GenerateForAccount has no production caller. Adding a production caller that
+			// can drive an account/day concurrently with its job makes a CLAIM TOKEN on this
+			// transition REQUIRED — without one, a live attempt's claim could be released
+			// underneath it and a second send issued.
 			if err := s.releaseToPending(ctx, account, day, DigestReasonSendNotInitiated, rec.StatusCode); err != nil {
 				return s.terminalUnpersisted(ctx, account, day, DigestReasonSendNotInitiated, err)
 			}
@@ -511,6 +546,14 @@ func (s *DigestService) deliverAccountDay(ctx context.Context, account uuid.UUID
 			return s.terminalUnpersisted(ctx, account, day, reason, err)
 		}
 		if !ok {
+			// The guard missed. Either a concurrent drive already finalized the row, or the
+			// mailer reported an ambiguous outcome WITHOUT having invoked the barrier that
+			// records the window — a BarrierMailer contract violation. Both leave the row
+			// nonterminal and the job "successful", which is indistinguishable from a
+			// legitimate no-op unless it is said out loud. Recovery still owns the repair.
+			s.logDelivery(ctx, slog.LevelWarn,
+				"digest ambiguous outcome did not finalize: the durable window guard missed (concurrent drive, or a mailer reported Ambiguous without entering the barrier)",
+				account, day, OutcomeNoop, reason, code)
 			return OutcomeNoop, "", nil
 		}
 		s.isolateAccount(ctx, account, day, OutcomeUnconfirmed, reason, code, sendErr)
@@ -542,7 +585,7 @@ func (s *DigestService) send(ctx context.Context, barrier BarrierMailer, account
 		return s.mailer.Send(ctx, msg)
 	}
 	return barrier.SendReportingAmbiguity(ctx, msg, func(c context.Context) error {
-		wctx, cancel := durableCtx(c)
+		wctx, cancel := barrierWriteCtx(c)
 		defer cancel()
 		ok, err := s.deliveries.MarkAmbiguous(wctx, account, day, s.now())
 		if err != nil {
@@ -655,9 +698,24 @@ func (s *DigestService) claim(ctx context.Context, account uuid.UUID, day time.T
 func classifyDigestSendFailure(err error) (reason DigestReason, code int32, ambiguous, permanent bool) {
 	var se *SendError
 	if errors.As(err, &se) {
-		return DigestReason(se.Reason), int32(se.Code), se.Ambiguous, se.Permanent()
+		return boundedSendReason(se.Reason), int32(se.Code), se.Ambiguous, se.Permanent()
 	}
 	return DigestReasonSendError, 0, false, false
+}
+
+// boundedSendReason projects a mailer reason onto the closed digest vocabulary.
+//
+// SendReason is an exported plain string type, so an injected or third-party Mailer can
+// hand-build a *SendError carrying ANY token — and that token becomes a metric label and
+// the durable `last_reason`. Trusting it would reintroduce unbounded label cardinality
+// and, because a 550 commonly echoes the recipient address, a PII leak into durable
+// state (free-text containment, §4.6 / LOC-001). Anything outside the closed set
+// therefore degrades to the bounded fallback rather than being persisted verbatim.
+func boundedSendReason(r SendReason) DigestReason {
+	if slices.Contains(SendReasons(), r) {
+		return DigestReason(r)
+	}
+	return DigestReasonSendError
 }
 
 // normalizeBusinessDay reduces an instant to its UTC calendar day, so a pinned day is
@@ -672,22 +730,31 @@ func normalizeBusinessDay(day time.Time) time.Time {
 // in the SAME transaction (transactional enqueue: the row and its job commit or roll
 // back together). Opening the row is idempotent, so repeated passes converge on one
 // logical digest rather than creating a second unit of work.
-func (s *DigestService) EnsureDelivery(ctx context.Context, account uuid.UUID, day time.Time, enqueue bool) error {
+//
+// enqueued reports whether this call actually inserted a driving job. It is FALSE for
+// the common re-run in which the row already existed, so a caller counting work can
+// report the number of jobs it really enqueued rather than the number of accounts it
+// looked at.
+func (s *DigestService) EnsureDelivery(ctx context.Context, account uuid.UUID, day time.Time, enqueue bool) (enqueued bool, err error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	created, err := s.deliveries.Ensure(ctx, tx, account, day)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if created && enqueue && s.enqueuer != nil {
+	enqueued = created && enqueue && s.enqueuer != nil
+	if enqueued {
 		if err := s.enqueuer.EnqueueDigestAccountTx(ctx, tx, account, day); err != nil {
-			return err
+			return false, err
 		}
 	}
-	return tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return enqueued, nil
 }
 
 // NonterminalDeliveries is the OWNED RECOVERY source (issue #124 / PD-4): every
@@ -731,10 +798,7 @@ func (s *DigestService) GenerateAll(ctx context.Context) (int, error) {
 		return 0, err
 	}
 	discovered, discoverErr := s.generateEach(ctx, day, ids, func(c context.Context, id uuid.UUID) (bool, error) {
-		if err := s.EnsureDelivery(c, id, day, true); err != nil {
-			return false, err
-		}
-		return true, nil
+		return s.EnsureDelivery(c, id, day, true)
 	})
 	recovered, recoverErr := s.RecoverNonterminal(ctx)
 	return discovered + recovered, errors.Join(discoverErr, recoverErr)
@@ -800,7 +864,9 @@ func (s *DigestService) reenqueue(ctx context.Context, account uuid.UUID, day ti
 // continues to the next account, and at the end it returns an AGGREGATE error (nil
 // when every account succeeded) so the River job retries the failed account(s). That
 // retry is safe: an already-sent account is a same-day idempotent no-op. It returns
-// the count of digests actually SENT this pass. perAccount is injected so the
+// the count of accounts for which perAccount reported it did WORK — for the fan-out,
+// the number of driving jobs actually enqueued, which is 0 on a re-run whose rows all
+// already exist. perAccount is injected so the
 // isolation loop is unit-testable without a database.
 func (s *DigestService) generateEach(ctx context.Context, day time.Time, ids []uuid.UUID, perAccount func(context.Context, uuid.UUID) (bool, error)) (int, error) {
 	sent := 0

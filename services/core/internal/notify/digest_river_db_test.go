@@ -170,7 +170,7 @@ func TestRiver_CorrelatedTerminalWriteFailureRecoversWithZeroResend(t *testing.T
 	client := startDigestRiver(t, pool, svc)
 
 	// --- Phase A: the send succeeds, the TERMINAL write fails --------------------
-	if err := svc.EnsureDelivery(ctx, account, day, true); err != nil {
+	if _, err := svc.EnsureDelivery(ctx, account, day, true); err != nil {
 		t.Fatalf("ensure + transactional enqueue: %v", err)
 	}
 	waitFor(t, 20*time.Second, "the relay to accept the digest", func() bool {

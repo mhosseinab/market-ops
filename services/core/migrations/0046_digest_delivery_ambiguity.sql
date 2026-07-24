@@ -4,12 +4,13 @@
 --
 -- 0045 recorded only `delivery_state`, so every row found abandoned in `sending` was
 -- finalized as the terminal AMBIGUOUS state. That over-claimed: the mailer already
--- distinguishes a DEFINITIVE non-acceptance (dial failure, pre-DATA drop, deadline
--- before the body terminator was written — the relay provably holds nothing) from a
--- genuinely AMBIGUOUS one (the body was transmitted and the acceptance response was
--- lost). The distinction was computed and then discarded, so the durable record and its
--- telemetry claimed "we may have delivered" for a KNOWN non-delivery, and the account
--- lost its retry budget for a failure that was safe to retry.
+-- distinguishes a DEFINITIVE non-acceptance (dial failure, pre-DATA drop, a typed
+-- 4xx/5xx, or an attempt already expired at the boundary — the relay provably holds
+-- nothing) from a genuinely AMBIGUOUS one (the terminator was handed to the transport
+-- and no verdict could be established). The distinction was computed and then
+-- discarded, so the durable record and its telemetry claimed "we may have delivered"
+-- for a KNOWN non-delivery, and the account lost its retry budget for a failure that
+-- was safe to retry.
 --
 -- `ambiguous` persists that bit alongside the state, so a later drive can tell the two
 -- apart from the row alone:
@@ -22,6 +23,14 @@
 --     window). Acceptance is genuinely unknown, so the row is finalized `unconfirmed`
 --     and NEVER resent — zero resend outranks a speculative repair (idempotency is
 --     never-cut; a duplicate delivery must never create a duplicate product event).
+--
+-- The marker means "acceptance could not be DISPROVEN", NOT "the body reached the
+-- relay". Go's DATA writer buffers, and closing it discards the flush error, so once
+-- the terminator is attempted the transmitted/not-transmitted question is genuinely
+-- unanswerable from the client side. The mailer therefore rules out every case that is
+-- provably untransmitted BEFORE raising this bit — including an attempt whose deadline
+-- has already elapsed, which cannot flush a byte. Do not narrow it further on the
+-- assumption that `true` implies the body was on the wire.
 --
 -- The marker is set on the guarded `pending -> sending` claim and narrowed by the
 -- mailer at the real post-DATA boundary. It is a BOOLEAN — no relay text, no recipient,

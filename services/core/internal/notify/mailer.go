@@ -230,11 +230,30 @@ func (m *SMTPMailer) SendReportingAmbiguity(ctx context.Context, msg Message, en
 		// the relay cannot have accepted it: DEFINITIVE, not ambiguous.
 		return classifySend(ctx, err, false, ReasonSMTPConnectionLost)
 	}
+	// Nothing has reached the wire yet. Go's DATA writer is a textproto dot-writer over a
+	// BUFFERED bufio.Writer: w.Write above performed NO I/O for any body under the buffer
+	// size — the common case for a digest. An attempt whose context is ALREADY done
+	// therefore provably cannot flush a single byte, so it is a DEFINITIVE, retryable
+	// non-acceptance. Checking here also keeps a dead attempt from durably raising the
+	// caller's ambiguity marker for a send that never left the process.
+	if err := ctx.Err(); err != nil {
+		return classifySend(ctx, err, false, ReasonSMTPTimeout)
+	}
 	// The ambiguous window is about to open. Report it BEFORE crossing the boundary so
 	// the caller can record it durably; if it cannot, abandon the send here — nothing has
 	// been accepted yet, so this is a DEFINITIVE, retryable non-acceptance.
 	if err := enter(ctx); err != nil {
 		return classifySend(ctx, errAmbiguousWindowUnrecordable, false, ReasonWindowUnrecordable)
+	}
+	// Re-check AFTER the barrier. Recording the window is a durable write on a context
+	// detached from this attempt, so a slow database can consume the attempt's remaining
+	// budget. If it did, the flush below would write zero bytes onto an expired socket
+	// deadline — and dataCloser.Close DISCARDS the flush error, so the resulting failure
+	// is indistinguishable from a lost verdict and would be misclassified as AMBIGUOUS
+	// (terminal `unconfirmed`, never retried) for a digest that was provably never
+	// transmitted. An expired attempt is DEFINITIVE.
+	if err := ctx.Err(); err != nil {
+		return classifySend(ctx, err, false, ReasonSMTPTimeout)
 	}
 	// Closing the DATA writer sends the terminator AND reads the relay's final verdict.
 	// This is the only genuinely ambiguous point in the exchange.
@@ -290,7 +309,14 @@ func classifySend(ctx context.Context, err error, afterData bool, fallback SendR
 			reason = ReasonSMTPTransientRejection
 		}
 		// te.Msg (the relay's free text) is deliberately NOT retained.
-		return &SendError{Reason: reason, Code: te.Code}
+		//
+		// A 4xx/5xx is a refusal, so it stays DEFINITIVE wherever it occurs. A SUB-400
+		// typed code raised while awaiting the terminator's verdict is not: Go reads that
+		// verdict with ReadResponse(250), which errors on ANY other code — including a
+		// nonconforming relay's 251/252, which are ACCEPTANCE codes. Treating those as a
+		// definitive non-acceptance would release the claim and resend a message the relay
+		// probably already holds (NOT-001), so after the terminator they are AMBIGUOUS.
+		return &SendError{Reason: reason, Code: te.Code, Ambiguous: afterData && te.Code < 400}
 	}
 	if ctx.Err() != nil {
 		return &SendError{Reason: ReasonSMTPTimeout, Ambiguous: afterData}

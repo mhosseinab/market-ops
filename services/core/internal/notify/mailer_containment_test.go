@@ -29,9 +29,17 @@ import (
 type fakeSMTP struct {
 	ln         net.Listener
 	finalReply string
+	// rcptReply is the answer to RCPT TO (default "250 OK"). A 5xx here is the
+	// PRE-DATA rejection: the exchange never reaches the ambiguous window.
+	rcptReply string
 	// dropAfterData closes the connection instead of answering the DATA terminator,
 	// producing the AMBIGUOUS acceptance case (the response was lost, not refused).
 	dropAfterData bool
+	// onDataCommand runs when DATA is received, BEFORE the 354 continuation is written.
+	// It is the deterministic lever for expiring the caller's attempt at a precise
+	// point: smtp.Client does not watch the context, so cancelling here cannot disturb
+	// the 354 read, and the mailer's next context check is the one under test.
+	onDataCommand func()
 	mu            sync.Mutex
 	bodies        []string
 }
@@ -42,13 +50,21 @@ func newFakeSMTP(t *testing.T, finalReply string) *fakeSMTP {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	s := &fakeSMTP{ln: ln, finalReply: finalReply}
+	s := &fakeSMTP{ln: ln, finalReply: finalReply, rcptReply: "250 OK"}
 	t.Cleanup(func() { _ = ln.Close() })
 	go s.serve()
 	return s
 }
 
 func (s *fakeSMTP) addr() string { return s.ln.Addr().String() }
+
+// bodyCount reports how many complete bodies the relay has RECEIVED (terminator seen).
+// It is the wire-level evidence that a send was abandoned without transmitting.
+func (s *fakeSMTP) bodyCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.bodies)
+}
 
 func (s *fakeSMTP) serve() {
 	for {
@@ -81,9 +97,14 @@ func (s *fakeSMTP) handle(conn net.Conn) {
 			write("250 SIZE 10485760")
 		case strings.HasPrefix(cmd, "HELO"):
 			write("250 fake")
-		case strings.HasPrefix(cmd, "MAIL FROM"), strings.HasPrefix(cmd, "RCPT TO"), strings.HasPrefix(cmd, "RSET"):
+		case strings.HasPrefix(cmd, "RCPT TO"):
+			write(s.rcptReply)
+		case strings.HasPrefix(cmd, "MAIL FROM"), strings.HasPrefix(cmd, "RSET"):
 			write("250 OK")
 		case strings.HasPrefix(cmd, "DATA"):
+			if s.onDataCommand != nil {
+				s.onDataCommand()
+			}
 			write("354 End data with <CR><LF>.<CR><LF>")
 			var body strings.Builder
 			for {
@@ -328,7 +349,7 @@ func TestSMTPMailer_BoundedReasonsAreAClosedSet(t *testing.T) {
 			t.Fatalf("reason %q is not a short bounded token", s)
 		}
 		for _, c := range s {
-			if !(c >= 'a' && c <= 'z') && c != '_' {
+			if (c < 'a' || c > 'z') && c != '_' {
 				t.Fatalf("reason %q contains %q; reasons are lower-snake LTR technical tokens only", s, c)
 			}
 		}
@@ -398,6 +419,269 @@ func TestSMTPMailer_DeadlineOutcomeIsDeterministicUnderRace(t *testing.T) {
 	}
 	if timedOut == 0 {
 		t.Skip("the deadline never won the race on this machine; the normalization path was not exercised")
+	}
+}
+
+// --- The PRODUCTION barrier seam, exercised on the REAL SMTPMailer ----------------
+//
+// Issue #124 review cycle 2 (G1/G2). The durable ambiguity marker is what confines the
+// terminal `unconfirmed` state to genuine ambiguity, and it is raised by a barrier the
+// mailer invokes at the post-DATA boundary. Every test below drives the REAL
+// *notify.SMTPMailer against the loopback sink, so the invariants are proven on the
+// transport that production uses — not on a fake that reimplements the contract.
+
+// countingBarrier records how the mailer used the barrier and what the relay had
+// received at each invocation, so a test can prove ORDERING at the wire.
+type countingBarrier struct {
+	srv              *fakeSMTP
+	err              error
+	delay            time.Duration
+	mu               sync.Mutex
+	calls            int
+	bodiesAtFirstUse int
+}
+
+func (b *countingBarrier) enter(context.Context) error {
+	b.mu.Lock()
+	b.calls++
+	if b.calls == 1 {
+		b.bodiesAtFirstUse = b.srv.bodyCount()
+	}
+	b.mu.Unlock()
+	if b.delay > 0 {
+		time.Sleep(b.delay)
+	}
+	return b.err
+}
+
+func (b *countingBarrier) count() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
+func sendReportingAmbiguity(ctx context.Context, m *notify.SMTPMailer, b *countingBarrier) error {
+	return m.SendReportingAmbiguity(ctx, notify.Message{To: recipientEcho, Subject: "s", Body: "b"}, b.enter)
+}
+
+// TestSMTPMailer_BarrierIsInvokedExactlyOnceBeforeTheTerminator pins the ordering the
+// whole durability design rests on: the barrier runs BEFORE the relay can have received
+// the message (bodyCount 0), exactly once, and a nil barrier result lets the send
+// complete normally.
+func TestSMTPMailer_BarrierIsInvokedExactlyOnceBeforeTheTerminator(t *testing.T) {
+	srv := newFakeSMTP(t, "250 OK")
+	m := notify.NewSMTPMailer(srv.addr(), "digest@market-ops.test")
+	b := &countingBarrier{srv: srv}
+
+	if err := sendReportingAmbiguity(context.Background(), m, b); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if b.count() != 1 {
+		t.Fatalf("barrier invoked %d times, want exactly 1", b.count())
+	}
+	if b.bodiesAtFirstUse != 0 {
+		t.Fatalf("the relay had already received %d bodies when the barrier ran; the ambiguous window must be recorded BEFORE it can be entered", b.bodiesAtFirstUse)
+	}
+	if srv.bodyCount() != 1 {
+		t.Fatalf("relay received %d bodies, want 1 (a nil barrier must not block delivery)", srv.bodyCount())
+	}
+}
+
+// TestSMTPMailer_UnrecordableWindowAbandonsTheSendWithoutTransmitting is the fail-closed
+// negative: when the caller cannot durably record the ambiguous window, the mailer must
+// abandon the send BEFORE entering it. The relay must receive NOTHING, and the failure
+// must be DEFINITIVE (retryable) — never an unresolvable `unconfirmed`.
+func TestSMTPMailer_UnrecordableWindowAbandonsTheSendWithoutTransmitting(t *testing.T) {
+	srv := newFakeSMTP(t, "250 OK")
+	m := notify.NewSMTPMailer(srv.addr(), "digest@market-ops.test")
+	b := &countingBarrier{srv: srv, err: errors.New("durable marker write failed")}
+
+	err := sendReportingAmbiguity(context.Background(), m, b)
+	var se *notify.SendError
+	if !errors.As(err, &se) {
+		t.Fatalf("error %T is not a *notify.SendError", err)
+	}
+	if se.Reason != notify.ReasonWindowUnrecordable {
+		t.Fatalf("reason = %q, want %q", se.Reason, notify.ReasonWindowUnrecordable)
+	}
+	if se.Ambiguous {
+		t.Fatal("an unrecordable window abandons the send before the window opens; that is DEFINITIVE, not ambiguous")
+	}
+	if srv.bodyCount() != 0 {
+		t.Fatalf("the relay received %d bodies after an unrecordable window; the send must fail closed WITHOUT transmitting", srv.bodyCount())
+	}
+	// The barrier's own error is a caller-supplied string: it must not escape either.
+	if strings.Contains(err.Error(), "durable marker write failed") {
+		t.Fatalf("the barrier's error text escaped the mailer: %q", err.Error())
+	}
+}
+
+// TestSMTPMailer_BarrierIsNotInvokedOnAPreDataFailure proves the barrier marks the REAL
+// boundary: a failure before DATA transmitted nothing, so no ambiguous window may be
+// recorded for it.
+func TestSMTPMailer_BarrierIsNotInvokedOnAPreDataFailure(t *testing.T) {
+	t.Run("dial failure", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		addr := ln.Addr().String()
+		_ = ln.Close()
+
+		m := notify.NewSMTPMailer(addr, "digest@market-ops.test")
+		b := &countingBarrier{srv: &fakeSMTP{}}
+		err = sendReportingAmbiguity(context.Background(), m, b)
+		var se *notify.SendError
+		if !errors.As(err, &se) || se.Reason != notify.ReasonSMTPDialFailed {
+			t.Fatalf("got %v, want a bounded %q failure", err, notify.ReasonSMTPDialFailed)
+		}
+		if b.count() != 0 {
+			t.Fatalf("the barrier ran %d times on an unreachable relay; nothing was transmitted", b.count())
+		}
+	})
+
+	t.Run("recipient rejected", func(t *testing.T) {
+		srv := newFakeSMTP(t, "250 OK")
+		srv.rcptReply = "550 5.1.1 <" + recipientEcho + "> Recipient address rejected"
+		m := notify.NewSMTPMailer(srv.addr(), "digest@market-ops.test")
+		b := &countingBarrier{srv: srv}
+
+		err := sendReportingAmbiguity(context.Background(), m, b)
+		var se *notify.SendError
+		if !errors.As(err, &se) {
+			t.Fatalf("error %T is not a *notify.SendError", err)
+		}
+		if se.Ambiguous {
+			t.Fatal("a RCPT rejection is definitive; nothing was transmitted")
+		}
+		if b.count() != 0 {
+			t.Fatalf("the barrier ran %d times on a pre-DATA rejection", b.count())
+		}
+		if srv.bodyCount() != 0 {
+			t.Fatal("the relay received a body after rejecting the recipient")
+		}
+		assertNoLeak(t, "rcpt rejection", err.Error())
+	})
+}
+
+// TestSMTPMailer_LostVerdictAfterTheBarrierIsAmbiguous is the positive half: once the
+// barrier has run and the terminator is written, a lost verdict leaves acceptance
+// genuinely unknown, so the mailer must report Ambiguous.
+func TestSMTPMailer_LostVerdictAfterTheBarrierIsAmbiguous(t *testing.T) {
+	srv := newFakeSMTP(t, "250 OK")
+	srv.dropAfterData = true
+	m := notify.NewSMTPMailer(srv.addr(), "digest@market-ops.test")
+	b := &countingBarrier{srv: srv}
+
+	err := sendReportingAmbiguity(context.Background(), m, b)
+	var se *notify.SendError
+	if !errors.As(err, &se) {
+		t.Fatalf("error %T is not a *notify.SendError", err)
+	}
+	if !se.Ambiguous {
+		t.Fatalf("a verdict lost AFTER the barrier must be ambiguous (reason %q)", se.Reason)
+	}
+	if b.count() != 1 {
+		t.Fatalf("the barrier ran %d times, want 1 — the ambiguous window must have been recorded first", b.count())
+	}
+	if srv.bodyCount() != 1 {
+		t.Fatalf("relay received %d bodies, want 1", srv.bodyCount())
+	}
+}
+
+// TestSMTPMailer_ExpiredAttemptBeforeTheBarrierIsDefinitive is G1's first regression.
+// Go's DATA writer is BUFFERED: w.Write performs no I/O, so an attempt whose deadline
+// has already elapsed when the boundary is reached provably cannot flush a single byte.
+// Raising the durable ambiguity marker there would commit "we may have delivered" for a
+// send that never left the process. The barrier must not run at all, and the failure
+// must be DEFINITIVE and retryable.
+func TestSMTPMailer_ExpiredAttemptBeforeTheBarrierIsDefinitive(t *testing.T) {
+	srv := newFakeSMTP(t, "250 OK")
+	// The socket deadline is armed from the context deadline, so a generous deadline
+	// keeps every read healthy; cancellation is what expires the attempt.
+	ctx, cancelTimeout := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelTimeout()
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// Expire the attempt BEFORE the 354 continuation is written. smtp.Client does not
+	// watch the context, so the exchange proceeds normally to the boundary — where the
+	// mailer must notice the dead attempt.
+	srv.onDataCommand = cancel
+
+	m := notify.NewSMTPMailer(srv.addr(), "digest@market-ops.test")
+	b := &countingBarrier{srv: srv}
+
+	err := sendReportingAmbiguity(ctx, m, b)
+	var se *notify.SendError
+	if !errors.As(err, &se) {
+		t.Fatalf("error %T is not a *notify.SendError", err)
+	}
+	if se.Ambiguous {
+		t.Fatalf("an attempt already expired at the boundary flushed nothing (reason %q); classifying it AMBIGUOUS makes it terminally `unconfirmed` and never retried", se.Reason)
+	}
+	if se.Reason != notify.ReasonSMTPTimeout {
+		t.Fatalf("reason = %q, want %q", se.Reason, notify.ReasonSMTPTimeout)
+	}
+	if b.count() != 0 {
+		t.Fatalf("the barrier ran %d times on an already-expired attempt; the durable ambiguity marker must not be raised", b.count())
+	}
+	if srv.bodyCount() != 0 {
+		t.Fatalf("the relay received %d bodies from an expired attempt", srv.bodyCount())
+	}
+}
+
+// TestSMTPMailer_ExpiredAttemptDuringTheBarrierIsDefinitive is G1's headline regression:
+// the slow-PostgreSQL case. The barrier's durable write runs on a DETACHED 5s context
+// while the attempt's own deadline keeps running, so a slow database can consume the
+// remaining budget. Because the DATA writer is buffered, w.Close() then flushes onto an
+// expired socket deadline and writes ZERO bytes — and dataCloser.Close DISCARDS the
+// flush error, so the failure is indistinguishable from a lost verdict. The mailer must
+// therefore check the attempt itself: an expired attempt provably transmitted nothing.
+func TestSMTPMailer_ExpiredAttemptDuringTheBarrierIsDefinitive(t *testing.T) {
+	srv := newFakeSMTP(t, "250 OK")
+	m := notify.NewSMTPMailer(srv.addr(), "digest@market-ops.test")
+	// A barrier slower than what is left of the attempt — the slow durable write.
+	b := &countingBarrier{srv: srv, delay: 400 * time.Millisecond}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	err := sendReportingAmbiguity(ctx, m, b)
+	var se *notify.SendError
+	if !errors.As(err, &se) {
+		t.Fatalf("error %T is not a *notify.SendError", err)
+	}
+	if se.Ambiguous {
+		t.Fatalf("the attempt expired while the ambiguous window was being recorded (reason %q); nothing could be flushed, so the outcome is DEFINITIVE and retryable — not terminally `unconfirmed`", se.Reason)
+	}
+	if se.Reason != notify.ReasonSMTPTimeout {
+		t.Fatalf("reason = %q, want %q", se.Reason, notify.ReasonSMTPTimeout)
+	}
+	if srv.bodyCount() != 0 {
+		t.Fatalf("the relay received %d bodies from an attempt that expired at the boundary", srv.bodyCount())
+	}
+}
+
+// TestSMTPMailer_NonconformingFinalCodeAfterTheTerminatorIsAmbiguous closes the
+// remaining resend hole. Go reads the DATA terminator's verdict with ReadResponse(250),
+// which errors on ANY code other than 250 — including a nonconforming relay's 251/252,
+// which are ACCEPTANCE codes. Classifying those as a definitive non-acceptance would
+// release the claim and resend a message the relay probably already holds (NOT-001).
+func TestSMTPMailer_NonconformingFinalCodeAfterTheTerminatorIsAmbiguous(t *testing.T) {
+	for _, reply := range []string{"251 User not local; will forward", "252 Cannot verify user; will accept"} {
+		srv := newFakeSMTP(t, reply)
+		m := notify.NewSMTPMailer(srv.addr(), "digest@market-ops.test")
+
+		err := m.Send(context.Background(), notify.Message{To: recipientEcho, Subject: "s", Body: "b"})
+		var se *notify.SendError
+		if !errors.As(err, &se) {
+			t.Fatalf("%q: error %T is not a *notify.SendError", reply, err)
+		}
+		if !se.Ambiguous {
+			t.Fatalf("%q: a sub-400 final code after the terminator was classified DEFINITIVE (reason %q); the retry it licenses would resend a probably-accepted message",
+				reply, se.Reason)
+		}
+		assertNoLeak(t, "nonconforming final code", err.Error())
 	}
 }
 

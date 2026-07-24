@@ -36,7 +36,7 @@ func TestRecovery_DeliveredAccountDayIsNeverResent(t *testing.T) {
 	svc := digestFor(pool, mailer, at)
 
 	// The fan-out records the durable work row; delivery is a separate, per-account job.
-	if err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
+	if _, err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
 		t.Fatalf("ensure delivery row: %v", err)
 	}
 

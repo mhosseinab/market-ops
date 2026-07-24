@@ -2,6 +2,7 @@ package notify_test
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -30,7 +31,6 @@ import (
 // timeout the real SMTP mailer reports when the deadline elapses before the relay ever
 // accepted the body (nothing was transmitted). It never contacts a relay.
 type hangingMailer struct {
-	mu      sync.Mutex
 	entered chan struct{}
 	once    sync.Once
 }
@@ -70,7 +70,7 @@ func TestDeliverAccountDay_AttemptDeadlineDuringSendDoesNotStrandTheClaim(t *tes
 	insertNotifAt(t, pool, account, uuid.New(), "dl-"+uuid.NewString(), "v1", day.Add(2*time.Hour))
 
 	svc := digestFor(pool, newHangingMailer(), at)
-	if err := svc.EnsureDelivery(context.Background(), account, day, false); err != nil {
+	if _, err := svc.EnsureDelivery(context.Background(), account, day, false); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestDeliverAccountDay_StrandedSendingWithDefinitiveOutcomeIsReleasedNotUnco
 
 	mailer := &captureMailer{}
 	svc := digestFor(pool, mailer, at)
-	if err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
+	if _, err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestDeliverAccountDay_StrandedSendingInsideAmbiguousWindowStaysUnconfirmed(
 
 	mailer := &captureMailer{}
 	svc := digestFor(pool, mailer, at)
-	if err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
+	if _, err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	store := notify.NewDBDigestDeliveryStore(pool)
@@ -204,7 +204,7 @@ func TestDeliverAccountDay_AmbiguityMarkerNarrowsToThePostDataWindow(t *testing.
 	// A barrier-reporting mailer that fails BEFORE entering the ambiguous window.
 	pre := &barrierMailer{failBefore: true}
 	svc := digestFor(pool, pre, at)
-	if err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
+	if _, err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
 	if _, err := svc.DeliverAccountDay(ctx, account, day, false); err == nil {
@@ -250,6 +250,123 @@ func (m *barrierMailer) SendReportingAmbiguity(ctx context.Context, _ notify.Mes
 		return &notify.SendError{Reason: notify.ReasonSMTPConnectionLost, Ambiguous: true}
 	}
 	return nil
+}
+
+// TestMarkUnconfirmed_GuardRejectsANonAmbiguousSendingRow pins the SQL guard
+// INDEPENDENTLY of the service-level branch that normally protects it (issue #124 review
+// cycle 2, G2). `unconfirmed` is terminal and never resent, so the durable transition
+// itself — not only its caller — must refuse a row that provably never entered the
+// post-DATA window. Without the `AND ambiguous` predicate this test writes off a known
+// non-delivery as "we may have delivered".
+func TestMarkUnconfirmed_GuardRejectsANonAmbiguousSendingRow(t *testing.T) {
+	ctx := context.Background()
+	pool, q := newPool(t)
+	account := seedAccount(t, q)
+
+	day := time.Date(2026, 9, 12, 0, 0, 0, 0, time.UTC)
+	at := day.Add(30 * time.Hour)
+	svc := digestFor(pool, &captureMailer{}, at)
+	if _, err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	store := notify.NewDBDigestDeliveryStore(pool)
+
+	// A live claim that has NOT entered the ambiguous window.
+	claimed, err := store.MarkSending(ctx, account, day, at, false)
+	if err != nil || !claimed {
+		t.Fatalf("claim: claimed=%v err=%v", claimed, err)
+	}
+	applied, err := store.MarkUnconfirmed(ctx, account, day, notify.DigestReasonSendOutcomeUnknown, 0, at)
+	if err != nil {
+		t.Fatalf("mark unconfirmed: %v", err)
+	}
+	if applied {
+		t.Fatal("the guarded transition ACCEPTED a sending row with ambiguous=false; a definitively-untransmitted digest was written off as terminally unconfirmed")
+	}
+	if state := deliveryState(t, pool, account, day); state != notify.DigestStateSending {
+		t.Fatalf("state = %q, want %q (a guard miss must change nothing)", state, notify.DigestStateSending)
+	}
+
+	// The SAME transition on a row that DID enter the window is applied — the guard
+	// narrows the state, it does not disable it.
+	if ok, err := store.MarkAmbiguous(ctx, account, day, at); err != nil || !ok {
+		t.Fatalf("mark ambiguous: ok=%v err=%v", ok, err)
+	}
+	applied, err = store.MarkUnconfirmed(ctx, account, day, notify.DigestReasonSendOutcomeUnknown, 0, at)
+	if err != nil {
+		t.Fatalf("mark unconfirmed (ambiguous): %v", err)
+	}
+	if !applied {
+		t.Fatal("the guarded transition REJECTED a genuinely ambiguous row")
+	}
+	if state := deliveryState(t, pool, account, day); state != notify.DigestStateUnconfirmed {
+		t.Fatalf("state = %q, want %q", state, notify.DigestStateUnconfirmed)
+	}
+}
+
+// unboundedReasonMailer is a third-party/injected Mailer that hand-builds a *SendError
+// carrying an UNBOUNDED reason. SendReason is an exported plain string type, so nothing
+// stops it — the digest must therefore validate at the boundary rather than trust it.
+type unboundedReasonMailer struct{}
+
+func (unboundedReasonMailer) Send(context.Context, notify.Message) error {
+	return &notify.SendError{Reason: notify.SendReason(
+		"relay said: <digest-owner@tenant-example.test> 5.7.1 rejected — unbounded prose")}
+}
+
+// TestDeliverAccountDay_UnboundedMailerReasonIsContained is the free-text containment
+// negative (§4.6 / LOC-001). The mailer's reason becomes a METRIC LABEL and durable
+// `last_reason`, so an unvalidated token is both unbounded label cardinality and a PII
+// leak (a 550 echoes the recipient). Anything outside the closed set must degrade to the
+// bounded `send_error`, never be persisted or labelled verbatim.
+func TestDeliverAccountDay_UnboundedMailerReasonIsContained(t *testing.T) {
+	ctx := context.Background()
+	pool, q := newPool(t)
+	account := seedAccount(t, q)
+
+	day := time.Date(2026, 9, 13, 0, 0, 0, 0, time.UTC)
+	at := day.Add(30 * time.Hour)
+	insertNotifAt(t, pool, account, uuid.New(), "unb-"+uuid.NewString(), "v1", day.Add(2*time.Hour))
+
+	var observed []string
+	svc := digestFor(pool, unboundedReasonMailer{}, at).
+		WithAttemptObserver(func(_ context.Context, _ uuid.UUID, _ time.Time, _, reason string, _ time.Duration) {
+			observed = append(observed, reason)
+		})
+	if _, err := svc.EnsureDelivery(ctx, account, day, false); err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if _, err := svc.DeliverAccountDay(ctx, account, day, false); err == nil {
+		t.Fatal("a send failure returned no error")
+	}
+
+	persisted := deliveryReason(t, pool, account, day)
+	if !slices.Contains(notify.DigestReasons(), notify.DigestReason(persisted)) {
+		t.Fatalf("durable last_reason = %q is OUTSIDE the closed set; unbounded relay prose reached durable state and the metric label", persisted)
+	}
+	if persisted != string(notify.DigestReasonSendError) {
+		t.Fatalf("durable last_reason = %q, want %q (an unknown token degrades to the bounded fallback)", persisted, notify.DigestReasonSendError)
+	}
+	for _, r := range observed {
+		if !slices.Contains(notify.DigestReasons(), notify.DigestReason(r)) {
+			t.Fatalf("attempt observer reported reason %q outside the closed set", r)
+		}
+	}
+}
+
+// deliveryReason reads the durable bounded last_reason for (account, business_day).
+func deliveryReason(t *testing.T, pool *pgxpool.Pool, account uuid.UUID, day time.Time) string {
+	t.Helper()
+	var v *string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT last_reason FROM notification_digest_deliveries
+		 WHERE marketplace_account_id = $1 AND business_day = $2`, account, day.UTC()).Scan(&v); err != nil {
+		t.Fatalf("read last_reason: %v", err)
+	}
+	if v == nil {
+		return ""
+	}
+	return *v
 }
 
 // ambiguousFlag reads the durable ambiguity marker for (account, business_day).

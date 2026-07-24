@@ -38,7 +38,7 @@ surface; the digest header and item membership stay append-only).
 | `delivered` | yes | The relay accepted the message AND the durable write landed. |
 | `skipped` | yes | The closed day held nothing sendable (empty day, or every row isolated). Not a failure. |
 | `dead_letter` | yes | Permanent failure or exhausted attempts. **Definitively NOT delivered.** |
-| `unconfirmed` | yes | **Ambiguous:** the body was transmitted and acceptance could never be established. Does NOT claim delivery and is **never resent**. |
+| `unconfirmed` | yes | **Ambiguous:** the exchange reached the point of awaiting the relay's verdict and acceptance could never be **disproven**. Does NOT claim delivery and is **never resent**. |
 
 The `ambiguous` column is the durable post-DATA marker. It is raised by the mailer
 at the moment the exchange is about to await the relay's verdict, so a row
@@ -46,6 +46,15 @@ abandoned **before** that point is released to `pending` and retried, while one
 abandoned **after** it is finalized `unconfirmed`. Never resend an `unconfirmed`
 row by hand: at-most-once for the ambiguous window is a deliberate product choice
 (a duplicate delivery must never create a duplicate product event, NOT-001).
+
+`ambiguous = true` means **acceptance could not be disproven**, not "the body
+reached the relay". Go's SMTP DATA writer is buffered and closing it discards the
+flush error, so from the client side the transmitted/not-transmitted question is
+unanswerable once the terminator is attempted. The mailer rules out every provably
+untransmitted case first — dial/protocol failures, a typed 4xx/5xx, and an attempt
+whose deadline had already elapsed at the boundary (a dead attempt cannot flush a
+byte) — so those release to `pending` and retry. When triaging an `unconfirmed`
+row, confirm against the **relay's** logs; the row alone cannot tell you.
 
 ## Symptom
 
@@ -92,9 +101,16 @@ SELECT business_day, delivery_state, ambiguous, attempts,
    transmission and the claim was released for retry. Expected after a restart
    during the digest window; a rising count means restarts are landing mid-send.
 7. **`send_window_unrecordable`** — the ambiguous window could not be recorded, so
-   the send was abandoned before entering it (fail closed). This means the database
-   was unavailable mid-send; treat it as a database incident, not a mail incident.
-8. **Backlog rather than failure** — the digest runs on its own bounded queue
+   the send was abandoned before entering it (fail closed). The marker write is
+   bounded by the smaller of 5s and half the attempt's remaining budget, so this
+   means either the database was unavailable mid-send or the attempt had almost no
+   budget left. Treat it as a database/latency incident, not a mail incident.
+8. **`smtp_timeout` on a row released back to `pending`** — the attempt's deadline
+   elapsed at or before the post-DATA boundary. Nothing was transmitted (the DATA
+   writer is buffered, and an expired attempt cannot flush), so the row is
+   deliberately retried rather than written off `unconfirmed`. A rising count means
+   the per-account work deadline is too tight for the relay's latency.
+9. **Backlog rather than failure** — the digest runs on its own bounded queue
    (`digest_account`, 3 workers). Confirm work is progressing:
 
 ```sql
@@ -123,7 +139,10 @@ UPDATE notification_digest_deliveries
 ```
 
    Scope it to the one `(account, business_day)` — a blanket update re-drives every
-   tenant. The append-only digest header and item membership are reused verbatim, so
+   tenant. `operator_redrive` is a member of the code's closed reason vocabulary
+   (`notify.DigestReasons()`, pinned by a test); `last_reason` has no CHECK, so
+   writing any other token would put unbounded text into durable state and the
+   reason metric label. The append-only digest header and item membership are reused verbatim, so
    the retry covers the SAME window with the SAME items.
 4. **Never re-open an `unconfirmed` row.** Confirm delivery from the relay's logs
    instead. If the tenant genuinely did not receive it, that is a product decision
