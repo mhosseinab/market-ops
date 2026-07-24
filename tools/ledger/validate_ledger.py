@@ -54,12 +54,15 @@ Three failure classes, all fail closed:
     that is good — without this, the rule above was bypassable by simply
     DELETING the contradicting gate row (``testdata/erased_evidence.md``), by
     routing around it through a longer legal chain
-    (``testdata/hop_laundered.md``), or by writing a contentless ``satisfied``
-    token (``testdata/empty_note_gate.md``).
+    (``testdata/hop_laundered.md``), or by writing a ``satisfied`` token with no
+    record behind it — empty (``testdata/empty_note_gate.md``), invisible
+    (``testdata/zwsp_note_gate.md``) or punctuation-only
+    (``testdata/placeholder_note_gate.md``).
 
-    This rule does NOT cover a step logged straight ``pending -> passed``, nor a
-    ``passed -> reopened -> passed`` re-pass, nor per-GATE-item erasure when a
-    step has several mandatory items; see ``validate_unlock_evidence`` for the
+    This rule does NOT cover, among other residuals, a step logged straight
+    ``pending -> passed``, a ``passed -> reopened -> passed`` re-pass, or
+    per-GATE-item erasure when a step has several mandatory items. The note test
+    is a floor on FORM, not on truth. See ``validate_unlock_evidence`` for the
     full residual list and why each needs a policy/schema decision rather than a
     validator tweak.
 
@@ -167,6 +170,64 @@ def canon_state(raw: str) -> str:
     return raw.strip().lower().replace("-", "_")
 
 
+def has_evidence_content(note: str) -> bool:
+    """True when a gate note carries at least one letter or digit in ANY script.
+
+    A `satisfied` GATE row IS the evidence record, so the note must say
+    something. `str.strip()` is not enough to test that: it removes Unicode
+    whitespace (categories Zs/Cc) but NOT format characters (Cf), so a single
+    ZERO-WIDTH SPACE (U+200B) passes it while rendering identically to an empty
+    note; punctuation placeholders (`-`, `.`, `?`) pass it too.
+
+    The test is `str.isalnum()`, which is Unicode-aware, over any single
+    character — deliberately NOT an ASCII `[0-9A-Za-z]` test. Locale is data
+    (CLAUDE.md §11): a real evidence note written in Persian, with Persian-Indic
+    digits and ZWNJ inside words, is a genuine record and must be accepted. An
+    ASCII test would reject it and push evidence notes into English, which is a
+    localization-boundary violation, not a safety gain.
+
+    This is a floor on FORM, not on truth: see `validate_unlock_evidence` for the
+    residual it does not close.
+    """
+    return any(ch.isalnum() for ch in note)
+
+
+def check_block_delimiters(text: str, begin_mark: str, end_mark: str) -> list[str]:
+    """Fail closed when a machine-checked block's delimiters are not well formed.
+
+    The delimiters are structure, not prose. Two shapes previously fell open:
+
+    * BEGIN and END on ONE line — the scan tested BEGIN first and `continue`d, so
+      the block opened and never closed and every `GATE`/`TXN` row in the rest of
+      the document body was honoured as a registry row;
+    * a duplicated marker — any line merely CONTAINING the END token closed the
+      block, so a line of prose could silently truncate the registry and hide the
+      rows after it (a contradicting `pending-mandatory` row, for instance).
+
+    Each marker must therefore appear on exactly one line, and never on the same
+    line as its partner.
+    """
+    errors: list[str] = []
+    lines = text.splitlines()
+    begins = sum(1 for line in lines if begin_mark in line)
+    ends = sum(1 for line in lines if end_mark in line)
+    both = [line for line in lines if begin_mark in line and end_mark in line]
+    if both:
+        errors.append(
+            f"{begin_mark} and {end_mark} appear on the SAME line "
+            f"({both[0].strip()!r}) — a collapsed delimiter is not an open block "
+            f"(fail closed)."
+        )
+    if begins > 1:
+        errors.append(f"{begin_mark} appears on {begins} lines — it must appear exactly once.")
+    if ends > 1:
+        errors.append(
+            f"{end_mark} appears on {ends} lines — it must appear exactly once; a "
+            f"duplicate terminator silently truncates the block."
+        )
+    return errors
+
+
 def parse_status_table(text: str) -> dict[str, str]:
     """Map step id -> status from the markdown status table.
 
@@ -194,17 +255,19 @@ def parse_gate_registry(text: str) -> tuple[dict[str, list[tuple[str, str]]], li
     Returns (gates, errors) where gates maps step -> list of (state, note).
     """
     gates: dict[str, list[tuple[str, str]]] = {}
-    errors: list[str] = []
+    errors: list[str] = check_block_delimiters(text, BEGIN_MARK, END_MARK)
     lines = text.splitlines()
     inside = False
     seen_block = False
     for line in lines:
+        # END is tested FIRST: a line carrying both markers closes (never opens)
+        # the block, so a collapsed delimiter cannot leave it open forever.
+        if END_MARK in line:
+            inside = False
+            continue
         if BEGIN_MARK in line:
             inside = True
             seen_block = True
-            continue
-        if END_MARK in line:
-            inside = False
             continue
         if not inside:
             continue
@@ -260,16 +323,17 @@ def parse_transition_log(
     an absent block are reported as errors (fail closed).
     """
     transitions: list[tuple[str, str, str]] = []
-    errors: list[str] = []
+    errors: list[str] = check_block_delimiters(text, TXN_BEGIN_MARK, TXN_END_MARK)
     inside = False
     seen_block = False
     for line in text.splitlines():
+        # END first — see `check_block_delimiters`.
+        if TXN_END_MARK in line:
+            inside = False
+            continue
         if TXN_BEGIN_MARK in line:
             inside = True
             seen_block = True
-            continue
-        if TXN_END_MARK in line:
-            inside = False
             continue
         if not inside:
             continue
@@ -370,26 +434,50 @@ def validate_unlock_evidence(
     end at `passed`. The log is replayed per step, recording (a) whether the step
     was EVER in an outstanding-verification state (``verify-pending`` /
     ``blocked``) and (b) its derived final state. Every step that was ever
-    outstanding and derives `passed` must carry a `satisfied` GATE row WITH a
-    non-empty evidence note.
+    outstanding and derives `passed` must carry a `satisfied` GATE row whose
+    evidence note contains at least one letter or digit (`has_evidence_content`).
 
     Keying on the immediate predecessor was not enough: `verify-pending ->
     blocked -> in-progress -> passed` is a fully legal chain whose last edge
     leaves `in_progress`, so a predecessor-keyed rule never fired while Rule 1
     (needs a `pending-mandatory` row) and Rule 2 (needs a deferred bullet) both
     stay silent once those two lines are deleted — the same unverified `passed`,
-    two extra rows. History-keying closes every re-ordering of that chain, and
-    the non-empty-note requirement stops the rule being satisfied by a
-    contentless ``GATE S<N> | satisfied |`` token standing in for a record.
+    two extra rows. History-keying closes every re-ordering of that chain.
+
+    The note requirement is a floor on the FORM of the record, and only that.
+    MEASURED, not intended: it rejects a `satisfied` note that is empty,
+    whitespace-only, built from invisible format characters (U+200B, U+200C),
+    punctuation-only (`-`, `.`, `?`) or symbol-only; it ACCEPTS any note carrying
+    one letter or digit in any script — including `x`, `n/a`, `see above` and
+    `TBD, not run yet`. It removes the class where a state token stands in for a
+    record with nothing visible behind it. It cannot tell a thin note from a
+    false one; that residual is named below.
 
     What this rule does NOT guarantee (known residuals, deliberately in the open)
     ---------------------------------------------------------------------------
+    * The note is never checked for TRUTH or substance. ``GATE S<N> | satisfied |
+      n/a`` and ``... | TBD, not run yet`` both pass — a note stating in words
+      that the check did not run still satisfies the rule. No validator can prove
+      a note describes an executed run; closing this needs a registry-schema
+      change (a REQUIRED commit/check reference on GATE rows, as TXN rows already
+      carry, checkable against CI). A denylist of placeholder phrasings is
+      explicitly rejected as a fix: it would put a natural-language branch in
+      core logic, which the localization boundary forbids, and would be evaded by
+      writing the same placeholder in another language.
     * A step logged straight ``pending -> passed`` is NOT covered here. Rule 1
-      fires only when a `pending-mandatory` row is present and Rule 2 only when a
-      deferred bullet is present; erase both and such a step is currently
-      UNGUARDED. Closing it needs a registry-completeness policy (every step must
-      declare its mandatory-verification classification) — a schema/policy
-      decision, not a validator tweak.
+      fires only when a `pending-mandatory` row is present, and Rule 2 only when
+      the deferred bullet is written in the exact ``- S<N>:`` shape the parser
+      matches (``* S<N>:``, ``1. S<N>:`` and bullets under a sub-heading are
+      invisible to it) — so Rule 2 is a weak compensating control, not a
+      backstop. Erase or merely reshape both and such a step is UNGUARDED; about
+      thirty steps in the real ledger carry no GATE row at all. Closing it needs
+      a registry-completeness policy (every step must declare its
+      mandatory-verification classification) — a schema/policy decision, not a
+      validator tweak.
+    * Every rule only sees rows its parser matches. A status row written
+      ``| **S2** |`` or ``| s2 |`` does not match the step-cell pattern and is
+      invisible to all four rules. Widening those patterns is a separate,
+      fixture-backed change.
     * ``passed -> reopened -> passed`` (and the `regressed` twin) is likewise not
       covered: `reopened`/`regressed` are not outstanding-verification states, and
       the accepted ``testdata/parity_reopened.md`` fixture pins that as legal
@@ -397,7 +485,10 @@ def validate_unlock_evidence(
     * A single `satisfied` row satisfies the whole step, so a step with several
       mandatory gate items can still lose one to erasure. Per-item enforcement
       needs stable item IDs on GATE rows (registry-schema change).
-    * The rule reads the transition log, which is an ordinary file section. It is
+    * The rule reads the transition log, which is an ordinary file section. Its
+      delimiters are now well-formedness-checked (`check_block_delimiters`), so a
+      collapsed or duplicated marker fails closed rather than silently widening
+      or truncating the block, but the section is still editable: it is
       deletion-resistant only insofar as parity independently requires a
       producing transition for every non-initial table state; it is not an
       immutable history.
@@ -415,12 +506,14 @@ def validate_unlock_evidence(
             continue
         entries = gates.get(step, [])
         satisfying = [(state, note) for state, note in entries if state in SATISFYING_GATES]
-        if any(note.strip() for _, note in satisfying):
+        if any(has_evidence_content(note) for _, note in satisfying):
             continue
         if satisfying:
             reason = (
-                "the only `satisfied` GATE row(s) carry an EMPTY evidence note — "
-                "a state token is not a record of an executed check"
+                "the only `satisfied` GATE row(s) carry an evidence note with no "
+                "letter or digit in any script (empty, whitespace-only, "
+                "invisible-format-character, or punctuation-only) — a state token "
+                "is not a record of an executed check"
             )
         else:
             present = ", ".join(sorted({state for state, _ in entries})) or "none"

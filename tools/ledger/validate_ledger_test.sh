@@ -38,6 +38,14 @@ CASE_VARIANT="$HERE/testdata/case_variant.md"
 HOP_LAUNDERED="$HERE/testdata/hop_laundered.md"
 EMPTY_NOTE_GATE="$HERE/testdata/empty_note_gate.md"
 GATE_SATISFIED="$HERE/testdata/gate_satisfied.md"
+# Issue #19 cycle-2: placeholder evidence notes, and the registry-block
+# delimiters that the evidence rule's boundary depends on.
+ZWSP_NOTE_GATE="$HERE/testdata/zwsp_note_gate.md"
+PLACEHOLDER_NOTE_GATE="$HERE/testdata/placeholder_note_gate.md"
+PERSIAN_NOTE_GATE="$HERE/testdata/persian_note_gate.md"
+REGISTRY_COLLAPSED="$HERE/testdata/registry_collapsed_block.md"
+REGISTRY_TRUNCATED="$HERE/testdata/registry_truncated_block.md"
+TRANSITIONS_COLLAPSED="$HERE/testdata/transitions_collapsed_block.md"
 LEDGER="$REPO_ROOT/docs/implementation/dk-p0-progress.md"
 
 fail=0
@@ -128,12 +136,54 @@ expect_exit "rejects empty-note satisfied gate (token without a record)" 1 \
 expect_exit "accepts verify-pending -> passed WITH a satisfied gate" 0 \
   python3 "$VALIDATOR" --file "$GATE_SATISFIED"
 
-# 13. The real, now-reconciled orchestration ledger MUST be accepted (parity
+# --- Issue #19 (cycle-2): the note-content floor, and the registry boundary ---
+# --- the evidence rule stands on. A non-whitespace test was not a content
+# --- test: `str.strip()` removes Unicode whitespace but NOT format characters,
+# --- so an invisible note passed it while rendering exactly like the empty note
+# --- case 11 pins.
+
+# 13. NEGATIVE: a `satisfied` note that is a single ZERO-WIDTH SPACE (U+200B) —
+#     visually identical to an empty note — MUST be rejected like case 11.
+expect_exit "rejects invisible-placeholder satisfied note (U+200B)" 1 \
+  python3 "$VALIDATOR" --file "$ZWSP_NOTE_GATE"
+
+# 14. NEGATIVE: the visible twin — a punctuation-only `satisfied` note ('-') —
+#     MUST be rejected. It is non-empty and non-whitespace but records nothing.
+expect_exit "rejects punctuation-only satisfied note ('-')" 1 \
+  python3 "$VALIDATOR" --file "$PLACEHOLDER_NOTE_GATE"
+
+# 15. POSITIVE (anti-over-rejection, localization boundary): a real evidence note
+#     written in Persian — non-Latin script, ZWNJ inside words, Persian-Indic
+#     digits — MUST be accepted. The content test is Unicode-aware on purpose;
+#     an ASCII [0-9A-Za-z] test would reject this and force evidence into
+#     English. Locale is data, never a reason to reject a record.
+expect_exit "accepts a legitimate Persian-script evidence note" 0 \
+  python3 "$VALIDATOR" --file "$PERSIAN_NOTE_GATE"
+
+# 16. NEGATIVE: BEGIN and END on ONE line must NOT leave the registry block open
+#     for the rest of the document (which made every `GATE` row in ordinary prose
+#     count as evidence). MUST be rejected.
+expect_exit "rejects collapsed registry delimiter (BEGIN and END on one line)" 1 \
+  python3 "$VALIDATOR" --file "$REGISTRY_COLLAPSED"
+
+# 17. NEGATIVE: a duplicated END token (here smuggled in prose inside the block)
+#     silently truncated the registry, hiding the `pending-mandatory` row that
+#     contradicts S2's `passed`. A duplicated delimiter MUST be rejected.
+expect_exit "rejects duplicated registry terminator (hidden gate row)" 1 \
+  python3 "$VALIDATOR" --file "$REGISTRY_TRUNCATED"
+
+# 18. NEGATIVE: the transition-log twin — a collapsed TXN delimiter let prose
+#     `TXN` rows be replayed as logged transitions, so parity "held" on a history
+#     that was never inside the machine-checked block. MUST be rejected.
+expect_exit "rejects collapsed transition-log delimiter (prose TXN rows)" 1 \
+  python3 "$VALIDATOR" --file "$TRANSITIONS_COLLAPSED"
+
+# 19. The real, now-reconciled orchestration ledger MUST be accepted (parity
 #    holds: every non-initial table state has a producing, legal transition).
 expect_exit "accepts the real reconciled ledger" 0 \
   python3 "$VALIDATOR" --file "$LEDGER"
 
-# 14. INPUT ERROR: an unreadable ledger (here: a directory) is neither a clean
+# 20. INPUT ERROR: an unreadable ledger (here: a directory) is neither a clean
 #     run (0) nor a violation (1) — it MUST exit 2 with an actionable message,
 #     never an unhandled traceback.
 expect_exit "exits 2 on an unreadable ledger path (no traceback)" 2 \
