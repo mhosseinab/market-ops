@@ -46,12 +46,32 @@ from llm.tools.registry import ToolRegistry, build_registry
 class ChatRequest(BaseModel):
     """A conversation turn from the gateway. Free text carries no authority.
 
-    ``organization_id`` + ``marketplace_account_id`` are the turn's AUTHENTICATED
-    scope: the gateway asserts them under the inbound bearer credential (issue
-    #167) from the user's session, and they are the ONLY source of the context
-    resolver's :class:`~llm.contextres.models.RequestScope`. The tenant fields
-    carried inside :attr:`context` are untrusted DATA validated against that
-    scope — never the scope itself (PRD §12, §4.6 identity quarantine).
+    ``organization_id`` + ``marketplace_account_id`` are the turn's SCOPE — the
+    ONLY source of the context resolver's
+    :class:`~llm.contextres.models.RequestScope`. The tenant fields carried
+    inside :attr:`context` are untrusted DATA validated against that scope, never
+    the scope itself (PRD §12, §4.6 identity quarantine).
+
+    The two are asserted by the gateway under the inbound bearer credential
+    (issue #167), but they are NOT equally strong:
+
+    * ``organization_id`` is the caller's authenticated organization;
+    * ``marketplace_account_id`` is the account the GATEWAY RESOLVED for the turn
+      (``services/core/internal/httpapi/chat.go``: the stored conversation
+      governs; a request account contradicting it is denied; an omitted one
+      inherits the stored value). It is authoritative in that a caller cannot
+      choose it freely — not a bearer-asserted identity in the same sense as the
+      organization.
+
+    KNOWN GAP (pre-existing, tracked outside this plane, #108 G3): a NEW
+    conversation may be opened naming an account owned by ANOTHER organization —
+    ``CreateConversation`` performs no org-ownership check and
+    ``migrations/0005_conversation.sql`` carries only an FK to
+    ``marketplace_accounts(id)``. On that path the turn's scope account and the
+    context payload's account provenance trace to the same unvalidated row, so
+    the resolver's scope check ALONE is not sufficient tenant authorization for
+    an authoritative read. A consumer of ``active_context`` (108c) must not treat
+    it as such.
 
     ``extra="ignore"`` is retained DELIBERATELY at this level: the gateway is a
     co-evolving producer that already sends top-level keys this plane does not

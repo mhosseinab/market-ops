@@ -770,15 +770,20 @@ def test_gateway_payload_from_a_foreign_tenant_fails_closed() -> None:
 def test_gateway_payload_without_an_account_fails_closed_as_scope_missing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """The no-account continuation, pinned with its precise reason token.
+    """A turn reaching this plane with NO account scope fails closed. Permanent.
 
-    When the request omits ``marketplaceAccountId`` the turn's AUTHENTICATED
-    scope has no account, so a context-bound turn fails closed with
-    ``CONTEXT_SCOPE_MISSING`` / ``request_scope_missing`` EVEN THOUGH the stored
-    provenance is now correct. That is fail-closed and correct: the scope check
-    is only meaningful when both sides are independently sourced. Do not "fix"
-    it by loosening the check or manufacturing an account — it is a reported
-    follow-up, and this test pins today's behavior so the fix is deliberate.
+    A context-bound turn whose request carries no ``marketplaceAccountId`` has no
+    account to validate the payload's provenance against, so it fails closed with
+    ``CONTEXT_SCOPE_MISSING`` / ``request_scope_missing``. This assertion is NOT a
+    pinned residual — it is the invariant, and it must never be loosened: a scope
+    check is only meaningful when both sides are independently sourced, and an
+    account is never manufactured for a scopeless request (§4.6).
+
+    The PRODUCTION trigger for it is closed upstream, not here: the gateway now
+    derives the turn's account from the authoritative ``decision.account``
+    (commit ``70fe9e1``), so a continuation that omits the field forwards the
+    STORED account rather than nothing. That fixed the producer without loosening
+    anything here — this plane still refuses a scopeless context-bound turn.
     """
     app = create_app(mock_settings())
     with TestClient(app) as client, caplog.at_level("INFO", logger="llm.contextres"):

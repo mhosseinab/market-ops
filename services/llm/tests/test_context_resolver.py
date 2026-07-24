@@ -141,6 +141,66 @@ def test_card_leading_with_account_context_pickers() -> None:
     assert res.reason == "account_level_context_needs_target"
 
 
+@pytest.mark.parametrize(
+    "context_type",
+    [
+        ContextType.PRODUCT,
+        ContextType.RECOMMENDATION,
+        ContextType.BULK_SELECTION,
+        ContextType.ACTION_EXECUTION,
+    ],
+)
+def test_card_leading_with_card_capable_but_entityless_context_pickers(
+    context_type: ContextType,
+) -> None:
+    """A card-capable chip that names NO entity is not a settled subject (#108 G1).
+
+    The web dock emits exactly this payload: ``{kind:"bulk"}`` on every ``/bulk``
+    turn, and ``{kind:"product"}`` / ``{kind:"action"}`` when the deep-link search
+    param is absent. Resolving it would report a "settled subject" that names no
+    entity — the ambiguity CHAT-007 requires a picker for. Versions are supplied
+    here so the outcome cannot be attributed to the version gate.
+    """
+    req = ResolveRequest(
+        intent=IntentClass.PREPARE_ACTION,
+        scope=_SCOPE,
+        active_context=_chip(
+            context_type,
+            entity_id=None,
+            context_version="cv-1",
+            recommendation_version="rv-1",
+        ),
+    )
+    res = resolve(req)
+    assert res.kind is ResolutionKind.PICKER
+    assert res.chip is None  # no subject-less "resolved" context
+    assert res.reason == "card_context_without_entity"
+
+
+def test_card_leading_with_empty_string_entity_id_pickers() -> None:
+    """The empty string is absence, never a bindable subject (§4.6 quarantine)."""
+    res = resolve(
+        ResolveRequest(
+            intent=IntentClass.PREPARE_ACTION,
+            scope=_SCOPE,
+            active_context=_chip(ContextType.PRODUCT, entity_id="", context_version="cv-1"),
+        )
+    )
+    assert res.kind is ResolutionKind.PICKER
+    assert res.chip is None
+    assert res.reason == "card_context_without_entity"
+
+
+def test_non_card_leading_entityless_context_still_resolves() -> None:
+    """A Question binds no card, so an entity-less bulk chip stays answerable."""
+    chip = _chip(ContextType.BULK_SELECTION, entity_id=None)
+    res = resolve(
+        ResolveRequest(intent=IntentClass.QUESTION, scope=_SCOPE, active_context=chip)
+    )
+    assert res.kind is ResolutionKind.RESOLVED
+    assert res.chip == chip
+
+
 def test_card_leading_with_specific_context_resolves() -> None:
     chip = _chip(
         ContextType.PRODUCT,

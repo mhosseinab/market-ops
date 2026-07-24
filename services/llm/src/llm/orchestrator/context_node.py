@@ -17,10 +17,19 @@ outcome:
 
 **The tenant rule (PRD §12, §4.6 identity quarantine).** The turn's
 :class:`~llm.contextres.models.RequestScope` is built ONLY from the request's own
-authenticated identity — the fields the gateway asserts under its bearer
-credential (issue #167). The organization/account carried INSIDE the context
-payload are untrusted data validated against that scope; they are never the
-scope, and a provenance-less or foreign-tenant chip fails closed.
+identity fields — never from the payload. The organization/account carried INSIDE
+the context payload are untrusted data validated against that scope; they are
+never the scope, and a provenance-less or foreign-tenant chip fails closed.
+
+What the two scope fields actually guarantee differs, and the check is only as
+strong as the weaker one: ``organization_id`` is the caller's authenticated
+organization (gateway bearer, issue #167), while ``account_id`` is the account
+the GATEWAY RESOLVED for the turn from the stored conversation. A pre-existing,
+out-of-scope gap (recorded on :class:`llm.app.ChatRequest`, #108 G3) means a new
+conversation can name an account owned by another organization, in which case
+scope and payload provenance trace to the SAME unvalidated row. Passing this
+scope check is therefore necessary but NOT sufficient tenant authorization for an
+authoritative read — 108c's consumers must not treat it as such.
 """
 
 from __future__ import annotations
@@ -114,8 +123,9 @@ def resolve_turn_context(
 ) -> ContextOutcome:
     """Resolve one turn's context deterministically. Never guesses a subject.
 
-    ``organization_id`` / ``account_id`` are the turn's AUTHENTICATED scope; the
-    ``turn_context`` payload is untrusted data checked against it.
+    ``organization_id`` / ``account_id`` are the turn's scope (see the module
+    docstring for exactly what each one guarantees); the ``turn_context`` payload
+    is untrusted data checked against it, never a source of it.
     """
     if turn_context is None:
         # Nothing was supplied, so there is nothing to resolve — and nothing is

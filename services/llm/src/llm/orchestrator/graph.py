@@ -71,9 +71,12 @@ class TurnState(TypedDict, total=False):
     context keys are written by the deterministic context node
     (:mod:`llm.orchestrator.context_node`) and read downstream:
 
-    * ``organization_id`` / ``marketplace_account_id`` — the turn's AUTHENTICATED
-      scope, asserted by the gateway under its bearer credential (issue #167).
-      They are the only source of the resolver's ``RequestScope``;
+    * ``organization_id`` / ``marketplace_account_id`` — the turn's SCOPE, the
+      only source of the resolver's ``RequestScope``. ``organization_id`` is the
+      caller's authenticated organization; ``marketplace_account_id`` is the
+      account the GATEWAY resolved for the turn (the stored conversation governs
+      — see :class:`llm.app.ChatRequest`, which also records the pre-existing
+      new-conversation ownership gap this scope check does not close);
     * ``turn_context`` — the gateway's typed, UNTRUSTED context payload
       (:class:`~llm.contextres.turn.TurnContext` in dict form), validated against
       the scope above;
