@@ -54,6 +54,56 @@ var (
 	buildTime = "unknown"
 )
 
+// digestSentEventName is the stable §18 event name of the daily-digest send within
+// the briefing family. It is a CLOSED developer-defined constant (never caller or
+// marketplace free text): it is both a bounded metric label value and half of the
+// event's deduplication key namespace, so it must never be constructed at runtime.
+const digestSentEventName = "daily_digest_sent"
+
+// digestSentEvent builds the §18 briefing-family event for ONE committed daily-digest
+// send. It is a pure function of the committed digest row (notify.DigestSent), the
+// authoritative organization resolved from the account, and the locale/region/
+// currency-contract/timestamp DATA the caller supplies — so the producer's contract is
+// testable without a database, an SMTP server, or a running binary.
+//
+// The event is:
+//   - ACCOUNT-LEVEL (briefing): its entity IS the marketplace account, which is what
+//     the emitter's account-level entity guard requires.
+//   - KEYED off the COMMITTED business row (DigestID), never off a wall clock or a
+//     per-call value. DigestID is unique per (account, business day) by the digest's
+//     own idempotency constraint, so any re-observation of the same digest reproduces
+//     the same key and is suppressed structurally (§4.6 event deduplication).
+//   - Locale/region are carried as DATA, never branched on (LOC-001), and the dedup
+//     key holds only technical identifiers — no locale copy, no free text.
+//
+// It records NO §17.3 cost: a digest LINKS an already-generated briefing (§6.8), so it
+// is not a billable generation (issue #130) and no cost is fabricated for it.
+func digestSentEvent(sent notify.DigestSent, org uuid.UUID, data analytics.Envelope) analytics.Event {
+	return analytics.Event{
+		Envelope: analytics.Envelope{
+			Organization:            org,
+			Account:                 sent.Account,
+			Entity:                  sent.Account, // account-level family: entity IS the account
+			Locale:                  data.Locale,
+			Region:                  data.Region,
+			CurrencyContractVersion: data.CurrencyContractVersion,
+			SourceSurface:           digestSourceSurface,
+			Timestamp:               data.Timestamp,
+		},
+		Family:   analytics.FamilyBriefing,
+		Name:     digestSentEventName,
+		DedupKey: analytics.DedupKey(analytics.FamilyBriefing, digestSentEventName, sent.DigestID.String()),
+		Attributes: map[string]string{
+			"item_count": strconv.Itoa(sent.ItemCount),
+			// Provenance: the committed business row this event came from.
+			"digest_id": sent.DigestID.String(),
+		},
+	}
+}
+
+// digestSourceSurface is the bounded §18 source-surface label for the digest producer.
+const digestSourceSurface = "email_digest"
+
 func main() {
 	if err := run(); err != nil {
 		// Logger may not exist yet on early failure; use the default.
@@ -322,28 +372,36 @@ func run() error {
 			// spend is owned solely by the S23 CHAT-010 generation path (issue #130).
 			// Envelope fields are DATA from config; a lookup/emit hiccup is logged,
 			// never fatal (advisory pipe).
+			//
+			// DEDUPLICATION (issue #111, §4.6 never-cut): the event is keyed off the
+			// COMMITTED notification_digests row (sent.DigestID), which is unique per
+			// (account, business day) by the digest's own idempotency constraint. So the
+			// key is STABLE — a River retry, a redelivered job, or any future
+			// re-observation of the same digest reproduces it byte-for-byte and the
+			// account-scoped partial unique index suppresses the second write
+			// structurally. A wall-clock or per-call value here would deduplicate
+			// nothing.
 			emitter := analyticsEmitter
 			digestSvc = notify.NewDigestService(pool, mailer, resolver).WithObserver(
-				func(ctx context.Context, account uuid.UUID, itemCount int) {
+				func(ctx context.Context, sent notify.DigestSent) {
+					account := sent.Account
 					acct, err := queries.GetMarketplaceAccount(ctx, account)
 					if err != nil {
 						logger.WarnContext(ctx, "digest analytics: account lookup failed", "account", account.String(), "error", err.Error())
 						return
 					}
-					env := analytics.Envelope{
-						Organization:            acct.OrganizationID,
-						Account:                 account,
-						Entity:                  account,
+					ev := digestSentEvent(sent, acct.OrganizationID, analytics.Envelope{
 						Locale:                  cfg.NotifyLocale,
 						Region:                  cfg.NotifyRegion,
 						CurrencyContractVersion: cfg.CurrencyContractVersion,
-						SourceSurface:           "email_digest",
 						Timestamp:               time.Now().UTC(),
-					}
-					if err := emitter.Emit(ctx, analytics.Event{
-						Envelope: env, Family: analytics.FamilyBriefing, Name: "daily_digest_sent",
-						Attributes: map[string]string{"item_count": strconv.Itoa(itemCount)},
-					}); err != nil {
+					})
+					if err := emitter.Emit(ctx, ev); err != nil {
+						// The digest already COMMITTED and the mail already went out. An
+						// analytics failure is logged + metered and the send stands: the
+						// advisory pipe never rolls back delivery state. The loss is
+						// bounded and observable; the dedup key makes a future retrying
+						// producer safe to add without double-counting.
 						logger.WarnContext(ctx, "digest analytics: emit failed", "account", account.String(), "error", err.Error())
 					}
 					// A daily digest LINKS an already-generated briefing (shares briefing

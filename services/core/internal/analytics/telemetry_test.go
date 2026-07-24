@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"go.opentelemetry.io/otel"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -18,13 +19,22 @@ import (
 // the same field-name schema (CLAUDE.md observability).
 func collectMetrics(t *testing.T, emit func(em *Emitter)) map[string][]metricdata.DataPoint[int64] {
 	t.Helper()
+	return collectMetricsWith(t, func() *Emitter { return NewEmitter(nil) }, emit)
+}
+
+// collectMetricsWith is collectMetrics for a caller-BUILT emitter (e.g. one over a
+// store double). build runs AFTER the ManualReader-backed provider is installed, so
+// newTelemetry binds to the test meter — the same ordering requirement collectMetrics
+// has. Both share one schema with prod telemetry (CLAUDE.md observability).
+func collectMetricsWith(t *testing.T, build func() *Emitter, emit func(em *Emitter)) map[string][]metricdata.DataPoint[int64] {
+	t.Helper()
 	reader := sdkmetric.NewManualReader()
 	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	prev := otel.GetMeterProvider()
 	otel.SetMeterProvider(provider)
 	t.Cleanup(func() { otel.SetMeterProvider(prev) })
 
-	em := NewEmitter(nil) // counter-only emitter; newTelemetry reads the meter now.
+	em := build() // newTelemetry reads the meter NOW, so build must run here.
 	emit(em)
 
 	var rm metricdata.ResourceMetrics
@@ -60,7 +70,10 @@ func TestMetricLabels_NoTenantOrUnboundedKeys(t *testing.T) {
 	uuidStrings := []string{env.Organization.String(), env.Account.String(), env.Entity.String()}
 
 	got := collectMetrics(t, func(em *Emitter) {
-		if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent"}); err != nil {
+		if err := em.Emit(context.Background(), Event{
+			Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent",
+			DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", "labels"),
+		}); err != nil {
 			t.Fatalf("emit: %v", err)
 		}
 		if err := em.RecordCost(context.Background(), env, CostBriefing, 42); err != nil {
@@ -117,7 +130,10 @@ func TestMetricLabels_CardinalityIndependentOfTenant(t *testing.T) {
 	got := collectMetrics(t, func(em *Emitter) {
 		for i := 0; i < 25; i++ {
 			env := fullEnvelope() // fresh org/account/entity UUIDs each iteration
-			if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent"}); err != nil {
+			if err := em.Emit(context.Background(), Event{
+				Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent",
+				DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", strconv.Itoa(i)),
+			}); err != nil {
 				t.Fatalf("emit %d: %v", i, err)
 			}
 			if err := em.RecordCost(context.Background(), env, CostBriefing, 1); err != nil {
@@ -150,7 +166,10 @@ func TestMetricLabels_OpenDimensionsBucketedToSentinel(t *testing.T) {
 	const closedName = "recommendation_ranked" // a real closed constant, not free text
 
 	got := collectMetrics(t, func(em *Emitter) {
-		if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: closedName}); err != nil {
+		if err := em.Emit(context.Background(), Event{
+			Envelope: env, Family: FamilyRecommendation, Name: closedName,
+			DedupKey: DedupKey(FamilyRecommendation, closedName, "sentinel"),
+		}); err != nil {
 			t.Fatalf("emit: %v", err)
 		}
 		if err := em.RecordCost(context.Background(), env, CostBriefing, 1); err != nil {
@@ -205,7 +224,10 @@ func TestMetricLabels_ClosedEventNamePassesThroughVerbatim(t *testing.T) {
 	for _, name := range names {
 		name := name
 		got := collectMetrics(t, func(em *Emitter) {
-			if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyConversation, Name: name}); err != nil {
+			if err := em.Emit(context.Background(), Event{
+				Envelope: env, Family: FamilyConversation, Name: name,
+				DedupKey: DedupKey(FamilyConversation, name, "verbatim"),
+			}); err != nil {
 				t.Fatalf("emit %q: %v", name, err)
 			}
 		})
@@ -235,7 +257,10 @@ func TestMetricLabels_BoundedSetPresentAndCorrect(t *testing.T) {
 	}
 
 	got := collectMetrics(t, func(em *Emitter) {
-		if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent"}); err != nil {
+		if err := em.Emit(context.Background(), Event{
+			Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent",
+			DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", "bounded"),
+		}); err != nil {
 			t.Fatalf("emit: %v", err)
 		}
 		if err := em.RecordCost(context.Background(), env, CostBriefing, 7); err != nil {
@@ -280,6 +305,101 @@ func TestMetricLabels_BoundedSetPresentAndCorrect(t *testing.T) {
 	}
 }
 
+// dedupEmitter builds an emitter over a store double owning account for org. When
+// suppressed is true the store returns pgx.ErrNoRows from the insert — exactly what
+// `ON CONFLICT ... DO NOTHING RETURNING *` returns when the partial unique index
+// rejects a duplicate — so the suppression path is exercised without a database.
+func dedupEmitter(org, account uuid.UUID, suppressed bool) *Emitter {
+	fs := &fakeStore{owner: map[uuid.UUID]uuid.UUID{account: org}}
+	if suppressed {
+		fs.insertErr = pgx.ErrNoRows
+	}
+	return newEmitterWithStore(fs)
+}
+
+// TestEmit_SuppressedDuplicateIsObservableAndNotDoubleCounted is the observability
+// half of the event-deduplication invariant (§4.6 never-cut). A duplicate suppressed
+// by the (marketplace_account_id, dedup_key) partial unique index must:
+//   - NOT increment analytics.events — otherwise the §18 dashboards would count an
+//     event that has no row behind it, re-introducing the double-count the dedup key
+//     exists to prevent;
+//   - increment analytics.events_deduplicated instead, so suppression is OBSERVED,
+//     never a silent swallow (a silent no-op and a healthy write must be
+//     distinguishable in telemetry).
+func TestEmit_SuppressedDuplicateIsObservableAndNotDoubleCounted(t *testing.T) {
+	org, account := uuid.New(), uuid.New()
+	env := tenantEnvelope(org, account)
+	env.SourceSurface = "email_digest"
+
+	got := collectMetricsWith(t,
+		func() *Emitter { return dedupEmitter(org, account, true) },
+		func(em *Emitter) {
+			// A suppressed duplicate is an idempotent SUCCESS, not an error.
+			if err := em.Emit(context.Background(), Event{
+				Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent",
+				DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", "digest-1"),
+			}); err != nil {
+				t.Fatalf("suppressed duplicate returned an error: %v", err)
+			}
+		})
+
+	if dps := got["analytics.events"]; len(dps) != 0 {
+		t.Fatalf("suppressed duplicate incremented analytics.events (%d datapoints), want 0 — a deduplicated event must never be counted twice", len(dps))
+	}
+	dps := got["analytics.events_deduplicated"]
+	if len(dps) != 1 {
+		t.Fatalf("analytics.events_deduplicated datapoints = %d, want 1 (suppression must be observable, never silent)", len(dps))
+	}
+	if dps[0].Value != 1 {
+		t.Fatalf("analytics.events_deduplicated = %d, want 1", dps[0].Value)
+	}
+	keys := attrKeySet(dps[0])
+	allowed := map[string]struct{}{
+		"family": {}, "name": {}, "locale": {}, "region": {}, "source_surface": {},
+	}
+	for k, v := range keys {
+		if _, ok := allowed[k]; !ok {
+			t.Fatalf("analytics.events_deduplicated emitted unexpected label key %q (bounded allowlist only)", k)
+		}
+		// The dedup key itself is unbounded and tenant-derived: it is PERSISTED on
+		// analytics_events, never a metric label (issue #151/#244).
+		if v == DedupKey(FamilyBriefing, "daily_digest_sent", "digest-1") {
+			t.Fatalf("analytics.events_deduplicated label %q leaked the dedup key value", k)
+		}
+		for _, u := range []string{org.String(), account.String()} {
+			if v == u {
+				t.Fatalf("analytics.events_deduplicated label %q leaked tenant UUID %q", k, v)
+			}
+		}
+	}
+}
+
+// TestEmit_FirstWriteCountsOnceAndIsNotDeduplicated is the positive counterpart: a
+// genuinely NEW event increments analytics.events exactly once and does NOT touch
+// the deduplication counter, so the two signals can never be conflated.
+func TestEmit_FirstWriteCountsOnceAndIsNotDeduplicated(t *testing.T) {
+	org, account := uuid.New(), uuid.New()
+	env := tenantEnvelope(org, account)
+
+	got := collectMetricsWith(t,
+		func() *Emitter { return dedupEmitter(org, account, false) },
+		func(em *Emitter) {
+			if err := em.Emit(context.Background(), Event{
+				Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent",
+				DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", "digest-1"),
+			}); err != nil {
+				t.Fatalf("emit: %v", err)
+			}
+		})
+
+	if dps := got["analytics.events"]; len(dps) != 1 || dps[0].Value != 1 {
+		t.Fatalf("analytics.events = %+v, want exactly one datapoint of value 1", dps)
+	}
+	if dps := got["analytics.events_deduplicated"]; len(dps) != 0 {
+		t.Fatalf("a first write incremented analytics.events_deduplicated (%d datapoints), want 0", len(dps))
+	}
+}
+
 // TestIssue130_DigestSendEmitsNoBriefingCost is the issue #130 regression guard.
 // A daily digest LINKS an already-generated briefing (§6.8) — it does NOT generate
 // one — so the digest send must emit its briefing-family ANALYTICS EVENT but NO
@@ -302,6 +422,7 @@ func TestIssue130_DigestSendEmitsNoBriefingCost(t *testing.T) {
 			Envelope:   env,
 			Family:     FamilyBriefing,
 			Name:       "daily_digest_sent",
+			DedupKey:   DedupKey(FamilyBriefing, "daily_digest_sent", uuid.NewString()),
 			Attributes: map[string]string{"item_count": strconv.Itoa(itemCount)},
 		}); err != nil {
 			t.Fatalf("emit: %v", err)

@@ -44,6 +44,12 @@ func (f *fakeStore) InsertAnalyticsEvent(_ context.Context, arg db.InsertAnalyti
 	}, nil
 }
 
+// execAttemptedKey is a stable dedup key for these tests (issue #111): every Emit
+// carries one, because an unkeyed event is rejected before any tenant resolution. The
+// key never affects the tenant guard — the rejections below must fire on their own
+// terms, never because a key was missing.
+const execAttemptedKey = "execution:execution_attempted:tenant-integrity-test"
+
 func tenantEnvelope(org, account uuid.UUID) Envelope {
 	return Envelope{
 		Organization:            org,
@@ -72,6 +78,7 @@ func TestEmit_RejectsCrossTenantPairing(t *testing.T) {
 		Envelope: tenantEnvelope(orgA, accountB), // A claims B's account
 		Family:   FamilyExecution,
 		Name:     "execution_attempted",
+		DedupKey: execAttemptedKey,
 	})
 	if !errors.Is(err, ErrCrossTenant) {
 		t.Fatalf("cross-tenant emit: got %v, want ErrCrossTenant", err)
@@ -95,6 +102,7 @@ func TestEmit_RejectsUnknownAccount(t *testing.T) {
 		Envelope: tenantEnvelope(orgA, unknown),
 		Family:   FamilyExecution,
 		Name:     "execution_attempted",
+		DedupKey: execAttemptedKey,
 	})
 	if !errors.Is(err, ErrCrossTenant) {
 		t.Fatalf("unknown-account emit: got %v, want ErrCrossTenant", err)
@@ -120,8 +128,8 @@ func TestEmit_NoExistenceOracle(t *testing.T) {
 	em1 := newEmitterWithStore(fsForeign)
 	em2 := newEmitterWithStore(fsUnknown)
 
-	errForeign := em1.Emit(context.Background(), Event{Envelope: tenantEnvelope(orgA, probe), Family: FamilyExecution, Name: "execution_attempted"})
-	errUnknown := em2.Emit(context.Background(), Event{Envelope: tenantEnvelope(orgA, probe), Family: FamilyExecution, Name: "execution_attempted"})
+	errForeign := em1.Emit(context.Background(), Event{Envelope: tenantEnvelope(orgA, probe), Family: FamilyExecution, Name: "execution_attempted", DedupKey: execAttemptedKey})
+	errUnknown := em2.Emit(context.Background(), Event{Envelope: tenantEnvelope(orgA, probe), Family: FamilyExecution, Name: "execution_attempted", DedupKey: execAttemptedKey})
 
 	if errForeign == nil || errUnknown == nil {
 		t.Fatalf("expected rejection for both; foreign=%v unknown=%v", errForeign, errUnknown)
@@ -148,6 +156,7 @@ func TestEmit_MatchingPairPersistsAuthoritativeOrg(t *testing.T) {
 		Envelope: tenantEnvelope(orgA, accountA),
 		Family:   FamilyBriefing,
 		Name:     "daily_digest_sent",
+		DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", "tenant-integrity-test"),
 	}); err != nil {
 		t.Fatalf("matching emit rejected: %v", err)
 	}

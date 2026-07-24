@@ -142,6 +142,15 @@ var ErrInvalidFamily = errors.New("analytics: invalid event family")
 // ErrInvalidCostKind is returned when a cost record names an unknown §17.3 kind.
 var ErrInvalidCostKind = errors.New("analytics: invalid cost kind")
 
+// ErrMissingDedupKey is returned when an event carries no deduplication key. Event
+// deduplication is a §4.6 never-cut invariant and it is STRUCTURAL — the account-
+// scoped partial unique index on (marketplace_account_id, dedup_key). An unkeyed
+// event is therefore a SILENT opt-out of that invariant, so it is rejected rather
+// than persisted with a NULL key or given a generated one (a fresh per-call key
+// would deduplicate nothing while looking like it did). NULL dedup_key values exist
+// only for rows written before the key existed (migration 0045).
+var ErrMissingDedupKey = errors.New("analytics: event has no deduplication key")
+
 // ErrCrossTenant is returned when an event envelope pairs an organization with a
 // marketplace account that organization does NOT own (issue #125, §18 envelope +
 // §4.6 tenant-integrity never-cut). The §18 envelope must identify ONE coherent
@@ -192,13 +201,36 @@ func (e Envelope) Validate() error {
 }
 
 // Event is one §18 analytics event: the full envelope plus a family, a stable
-// name within that family, and JSON-safe attributes (string values only — no
-// money float ever enters the pipe).
+// name within that family, a stable deduplication key, and JSON-safe attributes
+// (string values only — no money float ever enters the pipe).
 type Event struct {
 	Envelope
-	Family     Family
-	Name       string
+	Family Family
+	Name   string
+	// DedupKey is the STABLE key of the lifecycle transition that produced this
+	// event, and it is MANDATORY (§4.6 event-deduplication never-cut). §18 producers
+	// are at-least-once (a River retry, a redelivered job, a re-observed commit), so
+	// the same business fact can be emitted more than once; the account-scoped partial
+	// unique index on (marketplace_account_id, dedup_key) makes the SECOND write a
+	// structural no-op. The key MUST derive from the committed business row (see
+	// DedupKey) — a per-call value such as a fresh UUID or a wall-clock timestamp
+	// deduplicates NOTHING while appearing to, which is worse than no key at all.
+	DedupKey   string
 	Attributes map[string]string
+}
+
+// DedupKey builds a stable, namespaced deduplication key from the event's family,
+// its stable name, and the identifying parts of the COMMITTED business row that
+// produced it (e.g. the persisted digest id). Namespacing by family+name keeps two
+// producers from colliding inside one account, which is the scope of the uniqueness
+// constraint. parts must be TECHNICAL identifiers only — never locale copy, never
+// marketplace or user free text (LOC-001, free-text containment).
+func DedupKey(family Family, name string, parts ...string) string {
+	key := string(family) + ":" + name
+	for _, p := range parts {
+		key += ":" + p
+	}
+	return key
 }
 
 // store is the narrow persistence seam the emitter needs (ISP): resolve an
@@ -271,9 +303,24 @@ func newEmitterWithStore(s store) *Emitter {
 }
 
 // Emit validates the envelope, persists the event append-only, and increments the
-// per-family OTel counter. It FAILS CLOSED on an incomplete envelope or unknown
-// family — a partial event is never written. When the emitter has no pool it only
-// meters (still validated), so a metrics-only wiring cannot smuggle a bad envelope.
+// per-family OTel counter. It FAILS CLOSED on an incomplete envelope, an unknown
+// family, or a missing deduplication key — a partial or unkeyed event is never
+// written. When the emitter has no pool it only meters (still fully validated), so a
+// metrics-only wiring cannot smuggle a bad envelope or an unkeyed event.
+//
+// DEDUPLICATION / DELIVERY SEMANTICS (§4.6 never-cut, issue #111):
+//   - DUPLICATION is impossible for a keyed event: re-emitting the same DedupKey for
+//     the same account is suppressed by the partial unique index (ON CONFLICT DO
+//     NOTHING). Emit then returns nil — a suppressed duplicate is an idempotent
+//     SUCCESS, so a producer's retry loop terminates — and increments the
+//     deduplication counter INSTEAD of the events counter, so a suppressed write is
+//     never double-counted on the §18 dashboards and is never silent.
+//   - LOSS is possible and is the deliberate, documented trade: producers emit AFTER
+//     their business transaction commits, so an emitter/sink failure returns an error
+//     the producer LOGS and METERS but never lets roll back safety-critical business
+//     state. Analytics is an advisory pipe; a durable per-family outbox (at-least-
+//     once delivery, which this key makes safe to retry) is the follow-on producer
+//     sub-step, not a silent fallback here.
 func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 	if err := ev.Validate(); err != nil {
 		return err
@@ -283,6 +330,9 @@ func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 	}
 	if ev.Name == "" {
 		return fmt.Errorf("%w: name", ErrIncompleteEnvelope)
+	}
+	if ev.DedupKey == "" {
+		return fmt.Errorf("%w: %s/%s", ErrMissingDedupKey, ev.Family, ev.Name)
 	}
 	attrs, err := marshalAttributes(ev.Attributes)
 	if err != nil {
@@ -320,7 +370,19 @@ func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 			Family:                  string(ev.Family),
 			Name:                    ev.Name,
 			Attributes:              attrs,
+			DedupKey:                ev.DedupKey,
 		}); err != nil {
+			// EVENT DEDUPLICATION (§4.6 never-cut): the insert is
+			// `ON CONFLICT (marketplace_account_id, dedup_key) DO NOTHING RETURNING *`,
+			// so a SUPPRESSED duplicate returns no row (pgx.ErrNoRows). That is not a
+			// failure — the event is already recorded — so Emit reports an idempotent
+			// success and the producer's retry terminates. It is deliberately NOT
+			// silent: the deduplication counter fires and the events counter does NOT,
+			// so the §18 dashboards never count an event with no row behind it.
+			if errors.Is(err, pgx.ErrNoRows) {
+				em.tel.deduplicated(ctx, ev.Envelope, ev.Family, ev.Name)
+				return nil
+			}
 			return fmt.Errorf("analytics: insert %s/%s: %w", ev.Family, ev.Name, err)
 		}
 	}

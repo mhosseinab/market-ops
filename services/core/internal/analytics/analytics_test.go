@@ -64,6 +64,43 @@ func TestEmit_RejectsIncompleteEnvelope(t *testing.T) {
 	}
 }
 
+// TestEmit_RejectsMissingDedupKey is the EVENT-DEDUPLICATION fail-closed negative
+// (§4.6 never-cut, PD-4 item 1 — written before the happy path). Deduplication is
+// structural: it is the (marketplace_account_id, dedup_key) partial unique index.
+// An event with NO key therefore has NO dedup protection, so an unkeyed emit is a
+// SILENT opt-out of a never-cut invariant and must be rejected outright — never
+// persisted with a NULL key, never defaulted to a generated key (a fresh key per
+// call would deduplicate nothing while looking like it did).
+func TestEmit_RejectsMissingDedupKey(t *testing.T) {
+	em := NewEmitter(nil)
+	ev := Event{Envelope: fullEnvelope(), Family: FamilyBriefing, Name: "generated"}
+	if err := em.Emit(t.Context(), ev); !errors.Is(err, ErrMissingDedupKey) {
+		t.Fatalf("Emit accepted an event with no dedup key: %v", err)
+	}
+}
+
+// TestDedupKey_StableAndNamespaced pins the shared key builder: the same inputs
+// always yield the same key (a retry must reproduce it byte-for-byte), the key is
+// namespaced by family+name so two families cannot collide within one account, and
+// distinct parts yield distinct keys. The key carries only technical identifiers —
+// never locale copy, never marketplace free text (LOC-001, free-text containment).
+func TestDedupKey_StableAndNamespaced(t *testing.T) {
+	a := DedupKey(FamilyBriefing, "daily_digest_sent", "digest-1")
+	b := DedupKey(FamilyBriefing, "daily_digest_sent", "digest-1")
+	if a != b {
+		t.Fatalf("DedupKey is not stable: %q != %q", a, b)
+	}
+	if want := "briefing:daily_digest_sent:digest-1"; a != want {
+		t.Fatalf("DedupKey = %q, want %q", a, want)
+	}
+	if c := DedupKey(FamilySync, "daily_digest_sent", "digest-1"); c == a {
+		t.Fatal("DedupKey must be namespaced by family")
+	}
+	if c := DedupKey(FamilyBriefing, "daily_digest_sent", "digest-2"); c == a {
+		t.Fatal("DedupKey must vary with its parts")
+	}
+}
+
 // TestEmit_RejectsInvalidFamily proves the family boundary fails closed.
 func TestEmit_RejectsInvalidFamily(t *testing.T) {
 	em := NewEmitter(nil)

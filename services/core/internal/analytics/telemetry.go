@@ -26,6 +26,12 @@ type telemetry struct {
 	// not leak or let explode cardinality, so the boundary is a bare, tenant-free
 	// counter — a non-zero value is the fail-closed signal, nothing more.
 	tenantRejects metric.Int64Counter
+	// deduplicated counts events SUPPRESSED by the account-scoped dedup key (issue
+	// #111, §4.6 event-deduplication never-cut). It carries the SAME bounded label set
+	// as events (family/name + the bounded envelope dimensions) so a dashboard can put
+	// written and suppressed side by side per family. The dedup KEY itself is never a
+	// label — it is tenant-derived and unbounded, and lives on the persisted row.
+	dedups metric.Int64Counter
 	// entityRejects counts entity-scope rejections (issue #125 reopen residual): an
 	// entity_id not owned by the account or incompatible with the family. Like
 	// tenantRejects it is DELIBERATELY label-free — its only natural dimensions
@@ -49,6 +55,7 @@ func newTelemetry() *telemetry {
 	}
 	return &telemetry{
 		events:        ctr("analytics.events", "§18 analytics events emitted (by family)"),
+		dedups:        ctr("analytics.events_deduplicated", "§18 analytics events suppressed by their account-scoped dedup key (issue #111)"),
 		costs:         ctr("analytics.cost_minor_units", "§17.3 variable cost in integer minor units (by kind)"),
 		tenantRejects: ctr("analytics.tenant_rejections", "cross-tenant analytics envelope rejections (issue #125; no labels)"),
 		entityRejects: ctr("analytics.entity_rejections", "entity-scope analytics envelope rejections (issue #125 reopen; no labels)"),
@@ -64,8 +71,13 @@ func newTelemetry() *telemetry {
 // unbounded and tenant-sensitive and would explode series cardinality.
 //
 // The label KEY allowlist is closed and asserted by telemetry_test.go:
-//   - analytics.events           → {family, name, locale, region, source_surface}
-//   - analytics.cost_minor_units → {cost_kind, locale, region, source_surface}
+//   - analytics.events              → {family, name, locale, region, source_surface}
+//   - analytics.events_deduplicated → {family, name, locale, region, source_surface}
+//   - analytics.cost_minor_units    → {cost_kind, locale, region, source_surface}
+//
+// The DEDUP KEY (issue #111) is deliberately absent from every label set: it is
+// tenant-derived and unbounded (it embeds committed business-row identifiers), so it
+// lives ONLY on the persisted analytics_events row, never on a metric.
 //
 // family and cost_kind are already closed enums (validated before emit). name is a
 // CLOSED developer-defined constant — a stable name within its family (analytics.go
@@ -129,6 +141,18 @@ func (t *telemetry) event(ctx context.Context, env Envelope, family Family, name
 		attribute.String("name", name),
 	)
 	t.events.Add(ctx, 1, metric.WithAttributes(attrs...))
+}
+
+// deduplicated records ONE event suppressed by its account-scoped dedup key (issue
+// #111). It shares the events counter's bounded label set so "written" and
+// "suppressed" are comparable per family/name; the dedup key and every tenant
+// identifier stay OFF the metric (they are on the persisted analytics_events row).
+func (t *telemetry) deduplicated(ctx context.Context, env Envelope, family Family, name string) {
+	attrs := append(envelopeAttrs(env),
+		attribute.String("family", string(family)),
+		attribute.String("name", name),
+	)
+	t.dedups.Add(ctx, 1, metric.WithAttributes(attrs...))
 }
 
 // tenantReject records ONE cross-tenant envelope rejection (issue #125). It is

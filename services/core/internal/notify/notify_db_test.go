@@ -463,6 +463,81 @@ func TestDigest_IsolatesInvalidRow(t *testing.T) {
 	}
 }
 
+// TestDigestSentObserverCarriesCommittedDigestProvenance is the producer half of the
+// §18 event-deduplication seam (issue #111): the post-send observer — the seam the
+// analytics pipe hooks — must report the identity of the COMMITTED notification_digests
+// row, not a re-derived or wall-clock value. That committed identity is what the §18
+// emitter turns into a stable dedup key, so it must satisfy two properties:
+//
+//   - PROVENANCE: DigestID equals the persisted header id and BusinessDay equals the
+//     header's business day, so "which business row produced this event" is answerable
+//     from the event alone.
+//   - STABILITY: the digest is idempotent per account business-day, so a re-run fires
+//     NO second observation — and had it fired, it would carry the SAME digest id, so
+//     the derived dedup key would suppress the duplicate event structurally.
+func TestDigestSentObserverCarriesCommittedDigestProvenance(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	account := seedAccount(t, q)
+	store := notify.NewStore(pool)
+
+	eventID := uuid.New()
+	if _, err := store.Deliver(ctx, notify.DeliverParams{
+		Account: account, EventID: eventID, DedupKey: "prov-" + eventID.String(),
+		Category: notify.CategoryMarketEvent, Severity: "info",
+		TitleKey: notify.KeyItemMarketEvent, BodyKey: notify.KeyItemMarketEvent,
+		BodyParams: map[string]string{"variant": "SKU-PROV"},
+	}); err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+
+	var observed []notify.DigestSent
+	mailer := &captureMailer{}
+	digest := notify.NewDigestService(pool, mailer, fixedResolver{notify.Target{
+		Email: "owner@example.com", Locale: "en", BriefingURL: "https://app/briefing",
+	}}).WithClock(digestClockAfterLatest(t, pool, account)).
+		WithObserver(func(_ context.Context, sent notify.DigestSent) {
+			if sent.Account == account {
+				observed = append(observed, sent)
+			}
+		})
+
+	sent, err := digest.GenerateForAccount(ctx, account)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !sent || len(observed) != 1 {
+		t.Fatalf("sent=%v, observations=%d, want one sent digest with one observation", sent, len(observed))
+	}
+
+	header, err := q.GetDigestByAccountDay(ctx, db.GetDigestByAccountDayParams{
+		MarketplaceAccountID: account,
+		BusinessDay:          pgDate(digest.FinalizedBusinessDay()),
+	})
+	if err != nil {
+		t.Fatalf("get digest header: %v", err)
+	}
+	got := observed[0]
+	if got.DigestID != header.ID {
+		t.Fatalf("observed digest id = %s, want the COMMITTED header id %s", got.DigestID, header.ID)
+	}
+	if !got.BusinessDay.Equal(header.BusinessDay.Time.UTC()) {
+		t.Fatalf("observed business day = %s, want committed %s", got.BusinessDay, header.BusinessDay.Time.UTC())
+	}
+	if got.ItemCount != 1 {
+		t.Fatalf("observed item count = %d, want 1", got.ItemCount)
+	}
+
+	// Idempotent per business day: the re-run neither sends nor observes again.
+	sent2, err := digest.GenerateForAccount(ctx, account)
+	if err != nil {
+		t.Fatalf("regenerate: %v", err)
+	}
+	if sent2 || len(observed) != 1 {
+		t.Fatalf("re-run: sent=%v observations=%d, want no second send and no second observation", sent2, len(observed))
+	}
+}
+
 // TestMarkRead_IsIdempotentProjection proves the read-state projection is bounded:
 // marking read once flips read_at, and a second mark is an idempotent no-op
 // (changed=false) — never a blind overwrite of the append-only row.

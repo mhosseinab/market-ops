@@ -106,6 +106,7 @@ func TestEmit_EveryFamilyCarriesFullEnvelope(t *testing.T) {
 			Envelope:   env,
 			Family:     family,
 			Name:       string(family) + ".sampled",
+			DedupKey:   analytics.DedupKey(family, string(family)+".sampled", uuid.NewString()),
 			Attributes: map[string]string{"k": "v"},
 		}); err != nil {
 			t.Fatalf("emit family %q: %v", family, err)
@@ -172,6 +173,7 @@ func TestEmit_CrossTenantRejectedAtServiceAndDB(t *testing.T) {
 			SourceSurface: "system", Timestamp: time.Now().UTC(),
 		},
 		Family: analytics.FamilyExecution, Name: "execution_attempted",
+		DedupKey: analytics.DedupKey(analytics.FamilyExecution, "execution_attempted", uuid.NewString()),
 	})
 	if err == nil {
 		t.Fatal("service boundary accepted a cross-tenant envelope")
@@ -194,6 +196,7 @@ func TestEmit_CrossTenantRejectedAtServiceAndDB(t *testing.T) {
 		SourceSurface: "system", OccurredAt: time.Now().UTC(),
 		Family: string(analytics.FamilyExecution), Name: "execution_attempted",
 		Attributes: []byte("{}"),
+		DedupKey:   analytics.DedupKey(analytics.FamilyExecution, "execution_attempted", uuid.NewString()),
 	})
 	if rawErr == nil {
 		t.Fatal("database boundary accepted an incoherent (org, account) pair — composite FK missing")
@@ -221,6 +224,7 @@ func TestEmit_MatchingPairPersistsAtDB(t *testing.T) {
 			SourceSurface: "system", Timestamp: time.Now().UTC(),
 		},
 		Family: analytics.FamilyExecution, Name: "execution_attempted",
+		DedupKey: analytics.DedupKey(analytics.FamilyExecution, "execution_attempted", uuid.NewString()),
 	}); err != nil {
 		t.Fatalf("matching emit rejected: %v", err)
 	}
@@ -235,6 +239,124 @@ func TestEmit_MatchingPairPersistsAtDB(t *testing.T) {
 	}
 	if rows[0].OrganizationID != orgA {
 		t.Fatalf("persisted org = %s, want authoritative %s", rows[0].OrganizationID, orgA)
+	}
+}
+
+// TestEmit_DuplicateDedupKeySuppressedAtDB is the EVENT-DEDUPLICATION negative
+// (§4.6 never-cut, PD-4 item 1 — written before the happy path): re-emitting the
+// SAME logical event with the SAME dedup key persists NO second row. The guarantee
+// is STRUCTURAL — a partial unique index on (marketplace_account_id, dedup_key)
+// plus ON CONFLICT DO NOTHING — so it holds for any retry path, including a retry
+// by a different process, and it holds without any UPDATE (append-only preserved).
+// The re-emit is NOT an error: a suppressed duplicate is an idempotent success.
+func TestEmit_DuplicateDedupKeySuppressedAtDB(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	org, account := seedAccount(t, q)
+	em := analytics.NewEmitter(pool)
+
+	ev := analytics.Event{
+		Envelope: analytics.Envelope{
+			Organization: org, Account: account, Entity: account,
+			Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
+			SourceSurface: "email_digest", Timestamp: time.Now().UTC(),
+		},
+		Family:   analytics.FamilyBriefing,
+		Name:     "daily_digest_sent",
+		DedupKey: analytics.DedupKey(analytics.FamilyBriefing, "daily_digest_sent", uuid.NewString()),
+	}
+
+	for attempt := 1; attempt <= 3; attempt++ {
+		if err := em.Emit(ctx, ev); err != nil {
+			t.Fatalf("emit attempt %d: %v", attempt, err)
+		}
+	}
+
+	n, err := q.CountAnalyticsEventsByFamily(ctx, db.CountAnalyticsEventsByFamilyParams{
+		MarketplaceAccountID: account, Family: string(analytics.FamilyBriefing),
+	})
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("three emits of one dedup key persisted %d rows, want exactly 1", n)
+	}
+}
+
+// TestEmit_DedupKeyIsAccountScoped is the TENANT-SAFETY negative for deduplication:
+// the dedup key is scoped to its marketplace account (mirroring the notifications
+// UNIQUE(marketplace_account_id, dedup_key) pattern, migration 0015). Two DIFFERENT
+// accounts using the SAME key each persist their own row — one tenant's event can
+// never suppress another tenant's event (a global-unique key would be a cross-tenant
+// data-loss defect).
+func TestEmit_DedupKeyIsAccountScoped(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	orgA, accountA := seedAccount(t, q)
+	orgB, accountB := seedAccount(t, q)
+	em := analytics.NewEmitter(pool)
+
+	shared := analytics.DedupKey(analytics.FamilyBriefing, "daily_digest_sent", "2026-07-23")
+	emit := func(org, account uuid.UUID) {
+		t.Helper()
+		if err := em.Emit(ctx, analytics.Event{
+			Envelope: analytics.Envelope{
+				Organization: org, Account: account, Entity: account,
+				Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
+				SourceSurface: "email_digest", Timestamp: time.Now().UTC(),
+			},
+			Family: analytics.FamilyBriefing, Name: "daily_digest_sent", DedupKey: shared,
+		}); err != nil {
+			t.Fatalf("emit for account %s: %v", account, err)
+		}
+	}
+	emit(orgA, accountA)
+	emit(orgB, accountB)
+
+	for _, account := range []uuid.UUID{accountA, accountB} {
+		n, err := q.CountAnalyticsEventsByFamily(ctx, db.CountAnalyticsEventsByFamilyParams{
+			MarketplaceAccountID: account, Family: string(analytics.FamilyBriefing),
+		})
+		if err != nil {
+			t.Fatalf("count for %s: %v", account, err)
+		}
+		if n != 1 {
+			t.Fatalf("account %s has %d rows, want 1 (a dedup key must never dedup ACROSS accounts)", account, n)
+		}
+	}
+}
+
+// TestEmit_DedupKeyPersistedAsProvenance proves the stable key is PERSISTED on the
+// committed row, so "which emission produced this row" is answerable from the row
+// alone (the provenance half of the §18 acceptance criteria).
+func TestEmit_DedupKeyPersistedAsProvenance(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	org, account := seedAccount(t, q)
+	em := analytics.NewEmitter(pool)
+
+	key := analytics.DedupKey(analytics.FamilySync, "provenance", uuid.NewString())
+	if err := em.Emit(ctx, analytics.Event{
+		Envelope: analytics.Envelope{
+			Organization: org, Account: account, Entity: account,
+			Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
+			SourceSurface: "system", Timestamp: time.Now().UTC(),
+		},
+		Family: analytics.FamilySync, Name: "provenance", DedupKey: key,
+	}); err != nil {
+		t.Fatalf("emit: %v", err)
+	}
+	rows, err := q.ListAnalyticsEventsByFamily(ctx, db.ListAnalyticsEventsByFamilyParams{
+		MarketplaceAccountID: account, Family: string(analytics.FamilySync),
+	})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("persisted %d rows, want 1", len(rows))
+	}
+	if !rows[0].DedupKey.Valid || rows[0].DedupKey.String != key {
+		t.Fatalf("persisted dedup_key = %+v, want %q", rows[0].DedupKey, key)
 	}
 }
 

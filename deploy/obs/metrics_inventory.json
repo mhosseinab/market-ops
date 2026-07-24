@@ -87,6 +87,11 @@
       "family": "analytics",
       "source": "internal/analytics/telemetry.go"
     },
+    "analytics.events_deduplicated": {
+      "type": "counter",
+      "family": "analytics",
+      "source": "internal/analytics/telemetry.go"
+    },
     "analytics.cost_minor_units": {
       "type": "counter",
       "family": "analytics",

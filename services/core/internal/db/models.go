@@ -60,6 +60,8 @@ type AnalyticsEvent struct {
 	Name                    string
 	Attributes              []byte
 	CreatedAt               time.Time
+	// Stable per-account deduplication key for the producing lifecycle transition (issue #111). NULL only for rows written before the key existed; every new row is keyed.
+	DedupKey pgtype.Text
 }
 
 type AnalyticsEventsTenantQuarantine struct {

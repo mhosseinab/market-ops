@@ -5,7 +5,8 @@ The `analytics` package implements the §18 event pipe, serving as a typed, stri
 ## Objectives
 - **Envelope Completeness**: Enforces that every event carries a full envelope (organization, account, entity, locale, region, currency contract version, source surface, and timestamp). A missing field is a hard rejection.
 - **Tenant Integrity**: Enforces strict tenant separation (§18 and §4.6 invariants). Cross-tenant envelope pairings are rejected server-side to ensure an account's data cannot be misattributed or leaked. 
-- **Append-Only Immutability**: Provides an `INSERT`/`SELECT` only pipe for `analytics_events`. No `UPDATE` or `DELETE` is issued.
+- **Append-Only Immutability**: Provides an `INSERT`/`SELECT` only pipe for `analytics_events`. No `UPDATE` or `DELETE` is issued (`ON CONFLICT DO NOTHING` is still insert-only; `DO UPDATE` is forbidden).
+- **Event Deduplication (§4.6 never-cut)**: Every event carries a mandatory, stable `DedupKey` derived from the committed business row that produced it. The guarantee is structural — an account-scoped partial unique index on `(marketplace_account_id, dedup_key)` (migration 0045) plus `ON CONFLICT DO NOTHING`.
 - **Cost Recording**: Acts as the collector for variable cost metrics (in integer minor units), emitting them via OpenTelemetry.
 
 ## How it Works
@@ -19,6 +20,17 @@ The `Emitter` handles the persistence and metric incrementation for events.
 - **Events**: Application -> `Emitter.Emit()` -> Validation (Completeness, Tenant, Entity) -> `db.InsertAnalyticsEvent` -> OpenTelemetry Counter.
 - **Costs**: Application -> `Emitter.RecordCost()` -> Validation -> OpenTelemetry Counter (not stored in DB as a row).
 - **Resolvers**: Entity-level families rely on a dynamically injected `EntityResolver` to evaluate whether an entity naturally fits within the caller's account and family. Account-level families inherently evaluate against the account ID.
+
+## Delivery semantics (loss vs. duplication)
+
+| Property | Guarantee | Mechanism |
+| --- | --- | --- |
+| Duplication | **Impossible** for a keyed event within one account | Partial unique index `(marketplace_account_id, dedup_key) WHERE dedup_key IS NOT NULL`; the insert is `ON CONFLICT DO NOTHING`, so the second write is a structural no-op. `Emit` returns `nil` for a suppressed duplicate (an idempotent success, so a producer's retry terminates) and increments `analytics.events_deduplicated` **instead of** `analytics.events`, so a dashboard never counts an event with no row behind it. |
+| Loss | **Possible, bounded, observed** | Producers emit **after** their business transaction commits. An emitter/sink failure returns an error the producer logs and meters; it never rolls back safety-critical business state (analytics is an advisory pipe). A durable per-family outbox — safe to retry precisely because the key exists — is a follow-on producer sub-step, never a silent fallback. |
+| Ordering | Not guaranteed | Consumers read `occurred_at` from the envelope, not arrival order. |
+| Cross-tenant dedup | **Impossible** | The key is unique only *within* an account; two accounts may use identical keys and each persists its own row. |
+
+A missing key is rejected (`ErrMissingDedupKey`), never defaulted: an unkeyed event would be a silent opt-out of the deduplication invariant, and a freshly generated per-call key would deduplicate nothing while appearing to. `dedup_key` is `NULL` only on rows written before migration 0045; no backfill value is fabricated for them.
 
 ## Constraints
 - **Data Integrity**: The pipeline rejects incomplete envelopes (fail-closed) and never writes a partial event row.
@@ -37,7 +49,9 @@ flowchart TD
     ValEnv1 -->|No| ErrEnv[ErrIncompleteEnvelope]
     ValEnv1 -->|Yes| ValFam{"Family<br/>Valid?"}
     ValFam -->|No| ErrFam[ErrInvalidFamily]
-    ValFam -->|Yes| Store{"Has Store?"}
+    ValFam -->|Yes| ValKey{"Dedup Key<br/>Present?"}
+    ValKey -->|No| ErrKey[ErrMissingDedupKey]
+    ValKey -->|Yes| Store{"Has Store?"}
     
     Store -->|No| OTel[telemetry.event]
     Store -->|Yes| ResolveOrg[resolveOwnerOrg]
@@ -58,8 +72,11 @@ flowchart TD
     CheckScope -->|No| ErrScope
     CheckScope -->|Yes| Insert
     
-    Insert --> OTel
-    OTel --> Done([Done])
+    Insert --> Conflict{"Dedup Key<br/>Conflict?"}
+    Conflict -->|Yes| Dedup["telemetry.deduplicated<br/>(no row, no event count)"]
+    Conflict -->|No| OTel
+    Dedup --> Done([Done])
+    OTel --> Done
     
     RecordCost --> ValEnv2{"Envelope<br/>Valid?"}
     ValEnv2 -->|No| ErrEnv

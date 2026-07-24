@@ -12,6 +12,15 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 )
 
+// Stable dedup keys for these tests (issue #111): every Emit carries one, because an
+// unkeyed event is rejected outright. The key is irrelevant to entity-scope
+// authorization — that is precisely the point: the entity guard must fire on its own
+// terms, never because a key was missing.
+const (
+	recRankedKey  = "recommendation:recommendation_ranked:entity-scope-test"
+	digestSentKey = "briefing:daily_digest_sent:entity-scope-test"
+)
+
 // fakeEntityResolver is an in-memory EntityResolver double for the entity-scope
 // tenant-integrity tests (issue #125 reopen residual). It answers the AUTHORITATIVE
 // (owning account + classifying family) of an entity_id exactly as a per-family,
@@ -58,6 +67,7 @@ func TestEmit_RejectsForeignAccountEntity(t *testing.T) {
 	env.Entity = foreignEntity
 	err := em.Emit(context.Background(), Event{
 		Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked",
+		DedupKey: recRankedKey,
 	})
 	if !errors.Is(err, ErrEntityScope) {
 		t.Fatalf("foreign-account entity: got %v, want ErrEntityScope", err)
@@ -82,6 +92,7 @@ func TestEmit_RejectsFamilyMismatchedEntity(t *testing.T) {
 	env.Entity = entity
 	err := em.Emit(context.Background(), Event{
 		Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked", // ...in a recommendation event
+		DedupKey: recRankedKey,
 	})
 	if !errors.Is(err, ErrEntityScope) {
 		t.Fatalf("family-mismatched entity: got %v, want ErrEntityScope", err)
@@ -102,6 +113,7 @@ func TestEmit_RejectsUnknownEntity(t *testing.T) {
 	env.Entity = uuid.New() // unknown
 	err := em.Emit(context.Background(), Event{
 		Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked",
+		DedupKey: recRankedKey,
 	})
 	if !errors.Is(err, ErrEntityScope) {
 		t.Fatalf("unknown entity: got %v, want ErrEntityScope", err)
@@ -124,6 +136,7 @@ func TestEmit_EntityLevelFamilyWithoutResolverFailsClosed(t *testing.T) {
 	env.Entity = uuid.New()
 	err := em.Emit(context.Background(), Event{
 		Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked",
+		DedupKey: recRankedKey,
 	})
 	if !errors.Is(err, ErrEntityScope) {
 		t.Fatalf("entity-level family without resolver: got %v, want ErrEntityScope", err)
@@ -144,6 +157,7 @@ func TestEmit_AccountLevelFamilyRejectsForeignEntity(t *testing.T) {
 	env.Entity = uuid.New() // not the account
 	err := em.Emit(context.Background(), Event{
 		Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent",
+		DedupKey: digestSentKey,
 	})
 	if !errors.Is(err, ErrEntityScope) {
 		t.Fatalf("account-level family with foreign entity: got %v, want ErrEntityScope", err)
@@ -163,6 +177,7 @@ func TestEmit_AccountLevelFamilyEntityEqualsAccountPersists(t *testing.T) {
 	env := tenantEnvelope(orgA, accountA) // tenantEnvelope sets Entity = account
 	if err := em.Emit(context.Background(), Event{
 		Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent",
+		DedupKey: digestSentKey,
 	}); err != nil {
 		t.Fatalf("account-level entity==account emit rejected: %v", err)
 	}
@@ -185,6 +200,7 @@ func TestEmit_EntityScopeMatchPersists(t *testing.T) {
 	env.Entity = entity
 	if err := em.Emit(context.Background(), Event{
 		Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked",
+		DedupKey: recRankedKey,
 	}); err != nil {
 		t.Fatalf("coherent entity-level emit rejected: %v", err)
 	}
@@ -207,7 +223,7 @@ func TestEmit_EntityScopeNoOwnershipOracle(t *testing.T) {
 		em, _ := ownedEmitter(orgA, accountA, r)
 		env := tenantEnvelope(orgA, accountA)
 		env.Entity = probe
-		return em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked"})
+		return em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked", DedupKey: recRankedKey})
 	}
 
 	errUnknown := mk(map[uuid.UUID]EntityScope{})
@@ -234,7 +250,7 @@ func TestEmit_EntityScopeInfraErrorSurfacesRaw(t *testing.T) {
 
 	env := tenantEnvelope(orgA, accountA)
 	env.Entity = uuid.New()
-	err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked"})
+	err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked", DedupKey: recRankedKey})
 	if !errors.Is(err, boom) {
 		t.Fatalf("infra error: got %v, want wrapped %v", err, boom)
 	}
@@ -288,7 +304,7 @@ func TestEmit_EntityScopeRejectionNoEventTelemetry(t *testing.T) {
 	got := collectEntityMetrics(t, fs, r, func(em *Emitter) {
 		env := tenantEnvelope(orgA, accountA)
 		env.Entity = foreign
-		if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked"}); !errors.Is(err, ErrEntityScope) {
+		if err := em.Emit(context.Background(), Event{Envelope: env, Family: FamilyRecommendation, Name: "recommendation_ranked", DedupKey: recRankedKey}); !errors.Is(err, ErrEntityScope) {
 			t.Fatalf("emit: got %v, want ErrEntityScope", err)
 		}
 	})

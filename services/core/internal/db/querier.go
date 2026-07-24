@@ -498,6 +498,15 @@ type Querier interface {
 	// SELECT only — there is deliberately NO UPDATE/DELETE query. Every insert carries
 	// the FULL §18 envelope; the columns are NOT NULL, so a missing field cannot be
 	// persisted (envelope completeness is structural).
+	// EVENT DEDUPLICATION (§4.6 never-cut, issue #111): dedup_key is the stable key of
+	// the producing lifecycle transition. The ACCOUNT-SCOPED partial unique index
+	// (migration 0045) is the arbiter, so a retried emission of the SAME business fact
+	// SUPPRESSES itself instead of writing a second row. DO NOTHING — never DO UPDATE:
+	// analytics_events is APPEND-ONLY, so a duplicate is dropped, never merged. When the
+	// row is suppressed no row is returned, i.e. pgx.ErrNoRows, which the caller reads as
+	// "already recorded" (an idempotent success), NOT as a failure.
+	// The key is cast to text so it can never be inserted NULL through this query: NULL
+	// is reserved for rows written before the key existed.
 	InsertAnalyticsEvent(ctx context.Context, arg InsertAnalyticsEventParams) (AnalyticsEvent, error)
 	// Approval card queries (PRD §7.5 APR-001, §8.4 state machine). Write discipline:
 	//   * approval_cards is APPEND-ONLY within a lineage (a price edit is a new

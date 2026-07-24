@@ -55,12 +55,28 @@ type TargetResolver interface {
 // never silently fall back to another locale.
 var ErrUnsendableTarget = errors.New("notify: unsendable digest target")
 
+// DigestSent is the PROVENANCE of one successfully sent digest: the identity of the
+// notification_digests row that was COMMITTED for it, plus its batch size. It exists
+// so a downstream consumer (the §18 analytics pipe) can key an event off the committed
+// business row rather than a wall-clock or re-derived value — DigestID is unique per
+// (account, business day) by the digest's own idempotency constraint, so it is a
+// STABLE deduplication anchor across any retry (issue #111, §4.6 event-deduplication
+// never-cut). BusinessDay is UTC storage; a display calendar is a UI concern (LOC-001).
+type DigestSent struct {
+	Account     uuid.UUID
+	DigestID    uuid.UUID
+	BusinessDay time.Time
+	ItemCount   int
+}
+
 // SentObserver is notified after a digest is successfully sent for one account. It
 // is the seam the §18 analytics pipe hooks into (the digest emits a briefing-family
-// event + a §17.3 briefing cost on the same pipe) WITHOUT coupling this package to
-// analytics. A nil observer is a no-op; an observer error is logged by the caller,
-// never fatal (analytics is advisory, off the delivery-correctness path).
-type SentObserver func(ctx context.Context, account uuid.UUID, itemCount int)
+// event on the same pipe; it records NO §17.3 briefing cost — a link is not a billable
+// generation, issue #130) WITHOUT coupling this package to analytics. It fires only
+// AFTER the digest transaction commits, and it carries that committed row's identity
+// (DigestSent). A nil observer is a no-op; an observer failure is logged by the
+// caller, never fatal (analytics is advisory, off the delivery-correctness path).
+type SentObserver func(ctx context.Context, sent DigestSent)
 
 // IsolatedObserver is notified when the digest ISOLATES one persisted row that
 // violates the closed message schema (a legacy/invalid row): the row is skipped
@@ -258,7 +274,15 @@ func (s *DigestService) GenerateForAccount(ctx context.Context, account uuid.UUI
 		return false, err
 	}
 	if s.observer != nil {
-		s.observer(ctx, account, len(items))
+		// Post-COMMIT observation carrying the committed header's identity: the
+		// downstream §18 emitter derives its stable dedup key from DigestID, so a
+		// re-observation of the same digest can never produce a second event.
+		s.observer(ctx, DigestSent{
+			Account:     account,
+			DigestID:    header.ID,
+			BusinessDay: day,
+			ItemCount:   len(items),
+		})
 	}
 	return true, nil
 }
