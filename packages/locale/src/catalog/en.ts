@@ -738,6 +738,19 @@ export const en: Catalog = {
   "bulk.readiness.error.body":
     "Some rows on this page failed to load their readiness. Other rows are shown; retry to load the rest.",
 
+  "bulk.preview.error.title": "The selection set could not be built",
+  "bulk.preview.error.body": "The server builds and versions the selection set. Nothing was approved; try previewing again.",
+  "bulk.preview.pending": "Building the selection set…",
+  "bulk.preview.empty": "No candidate has an approval control to include.",
+  "bulk.confirm.error.title": "The bulk approval could not be submitted",
+  "bulk.confirm.error.body": "Nothing was approved. Re-preview the selection set and try again.",
+  "bulk.candidates.incomplete": "More actions exist than this page shows; the selection set covers this page only.",
+  "bulk.result.state.authorized": "Approved",
+  "bulk.result.state.alreadyAuthorized": "Already approved",
+  "bulk.result.state.invalidated": "Invalidated",
+  "bulk.result.state.failed": "Failed",
+  "bulk.result.notAMember": "Not in the selection set",
+
   "settings.connection.title": "DK connection",
   "settings.connection.manage": "Manage connection →",
   "settings.connection.state": "Connection state",

@@ -11,6 +11,7 @@ import { useAccount } from "./account";
 import { type ErrorEnvelope, GatewayError } from "./errors";
 import type {
   ActionExecutionView,
+  ActionList,
   ApprovalBinding,
   ApprovalCardView,
   ApprovalConfirmResult,
@@ -27,6 +28,7 @@ import type {
   OutcomeView,
   RecommendationDetail,
   RetryActionResult,
+  SelectionSetPreviewResult,
   SessionInfo,
   SingleCostEntryRequest,
   TodayFeed,
@@ -68,6 +70,7 @@ export const queryKeys = {
   approvalCard: (cardId: string) => ["approval-card", cardId] as const,
   session: () => ["session"] as const,
   actionExecution: (actionId: string) => ["action-execution", actionId] as const,
+  awaitingActions: (accountId: string) => ["awaiting-actions", accountId] as const,
   outcome: (actionId: string) => ["outcome", actionId] as const,
 };
 
@@ -566,6 +569,70 @@ export function useBulkConfirm() {
   return useMutation({
     mutationFn: async (req: BulkApprovalConfirmRequest): Promise<BulkApprovalConfirmResult> =>
       unwrap(await gateway.POST("/approvals/bulk/confirm", { body: req })),
+  });
+}
+
+// Bound page size for the bulk candidate read. The actions queue is server-
+// paginated (issue #90 blocker 3) and REJECTS a limit above its maximum, so this
+// is a deliberate, in-contract bound — never an unbounded whole-queue crawl. The
+// page's `hasMore` is surfaced to the screen, which reports an incomplete
+// candidate set explicitly rather than presenting one page as the whole queue.
+export const BULK_ACTIONS_PAGE_LIMIT = 200;
+
+// The account's control-bearing actions (§8.4 AwaitingConfirmation): the ONLY
+// server-authoritative source of the (variantId, recommendationId) pairs a bulk
+// selection set is built from. A candidate with no live control-bearing card has no
+// recommendation to authorize, so it can never be a selection member — the screen
+// shows it, but never sends it.
+export function useAwaitingConfirmationActions() {
+  const { marketplaceAccountId } = useAccount();
+  return useQuery({
+    queryKey: queryKeys.awaitingActions(marketplaceAccountId),
+    queryFn: async (): Promise<ActionList> =>
+      unwrap(
+        await gateway.GET("/actions", {
+          params: {
+            query: {
+              marketplaceAccountId,
+              state: "awaiting_confirmation",
+              limit: BULK_ACTIONS_PAGE_LIMIT,
+            },
+          },
+        }),
+      ),
+  });
+}
+
+// The SERVER-minted bulk selection-set preview (issue #90, CHAT-051/052). The
+// browser sends its filtered membership and NOTHING else that could influence
+// identity: the selection-set lineage and version are minted server-side, each
+// member's disposition is resolved from the member's own persisted recommendation,
+// and the subsequent confirmation binds to EXACTLY the returned (lineage, version)
+// pair. A client-synthesized lineage/version is not merely discouraged — the server
+// owns both, and a lineage the caller does not own is rejected outright.
+export function useSelectionPreview() {
+  const { marketplaceAccountId } = useAccount();
+  return useMutation({
+    mutationFn: async (input: {
+      lineageId?: string;
+      name: string;
+      criteria?: Record<string, string>;
+      members: readonly { variantId: string; recommendationId: string }[];
+    }): Promise<SelectionSetPreviewResult> =>
+      unwrap(
+        await gateway.POST("/selection-sets/preview", {
+          body: {
+            marketplaceAccountId,
+            name: input.name,
+            ...(input.lineageId ? { lineageId: input.lineageId } : {}),
+            ...(input.criteria ? { criteria: input.criteria } : {}),
+            members: input.members.map((m) => ({
+              variantId: m.variantId,
+              recommendationId: m.recommendationId,
+            })),
+          },
+        }),
+      ),
   });
 }
 

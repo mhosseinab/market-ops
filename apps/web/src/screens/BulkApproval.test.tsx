@@ -3,7 +3,15 @@ import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ObservationTarget, ObservedOffer } from "../data/types";
-import { bulkValid, offer, readinessComplete, target } from "../test/msw/fixtures";
+import {
+  bulkValid,
+  offer,
+  readinessComplete,
+  RECOMMENDATION_ID,
+  selectionPreview,
+  target,
+  VARIANT_ID,
+} from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
@@ -41,48 +49,161 @@ function withExecutableCandidate() {
   server.use(http.get(`${BASE}/cost/readiness`, () => HttpResponse.json(readinessComplete)));
 }
 
-describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set level)", () => {
-  it("preview → mutate set → preview invalidated → re-preview → confirm bound to the set version", async () => {
+describe("Bulk approval (journey 3 — SERVER-minted selection set, APR-001 at set level)", () => {
+  it("preview mints the set SERVER-side and the confirmation binds to exactly that lineage + version", async () => {
     withExecutableCandidate();
-    let captured: { selectionSetLineage: string; boundVersion: number } | null = null;
+    // The server's minted identity. If the screen ever submits anything else — a
+    // client-generated lineage, a locally counted version — the confirm handler
+    // rejects it exactly as a real backend would (unknown lineage → 404), and this
+    // test fails.
+    const SERVER_LINEAGE = "30000000-0000-0000-0000-000000000003";
+    const SERVER_VERSION = 7;
+    let previewBody: {
+      marketplaceAccountId: string;
+      lineageId?: string;
+      members: { variantId: string; recommendationId: string }[];
+      criteria?: Record<string, string>;
+    } | null = null;
+    let confirmBody: { selectionSetLineage: string; boundVersion: number } | null = null;
+    let previewCalls = 0;
+
     server.use(
+      http.post(`${BASE}/selection-sets/preview`, async ({ request }) => {
+        previewCalls += 1;
+        previewBody = (await request.json()) as typeof previewBody;
+        return HttpResponse.json({
+          ...selectionPreview,
+          lineageId: SERVER_LINEAGE,
+          version: SERVER_VERSION,
+        });
+      }),
       http.post(`${BASE}/approvals/bulk/confirm`, async ({ request }) => {
-        captured = (await request.json()) as typeof captured;
-        return HttpResponse.json({ ...bulkValid, boundVersion: captured?.boundVersion ?? 0 });
+        confirmBody = (await request.json()) as typeof confirmBody;
+        // A real backend resolves the lineage: an unknown (client-minted) one 404s.
+        if (confirmBody?.selectionSetLineage !== SERVER_LINEAGE) {
+          return HttpResponse.json(
+            { code: "APPROVAL_ERROR", message: "selection set not found" },
+            { status: 404 },
+          );
+        }
+        return HttpResponse.json({
+          ...bulkValid,
+          selectionSetLineage: SERVER_LINEAGE,
+          boundVersion: confirmBody.boundVersion,
+        });
       }),
     );
     renderRoute("/bulk");
 
-    // Before any preview the structured control is DISABLED (no bound version).
+    // Before any preview there is NO server-minted identity, so the structured
+    // control is disabled — there is nothing it could bind to.
     const approve = await screen.findByTestId("bulk-approve", undefined, { timeout: 5000 });
     expect(approve).toBeDisabled();
 
-    // Preview binds the control to the current selection-set version.
+    // Preview POSTs the selected membership and binds to the server's response.
     fireEvent.click(screen.getByTestId("bulk-preview"));
     await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
       timeout: 5000,
     });
+    expect(previewCalls).toBe(1);
+    const sentPreview = previewBody as unknown as {
+      members: { variantId: string; recommendationId: string }[];
+      lineageId?: string;
+    };
+    expect(sentPreview.members).toEqual([
+      { variantId: VARIANT_ID, recommendationId: RECOMMENDATION_ID },
+    ]);
+    // The FIRST preview starts a new lineage: the client never proposes one.
+    expect(sentPreview.lineageId).toBeUndefined();
+    // The rendered selection identity is the SERVER's.
+    expect(screen.getByTestId("selection-set")).toHaveTextContent(
+      `${SERVER_LINEAGE}·v${SERVER_VERSION}`,
+    );
 
-    // Mutate the set (a filter change mints a new version) → preview INVALIDATED.
+    // Mutate the set (a filter change) → the previewed selection is stale and the
+    // control disables until a fresh server preview is taken.
     fireEvent.click(screen.getByText(faIR["readiness.complete"]));
     expect(
       await screen.findByTestId("bulk-invalidated", undefined, { timeout: 5000 }),
     ).toBeInTheDocument();
     expect(screen.getByTestId("bulk-approve")).toBeDisabled();
 
-    // A fresh preview re-binds to the current version; confirm carries THAT version.
+    // A fresh preview REFRESHES the same lineage; the server mints the next version.
     fireEvent.click(screen.getByTestId("bulk-preview"));
+    await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    expect((previewBody as unknown as { lineageId?: string }).lineageId).toBe(SERVER_LINEAGE);
+
+    fireEvent.click(screen.getByTestId("bulk-approve"));
+    await screen.findByTestId("bulk-recommend-only", undefined, { timeout: 5000 });
+
+    const sentConfirm = confirmBody as unknown as {
+      selectionSetLineage: string;
+      boundVersion: number;
+    };
+    expect(sentConfirm.selectionSetLineage).toBe(SERVER_LINEAGE);
+    expect(sentConfirm.boundVersion).toBe(SERVER_VERSION);
+  });
+
+  it("renders the SERVER's per-item results, not a client reconstruction", async () => {
+    withExecutableCandidate();
+    server.use(
+      http.post(`${BASE}/approvals/bulk/confirm`, () =>
+        HttpResponse.json({
+          ...bulkValid,
+          executionPending: true,
+          items: [
+            {
+              variantId: VARIANT_ID,
+              recommendationId: RECOMMENDATION_ID,
+              disposition: "executable",
+              state: "failed",
+              reason: "authorize_failed",
+            },
+          ],
+        }),
+      ),
+    );
+    renderRoute("/bulk");
+
+    fireEvent.click(await screen.findByTestId("bulk-preview", undefined, { timeout: 5000 }));
     await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
       timeout: 5000,
     });
     fireEvent.click(screen.getByTestId("bulk-approve"));
 
-    await screen.findByTestId("bulk-recommend-only", undefined, { timeout: 5000 });
-    expect(captured).not.toBeNull();
-    expect((captured as unknown as { boundVersion: number }).boundVersion).toBe(2);
-    expect(
-      (captured as unknown as { selectionSetLineage: string }).selectionSetLineage,
-    ).toBeTruthy();
+    // The row renders the server's `failed` state — the client would have shown a
+    // pending/authorized outcome from its own candidate state.
+    const failed = await screen.findByTestId("result-failed", undefined, { timeout: 5000 });
+    expect(failed).toHaveTextContent(faIR["bulk.result.state.failed"]);
+    expect(screen.queryByTestId("result-authorized")).toBeNull();
+  });
+
+  it("surfaces a failed preview and approves NOTHING (no client-minted fallback identity)", async () => {
+    withExecutableCandidate();
+    let confirmCalls = 0;
+    server.use(
+      http.post(`${BASE}/selection-sets/preview`, () =>
+        HttpResponse.json({ code: "APPROVAL_ERROR", message: "selection set not found" }, {
+          status: 404,
+        }),
+      ),
+      http.post(`${BASE}/approvals/bulk/confirm`, () => {
+        confirmCalls += 1;
+        return HttpResponse.json(bulkValid);
+      }),
+    );
+    renderRoute("/bulk");
+
+    fireEvent.click(await screen.findByTestId("bulk-preview", undefined, { timeout: 5000 }));
+
+    const error = await screen.findByTestId("bulk-preview-error", undefined, { timeout: 5000 });
+    expect(error).toHaveTextContent(faIR["bulk.preview.error.title"]);
+    // No server identity ⇒ the approve control stays disabled and nothing is sent.
+    expect(screen.getByTestId("bulk-approve")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("bulk-approve"));
+    expect(confirmCalls).toBe(0);
   });
 
   it("never force-includes a blocked candidate (no include control, not executable)", async () => {

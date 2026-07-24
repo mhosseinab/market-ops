@@ -769,6 +769,18 @@ export const MESSAGE_KEYS = [
   "bulk.pagination.next",
   "bulk.readiness.error.title",
   "bulk.readiness.error.body",
+  "bulk.preview.error.title",
+  "bulk.preview.error.body",
+  "bulk.preview.pending",
+  "bulk.preview.empty",
+  "bulk.confirm.error.title",
+  "bulk.confirm.error.body",
+  "bulk.candidates.incomplete",
+  "bulk.result.state.authorized",
+  "bulk.result.state.alreadyAuthorized",
+  "bulk.result.state.invalidated",
+  "bulk.result.state.failed",
+  "bulk.result.notAMember",
 
   // Settings (admin levels §8.3)
   "settings.connection.title",

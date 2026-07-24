@@ -734,6 +734,19 @@ export const faIR: Catalog = {
   "bulk.readiness.error.body":
     "آمادگی حاشیهٔ برخی ردیف‌های این صفحه بارگذاری نشد. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
 
+  "bulk.preview.error.title": "مجموعهٔ انتخاب ساخته نشد",
+  "bulk.preview.error.body": "ساخت و نسخه‌گذاری مجموعهٔ انتخاب بر عهدهٔ سرور است. هیچ چیزی تایید نشد؛ دوباره پیش‌نمایش بگیرید.",
+  "bulk.preview.pending": "در حال ساخت مجموعهٔ انتخاب…",
+  "bulk.preview.empty": "هیچ نامزدی کنترل تایید ندارد که در مجموعه قرار گیرد.",
+  "bulk.confirm.error.title": "تایید دسته‌ای ثبت نشد",
+  "bulk.confirm.error.body": "هیچ چیزی تایید نشد. دوباره پیش‌نمایش بگیرید و تلاش کنید.",
+  "bulk.candidates.incomplete": "اقدام‌های بیشتری از آنچه در این صفحه دیده می‌شود وجود دارد؛ مجموعهٔ انتخاب فقط همین صفحه را دربر می‌گیرد.",
+  "bulk.result.state.authorized": "تاییدشده",
+  "bulk.result.state.alreadyAuthorized": "پیش‌تر تاییدشده",
+  "bulk.result.state.invalidated": "باطل‌شده",
+  "bulk.result.state.failed": "ناموفق",
+  "bulk.result.notAMember": "خارج از مجموعهٔ انتخاب",
+
   "settings.connection.title": "اتصال دیجی‌کالا",
   "settings.connection.manage": "مدیریت اتصال ←",
   "settings.connection.state": "وضعیت اتصال",
