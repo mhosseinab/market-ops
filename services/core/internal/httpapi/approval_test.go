@@ -33,7 +33,7 @@ type fakeApproval struct {
 
 	editedCard   db.ApprovalCard
 	editErr      error
-	actions      []db.ApprovalCard
+	actions      []db.ListApprovalCardsPageRow
 	rec          db.Recommendation
 	recErr       error
 	preview      recommendation.PreviewResult
@@ -58,8 +58,8 @@ func (f *fakeApproval) ConfirmBulkSelectionForOrg(_ context.Context, _ uuid.UUID
 func (f *fakeApproval) EditPriceForOrg(context.Context, uuid.UUID, uuid.UUID, money.Money, time.Time) (db.ApprovalCard, error) {
 	return f.editedCard, f.editErr
 }
-func (f *fakeApproval) ListActionsForOrg(context.Context, uuid.UUID, uuid.UUID, string, int32) ([]db.ApprovalCard, error) {
-	return f.actions, f.err
+func (f *fakeApproval) ListActionsForOrg(context.Context, uuid.UUID, uuid.UUID, string, recommendation.ActionsPageRequest) (recommendation.ActionsPage, error) {
+	return recommendation.ActionsPage{Items: f.actions}, f.err
 }
 func (f *fakeApproval) GetRecommendationForOrg(context.Context, uuid.UUID, uuid.UUID) (db.Recommendation, error) {
 	return f.rec, f.recErr

@@ -374,6 +374,10 @@ type ListApprovalCardsByAccountParams struct {
 // (greatest) version per lineage, newest first. The unfiltered read: every
 // current lineage head for the account. A deterministic id tie-break keeps
 // ordering stable across rows sharing a created_at (stable keyset paging).
+//
+// NOT a request path: superseded by ListApprovalCardsPage for every caller-facing
+// read (its bare LIMIT carries no completeness signal). Retained for internal
+// fixed-bound reads only.
 func (q *Queries) ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error) {
 	rows, err := q.db.Query(ctx, listApprovalCardsByAccount, arg.MarketplaceAccountID, arg.Limit)
 	if err != nil {
@@ -465,6 +469,125 @@ func (q *Queries) ListApprovalCardsByAccountAndState(ctx context.Context, arg Li
 			&i.PriceExponent,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listApprovalCardsPage = `-- name: ListApprovalCardsPage :many
+SELECT latest.id, latest.recommendation_id, latest.marketplace_account_id, latest.lineage_id, latest.version, latest.action_id, latest.parameter_version, latest.context_version, latest.policy_version, latest.cost_profile_version, latest.evidence_versions, latest.idempotency_key, latest.state, latest.price_mantissa, latest.price_currency, latest.price_exponent, latest.expires_at, latest.created_at, r.variant_id FROM (
+    SELECT DISTINCT ON (ac.lineage_id) ac.id, ac.recommendation_id, ac.marketplace_account_id, ac.lineage_id, ac.version, ac.action_id, ac.parameter_version, ac.context_version, ac.policy_version, ac.cost_profile_version, ac.evidence_versions, ac.idempotency_key, ac.state, ac.price_mantissa, ac.price_currency, ac.price_exponent, ac.expires_at, ac.created_at
+    FROM approval_cards ac
+    WHERE ac.marketplace_account_id = $1
+    ORDER BY ac.lineage_id, ac.version DESC
+) latest
+JOIN recommendations r ON r.id = latest.recommendation_id
+WHERE ($2::text IS NULL OR latest.state = $2::text)
+  AND (
+    $3::timestamptz IS NULL
+    OR (latest.created_at, latest.id) < ($3::timestamptz, $4::uuid)
+  )
+ORDER BY latest.created_at DESC, latest.id DESC
+LIMIT $5
+`
+
+type ListApprovalCardsPageParams struct {
+	MarketplaceAccountID uuid.UUID
+	State                pgtype.Text
+	CursorCreatedAt      pgtype.Timestamptz
+	CursorID             pgtype.UUID
+	PageLimit            int32
+}
+
+type ListApprovalCardsPageRow struct {
+	ID                   uuid.UUID
+	RecommendationID     uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	LineageID            uuid.UUID
+	Version              int32
+	ActionID             uuid.UUID
+	ParameterVersion     int64
+	ContextVersion       int64
+	PolicyVersion        int64
+	CostProfileVersion   int64
+	EvidenceVersions     []byte
+	IdempotencyKey       string
+	State                string
+	PriceMantissa        int64
+	PriceCurrency        string
+	PriceExponent        int16
+	ExpiresAt            time.Time
+	CreatedAt            time.Time
+	VariantID            uuid.UUID
+}
+
+// The BOUNDED, keyset-paginated actions queue (issue #90 blocker 3, §17 bounded
+// reads). It supersedes the two unpaginated reads below as the ONLY request-path
+// actions read: those silently CLAMPED an over-large limit to 500 and returned no
+// completeness signal, so a caller with more than 500 current lineage heads
+// received a truncated queue it could not distinguish from a complete one.
+//
+// Shape (identical to the notification feed's keyset idiom — one pagination
+// convention in this repo, issue #128):
+//   - current (greatest) version per lineage via DISTINCT ON, so the queue is one
+//     row per action;
+//   - the OPTIONAL §8.4 state predicate is AUTHORITATIVE and applied to the current
+//     lineage HEAD before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING rows,
+//     never an unfiltered newest-N prefix;
+//   - deterministic (created_at DESC, id DESC) ordering with the row-value cursor
+//     comparison, so ties on created_at break by id and every row is returned
+//     EXACTLY ONCE across pages (no duplicate, no skip);
+//   - a NULL cursor is the first (newest) page; the caller passes
+//     page_limit = requested_limit + 1 and treats the extra row as the hasMore
+//     signal (then trims it).
+//
+// The account predicate is the authorization; the cursor is only a position.
+//
+// variant_id is joined from the recommendation (a card and its recommendation are
+// account-bound by migration 0025's composite FK, so the join cannot widen the
+// tenant scope). It is what lets a caller build a bulk selection member
+// (variantId + recommendationId) from ONE bounded read instead of an N+1 fan-out.
+func (q *Queries) ListApprovalCardsPage(ctx context.Context, arg ListApprovalCardsPageParams) ([]ListApprovalCardsPageRow, error) {
+	rows, err := q.db.Query(ctx, listApprovalCardsPage,
+		arg.MarketplaceAccountID,
+		arg.State,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListApprovalCardsPageRow{}
+	for rows.Next() {
+		var i ListApprovalCardsPageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecommendationID,
+			&i.MarketplaceAccountID,
+			&i.LineageID,
+			&i.Version,
+			&i.ActionID,
+			&i.ParameterVersion,
+			&i.ContextVersion,
+			&i.PolicyVersion,
+			&i.CostProfileVersion,
+			&i.EvidenceVersions,
+			&i.IdempotencyKey,
+			&i.State,
+			&i.PriceMantissa,
+			&i.PriceCurrency,
+			&i.PriceExponent,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.VariantID,
 		); err != nil {
 			return nil, err
 		}

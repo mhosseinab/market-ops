@@ -12,9 +12,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/keyset"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
 
@@ -77,13 +79,127 @@ func (s *Service) EditPrice(ctx context.Context, cardID uuid.UUID, newPrice mone
 	return s.mintDraftCard(ctx, current.RecommendationID, current.LineageID, current.MarketplaceAccountID, binding, newPrice)
 }
 
-// Default and hard-maximum page sizes for the actions queue read (PD-3 item 5).
-// The default is conservative; the maximum is a hard cap the caller can never
-// exceed, so a large or absent client limit can never unbound the scan.
+// Default and hard-maximum page sizes for the actions queue read (PD-3 item 5,
+// §17 bounded reads). The default applies when the caller omits a limit; the
+// maximum is a hard cap, so a large or absent client limit can never unbound the
+// scan.
+//
+// The cap FAILS CLOSED (issue #90 blocker 3): a caller asking for MORE than
+// MaxActionsLimit gets ErrLimitAboveMax, never a silently clamped page. A silent
+// clamp is what made the old 500-row truncation invisible — the caller believed it
+// held the whole queue while the server had quietly dropped the tail. (The
+// notification feed deliberately clamps instead: its response is a scrollable feed
+// whose completeness the caller reads from hasMore/nextCursor. The actions queue
+// now carries the same completeness signal, and additionally refuses an
+// out-of-contract limit rather than answering a question it was not asked.)
 const (
 	defaultActionsLimit int32 = 200
-	maxActionsLimit     int32 = 500
+	// MaxActionsLimit is the hard, contract-declared maximum page size for
+	// GET /actions (mirrored as `maximum: 500` on the wire).
+	MaxActionsLimit int32 = 500
 )
+
+// ErrLimitAboveMax is returned when a caller requests an actions page larger than
+// MaxActionsLimit. It fails closed with NO rows: the transport maps it to a 400, so
+// an over-large request is a visible validation error, never a truncated success.
+var ErrLimitAboveMax = errors.New("recommendation: requested page limit exceeds the maximum")
+
+// ErrInvalidCursor is returned for a malformed, tampered, unknown-version, or
+// FOREIGN-account continuation cursor. It IS keyset.ErrInvalidCursor, the shared
+// sentinel every paginated read in this repo fails safe with; the transport maps it
+// to a 400. A bad cursor is never silently reinterpreted as a first page (which
+// would quietly re-serve rows the caller already had) and never reads another
+// tenant's queue — the account predicate remains the authorization.
+var ErrInvalidCursor = keyset.ErrInvalidCursor
+
+// ActionsPageRequest is a caller-facing, UNRESOLVED bounded-read request: the
+// optional raw limit and the optional opaque cursor exactly as they arrived on the
+// wire. Resolution (bound check + decode + account-binding validation) happens in
+// the service, so the fail-closed rules live in ONE place.
+type ActionsPageRequest struct {
+	Limit  *int32
+	Cursor *string
+}
+
+// ActionsPage is ONE bounded page of the actions queue plus its truthful
+// completeness signal. HasMore reports whether older matching actions exist beyond
+// this page; NextCursor is the opaque continuation token for them (nil when
+// HasMore is false). A caller can therefore always distinguish "this is the whole
+// queue" from "there is more" — the distinction the silent 500-row clamp destroyed.
+type ActionsPage struct {
+	Items      []db.ListApprovalCardsPageRow
+	NextCursor *string
+	HasMore    bool
+}
+
+// resolveActionsLimit applies the §17 bound: an omitted or non-positive limit gets
+// the conservative default; a limit ABOVE the maximum fails closed. The result is
+// always in [1, MaxActionsLimit].
+func resolveActionsLimit(requested *int32) (int32, error) {
+	if requested == nil || *requested <= 0 {
+		return defaultActionsLimit, nil
+	}
+	if *requested > MaxActionsLimit {
+		return 0, ErrLimitAboveMax
+	}
+	return *requested, nil
+}
+
+// ListActionsPage returns ONE bounded, keyset-paginated page of the account's
+// actions queue: the current (greatest) version per lineage, newest first,
+// optionally narrowed to a single §8.4 state (the predicate is applied to the
+// current lineage head in SQL, BEFORE the page bound — issue #142).
+//
+// Completeness is EXPLICIT: it fetches limit+1 rows, uses the extra row as the
+// hasMore signal, trims it, and mints the continuation cursor from the last
+// RETURNED row. Nothing is ever silently dropped.
+//
+// Fail-closed inputs (§4.6): a limit above MaxActionsLimit is ErrLimitAboveMax; a
+// malformed, tampered, or foreign-account cursor is ErrInvalidCursor. The account
+// predicate — resolved upstream from the authenticated org — is the authorization;
+// the cursor only names a position within it.
+func (s *Service) ListActionsPage(ctx context.Context, account uuid.UUID, stateFilter string, req ActionsPageRequest) (ActionsPage, error) {
+	limit, err := resolveActionsLimit(req.Limit)
+	if err != nil {
+		return ActionsPage{}, err
+	}
+	params := db.ListApprovalCardsPageParams{
+		MarketplaceAccountID: account,
+		PageLimit:            limit + 1, // the +1 probe row is the hasMore signal.
+	}
+	if stateFilter != "" {
+		params.State = pgtype.Text{String: stateFilter, Valid: true}
+	}
+	if req.Cursor != nil {
+		cur, err := keyset.Decode(*req.Cursor)
+		if err != nil {
+			return ActionsPage{}, err
+		}
+		// A cursor minted for ANOTHER account is rejected outright rather than
+		// reinterpreted: defense in depth beside the account-scoped predicate.
+		if cur.Account != account {
+			return ActionsPage{}, ErrInvalidCursor
+		}
+		params.CursorCreatedAt = pgtype.Timestamptz{Time: cur.CreatedAt, Valid: true}
+		params.CursorID = pgtype.UUID{Bytes: cur.ID, Valid: true}
+	}
+
+	rows, err := db.New(s.pool).ListApprovalCardsPage(ctx, params)
+	if err != nil {
+		return ActionsPage{}, err
+	}
+	page := ActionsPage{HasMore: int32(len(rows)) > limit}
+	if page.HasMore {
+		rows = rows[:limit]
+	}
+	page.Items = rows
+	if page.HasMore && len(rows) > 0 {
+		last := rows[len(rows)-1]
+		tok := keyset.Encode(account, last.CreatedAt, last.ID)
+		page.NextCursor = &tok
+	}
+	return page, nil
+}
 
 // ListActions returns the account's actions queue: the current (greatest)
 // version per lineage, newest first, bounded by limit (PD-3 item 5). A
@@ -99,8 +215,8 @@ func (s *Service) ListActions(ctx context.Context, account uuid.UUID, stateFilte
 	if limit <= 0 {
 		limit = defaultActionsLimit
 	}
-	if limit > maxActionsLimit {
-		limit = maxActionsLimit
+	if limit > MaxActionsLimit {
+		limit = MaxActionsLimit
 	}
 	q := db.New(s.pool)
 	if stateFilter == "" {

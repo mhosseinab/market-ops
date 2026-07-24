@@ -1074,6 +1074,7 @@ export interface paths {
         /**
          * List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
          * @description Returns the account's approval cards (one row per action, current version), newest first, optionally filtered by §8.4 state — the grouped multi-row queue the Actions screen needs beyond the single deep-linked card read (GET /approvals/card). This is a read; it never advances state.
+         *     The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads): pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the next page. Ties on `createdAt` break by `id`, so every action is returned EXACTLY ONCE across pages. Completeness is EXPLICIT — `hasMore` and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit` above the maximum was silently clamped to 500 and the response carried no completeness field, so an account with more than 500 actions received a truncated queue indistinguishable from a complete one; a limit above the maximum is now REJECTED (400) rather than quietly answered with a different question.
          */
         get: operations["listActions"];
         put?: never;
@@ -2768,6 +2769,11 @@ export interface components {
             id: string;
             /** Format: uuid */
             recommendationId: string;
+            /**
+             * Format: uuid
+             * @description The variant this action's recommendation is for. ADDITIVE and optional (an existing client may ignore it). It is what lets a bulk-approval surface build a selection-set member — which requires the PAIR (variantId, recommendationId) — from ONE bounded actions read instead of an N+1 per-action recommendation fan-out. It is server-derived from the recommendation, never a client assertion.
+             */
+            variantId?: string;
             /** Format: int64 */
             version: number;
             state: components["schemas"]["ApprovalState"];
@@ -2785,8 +2791,13 @@ export interface components {
             /** @description The EXE-005 state; present ONLY for a `recommend_only` action. */
             recommendOnlyState?: components["schemas"]["RecommendOnlyState"];
         };
+        /** @description One BOUNDED page of the actions queue (§17 bounded reads). `items` carries this page; `hasMore` and `nextCursor` carry its truthful completeness — `hasMore` is true when more matching actions exist beyond this page, and `nextCursor` is the opaque token to pass back as `cursor` to fetch them (null/absent on the last page). Both are ADDITIVE and optional so an existing client keeps working; a client that ignores them sees only the first page and must not treat it as the whole queue. */
         ActionList: {
             items: components["schemas"]["ActionSummary"][];
+            /** @description True when more matching actions exist beyond this page (a further page can be fetched with `nextCursor`). False on the last page. */
+            hasMore?: boolean;
+            /** @description Opaque keyset continuation token for the next (older) page; null when `hasMore` is false. Pass it back verbatim as the `cursor` query param. */
+            nextCursor?: string | null;
         };
         /** @description One row of the outcomes queue (OUT-001, PD-3 item 5). */
         OutcomeSummary: {
@@ -4729,9 +4740,12 @@ export interface operations {
         parameters: {
             query: {
                 marketplaceAccountId: string;
-                /** @description Optional §8.4 state filter. */
+                /** @description Optional §8.4 state filter. It is AUTHORITATIVE and applied to the current (greatest-version) lineage head BEFORE the page bound, so a page bounds MATCHING actions — never an unfiltered newest-N prefix. */
                 state?: components["schemas"]["ApprovalState"];
+                /** @description Maximum actions to return in this page. Optional: when omitted the server applies a conservative default (200). A value ABOVE the hard maximum (500) is REJECTED with a 400 — it is never silently clamped, because a clamped page is indistinguishable from a complete one. Values below 1 fall back to the default. Use `hasMore`/`nextCursor` to read beyond one page. */
                 limit?: number;
+                /** @description Opaque keyset continuation token from a previous response's `nextCursor`. Encodes the `(createdAt, id)` position and the owning account; the server reads STRICTLY OLDER matching rows under the same account. A malformed, tampered, or foreign-account cursor is rejected with a 400 — the cursor is only a position, the account predicate remains the authorization. Omit for the first (newest) page. */
+                cursor?: string;
             };
             header?: never;
             path?: never;

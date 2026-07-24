@@ -668,6 +668,15 @@ type Querier interface {
 	// (action_executions carries no account column of its own). A pure SELECT — the
 	// common action API overlays these onto the account's approval cards.
 	ListActionExecutionsByAccount(ctx context.Context, arg ListActionExecutionsByAccountParams) ([]ActionExecution, error)
+	// The write-mode action_executions rows for an EXPLICIT set of action ids under one
+	// account (issue #90 blocker 3). The account-wide newest-N projection above cannot
+	// serve a CURSOR-PAGINATED actions page: a page deeper than the newest N would find
+	// no overlay row and render an already-executed action as if it were still
+	// pre-execution — a fabricated state, not merely a missing enrichment. Keying the
+	// overlay on exactly the page's action ids makes it complete for that page by
+	// construction. The account predicate remains the authorization; the id list only
+	// narrows within it. A pure SELECT.
+	ListActionExecutionsByAccountAndActions(ctx context.Context, arg ListActionExecutionsByAccountAndActionsParams) ([]ActionExecution, error)
 	// Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
 	// cadence tier, across all accounts, in a stable order. A target deactivated by
 	// identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
@@ -682,6 +691,10 @@ type Querier interface {
 	// (greatest) version per lineage, newest first. The unfiltered read: every
 	// current lineage head for the account. A deterministic id tie-break keeps
 	// ordering stable across rows sharing a created_at (stable keyset paging).
+	//
+	// NOT a request path: superseded by ListApprovalCardsPage for every caller-facing
+	// read (its bare LIMIT carries no completeness signal). Retained for internal
+	// fixed-bound reads only.
 	ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error)
 	// Actions queue narrowed to a single §8.4 state (issue #142). The state
 	// predicate is AUTHORITATIVE and runs on the current (greatest-version) lineage
@@ -690,6 +703,32 @@ type Querier interface {
 	// non-matching ones. Tenant scoping (marketplace_account_id) is unchanged and
 	// the id tie-break keeps paging stable across equal created_at.
 	ListApprovalCardsByAccountAndState(ctx context.Context, arg ListApprovalCardsByAccountAndStateParams) ([]ApprovalCard, error)
+	// The BOUNDED, keyset-paginated actions queue (issue #90 blocker 3, §17 bounded
+	// reads). It supersedes the two unpaginated reads below as the ONLY request-path
+	// actions read: those silently CLAMPED an over-large limit to 500 and returned no
+	// completeness signal, so a caller with more than 500 current lineage heads
+	// received a truncated queue it could not distinguish from a complete one.
+	//
+	// Shape (identical to the notification feed's keyset idiom — one pagination
+	// convention in this repo, issue #128):
+	//   * current (greatest) version per lineage via DISTINCT ON, so the queue is one
+	//     row per action;
+	//   * the OPTIONAL §8.4 state predicate is AUTHORITATIVE and applied to the current
+	//     lineage HEAD before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING rows,
+	//     never an unfiltered newest-N prefix;
+	//   * deterministic (created_at DESC, id DESC) ordering with the row-value cursor
+	//     comparison, so ties on created_at break by id and every row is returned
+	//     EXACTLY ONCE across pages (no duplicate, no skip);
+	//   * a NULL cursor is the first (newest) page; the caller passes
+	//     page_limit = requested_limit + 1 and treats the extra row as the hasMore
+	//     signal (then trims it).
+	// The account predicate is the authorization; the cursor is only a position.
+	//
+	// variant_id is joined from the recommendation (a card and its recommendation are
+	// account-bound by migration 0025's composite FK, so the join cannot widen the
+	// tenant scope). It is what lets a caller build a bulk selection member
+	// (variantId + recommendationId) from ONE bounded read instead of an N+1 fan-out.
+	ListApprovalCardsPage(ctx context.Context, arg ListApprovalCardsPageParams) ([]ListApprovalCardsPageRow, error)
 	// The complete append-only audit trail for an action, in occurrence order. This
 	// is the reproduction read (AUD-001): it joins NOTHING in the conversation tables,
 	// so deleting a conversation leaves the trail intact.
@@ -847,6 +886,9 @@ type Querier interface {
 	// projection), newest first. recommend_only_actions carries its own account
 	// column, so no join is needed. A pure SELECT.
 	ListRecommendOnlyActionsByAccount(ctx context.Context, arg ListRecommendOnlyActionsByAccountParams) ([]RecommendOnlyAction, error)
+	// The recommend-only actions for an EXPLICIT set of action ids under one account
+	// (issue #90 blocker 3) — the recommend-only half of the page-scoped overlay above.
+	ListRecommendOnlyActionsByAccountAndActions(ctx context.Context, arg ListRecommendOnlyActionsByAccountAndActionsParams) ([]RecommendOnlyAction, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)

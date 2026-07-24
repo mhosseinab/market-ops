@@ -1,13 +1,11 @@
 package notify
 
 import (
-	"bytes"
-	"encoding/base64"
-	"encoding/json"
-	"errors"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/mhosseinab/market-ops/services/core/internal/keyset"
 )
 
 // Bounded-read constants for the in-app notification feed (issue #128, §17). The
@@ -24,10 +22,11 @@ const (
 	// to this value, bounding DB, heap, and network cost per page.
 	MaxPageLimit = 200
 
-	// cursorVersion is the opaque-cursor schema version. A cursor with any other
-	// version is rejected (fail safe), so the encoding can evolve without silently
-	// misreading an old token as a position.
-	cursorVersion = 1
+	// cursorVersion is the opaque-cursor schema version, owned by internal/keyset
+	// (the repo's single cursor codec). A cursor with any other version is rejected
+	// (fail safe), so the encoding can evolve without silently misreading an old
+	// token as a position.
+	cursorVersion = keyset.Version
 )
 
 // ErrInvalidCursor is returned when a continuation cursor is malformed, tampered,
@@ -36,7 +35,10 @@ const (
 // cursor is only a position — the account predicate is the authorization — so a
 // foreign or tampered cursor never reads another account's rows; it is rejected
 // outright rather than silently reinterpreted.
-var ErrInvalidCursor = errors.New("notify: invalid cursor")
+//
+// It IS keyset.ErrInvalidCursor (the shared codec's sentinel), so errors.Is matches
+// through either name and every paginated read fails safe identically.
+var ErrInvalidCursor = keyset.ErrInvalidCursor
 
 // ClampLimit resolves a caller-supplied optional page limit to a server-enforced
 // bound: nil or a non-positive value yields DefaultPageLimit; a value above
@@ -53,24 +55,12 @@ func ClampLimit(requested *int32) int32 {
 }
 
 // Cursor is a decoded keyset position over the (created_at, id) ordering, bound to
-// the account it was minted for. It is opaque on the wire (base64url of a versioned
-// JSON tuple); callers never construct it directly, only round-trip the encoded
-// token from a prior response's NextCursor.
-type Cursor struct {
-	Account   uuid.UUID
-	CreatedAt time.Time
-	ID        uuid.UUID
-}
+// the account it was minted for. It is the shared internal/keyset cursor type — one
+// codec, one convention, for every server-paginated read in the repo.
+type Cursor = keyset.Cursor
 
-// cursorPayload is the on-wire JSON shape. Compact keys keep the token short; the
-// version guards forward evolution. CreatedAt is carried as UnixNano to preserve the
-// exact microsecond keyset boundary across the encode/decode round-trip.
-type cursorPayload struct {
-	V int    `json:"v"`
-	A string `json:"a"`
-	T int64  `json:"t"`
-	I string `json:"i"`
-}
+// cursorPayload is the shared on-wire JSON shape (internal/keyset.Payload).
+type cursorPayload = keyset.Payload
 
 // PageRequest is a caller-facing, UNRESOLVED bounded-read request: an optional raw
 // limit and an optional opaque cursor token exactly as they arrived on the wire.
@@ -82,50 +72,17 @@ type PageRequest struct {
 }
 
 // encodeCursor mints the opaque continuation token for the last row of a page,
-// binding it to the account. The token is base64url (no padding) of the versioned
-// JSON tuple; it carries no secret and no rendered copy — only a position and its
-// owning account.
+// binding it to the account (internal/keyset.Encode).
 func encodeCursor(account uuid.UUID, createdAt time.Time, id uuid.UUID) string {
-	p := cursorPayload{
-		V: cursorVersion,
-		A: account.String(),
-		T: createdAt.UTC().UnixNano(),
-		I: id.String(),
-	}
-	raw, _ := json.Marshal(p) // a fixed struct of strings/ints never fails to marshal
-	return base64.RawURLEncoding.EncodeToString(raw)
+	return keyset.Encode(account, createdAt, id)
 }
 
-// decodeCursor parses an opaque token into a Cursor, failing SAFELY (ErrInvalidCursor)
-// on any malformed, tampered, or unknown-version input. It does NOT check account
-// binding — that check needs the caller's resolved account and lives in the store, so
-// a foreign cursor is rejected there with the same sentinel (defense in depth: the
-// account-scoped query is the authorization regardless).
+// decodeCursor parses an opaque token into a Cursor, failing SAFELY
+// (ErrInvalidCursor) on any malformed, tampered, or unknown-version input
+// (internal/keyset.Decode). It does NOT check account binding — that check needs the
+// caller's resolved account and lives in the store, so a foreign cursor is rejected
+// there with the same sentinel (defense in depth: the account-scoped query is the
+// authorization regardless).
 func decodeCursor(token string) (Cursor, error) {
-	raw, err := base64.RawURLEncoding.DecodeString(token)
-	if err != nil {
-		return Cursor{}, ErrInvalidCursor
-	}
-	var p cursorPayload
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&p); err != nil {
-		return Cursor{}, ErrInvalidCursor
-	}
-	if p.V != cursorVersion {
-		return Cursor{}, ErrInvalidCursor
-	}
-	account, err := uuid.Parse(p.A)
-	if err != nil {
-		return Cursor{}, ErrInvalidCursor
-	}
-	id, err := uuid.Parse(p.I)
-	if err != nil {
-		return Cursor{}, ErrInvalidCursor
-	}
-	return Cursor{
-		Account:   account,
-		CreatedAt: time.Unix(0, p.T).UTC(),
-		ID:        id,
-	}, nil
+	return keyset.Decode(token)
 }

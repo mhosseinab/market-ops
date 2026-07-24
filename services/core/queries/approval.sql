@@ -82,11 +82,56 @@ SELECT * FROM approval_card_states
 WHERE card_id = $1
 ORDER BY occurred_at, id;
 
+-- name: ListApprovalCardsPage :many
+-- The BOUNDED, keyset-paginated actions queue (issue #90 blocker 3, §17 bounded
+-- reads). It supersedes the two unpaginated reads below as the ONLY request-path
+-- actions read: those silently CLAMPED an over-large limit to 500 and returned no
+-- completeness signal, so a caller with more than 500 current lineage heads
+-- received a truncated queue it could not distinguish from a complete one.
+--
+-- Shape (identical to the notification feed's keyset idiom — one pagination
+-- convention in this repo, issue #128):
+--   * current (greatest) version per lineage via DISTINCT ON, so the queue is one
+--     row per action;
+--   * the OPTIONAL §8.4 state predicate is AUTHORITATIVE and applied to the current
+--     lineage HEAD before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING rows,
+--     never an unfiltered newest-N prefix;
+--   * deterministic (created_at DESC, id DESC) ordering with the row-value cursor
+--     comparison, so ties on created_at break by id and every row is returned
+--     EXACTLY ONCE across pages (no duplicate, no skip);
+--   * a NULL cursor is the first (newest) page; the caller passes
+--     page_limit = requested_limit + 1 and treats the extra row as the hasMore
+--     signal (then trims it).
+-- The account predicate is the authorization; the cursor is only a position.
+--
+-- variant_id is joined from the recommendation (a card and its recommendation are
+-- account-bound by migration 0025's composite FK, so the join cannot widen the
+-- tenant scope). It is what lets a caller build a bulk selection member
+-- (variantId + recommendationId) from ONE bounded read instead of an N+1 fan-out.
+SELECT latest.*, r.variant_id FROM (
+    SELECT DISTINCT ON (ac.lineage_id) ac.*
+    FROM approval_cards ac
+    WHERE ac.marketplace_account_id = $1
+    ORDER BY ac.lineage_id, ac.version DESC
+) latest
+JOIN recommendations r ON r.id = latest.recommendation_id
+WHERE (sqlc.narg('state')::text IS NULL OR latest.state = sqlc.narg('state')::text)
+  AND (
+    sqlc.narg('cursor_created_at')::timestamptz IS NULL
+    OR (latest.created_at, latest.id) < (sqlc.narg('cursor_created_at')::timestamptz, sqlc.narg('cursor_id')::uuid)
+  )
+ORDER BY latest.created_at DESC, latest.id DESC
+LIMIT sqlc.arg('page_limit');
+
 -- name: ListApprovalCardsByAccount :many
 -- Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
 -- (greatest) version per lineage, newest first. The unfiltered read: every
 -- current lineage head for the account. A deterministic id tie-break keeps
 -- ordering stable across rows sharing a created_at (stable keyset paging).
+--
+-- NOT a request path: superseded by ListApprovalCardsPage for every caller-facing
+-- read (its bare LIMIT carries no completeness signal). Retained for internal
+-- fixed-bound reads only.
 SELECT latest.* FROM (
     SELECT DISTINCT ON (ac.lineage_id) ac.*
     FROM approval_cards ac

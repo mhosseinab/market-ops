@@ -150,6 +150,30 @@ WHERE marketplace_account_id = $1
 ORDER BY approved_at DESC
 LIMIT $2;
 
+-- name: ListActionExecutionsByAccountAndActions :many
+-- The write-mode action_executions rows for an EXPLICIT set of action ids under one
+-- account (issue #90 blocker 3). The account-wide newest-N projection above cannot
+-- serve a CURSOR-PAGINATED actions page: a page deeper than the newest N would find
+-- no overlay row and render an already-executed action as if it were still
+-- pre-execution — a fabricated state, not merely a missing enrichment. Keying the
+-- overlay on exactly the page's action ids makes it complete for that page by
+-- construction. The account predicate remains the authorization; the id list only
+-- narrows within it. A pure SELECT.
+SELECT ae.*
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ac.marketplace_account_id = $1
+  AND ae.action_id = ANY(sqlc.arg('action_ids')::uuid[])
+ORDER BY ae.created_at DESC;
+
+-- name: ListRecommendOnlyActionsByAccountAndActions :many
+-- The recommend-only actions for an EXPLICIT set of action ids under one account
+-- (issue #90 blocker 3) — the recommend-only half of the page-scoped overlay above.
+SELECT * FROM recommend_only_actions
+WHERE marketplace_account_id = $1
+  AND action_id = ANY(sqlc.arg('action_ids')::uuid[])
+ORDER BY approved_at DESC;
+
 -- name: GetCurrentExecutionContext :one
 -- Server-side re-resolution for the Revalidating gate (EXE-001): the account,
 -- variant, and native variant id for a card's recommendation, PLUS the CURRENT

@@ -116,19 +116,23 @@ func (s *Service) EditPriceForOrg(ctx context.Context, organizationID, cardID uu
 	return s.EditPrice(ctx, cardID, newPrice, now)
 }
 
-// ListActionsForOrg returns the actions queue for the caller's own account only
-// (issue #102). The requested account MUST equal the caller's resolved account; a
-// foreign account id yields pgx.ErrNoRows (uniform not-found), never another
-// account's queue.
-func (s *Service) ListActionsForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID, stateFilter string, limit int32) ([]db.ApprovalCard, error) {
+// ListActionsForOrg returns ONE bounded, keyset-paginated page of the actions queue
+// for the caller's own account only (issue #102). The requested account MUST equal
+// the caller's resolved account; a foreign account id yields errNotOwnedAccount
+// (uniform not-found), never another account's queue.
+//
+// It is the paginated read (issue #90 blocker 3): the page carries an explicit
+// completeness signal, an over-large limit fails closed, and a bad or foreign cursor
+// is rejected — the request path can no longer receive a silently truncated queue.
+func (s *Service) ListActionsForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID, stateFilter string, req ActionsPageRequest) (ActionsPage, error) {
 	account, err := s.accountForOrg(ctx, organizationID)
 	if err != nil {
-		return nil, err
+		return ActionsPage{}, err
 	}
 	if requestedAccount != account {
-		return nil, errNotOwnedAccount
+		return ActionsPage{}, errNotOwnedAccount
 	}
-	return s.ListActions(ctx, account, stateFilter, limit)
+	return s.ListActionsPage(ctx, account, stateFilter, req)
 }
 
 // PreviewBulkSelectionForOrg mints a server-side bulk selection-set preview scoped

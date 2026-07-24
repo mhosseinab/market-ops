@@ -68,8 +68,8 @@ func (f *recordingApproval) EditPriceForOrg(context.Context, uuid.UUID, uuid.UUI
 	f.editCalls++
 	return db.ApprovalCard{}, nil
 }
-func (f *recordingApproval) ListActionsForOrg(context.Context, uuid.UUID, uuid.UUID, string, int32) ([]db.ApprovalCard, error) {
-	return nil, nil
+func (f *recordingApproval) ListActionsForOrg(context.Context, uuid.UUID, uuid.UUID, string, recommendation.ActionsPageRequest) (recommendation.ActionsPage, error) {
+	return recommendation.ActionsPage{}, nil
 }
 func (f *recordingApproval) GetRecommendationForOrg(context.Context, uuid.UUID, uuid.UUID) (db.Recommendation, error) {
 	return db.Recommendation{}, nil
