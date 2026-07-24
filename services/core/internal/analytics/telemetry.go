@@ -39,6 +39,17 @@ type telemetry struct {
 	// let explode cardinality — so a non-zero value is the fail-closed signal, nothing
 	// more.
 	entityRejects metric.Int64Counter
+	// emitFailures counts events that could NOT be written because the analytics SINK
+	// or its lookup failed — an INFRASTRUCTURE failure, never a validation rejection,
+	// a tenant/entity rejection, or a deduplication suppression (each of which has its
+	// own signal). It exists because without it an unreachable Postgres is
+	// indistinguishable from an IDLE pipe: every other analytics series simply reads
+	// zero, which is exactly what "nothing was due" looks like, so no alert can fire
+	// (issue #111 acceptance criterion: an unavailable analytics sink is observable).
+	// Like tenantRejects/entityRejects it is DELIBERATELY label-free — its natural
+	// dimensions are tenant identifiers, which are never metric labels (issue
+	// #151/#244) — so a non-zero value is the outage signal, nothing more.
+	emitFailures metric.Int64Counter
 }
 
 // noopMeter backs a counter when the real meter errors, so a counter is never nil.
@@ -59,6 +70,7 @@ func newTelemetry() *telemetry {
 		costs:         ctr("analytics.cost_minor_units", "§17.3 variable cost in integer minor units (by kind)"),
 		tenantRejects: ctr("analytics.tenant_rejections", "cross-tenant analytics envelope rejections (issue #125; no labels)"),
 		entityRejects: ctr("analytics.entity_rejections", "entity-scope analytics envelope rejections (issue #125 reopen; no labels)"),
+		emitFailures:  ctr("analytics.emit_failures", "§18 analytics events lost to an analytics SINK/lookup infrastructure failure (issue #111; no labels)"),
 	}
 }
 
@@ -170,6 +182,15 @@ func (t *telemetry) tenantReject(ctx context.Context) {
 // cardinality growth, no ownership oracle).
 func (t *telemetry) entityReject(ctx context.Context) {
 	t.entityRejects.Add(ctx, 1)
+}
+
+// emitFailure records ONE event LOST to an analytics sink/lookup infrastructure
+// failure (issue #111). It is label-free for the same reason tenantReject is: the
+// outage must be observable, but its only natural dimensions are tenant identifiers.
+// It is never incremented for a validation rejection, a tenant/entity rejection, or a
+// deduplication suppression — those are distinct, correctly-behaving outcomes.
+func (t *telemetry) emitFailure(ctx context.Context) {
+	t.emitFailures.Add(ctx, 1)
 }
 
 // cost adds an integer cost amount to the cost counter tagged by kind. Message

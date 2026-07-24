@@ -398,7 +398,9 @@ func run() error {
 					})
 					if err := emitter.Emit(ctx, ev); err != nil {
 						// The digest already COMMITTED and the mail already went out. An
-						// analytics failure is logged + metered and the send stands: the
+						// analytics failure is logged here and metered by the emitter on
+						// analytics.emit_failures (so a sink outage is not just a flat
+						// zero on every analytics series), and the send stands: the
 						// advisory pipe never rolls back delivery state. The loss is
 						// bounded and observable; the dedup key makes a future retrying
 						// producer safe to add without double-counting.

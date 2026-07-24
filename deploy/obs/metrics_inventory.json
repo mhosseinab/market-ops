@@ -107,6 +107,11 @@
       "family": "analytics",
       "source": "internal/analytics/telemetry.go"
     },
+    "analytics.emit_failures": {
+      "type": "counter",
+      "family": "analytics",
+      "source": "internal/analytics/telemetry.go"
+    },
     "http.server.request.duration": {
       "type": "histogram",
       "family": "red",

@@ -23,9 +23,15 @@ type fakeStore struct {
 	inserted []db.InsertAnalyticsEventParams
 	// insertErr, when set, is returned from InsertAnalyticsEvent (DB-boundary sim).
 	insertErr error
+	// getErr, when set, is returned from GetMarketplaceAccount INSTEAD of a lookup:
+	// an INFRASTRUCTURE failure (sink unreachable), not a tenant conflict.
+	getErr error
 }
 
 func (f *fakeStore) GetMarketplaceAccount(_ context.Context, id uuid.UUID) (db.MarketplaceAccount, error) {
+	if f.getErr != nil {
+		return db.MarketplaceAccount{}, f.getErr
+	}
 	org, ok := f.owner[id]
 	if !ok {
 		return db.MarketplaceAccount{}, pgx.ErrNoRows

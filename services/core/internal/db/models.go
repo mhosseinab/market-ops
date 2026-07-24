@@ -60,7 +60,7 @@ type AnalyticsEvent struct {
 	Name                    string
 	Attributes              []byte
 	CreatedAt               time.Time
-	// Stable per-account deduplication key for the producing lifecycle transition (issue #111). NULL only for rows written before the key existed; every new row is keyed.
+	// Stable per-account deduplication key for the producing lifecycle transition (issue #111). Non-null values are structurally unique per account and never empty. NULL means the writing path supplied no key: such rows are OUTSIDE the partial unique index and are NOT deduplicated. analytics.Emit in the Go core never writes NULL (ErrMissingDedupKey); no other writer is structurally prevented from doing so.
 	DedupKey pgtype.Text
 }
 

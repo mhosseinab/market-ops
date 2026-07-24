@@ -225,9 +225,22 @@ type Event struct {
 // producers from colliding inside one account, which is the scope of the uniqueness
 // constraint. parts must be TECHNICAL identifiers only — never locale copy, never
 // marketplace or user free text (LOC-001, free-text containment).
-func DedupKey(family Family, name string, parts ...string) string {
-	key := string(family) + ":" + name
-	for _, p := range parts {
+//
+// AT LEAST ONE PART IS REQUIRED (hence the non-variadic part parameter). A key of
+// family+name alone is an account-wide CONSTANT: the first such event would win the
+// account's slot and every later one — a genuinely different business fact — would be
+// suppressed forever, while the call site looked perfectly keyed. That is the mirror
+// image of the per-call-UUID hazard: one deduplicates nothing, the other deduplicates
+// everything. The identifying part must come from the committed business row.
+//
+// PARTS MUST NOT CONTAIN ':' — it is the unescaped delimiter, so ["a:b"] and
+// ["a","b"] produce the SAME key and would silently suppress each other. Committed
+// row identifiers (UUIDs, business days, integer ids) never contain ':'; if a future
+// producer needs a part that might, escape it at the CALL SITE (or add a versioned
+// escaping key builder) rather than passing it raw.
+func DedupKey(family Family, name string, part string, more ...string) string {
+	key := string(family) + ":" + name + ":" + part
+	for _, p := range more {
 		key += ":" + p
 	}
 	return key
@@ -317,10 +330,13 @@ func newEmitterWithStore(s store) *Emitter {
 //     never double-counted on the §18 dashboards and is never silent.
 //   - LOSS is possible and is the deliberate, documented trade: producers emit AFTER
 //     their business transaction commits, so an emitter/sink failure returns an error
-//     the producer LOGS and METERS but never lets roll back safety-critical business
-//     state. Analytics is an advisory pipe; a durable per-family outbox (at-least-
-//     once delivery, which this key makes safe to retry) is the follow-on producer
-//     sub-step, not a silent fallback here.
+//     the producer LOGS but never lets roll back safety-critical business state. The
+//     loss is METERED here, on analytics.emit_failures — without that counter an
+//     unreachable sink would be indistinguishable from an idle pipe (every analytics
+//     series flat at zero, which is also what "nothing was due" looks like) and no
+//     alert could fire. Analytics is an advisory pipe; a durable per-family outbox
+//     (at-least-once delivery, which this key makes safe to retry) is the follow-on
+//     producer sub-step, not a silent fallback here.
 func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 	if err := ev.Validate(); err != nil {
 		return err
@@ -383,6 +399,11 @@ func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 				em.tel.deduplicated(ctx, ev.Envelope, ev.Family, ev.Name)
 				return nil
 			}
+			// A genuine SINK failure (not a suppression): the event is LOST. Meter it,
+			// or an unreachable database is indistinguishable from an idle pipe —
+			// every analytics series would simply read zero and no alert could fire
+			// (issue #111: an unavailable analytics sink must be observable).
+			em.tel.emitFailure(ctx)
 			return fmt.Errorf("analytics: insert %s/%s: %w", ev.Family, ev.Name, err)
 		}
 	}
@@ -404,6 +425,10 @@ func (em *Emitter) resolveOwnerOrg(ctx context.Context, suppliedOrg, account uui
 			em.tel.tenantReject(ctx)
 			return uuid.Nil, fmt.Errorf("%w: account %s", ErrCrossTenant, account)
 		}
+		// INFRASTRUCTURE failure, not a tenant conflict: the event is LOST before it
+		// can be written. It is metered as an emit failure (never as a tenant
+		// rejection) so a sink/lookup outage is observable (issue #111).
+		em.tel.emitFailure(ctx)
 		return uuid.Nil, fmt.Errorf("analytics: resolve account owner: %w", err)
 	}
 	if suppliedOrg != acct.OrganizationID {
@@ -444,6 +469,10 @@ func (em *Emitter) validateEntityScope(ctx context.Context, env Envelope, fam Fa
 			em.tel.entityReject(ctx)
 			return fmt.Errorf("%w: entity %s", ErrEntityScope, env.Entity)
 		}
+		// Same class as the account-lookup failure above: an INFRASTRUCTURE error from
+		// the resolver loses the event before any write, so it is metered as an emit
+		// failure (never as an entity rejection) — issue #111.
+		em.tel.emitFailure(ctx)
 		return fmt.Errorf("analytics: resolve entity scope: %w", err)
 	}
 	if scope.Account != env.Account || scope.Family != fam {

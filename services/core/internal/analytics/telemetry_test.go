@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"testing"
 	"time"
@@ -398,6 +399,136 @@ func TestEmit_FirstWriteCountsOnceAndIsNotDeduplicated(t *testing.T) {
 	if dps := got["analytics.events_deduplicated"]; len(dps) != 0 {
 		t.Fatalf("a first write incremented analytics.events_deduplicated (%d datapoints), want 0", len(dps))
 	}
+}
+
+// TestEmit_SinkFailureIsObservable is the ANALYTICS-SINK-OUTAGE observability guard
+// (issue #111 acceptance criterion "an unavailable analytics sink is observable";
+// review finding F2). The failure scenario it closes: Postgres is unreachable during
+// the nightly digest fan-out. Digests still send (correct — analytics is advisory and
+// never rolls back delivery), every Emit errors, and with no failure counter the four
+// analytics series all read FLAT ZERO — byte-identical to "no digests were due
+// today". No alert can fire on that, and per CLAUDE.md a seam whose telemetry cannot
+// distinguish failure from correct behavior is incomplete.
+//
+// So a failed emit must increment analytics.emit_failures and must increment NEITHER
+// analytics.events (nothing was written) NOR analytics.events_deduplicated (nothing
+// was suppressed) — an infrastructure outage must never be readable as deduplication.
+// The counter is deliberately LABEL-FREE, mirroring tenantRejects/entityRejects: its
+// only natural dimensions are tenant identifiers, which are never metric labels
+// (issue #151/#244).
+func TestEmit_SinkFailureIsObservable(t *testing.T) {
+	org, account := uuid.New(), uuid.New()
+	env := tenantEnvelope(org, account)
+	env.SourceSurface = "email_digest"
+
+	sinkDown := errors.New("dial tcp: connect: connection refused")
+
+	cases := []struct {
+		name  string
+		build func() *Emitter
+	}{
+		{
+			// The INSERT itself fails (sink unreachable mid-write).
+			name: "insert_failure",
+			build: func() *Emitter {
+				return newEmitterWithStore(&fakeStore{
+					owner:     map[uuid.UUID]uuid.UUID{account: org},
+					insertErr: sinkDown,
+				})
+			},
+		},
+		{
+			// The authoritative account lookup fails — an INFRASTRUCTURE error, not a
+			// tenant conflict, so it must NOT read as a tenant rejection either.
+			name: "account_resolution_failure",
+			build: func() *Emitter {
+				return newEmitterWithStore(&fakeStore{
+					owner:  map[uuid.UUID]uuid.UUID{account: org},
+					getErr: sinkDown,
+				})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			var emitErr error
+			got := collectMetricsWith(t, tc.build, func(em *Emitter) {
+				emitErr = em.Emit(context.Background(), Event{
+					Envelope: env, Family: FamilyBriefing, Name: "daily_digest_sent",
+					DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", "digest-1"),
+				})
+			})
+
+			if emitErr == nil {
+				t.Fatal("a failed sink write returned nil; an outage must never read as success")
+			}
+			dps := got["analytics.emit_failures"]
+			if len(dps) != 1 {
+				t.Fatalf("analytics.emit_failures datapoints = %d, want 1 — an unavailable analytics sink must be OBSERVABLE, not indistinguishable from an idle pipe", len(dps))
+			}
+			if dps[0].Value != 1 {
+				t.Fatalf("analytics.emit_failures = %d, want 1", dps[0].Value)
+			}
+			if n := dps[0].Attributes.Len(); n != 0 {
+				t.Fatalf("analytics.emit_failures carried %d labels, want 0 (label-free: its only natural dimensions are tenant identifiers)", n)
+			}
+			if n := len(got["analytics.events"]); n != 0 {
+				t.Fatalf("a failed emit incremented analytics.events (%d datapoints), want 0 — nothing was written", n)
+			}
+			if n := len(got["analytics.events_deduplicated"]); n != 0 {
+				t.Fatalf("a failed emit incremented analytics.events_deduplicated (%d datapoints), want 0 — an outage is not a suppressed duplicate", n)
+			}
+		})
+	}
+}
+
+// TestEmit_SuccessAndTenantRejectionLeaveEmitFailuresUntouched is the counterpart to
+// TestEmit_SinkFailureIsObservable: the failure counter must mean INFRASTRUCTURE
+// failure and nothing else. A healthy write and a fail-closed cross-tenant rejection
+// (which has its own tenant_rejections signal) must both leave it at zero, or an
+// alert on it would fire on correct behavior.
+func TestEmit_SuccessAndTenantRejectionLeaveEmitFailuresUntouched(t *testing.T) {
+	org, account := uuid.New(), uuid.New()
+
+	t.Run("healthy_write", func(t *testing.T) {
+		got := collectMetricsWith(t,
+			func() *Emitter { return dedupEmitter(org, account, false) },
+			func(em *Emitter) {
+				if err := em.Emit(context.Background(), Event{
+					Envelope: tenantEnvelope(org, account), Family: FamilyBriefing,
+					Name:     "daily_digest_sent",
+					DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", "digest-1"),
+				}); err != nil {
+					t.Fatalf("emit: %v", err)
+				}
+			})
+		if n := len(got["analytics.emit_failures"]); n != 0 {
+			t.Fatalf("a healthy write incremented analytics.emit_failures (%d datapoints), want 0", n)
+		}
+	})
+
+	t.Run("cross_tenant_rejection", func(t *testing.T) {
+		got := collectMetricsWith(t,
+			func() *Emitter {
+				return newEmitterWithStore(&fakeStore{owner: map[uuid.UUID]uuid.UUID{account: org}})
+			},
+			func(em *Emitter) {
+				// A DIFFERENT organization claiming this account: fail-closed, and a
+				// tenant rejection — never an infrastructure failure.
+				if err := em.Emit(context.Background(), Event{
+					Envelope: tenantEnvelope(uuid.New(), account), Family: FamilyBriefing,
+					Name:     "daily_digest_sent",
+					DedupKey: DedupKey(FamilyBriefing, "daily_digest_sent", "digest-1"),
+				}); !errors.Is(err, ErrCrossTenant) {
+					t.Fatalf("got %v, want ErrCrossTenant", err)
+				}
+			})
+		if n := len(got["analytics.emit_failures"]); n != 0 {
+			t.Fatalf("a cross-tenant rejection incremented analytics.emit_failures (%d datapoints), want 0 (it has its own tenant_rejections signal)", n)
+		}
+	})
 }
 
 // TestIssue130_DigestSendEmitsNoBriefingCost is the issue #130 regression guard.

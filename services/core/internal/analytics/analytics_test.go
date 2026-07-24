@@ -2,6 +2,7 @@ package analytics
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -98,6 +99,41 @@ func TestDedupKey_StableAndNamespaced(t *testing.T) {
 	}
 	if c := DedupKey(FamilyBriefing, "daily_digest_sent", "digest-2"); c == a {
 		t.Fatal("DedupKey must vary with its parts")
+	}
+}
+
+// TestDedupKey_RequiresAtLeastOnePart is the EVENT-DEDUPLICATION negative for the key
+// BUILDER itself (§4.6 never-cut, issue #111 review finding F6). With a purely
+// variadic `parts ...string`, `DedupKey(FamilyBriefing, "daily_digest_sent")` compiles
+// and returns the CONSTANT "briefing:daily_digest_sent" — a key that would suppress
+// EVERY subsequent daily_digest_sent for that account forever while looking perfectly
+// keyed. That is the exact mirror of the per-call-UUID hazard the builder's doc
+// comment already warns about, and it is worse: it deduplicates distinct business
+// facts instead of none. Ten more producers are about to consume this builder, so the
+// requirement is enforced in the SIGNATURE — a zero-part call must not compile.
+//
+// This test pins that signature structurally, so reverting to `parts ...string` fails
+// here rather than silently reopening the hazard.
+func TestDedupKey_RequiresAtLeastOnePart(t *testing.T) {
+	fn := reflect.TypeOf(DedupKey)
+	if !fn.IsVariadic() {
+		t.Fatal("DedupKey should stay variadic in its TRAILING parameter so multi-part keys remain ergonomic")
+	}
+	// (family, name, part, more...) — the third parameter is the REQUIRED part.
+	if got := fn.NumIn(); got != 4 {
+		t.Fatalf("DedupKey has %d parameters, want 4 (family, name, part, more...): at least one identifying part must be REQUIRED, or a zero-part call yields an account-wide constant key that suppresses every later event of that family/name", got)
+	}
+	if got := fn.In(2); got.Kind() != reflect.String {
+		t.Fatalf("DedupKey's required third parameter is %s, want a string part", got)
+	}
+}
+
+// TestDedupKey_MultiPartStillSupported proves requiring one part did not cost the
+// multi-part form the §18 producers need.
+func TestDedupKey_MultiPartStillSupported(t *testing.T) {
+	got := DedupKey(FamilyExecution, "execution_attempted", "action-1", "attempt-2")
+	if want := "execution:execution_attempted:action-1:attempt-2"; got != want {
+		t.Fatalf("DedupKey = %q, want %q", got, want)
 	}
 }
 

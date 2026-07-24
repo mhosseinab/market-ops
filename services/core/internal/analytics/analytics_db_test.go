@@ -249,24 +249,52 @@ func TestEmit_MatchingPairPersistsAtDB(t *testing.T) {
 // plus ON CONFLICT DO NOTHING — so it holds for any retry path, including a retry
 // by a different process, and it holds without any UPDATE (append-only preserved).
 // The re-emit is NOT an error: a suppressed duplicate is an idempotent success.
+//
+// It also asserts the surviving row is UNCHANGED (issue #111 review finding F3): the
+// retries deliberately carry DIFFERENT occurred_at and attributes, so a suppression
+// implemented as `DO UPDATE SET attributes = EXCLUDED.attributes, occurred_at =
+// EXCLUDED.occurred_at` would keep the row COUNT at 1 — passing a count-only test —
+// while silently rewriting committed history. analytics_events is append-only (§4.6):
+// the FIRST write of a business fact is the immutable record of it.
 func TestEmit_DuplicateDedupKeySuppressedAtDB(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
 	org, account := seedAccount(t, q)
 	em := analytics.NewEmitter(pool)
 
-	ev := analytics.Event{
-		Envelope: analytics.Envelope{
-			Organization: org, Account: account, Entity: account,
-			Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
-			SourceSurface: "email_digest", Timestamp: time.Now().UTC(),
-		},
-		Family:   analytics.FamilyBriefing,
-		Name:     "daily_digest_sent",
-		DedupKey: analytics.DedupKey(analytics.FamilyBriefing, "daily_digest_sent", uuid.NewString()),
+	key := analytics.DedupKey(analytics.FamilyBriefing, "daily_digest_sent", uuid.NewString())
+	firstTS := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	emitAttempt := func(ts time.Time, itemCount string) analytics.Event {
+		return analytics.Event{
+			Envelope: analytics.Envelope{
+				Organization: org, Account: account, Entity: account,
+				Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
+				SourceSurface: "email_digest", Timestamp: ts,
+			},
+			Family:     analytics.FamilyBriefing,
+			Name:       "daily_digest_sent",
+			DedupKey:   key,
+			Attributes: map[string]string{"item_count": itemCount},
+		}
 	}
 
-	for attempt := 1; attempt <= 3; attempt++ {
+	if err := em.Emit(ctx, emitAttempt(firstTS, "1")); err != nil {
+		t.Fatalf("emit attempt 1: %v", err)
+	}
+	before, err := q.ListAnalyticsEventsByFamily(ctx, db.ListAnalyticsEventsByFamilyParams{
+		MarketplaceAccountID: account, Family: string(analytics.FamilyBriefing),
+	})
+	if err != nil {
+		t.Fatalf("list after first emit: %v", err)
+	}
+	if len(before) != 1 {
+		t.Fatalf("first emit persisted %d rows, want 1", len(before))
+	}
+
+	// Retries of the SAME business fact carrying DIVERGENT payloads: a later
+	// wall-clock timestamp and a different item_count. Both must be discarded.
+	for attempt := 2; attempt <= 3; attempt++ {
+		ev := emitAttempt(time.Now().UTC().Truncate(time.Microsecond), "999")
 		if err := em.Emit(ctx, ev); err != nil {
 			t.Fatalf("emit attempt %d: %v", attempt, err)
 		}
@@ -280,6 +308,80 @@ func TestEmit_DuplicateDedupKeySuppressedAtDB(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("three emits of one dedup key persisted %d rows, want exactly 1", n)
+	}
+
+	after, err := q.ListAnalyticsEventsByFamily(ctx, db.ListAnalyticsEventsByFamilyParams{
+		MarketplaceAccountID: account, Family: string(analytics.FamilyBriefing),
+	})
+	if err != nil {
+		t.Fatalf("list after retries: %v", err)
+	}
+	if len(after) != 1 {
+		t.Fatalf("after retries got %d rows, want 1", len(after))
+	}
+	got, want := after[0], before[0]
+	if got.ID != want.ID {
+		t.Fatalf("row id changed: %s -> %s (a suppressed duplicate must not replace the committed row)", want.ID, got.ID)
+	}
+	if !got.CreatedAt.Equal(want.CreatedAt) {
+		t.Fatalf("created_at mutated: %s -> %s (append-only, §4.6)", want.CreatedAt, got.CreatedAt)
+	}
+	if !got.OccurredAt.Equal(want.OccurredAt) {
+		t.Fatalf("occurred_at mutated by a suppressed duplicate: %s -> %s — ON CONFLICT must be DO NOTHING, never DO UPDATE (append-only, §4.6)", want.OccurredAt, got.OccurredAt)
+	}
+	if string(got.Attributes) != string(want.Attributes) {
+		t.Fatalf("attributes mutated by a suppressed duplicate: %s -> %s — ON CONFLICT must be DO NOTHING, never DO UPDATE (append-only, §4.6)", want.Attributes, got.Attributes)
+	}
+	if got.DedupKey != want.DedupKey {
+		t.Fatalf("dedup_key mutated: %+v -> %+v", want.DedupKey, got.DedupKey)
+	}
+}
+
+// TestInsertAnalyticsEvent_EmptyDedupKeyRejectedAtDB is the STRUCTURAL half of the
+// event-deduplication never-cut (§4.6, issue #111 review finding F1). The emitter
+// rejects an unkeyed event (ErrMissingDedupKey), but migration 0045 claims the
+// guarantee holds "for every writer, including a future out-of-band one" — so the
+// EMPTY key must be rejected by the DATABASE, not merely by this service.
+//
+// Without the CHECK constraint, ” IS NOT NULL, so ” falls INSIDE the partial unique
+// index: the first ” row wins that account's single ” slot forever and every later
+// ” row — a DIFFERENT business fact, possibly a different family — is silently
+// suppressed as if it were a legitimate retry. That is real data loss wearing the
+// deduplication invariant's uniform. The row must be REJECTED, never deduplicated.
+func TestInsertAnalyticsEvent_EmptyDedupKeyRejectedAtDB(t *testing.T) {
+	_, q := newPool(t)
+	ctx := context.Background()
+	org, account := seedAccount(t, q)
+
+	rawInsert := func(family, name string) error {
+		_, err := q.InsertAnalyticsEvent(ctx, db.InsertAnalyticsEventParams{
+			OrganizationID: org, MarketplaceAccountID: account, EntityID: account,
+			Locale: "fa-IR", Region: "IR", CurrencyContractVersion: "v1",
+			SourceSurface: "system", OccurredAt: time.Now().UTC(),
+			Family: family, Name: name, Attributes: []byte("{}"),
+			DedupKey: "", // the omitted-field default of the generated params struct
+		})
+		return err
+	}
+
+	if err := rawInsert(string(analytics.FamilyBriefing), "daily_digest_sent"); err == nil {
+		t.Fatal("database accepted an EMPTY dedup_key; '' is inside the partial unique index and would poison this account's '' slot (check constraint missing)")
+	}
+	// A SECOND, unrelated business fact with the same empty key must also be
+	// rejected — never silently suppressed as a duplicate of the first.
+	if err := rawInsert(string(analytics.FamilyExecution), "execution_attempted"); err == nil {
+		t.Fatal("database accepted a second EMPTY dedup_key row")
+	}
+	for _, family := range []analytics.Family{analytics.FamilyBriefing, analytics.FamilyExecution} {
+		n, err := q.CountAnalyticsEventsByFamily(ctx, db.CountAnalyticsEventsByFamilyParams{
+			MarketplaceAccountID: account, Family: string(family),
+		})
+		if err != nil {
+			t.Fatalf("count %q: %v", family, err)
+		}
+		if n != 0 {
+			t.Fatalf("family %q persisted %d empty-key rows, want 0 (rejected, not deduplicated)", family, n)
+		}
 	}
 }
 
