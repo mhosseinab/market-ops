@@ -46,8 +46,10 @@ const (
 	// Approved + exactly one execution intent enqueued.
 	BulkItemAuthorized BulkItemState = "authorized"
 	// BulkItemAlreadyAuthorized — an idempotent replay: the member's structured
-	// control was already ACTIVATED by a prior confirmation, so no second
-	// authorization/intent is created. The outcome is SEALED — it is reported for a
+	// control was already ACTIVATED by another confirmation — a PRIOR one (resume) or
+	// a CONCURRENT one that committed first (a double-clicked confirm / a retried
+	// request, issue #90 fix cycle 2) — so no second authorization/intent is created.
+	// The outcome is SEALED — it is reported for a
 	// card that is Approved AND for one that has since advanced downstream
 	// (Revalidating, Executing, or a terminal external result: Accepted, Rejected,
 	// PendingReconciliation, Failed). This is the resume-safe terminal for an
@@ -62,9 +64,14 @@ const (
 	// bindable control (superseded, expired, cross-account, or absent): fails closed,
 	// never executes, and is not retriable into execution.
 	BulkItemInvalidated BulkItemState = "invalidated"
-	// BulkItemFailed — a TRANSIENT failure authorizing an otherwise-eligible member
-	// (e.g. a dispatch/store error). The member's card stays a live control, so a
-	// resume (re-confirm) retries exactly this member; nothing is half-committed.
+	// BulkItemFailed — this call did not authorize an otherwise-eligible member and
+	// nothing is half-committed: either a TRANSIENT failure (a dispatch/store error
+	// rolled the individual confirm back, leaving the card a live control) or the
+	// member's outcome could not be DETERMINED (its state re-read failed). Both are
+	// resume-safe: a re-confirm retries a still-live control and re-derives an
+	// undetermined outcome. `failed` never means the member's authorization was
+	// voided — that is `invalidated` — and it is never reported for a member a
+	// concurrent confirmation durably approved (that is `already_authorized`).
 	BulkItemFailed BulkItemState = "failed"
 )
 
@@ -302,16 +309,28 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 	outcome, err := s.ConfirmIndividual(ctx, card.ID, domainCard.Binding, now, actor)
 	if err != nil {
 		switch {
-		case errors.Is(err, approval.ErrNoControl):
-			// Not control-bearing. The authorization outcome is SEALED: any card whose
-			// structured control was already ACTIVATED is a prior authorization
-			// (idempotent replay / resume) — report already_authorized and NEVER
-			// re-authorize or re-dispatch. The predicate is the §8.4 machine's own
+		case errors.Is(err, approval.ErrNoControl), errors.Is(err, ErrRejectedTransition):
+			// This call activated NOTHING, for one of the two ways an already-decided
+			// member refuses a (re-)confirmation:
+			//   - ErrNoControl: the card was no longer AwaitingConfirmation when the
+			//     individual confirm read it (a completed prior confirmation / resume);
+			//   - ErrRejectedTransition: the card WAS read as AwaitingConfirmation, but a
+			//     CONCURRENT confirmation of the same member committed first, so the
+			//     FROM-guarded advance matched no row (issue #90 fix cycle 2, C1). A
+			//     double-clicked bulk confirm, or a client retry of a confirmation whose
+			//     response was lost, produces exactly this. It is NOT a transient
+			//     authorize failure: the member is durably approved and its write is in
+			//     flight, so reporting it `failed` with nothing pending told the operator
+			//     the opposite of the truth.
+			//
+			// The authorization outcome is SEALED: any card whose structured control was
+			// already ACTIVATED is a prior authorization — report already_authorized and
+			// NEVER re-authorize or re-dispatch. The predicate is the §8.4 machine's own
 			// domain knowledge (approval.StateHasAuthorized), so a member that
-			// legitimately ADVANCED past Approved (Revalidating, Executing, or a
-			// terminal external result) is no longer mislabelled invalidated /
-			// not_control_bearing — the issue #90 blocker-2 defect, which also blocked
-			// a resume from retrying the members that were still eligible.
+			// legitimately ADVANCED past Approved (Revalidating, Executing, or a terminal
+			// external result) is no longer mislabelled invalidated / not_control_bearing
+			// — the issue #90 blocker-2 defect, which also blocked a resume from retrying
+			// the members that were still eligible.
 			//
 			// Retrying a member whose EXECUTION failed is deliberately NOT this seam's
 			// job: it stays already_authorized here, and re-attempting it goes through
@@ -321,7 +340,24 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 			// Only states that were NEVER authorized, or whose authorization was voided
 			// (Invalidated, Expired, Blocked, or a pre-activation state), fail closed
 			// as invalidated below.
-			if approval.StateHasAuthorized(approval.State(card.State)) {
+			//
+			// The state is re-read FRESH here rather than taken from the pre-confirm
+			// snapshot above: that snapshot is a pool read taken BEFORE the individual
+			// confirm ran, so a concurrent winner committing in between would have both
+			// mislabelled a sealed member (invalidated / not_control_bearing) and
+			// reported a stale ExecutionPending. After ErrNoControl / ErrRejectedTransition
+			// the card's state is monotonically at-or-after the confirm attempt, so a
+			// fresh read cannot regress — it is the only state this arm may reason about.
+			state, ok := s.currentCardState(ctx, item.RecommendationID)
+			if !ok {
+				// The outcome could not be DETERMINED (the state read failed). Fail
+				// closed on the report, never on a guess: claim no authorization and
+				// nothing pending, and let a resume re-derive the real outcome.
+				item.State = BulkItemFailed
+				item.Reason = "state_read_failed"
+				return false
+			}
+			if approval.StateHasAuthorized(state) {
 				item.State = BulkItemAlreadyAuthorized
 				item.Reason = "already_authorized"
 				// The idempotency boundary (§4.6): "this replay authorized nothing a
@@ -333,7 +369,7 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 				// A member whose write already produced a result — accepted, rejected,
 				// failed, or awaiting reconciliation — stays already_authorized while
 				// reporting nothing pending (issue #90 fix cycle 1, M1).
-				return approval.StateHasPendingExecution(approval.State(card.State))
+				return approval.StateHasPendingExecution(state)
 			}
 			item.State = BulkItemInvalidated
 			item.Reason = "not_control_bearing"
@@ -365,6 +401,19 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 		item.Reason = string(outcome.State)
 	}
 	return false
+}
+
+// currentCardState re-reads the CURRENT approval card of a member's recommendation
+// and returns its §8.4 state. It is the fresh-read seam the sealed-authorization arm
+// reasons about: a state decided from a snapshot taken before the confirm attempt can
+// be stale by exactly the race that produced the error. A read failure returns
+// ok=false — the caller reports an undetermined outcome rather than inferring one.
+func (s *Service) currentCardState(ctx context.Context, recommendationID uuid.UUID) (approval.State, bool) {
+	card, err := db.New(s.pool).GetCurrentApprovalCardByRecommendation(ctx, recommendationID)
+	if err != nil {
+		return "", false
+	}
+	return approval.State(card.State), true
 }
 
 // uuidFromPg converts a nullable pgtype.UUID member column to a plain uuid.UUID; an

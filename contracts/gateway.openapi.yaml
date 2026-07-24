@@ -2027,9 +2027,15 @@ paths:
         The queue is BOUNDED and keyset-paginated over `(createdAt, id)`
         newest-first (§17 bounded reads): pass `limit` for the page size and the
         opaque `cursor` from a prior response's `nextCursor` for the next page.
-        Ties on `createdAt` break by `id`, so every action is returned EXACTLY
-        ONCE across pages. Completeness is EXPLICIT — `hasMore` and `nextCursor`
-        say whether more matching actions exist beyond this page. Previously a
+        Ties on `createdAt` break by `id`, so no action is returned TWICE across
+        pages. The key is the CURRENT card version's `(createdAt, id)`, and a
+        lineage's current version is MUTABLE: a lineage that mints a NEW card
+        version while you are paging (a price edit, a recalculated draft) moves to
+        the newest position and is therefore observed on a refreshed FIRST page,
+        not on a later one — an in-progress scroll can miss it. The keyset is a
+        stable, non-duplicating position over an append-only ordering, never a
+        snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore` and
+        `nextCursor` say whether more matching actions exist beyond this page. Previously a
         `limit` above the maximum was silently clamped to 500 and the response
         carried no completeness field, so an account with more than 500 actions
         received a truncated queue indistinguishable from a complete one; a limit
@@ -2077,7 +2083,12 @@ paths:
             account; the server reads STRICTLY OLDER matching rows under the same
             account. A malformed, tampered, or foreign-account cursor is rejected
             with a 400 — the cursor is only a position, the account predicate
-            remains the authorization. Omit for the first (newest) page.
+            remains the authorization. Omit for the first (newest) page. The
+            position is taken over the CURRENT card version's `(createdAt, id)`:
+            a lineage that mints a newer version after this cursor was issued
+            sorts NEWER than the cursor and appears on a refreshed first page
+            rather than on the next page — re-read from the first page to observe
+            it.
           schema:
             type: string
       responses:
@@ -5122,7 +5133,9 @@ components:
             True only while at least one member carries a LIVE, still-unresolved
             execution authorization (approved / revalidating / executing). False
             once every member's write has produced an external result, even though
-            those members still report `already_authorized`.
+            those members still report `already_authorized`. It is derived from
+            each member's FRESHLY read state, so a confirmation that lost a race to
+            a concurrent one still reports the winner's in-flight write as pending.
         items:
           type: array
           description: >-
@@ -5138,8 +5151,14 @@ components:
         A per-member bulk-confirmation outcome (issue #90). Only `authorized` and
         `already_authorized` mean the member carries a durable authorization +
         execution intent; every other state means the member did NOT execute this
-        call. `failed` is a TRANSIENT failure a resume (re-confirm) retries; the
-        other terminal states are not retried into execution.
+        call. `failed` means this call neither authorized the member nor voided an
+        authorization: either a TRANSIENT failure (the authorization rolled back,
+        the card is still a live control) or an outcome that could not be
+        DETERMINED (its state re-read failed). Both are resume-safe — a re-confirm
+        retries the live control and re-derives an undetermined outcome. A member
+        that a CONCURRENT confirmation durably approved is never `failed`; it is
+        `already_authorized`. The other terminal states are not retried into
+        execution.
 
         BULK-PROTOCOL DESIGN RECORD (c) — IDEMPOTENCY-KEY SCHEME. A bulk
         confirmation mints NO bulk-specific idempotency key. Each member is
@@ -5155,10 +5174,14 @@ components:
         same per-member keys.
 
         `already_authorized` is the SEALED authorization outcome: it is reported for
-        a member whose control was activated by a prior confirmation, INCLUDING one
-        whose card has since advanced downstream (revalidating, executing, or a
-        terminal external result — accepted, rejected, pending_reconciliation,
-        failed). Re-attempting a member whose EXECUTION failed is the
+        a member whose control was activated by ANOTHER confirmation — a prior one
+        (a resume) or a CONCURRENT one that committed first (a double-clicked
+        confirm, or a client retry of a confirmation whose response was lost) —
+        INCLUDING one whose card has since advanced downstream (revalidating,
+        executing, or a terminal external result — accepted, rejected,
+        pending_reconciliation, failed). The member state behind this outcome is
+        read FRESH at report time, so a member the race durably approved reports a
+        sealed authorization with `executionPending` true, never a failure. Re-attempting a member whose EXECUTION failed is the
         reconciliation-gated retry path's decision (an unknown result must reconcile
         first; only a definitively reconciled failure is retry-eligible, EXE-003),
         never a second bulk authorization.

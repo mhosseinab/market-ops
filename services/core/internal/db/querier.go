@@ -717,8 +717,14 @@ type Querier interface {
 	//     lineage HEAD before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING rows,
 	//     never an unfiltered newest-N prefix;
 	//   * deterministic (created_at DESC, id DESC) ordering with the row-value cursor
-	//     comparison, so ties on created_at break by id and every row is returned
-	//     EXACTLY ONCE across pages (no duplicate, no skip);
+	//     comparison, so ties on created_at break by id and no row is returned TWICE
+	//     across pages. The key is the CURRENT version's created_at/id, which is
+	//     MUTABLE (a new card version replaces the head with a newer key): a lineage
+	//     that mints a version mid-paging sorts NEWER than the cursor and is therefore
+	//     observed on a refreshed FIRST page, not on a later one. Stability over a
+	//     mutable head would need a different key (e.g. the lineage's first version)
+	//     and is a deliberate non-goal here — the queue is read newest-first and
+	//     refreshed, not scrolled as a snapshot;
 	//   * a NULL cursor is the first (newest) page; the caller passes
 	//     page_limit = requested_limit + 1 and treats the extra row as the hasMore
 	//     signal (then trims it).

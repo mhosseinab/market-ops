@@ -348,6 +348,15 @@ export function BulkApproval() {
     [result],
   );
 
+  // The aggregate note is gated on the SERVER's authorized count, not on
+  // `executionPending` (issue #90 fix cycle 2, C4). A resume whose members have all
+  // reached a terminal external result is valid, authorized, and NOT pending — gating
+  // on pending left that (newly reachable) state with no aggregate rendering at all.
+  // The copy carries the distinction the flag makes: in flight vs settled.
+  const summaryKey: MessageKey = result?.executionPending
+    ? "bulk.result.recommendOnly"
+    : "bulk.result.settled";
+
   const unavailable = t("common.notAvailable");
 
   const columns: readonly Column<Candidate>[] = [
@@ -601,9 +610,9 @@ export function BulkApproval() {
           </div>
         ) : null}
 
-        {result?.valid && result.executionPending ? (
+        {result?.valid && authorizedCount > 0 ? (
           <p className="success-note" data-testid="bulk-recommend-only">
-            {t("bulk.result.recommendOnly", {
+            {t(summaryKey, {
               count: formatCount(authorizedCount, locale),
             })}
           </p>

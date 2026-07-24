@@ -32,7 +32,9 @@ class BulkApprovalConfirmResult:
             valid (bool):
             execution_pending (bool): True only while at least one member carries a LIVE, still-unresolved execution
                 authorization (approved / revalidating / executing). False once every member's write has produced an external
-                result, even though those members still report `already_authorized`.
+                result, even though those members still report `already_authorized`. It is derived from each member's FRESHLY
+                read state, so a confirmation that lost a race to a concurrent one still reports the winner's in-flight write as
+                pending.
             items (list[BulkApprovalItemResult]): One durable result per member of the bound version. Empty when the
                 confirmation is invalid (nothing authorized).
             current_version (int | Unset): The current selection-set version (differs from bound when stale).

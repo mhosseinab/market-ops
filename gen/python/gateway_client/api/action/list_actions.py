@@ -80,12 +80,17 @@ def sync_detailed(
     deep-linked card read (GET /approvals/card). This is a read; it never advances state.
     The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads):
     pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the
-    next page. Ties on `createdAt` break by `id`, so every action is returned EXACTLY ONCE across pages.
-    Completeness is EXPLICIT — `hasMore` and `nextCursor` say whether more matching actions exist beyond
-    this page. Previously a `limit` above the maximum was silently clamped to 500 and the response
-    carried no completeness field, so an account with more than 500 actions received a truncated queue
-    indistinguishable from a complete one; a limit above the maximum is now REJECTED (400) rather than
-    quietly answered with a different question.
+    next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key
+    is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a
+    lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft)
+    moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one
+    — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an
+    append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore`
+    and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit`
+    above the maximum was silently clamped to 500 and the response carried no completeness field, so an
+    account with more than 500 actions received a truncated queue indistinguishable from a complete one;
+    a limit above the maximum is now REJECTED (400) rather than quietly answered with a different
+    question.
 
     Args:
         marketplace_account_id (UUID):
@@ -131,12 +136,17 @@ def sync(
     deep-linked card read (GET /approvals/card). This is a read; it never advances state.
     The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads):
     pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the
-    next page. Ties on `createdAt` break by `id`, so every action is returned EXACTLY ONCE across pages.
-    Completeness is EXPLICIT — `hasMore` and `nextCursor` say whether more matching actions exist beyond
-    this page. Previously a `limit` above the maximum was silently clamped to 500 and the response
-    carried no completeness field, so an account with more than 500 actions received a truncated queue
-    indistinguishable from a complete one; a limit above the maximum is now REJECTED (400) rather than
-    quietly answered with a different question.
+    next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key
+    is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a
+    lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft)
+    moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one
+    — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an
+    append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore`
+    and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit`
+    above the maximum was silently clamped to 500 and the response carried no completeness field, so an
+    account with more than 500 actions received a truncated queue indistinguishable from a complete one;
+    a limit above the maximum is now REJECTED (400) rather than quietly answered with a different
+    question.
 
     Args:
         marketplace_account_id (UUID):
@@ -177,12 +187,17 @@ async def asyncio_detailed(
     deep-linked card read (GET /approvals/card). This is a read; it never advances state.
     The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads):
     pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the
-    next page. Ties on `createdAt` break by `id`, so every action is returned EXACTLY ONCE across pages.
-    Completeness is EXPLICIT — `hasMore` and `nextCursor` say whether more matching actions exist beyond
-    this page. Previously a `limit` above the maximum was silently clamped to 500 and the response
-    carried no completeness field, so an account with more than 500 actions received a truncated queue
-    indistinguishable from a complete one; a limit above the maximum is now REJECTED (400) rather than
-    quietly answered with a different question.
+    next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key
+    is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a
+    lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft)
+    moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one
+    — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an
+    append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore`
+    and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit`
+    above the maximum was silently clamped to 500 and the response carried no completeness field, so an
+    account with more than 500 actions received a truncated queue indistinguishable from a complete one;
+    a limit above the maximum is now REJECTED (400) rather than quietly answered with a different
+    question.
 
     Args:
         marketplace_account_id (UUID):
@@ -226,12 +241,17 @@ async def asyncio(
     deep-linked card read (GET /approvals/card). This is a read; it never advances state.
     The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads):
     pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the
-    next page. Ties on `createdAt` break by `id`, so every action is returned EXACTLY ONCE across pages.
-    Completeness is EXPLICIT — `hasMore` and `nextCursor` say whether more matching actions exist beyond
-    this page. Previously a `limit` above the maximum was silently clamped to 500 and the response
-    carried no completeness field, so an account with more than 500 actions received a truncated queue
-    indistinguishable from a complete one; a limit above the maximum is now REJECTED (400) rather than
-    quietly answered with a different question.
+    next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key
+    is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a
+    lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft)
+    moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one
+    — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an
+    append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore`
+    and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit`
+    above the maximum was silently clamped to 500 and the response carried no completeness field, so an
+    account with more than 500 actions received a truncated queue indistinguishable from a complete one;
+    a limit above the maximum is now REJECTED (400) rather than quietly answered with a different
+    question.
 
     Args:
         marketplace_account_id (UUID):
