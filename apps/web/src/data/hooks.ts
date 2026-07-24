@@ -11,6 +11,7 @@ import { useAccount } from "./account";
 import { type ErrorEnvelope, GatewayError } from "./errors";
 import type {
   ActionExecutionView,
+  ActionList,
   ApprovalBinding,
   ApprovalCardView,
   ApprovalConfirmResult,
@@ -24,6 +25,7 @@ import type {
   LoginRequest,
   MarginReadiness,
   MarketEvent,
+  OutcomeList,
   OutcomeView,
   RecommendationDetail,
   RetryActionResult,
@@ -69,6 +71,8 @@ export const queryKeys = {
   session: () => ["session"] as const,
   actionExecution: (actionId: string) => ["action-execution", actionId] as const,
   outcome: (actionId: string) => ["outcome", actionId] as const,
+  actions: (accountId: string) => ["actions", accountId] as const,
+  outcomesList: (accountId: string) => ["outcomes-list", accountId] as const,
 };
 
 export function useConnectorStatus() {
@@ -511,6 +515,45 @@ export function useLogout() {
 // An action's single EXE-002 execution record (CHAT-073 read): mode + EXE-003
 // external state + reconciliation instant. The external state is rendered exactly
 // as given — pending_reconciliation is NEVER coerced to success/failure.
+// The account's grouped multi-mode actions queue (issue #106, PD-3 item 5): every
+// action the account owns — write AND recommend-only — as approval-card rows with
+// an execution overlay bound to the exact card version. This is the ONLY discovery
+// path the Actions screen needs; nothing here depends on a deep link.
+//
+// It is deliberately UNFILTERED: the server's `state` parameter narrows by §8.4
+// approval state, while the screen groups by CANONICAL execution state (the
+// mode-independent lifecycle bucket). Filtering client-side over the authoritative
+// rows keeps both axes truthful and keeps a filter from hiding a mode.
+export function useActions() {
+  const { marketplaceAccountId } = useAccount();
+  return useQuery({
+    queryKey: queryKeys.actions(marketplaceAccountId),
+    refetchInterval: 8000,
+    queryFn: async (): Promise<ActionList> =>
+      unwrap(
+        await gateway.GET("/actions", {
+          params: { query: { marketplaceAccountId } },
+        }),
+      ),
+  });
+}
+
+// The account's OUT-001 outcome windows (PD-3 item 5). Rows correlate to actions
+// through the CARD id — an outcome belongs to the exact card version that was
+// executed, never to the action lineage as a whole.
+export function useOutcomesList() {
+  const { marketplaceAccountId } = useAccount();
+  return useQuery({
+    queryKey: queryKeys.outcomesList(marketplaceAccountId),
+    queryFn: async (): Promise<OutcomeList> =>
+      unwrap(
+        await gateway.GET("/outcomes/list", {
+          params: { query: { marketplaceAccountId } },
+        }),
+      ),
+  });
+}
+
 export function useActionExecution(actionId: string | undefined) {
   return useQuery({
     enabled: Boolean(actionId),

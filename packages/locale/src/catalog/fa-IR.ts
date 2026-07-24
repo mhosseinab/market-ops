@@ -91,6 +91,17 @@ export const faIR: Catalog = {
   "state.expired": "منقضی‌شده",
   "state.simulation": "شبیه‌سازی",
 
+  // EXE-005 recommend-only states (issue #106). The awaiting term is IDENTICAL
+  // to the one the existing recommend-only surfaces use (sm.recommendOnly.title,
+  // bulk.result.awaitingExternal) — the same term, never a synonym. Neither of
+  // the terminal terms may read as a marketplace write: "اجراشده به‌صورت خارجی"
+  // says the seller executed it outside the system, and "بدون تطبیق" says the
+  // observation window closed with no matching price change — deliberately NOT
+  // "منقضی‌شده" (an expired approval card) and NOT "ناموفق" (a failed write).
+  "state.awaitingExternalExecution": "در انتظار اجرای خارجی",
+  "state.externallyExecuted": "اجراشده به‌صورت خارجی",
+  "state.lapsed": "بدون تطبیق",
+
   "readiness.complete": "کامل",
   "readiness.partial": "جزئی",
   "readiness.stale": "قدیمی‌شده",
@@ -577,6 +588,7 @@ export const faIR: Catalog = {
   "state.readyForReview": "آماده برای بررسی",
   "state.revalidating": "در حال بازاعتبارسنجی",
   "state.invalidated": "باطل‌شده",
+  "state.approved": "تاییدشده برای اجرا",
   "sm.title": "چرخهٔ تایید",
   "sm.gates.title": "دروازه‌های بازاعتبارسنجی",
   "sm.gate.identity": "هویت تاییدشده",
@@ -646,6 +658,37 @@ export const faIR: Catalog = {
   "actions.col.surface": "عامل · صفحه",
   "actions.col.state": "وضعیت",
   "actions.col.time": "زمان",
+  "actions.col.mode": "حالت اجرا",
+  "actions.col.select": "انتخاب",
+  "actions.mode.write": "نوشتن در دیجی‌کالا",
+  "actions.mode.recommendOnly": "پیشنهادی",
+  "actions.group.proposed": "پیشنهادشده (هنوز اجرا نشده)",
+  "actions.group.awaiting": "در انتظار نتیجه",
+  "actions.group.succeeded": "اعمال‌شده",
+  "actions.group.rejected": "رد شده",
+  "actions.group.failed": "ناموفق",
+  "actions.group.lapsed": "بدون تطبیق",
+  "actions.group.unknown": "وضعیت ناشناخته",
+  "actions.row.select": "نمایش جزئیات اقدام {id}",
+  "actions.row.selected": "اقدام انتخاب‌شده {id}",
+  "actions.list.emptyFiltered": "با این پالایه اقدامی وجود ندارد؛ پالایه را تغییر دهید.",
+  "actions.list.error": "فهرست اقدام‌ها بارگذاری نشد. دوباره تلاش کنید.",
+  "actions.detail.selectPrompt": "برای دیدن جزئیات، یک اقدام را انتخاب کنید.",
+  "actions.detail.error": "جزئیات این اقدام بارگذاری نشد. دوباره تلاش کنید.",
+  "actions.recommendOnly.title": "در انتظار اجرای خارجی",
+  "actions.recommendOnly.body":
+    "این اقدام در حالت پیشنهادی ثبت شده است؛ تغییر قیمت متناظر ظرف ۲۴ ساعت رصد می‌شود.",
+  "actions.recommendOnly.noWriteNote": "هیچ نوشتنی در دیجی‌کالا انجام نشده است.",
+  "actions.externallyExecuted.title": "اجراشده به‌صورت خارجی",
+  "actions.externallyExecuted.body":
+    "تغییر قیمت متناظر در بازهٔ رصد مشاهده شد؛ اجرا خارج از این سامانه انجام شده است.",
+  "actions.externallyExecuted.matchedAt": "زمان مشاهدهٔ تطبیق",
+  "actions.lapsed.title": "بدون تطبیق",
+  "actions.lapsed.body": "بازهٔ رصد ۲۴ ساعته بدون مشاهدهٔ تغییر قیمت متناظر بسته شد.",
+  "actions.lapsed.noClaimNote":
+    "این وضعیت به‌معنای اجرا یا شکست نوشتن نیست؛ هیچ نوشتنی در دیجی‌کالا انجام نشده است.",
+  "actions.proposed.title": "پیشنهادشده",
+  "actions.proposed.body": "این کارت هنوز اجرا نشده است؛ وضعیت آن در چرخهٔ تایید دنبال می‌شود.",
   "actions.pending.title": "در انتظار تطبیق",
   "actions.pending.body":
     "نتیجه نامشخص است تا وضعیت فعلی دیجی‌کالا خوانده شود؛ هرگز به‌عنوان موفق یا ناموفق نمایش داده نمی‌شود.",
@@ -669,6 +712,7 @@ export const faIR: Catalog = {
   "actions.outcome.confidence": "اطمینان",
   "actions.outcome.error": "بارگیری پنجرهٔ پیامد ممکن نشد. دوباره تلاش کنید.",
   "actions.outcome.pending": "در حال بارگیری پنجرهٔ پیامد…",
+  "actions.outcome.none": "برای این اقدام پنجرهٔ پیامدی باز نشده است.",
   "actions.outcome.attributionNote": "تغییرات هم‌زمان اطمینان انتساب را کاهش می‌دهد.",
   "actions.audit.title": "رد ممیزی",
   "actions.audit.card": "عکس‌برداری کارت تایید",

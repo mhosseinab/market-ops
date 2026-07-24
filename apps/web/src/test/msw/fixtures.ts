@@ -1,6 +1,8 @@
 import type { DailyBriefing } from "../../chat/types";
 import type {
   ActionExecutionView,
+  ActionList,
+  ActionSummary,
   ApprovalCardView,
   ApprovalConfirmResult,
   BulkApprovalConfirmResult,
@@ -14,6 +16,7 @@ import type {
   NeedsReviewQueue,
   ObservationTarget,
   ObservedOffer,
+  OutcomeList,
   OutcomeView,
   RecommendationDetail,
   SessionInfo,
@@ -523,6 +526,128 @@ export const outcomeOpen: OutcomeView = {
 export const outcomeClosed: OutcomeView = {
   ...outcomeOpen,
   result: { result: "positive", confidence: "high", computedAt: "2026-07-24T11:05:00Z" },
+};
+
+// ── issue #106: the grouped multi-mode actions queue ────────────────────────
+// Card ids for the recommend-only lifecycle rows. Each is a DISTINCT card
+// version, because an execution overlay binds to an exact card version — the
+// list is keyed by card id, not by action lineage.
+export const CARD_ID_AWAITING = "d1111111-1111-1111-1111-111111111111";
+export const CARD_ID_EXTERNALLY_EXECUTED = "d2222222-2222-2222-2222-222222222222";
+export const CARD_ID_LAPSED = "d3333333-3333-3333-3333-333333333333";
+export const CARD_ID_PROPOSED = "d4444444-4444-4444-4444-444444444444";
+export const ACTION_ID_AWAITING = "e1111111-1111-1111-1111-111111111111";
+export const ACTION_ID_EXTERNALLY_EXECUTED = "e2222222-2222-2222-2222-222222222222";
+export const ACTION_ID_LAPSED = "e3333333-3333-3333-3333-333333333333";
+
+const summaryBase = {
+  recommendationId: RECOMMENDATION_ID,
+  version: 1,
+  price: { mantissa: "9500000", currency: "IRR", exponent: 0 },
+  expiresAt: "2026-07-17T12:00:00Z",
+  createdAt: "2026-07-17T10:00:00Z",
+} as const;
+
+/** An accepted marketplace WRITE (the deep-link fixture's card). */
+export const actionWriteAccepted: ActionSummary = {
+  ...summaryBase,
+  id: CARD_ID,
+  state: "accepted",
+  executionMode: "write",
+  canonicalState: "succeeded",
+  externalState: "accepted",
+};
+
+/** EXE-005 awaiting: recorded recommend-only, no write was made. */
+export const actionAwaitingExternal: ActionSummary = {
+  ...summaryBase,
+  id: CARD_ID_AWAITING,
+  state: "approved",
+  executionMode: "recommend_only",
+  canonicalState: "awaiting",
+  recommendOnlyState: "awaiting_external_execution",
+};
+
+/** EXE-005 externally executed: a matching owned-price change was observed. */
+export const actionExternallyExecuted: ActionSummary = {
+  ...summaryBase,
+  id: CARD_ID_EXTERNALLY_EXECUTED,
+  state: "approved",
+  executionMode: "recommend_only",
+  canonicalState: "succeeded",
+  recommendOnlyState: "externally_executed",
+};
+
+/** EXE-005 lapsed: the window closed with no match. NEVER an execution claim. */
+export const actionLapsed: ActionSummary = {
+  ...summaryBase,
+  id: CARD_ID_LAPSED,
+  state: "approved",
+  executionMode: "recommend_only",
+  canonicalState: "lapsed",
+  recommendOnlyState: "lapsed",
+};
+
+/** A pre-execution card version: NO overlay fields at all. */
+export const actionProposed: ActionSummary = {
+  ...summaryBase,
+  id: CARD_ID_PROPOSED,
+  state: "draft",
+};
+
+export const actionList: ActionList = {
+  items: [
+    actionWriteAccepted,
+    actionAwaitingExternal,
+    actionExternallyExecuted,
+    actionLapsed,
+    actionProposed,
+  ],
+};
+
+/**
+ * The action id bound to each fixture card version. The real GET /approvals/card
+ * answers for the EXACT card requested, so the default handler echoes the card id
+ * and its own action id — without that, every detail panel would resolve to one
+ * card's binding and the exact-(actionId, cardId) correlation could not be tested.
+ */
+const ACTION_ID_BY_CARD: Record<string, string> = {
+  [CARD_ID]: ACTION_ID,
+  [CARD_ID_AWAITING]: ACTION_ID_AWAITING,
+  [CARD_ID_EXTERNALLY_EXECUTED]: ACTION_ID_EXTERNALLY_EXECUTED,
+  [CARD_ID_LAPSED]: ACTION_ID_LAPSED,
+};
+
+export function approvalCardFor(cardId: string | null): ApprovalCardView {
+  const id = cardId ?? CARD_ID;
+  return {
+    ...approvalCardAwaiting,
+    id,
+    binding: {
+      ...approvalCardAwaiting.binding,
+      actionId: ACTION_ID_BY_CARD[id] ?? approvalCardAwaiting.binding.actionId,
+    },
+  };
+}
+
+/** Outcome windows keyed by (actionId, cardId) — the exact executed versions. */
+export const outcomeList: OutcomeList = {
+  items: [
+    {
+      actionId: ACTION_ID,
+      cardId: CARD_ID,
+      openedAt: "2026-07-17T11:00:00Z",
+      closesAt: "2026-07-24T11:00:00Z",
+      result: "positive",
+      confidence: "high",
+    },
+    {
+      actionId: ACTION_ID_EXTERNALLY_EXECUTED,
+      cardId: CARD_ID_EXTERNALLY_EXECUTED,
+      openedAt: "2026-07-17T11:30:00Z",
+      closesAt: "2026-07-24T11:30:00Z",
+    },
+  ],
 };
 
 /**

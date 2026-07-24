@@ -101,6 +101,17 @@ export const MESSAGE_KEYS = [
   "state.expired",
   "state.simulation",
 
+  // EXE-005 recommend-only lifecycle states (issue #106). A recommend-only
+  // action is NEVER a marketplace write, so it never borrows a write term:
+  // `state.accepted` ("تاییدشده توسط دیجی‌کالا") must never label one, and
+  // `state.lapsed` must never read as `state.expired` (an expired approval card
+  // is a different thing). The awaiting term is the SAME string the existing
+  // recommend-only surfaces use ("در انتظار اجرای خارجی") — one term, not a
+  // synonym.
+  "state.awaitingExternalExecution",
+  "state.externallyExecuted",
+  "state.lapsed",
+
   // Margin readiness (distinct axis)
   "readiness.complete",
   "readiness.partial",
@@ -613,6 +624,11 @@ export const MESSAGE_KEYS = [
   "state.readyForReview",
   "state.revalidating",
   "state.invalidated",
+  // The operator-side §8.4 Approved state. Deliberately NOT "تاییدشده" (which is
+  // Verified, an observation-quality term) and NOT "تاییدشده توسط دیجی‌کالا"
+  // (Accepted — the marketplace's answer to a write). An approved card has been
+  // authorized for execution and nothing more.
+  "state.approved",
   "sm.title",
   "sm.gates.title",
   "sm.gate.identity",
@@ -685,6 +701,41 @@ export const MESSAGE_KEYS = [
   "actions.col.surface",
   "actions.col.state",
   "actions.col.time",
+  // Multi-mode grouped queue (issue #106): mode column, canonical-state group
+  // headings, accessible row selection, and the states a query can be in that
+  // must never collapse into one another (STATE_MATRIX).
+  "actions.col.mode",
+  "actions.col.select",
+  "actions.mode.write",
+  "actions.mode.recommendOnly",
+  "actions.group.proposed",
+  "actions.group.awaiting",
+  "actions.group.succeeded",
+  "actions.group.rejected",
+  "actions.group.failed",
+  "actions.group.lapsed",
+  "actions.group.unknown",
+  "actions.row.select",
+  "actions.row.selected",
+  "actions.list.emptyFiltered",
+  "actions.list.error",
+  "actions.detail.selectPrompt",
+  "actions.detail.error",
+  // EXE-005 detail panels. Each states plainly what did and did NOT happen: an
+  // awaiting/lapsed recommend-only action made no marketplace write, and a
+  // lapse is a closed observation window, never a failed or executed write.
+  "actions.recommendOnly.title",
+  "actions.recommendOnly.body",
+  "actions.recommendOnly.noWriteNote",
+  "actions.externallyExecuted.title",
+  "actions.externallyExecuted.body",
+  "actions.externallyExecuted.matchedAt",
+  "actions.lapsed.title",
+  "actions.lapsed.body",
+  "actions.lapsed.noClaimNote",
+  "actions.proposed.title",
+  "actions.proposed.body",
+  "actions.outcome.none",
   "actions.pending.title",
   "actions.pending.body",
   "actions.pending.retryNote",

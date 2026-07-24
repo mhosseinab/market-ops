@@ -95,5 +95,16 @@ export type RetryActionResult = components["schemas"]["RetryActionResult"];
 export type OutcomeView = components["schemas"]["OutcomeView"];
 export type OutcomeResultView = components["schemas"]["OutcomeResultView"];
 
+// The grouped multi-mode actions queue (issue #106). A row is an approval card
+// carrying an OPTIONAL execution overlay bound to that EXACT card version; the
+// overlay is absent for a pre-execution card. `ActionSummary` has no actionId —
+// rows correlate to outcomes and executions through the CARD id
+// (ActionSummary.id ↔ OutcomeSummary.cardId ↔ ActionExecutionView.cardId).
+export type ActionSummary = components["schemas"]["ActionSummary"];
+export type ActionList = components["schemas"]["ActionList"];
+export type ActionCanonicalState = components["schemas"]["ActionCanonicalState"];
+export type OutcomeSummary = components["schemas"]["OutcomeSummary"];
+export type OutcomeList = components["schemas"]["OutcomeList"];
+
 export type BulkApprovalConfirmRequest = components["schemas"]["BulkApprovalConfirmRequest"];
 export type BulkApprovalConfirmResult = components["schemas"]["BulkApprovalConfirmResult"];

@@ -1,7 +1,8 @@
 import { HttpResponse, http } from "msw";
 import type { ChatStreamEvent } from "../../chat/types";
 import {
-  approvalCardAwaiting,
+  actionList,
+  approvalCardFor,
   bulkValid,
   catalogProductPage,
   catalogProductRow,
@@ -13,6 +14,7 @@ import {
   needsReviewQueue,
   offer,
   outcomeClosed,
+  outcomeList,
   previewWithDuplicate,
   productDiagnostics,
   readinessMissing,
@@ -105,7 +107,12 @@ export const handlers = [
   ),
 
   http.get(`${B}/recommendations/detail`, () => HttpResponse.json(recommendationDetail)),
-  http.get(`${B}/approvals/card`, () => HttpResponse.json(approvalCardAwaiting)),
+  // Echoes the REQUESTED card id (and its own bound action id), like the real
+  // server: a handler that always answered with one fixed card would let a screen
+  // render one action's binding under another and still pass.
+  http.get(`${B}/approvals/card`, ({ request }) =>
+    HttpResponse.json(approvalCardFor(new URL(request.url).searchParams.get("cardId"))),
+  ),
   http.post(`${B}/approvals/confirm`, () => HttpResponse.json(confirmApproved)),
 
   // ── S28 defaults ──────────────────────────────────────────────────────────
@@ -115,6 +122,10 @@ export const handlers = [
   // these to exercise invalid credentials, expiry, and logout transitions.
   http.post(`${B}/auth/login`, () => HttpResponse.json(sessionOwner)),
   http.post(`${B}/auth/logout`, () => new HttpResponse(null, { status: 204 })),
+  // The grouped multi-mode actions queue + the account's outcome windows (issue
+  // #106): the Actions screen's PRIMARY discovery path, no deep link required.
+  http.get(`${B}/actions`, () => HttpResponse.json(actionList)),
+  http.get(`${B}/outcomes/list`, () => HttpResponse.json(outcomeList)),
   http.get(`${B}/actions/execution`, () => HttpResponse.json(execAccepted)),
   http.get(`${B}/outcomes`, () => HttpResponse.json(outcomeClosed)),
   http.post(`${B}/actions/retry`, () =>

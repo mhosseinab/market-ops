@@ -124,6 +124,91 @@ export function StatusBadge({ state }: { state: StatusState }) {
   return <Badge tone={m.tone} label={label} />;
 }
 
+// ── §8.4 approval-lifecycle state (pre-execution rows) ─────────────────────
+// The state of a card that has NOT been executed. It is a THIRD axis, disjoint
+// from both write results and recommend-only states, so a pre-execution card can
+// never borrow an execution term: `approved` is "approved for execution", never
+// "Accepted by DK" (the marketplace's answer to a write that was actually made)
+// and never "Awaiting external execution" (which is an EXE-005 tracked state).
+export type ApprovalLifecycleState =
+  | "draft"
+  | "ready_for_review"
+  | "blocked"
+  | "awaiting_confirmation"
+  | "approved"
+  | "expired"
+  | "invalidated"
+  | "revalidating"
+  | "executing"
+  | "accepted"
+  | "rejected"
+  | "pending_reconciliation"
+  | "failed";
+
+const APPROVAL_LIFECYCLE: Record<ApprovalLifecycleState, { tone: Tone; key: MessageKey }> = {
+  draft: { tone: "tone-ink2", key: "state.draft" },
+  ready_for_review: { tone: "tone-info", key: "state.readyForReview" },
+  blocked: { tone: "tone-risk", key: "state.blocked" },
+  awaiting_confirmation: { tone: "tone-ink2", key: "state.awaitingConfirmation" },
+  approved: { tone: "tone-info", key: "state.approved" },
+  expired: { tone: "tone-ink2", key: "state.expired" },
+  invalidated: { tone: "tone-warn", key: "state.invalidated" },
+  revalidating: { tone: "tone-info", key: "state.revalidating" },
+  executing: { tone: "tone-info", key: "state.executing" },
+  accepted: { tone: "tone-pos", key: "state.accepted" },
+  rejected: { tone: "tone-risk", key: "state.rejected" },
+  pending_reconciliation: { tone: "tone-warn", key: "state.pendingReconciliation" },
+  failed: { tone: "tone-risk", key: "state.failed" },
+};
+
+export function ApprovalStateBadge({ state }: { state: ApprovalLifecycleState }) {
+  const t = useT();
+  const m = APPROVAL_LIFECYCLE[state];
+  const label =
+    state === "accepted" ? t("state.accepted", { marketplace: t("marketplace.name") }) : t(m.key);
+  return <Badge tone={m.tone} label={label} />;
+}
+
+// ── EXE-005 recommend-only lifecycle (issue #106) ──────────────────────────
+// A DELIBERATELY SEPARATE axis from StatusState. A recommend-only action never
+// wrote to the marketplace, so no write term may reach it: keeping the maps
+// disjoint makes "Accepted by DK" structurally unreachable for a recommend-only
+// row, rather than relying on a caller remembering not to pass it. `lapsed` is
+// its own neutral term — never `expired` (an approval card) and never `failed`
+// (a write that was attempted and failed).
+export type RecommendOnlyStatusState =
+  | "awaiting_external_execution"
+  | "externally_executed"
+  | "lapsed";
+
+const RECOMMEND_ONLY: Record<RecommendOnlyStatusState, { tone: Tone; key: MessageKey }> = {
+  awaiting_external_execution: { tone: "tone-ink2", key: "state.awaitingExternalExecution" },
+  externally_executed: { tone: "tone-pos", key: "state.externallyExecuted" },
+  lapsed: { tone: "tone-muted", key: "state.lapsed" },
+};
+
+export function RecommendOnlyBadge({ state }: { state: RecommendOnlyStatusState }) {
+  const t = useT();
+  const m = RECOMMEND_ONLY[state];
+  return <Badge tone={m.tone} label={t(m.key)} />;
+}
+
+// ── Execution mode (EXE-003 write vs EXE-005 recommend-only) ───────────────
+// The mode is an authoritative property of the action, not a visual grouping:
+// it is what tells an operator whether anything was written to the marketplace.
+export type ExecutionModeName = "write" | "recommend_only";
+
+const EXECUTION_MODE: Record<ExecutionModeName, { tone: Tone; key: MessageKey }> = {
+  write: { tone: "tone-info", key: "actions.mode.write" },
+  recommend_only: { tone: "tone-accent", key: "actions.mode.recommendOnly" },
+};
+
+export function ExecutionModeBadge({ mode }: { mode: ExecutionModeName }) {
+  const t = useT();
+  const m = EXECUTION_MODE[mode];
+  return <Badge tone={m.tone} label={t(m.key)} shape="square" />;
+}
+
 // ── Event-type badge (1–5) ─────────────────────────────────────────────────
 export type EventType = 1 | 2 | 3 | 4 | 5;
 
