@@ -100,7 +100,7 @@ export const faIR: Catalog = {
   // "منقضی‌شده" (an expired approval card) and NOT "ناموفق" (a failed write).
   "state.awaitingExternalExecution": "در انتظار اجرای خارجی",
   "state.externallyExecuted": "اجراشده به‌صورت خارجی",
-  "state.lapsed": "بدون تطبیق",
+  "state.lapsed": "بدون تغییر متناظر",
 
   "readiness.complete": "کامل",
   "readiness.partial": "جزئی",
@@ -667,14 +667,16 @@ export const faIR: Catalog = {
   "actions.group.succeeded": "اعمال‌شده",
   "actions.group.rejected": "رد شده",
   "actions.group.failed": "ناموفق",
-  "actions.group.lapsed": "بدون تطبیق",
+  "actions.group.lapsed": "بدون تغییر متناظر",
   "actions.group.unknown": "وضعیت ناشناخته",
-  "actions.row.select": "نمایش جزئیات اقدام {id}",
-  "actions.row.selected": "اقدام انتخاب‌شده {id}",
   "actions.list.emptyFiltered": "با این پالایه اقدامی وجود ندارد؛ پالایه را تغییر دهید.",
   "actions.list.error": "فهرست اقدام‌ها بارگذاری نشد. دوباره تلاش کنید.",
   "actions.detail.selectPrompt": "برای دیدن جزئیات، یک اقدام را انتخاب کنید.",
   "actions.detail.error": "جزئیات این اقدام بارگذاری نشد. دوباره تلاش کنید.",
+  "actions.detail.resolving": "در حال یافتن اقدام پیوند‌شده…",
+  "actions.notInPage.title": "خارج از صفحهٔ فعلی فهرست",
+  "actions.notInPage.body":
+    "این اقدام انتخاب شده است اما در صفحهٔ فعلی فهرست نیست؛ وضعیت اجرای آن در این صفحه نمایش داده نمی‌شود. پالایه را روی «همه» بگذارید یا فهرست را دوباره بارگذاری کنید.",
   "actions.recommendOnly.title": "در انتظار اجرای خارجی",
   "actions.recommendOnly.body":
     "این اقدام در حالت پیشنهادی ثبت شده است؛ تغییر قیمت متناظر ظرف ۲۴ ساعت رصد می‌شود.",
@@ -683,7 +685,7 @@ export const faIR: Catalog = {
   "actions.externallyExecuted.body":
     "تغییر قیمت متناظر در بازهٔ رصد مشاهده شد؛ اجرا خارج از این سامانه انجام شده است.",
   "actions.externallyExecuted.matchedAt": "زمان مشاهدهٔ تطبیق",
-  "actions.lapsed.title": "بدون تطبیق",
+  "actions.lapsed.title": "بدون تغییر متناظر",
   "actions.lapsed.body": "بازهٔ رصد ۲۴ ساعته بدون مشاهدهٔ تغییر قیمت متناظر بسته شد.",
   "actions.lapsed.noClaimNote":
     "این وضعیت به‌معنای اجرا یا شکست نوشتن نیست؛ هیچ نوشتنی در دیجی‌کالا انجام نشده است.",

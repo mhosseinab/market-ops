@@ -1,6 +1,6 @@
 import { faIR } from "@market-ops/locale";
 import { fireEvent, screen, within } from "@testing-library/react";
-import { HttpResponse, http } from "msw";
+import { delay, HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ACTION_ID,
@@ -10,6 +10,7 @@ import {
   type actionList,
   actionProposed,
   actionWriteAccepted,
+  approvalCardAwaiting,
   CARD_ID,
   CARD_ID_AWAITING,
   CARD_ID_EXTERNALLY_EXECUTED,
@@ -290,6 +291,102 @@ describe("Actions — truthful query and selection states (STATE_MATRIX)", () =>
     server.use(http.get(`${BASE}/actions/execution`, () => HttpResponse.json(execAccepted)));
     renderRoute(`/actions?actionId=${ACTION_ID}`);
     expect(await screen.findByTestId("action-accepted")).toBeInTheDocument();
+  });
+});
+
+// ── Fix cycle 1 (issue #106 review) ─────────────────────────────────────────
+// Each test below reproduces ONE upheld blocking finding. They are negative
+// tests first: a pending/failed/page-bounded READ must never surface as a
+// definitive negative claim, and a technical identifier must never be
+// interpolated into RTL copy.
+describe("Actions — F2: the outcome panel never makes an unsupported negative claim", () => {
+  it("F2: does not claim 'no outcome window' while the CARD read is still in flight", async () => {
+    server.use(
+      http.get(`${BASE}/approvals/card`, async () => {
+        await delay("infinite");
+        return HttpResponse.json(approvalCardAwaiting);
+      }),
+    );
+    renderRoute("/actions");
+    await selectCard(CARD_ID);
+
+    // The action id comes from the card binding; until it resolves, absence is
+    // UNKNOWN, not established.
+    expect(await screen.findByTestId("outcome-pending")).toBeInTheDocument();
+    expect(screen.queryByTestId("outcome-none")).toBeNull();
+  });
+
+  it("F2: does not claim 'no outcome window' when the CARD read FAILS", async () => {
+    server.use(
+      http.get(`${BASE}/approvals/card`, () =>
+        HttpResponse.json({ code: "internal", message: "boom" }, { status: 500 }),
+      ),
+    );
+    renderRoute("/actions");
+    await selectCard(CARD_ID);
+
+    expect(await screen.findByTestId("outcome-error")).toBeInTheDocument();
+    // NEGATIVE: a permanently failed read must never harden into "no window".
+    expect(screen.queryByTestId("outcome-none")).toBeNull();
+  });
+
+  it("F2: renders the window from the ACTION-scoped read when it is outside the list page", async () => {
+    // The account-wide list is page-bounded (newest 200): the selected action's
+    // window is real but simply not in the returned page.
+    server.use(http.get(`${BASE}/outcomes/list`, () => HttpResponse.json({ items: [] })));
+    renderRoute("/actions");
+    await selectCard(CARD_ID);
+
+    expect(await screen.findByTestId("outcome-window")).toBeInTheDocument();
+    expect(screen.queryByTestId("outcome-none")).toBeNull();
+  });
+
+  it("F2: states absence ONLY from the authoritative per-action read (404)", async () => {
+    renderRoute("/actions");
+    await selectCard(CARD_ID_LAPSED);
+    expect(await screen.findByTestId("outcome-none")).toHaveTextContent(
+      faIR["actions.outcome.none"],
+    );
+  });
+});
+
+describe("Actions — F4: technical identifiers stay out of RTL copy", () => {
+  it("F4: the row control's COPY carries no raw card id; the id reaches AT via the LTR-isolated cell", async () => {
+    renderRoute("/actions");
+    const btn = await screen.findByTestId(`action-select-${CARD_ID}`);
+
+    // The rendered copy is the catalog label alone — no interpolated identifier.
+    expect(btn).toHaveTextContent(faIR["actions.col.select"]);
+    expect(btn.textContent).not.toContain(CARD_ID);
+    // The accessible name still names the row, through the LTR-isolated ID cell.
+    expect(btn).toHaveAccessibleName(expect.stringContaining(CARD_ID) as unknown as string);
+  });
+});
+
+describe("Actions — F6: a deep-linked action outside the page is never 'nothing selected'", () => {
+  it("F6: renders an explicit out-of-page state for a cardId absent from the returned page", async () => {
+    // The queue page does not contain the deep-linked card (older than the page).
+    onlyRow(actionWriteAccepted);
+    renderRoute(`/actions?cardId=${CARD_ID_LAPSED}`);
+
+    expect(await screen.findByTestId("action-not-in-page")).toHaveTextContent(
+      faIR["actions.notInPage.body"],
+    );
+    // NEGATIVE: a valid selection must never render as no selection at all.
+    expect(screen.queryByTestId("actions-select-prompt")).toBeNull();
+  });
+
+  it("F6: shows a legacy actionId deep link as RESOLVING, never as nothing selected", async () => {
+    server.use(
+      http.get(`${BASE}/actions/execution`, async () => {
+        await delay("infinite");
+        return HttpResponse.json(execAccepted);
+      }),
+    );
+    renderRoute(`/actions?actionId=${ACTION_ID}`);
+
+    expect(await screen.findByTestId("actions-deeplink-resolving")).toBeInTheDocument();
+    expect(screen.queryByTestId("actions-select-prompt")).toBeNull();
   });
 });
 

@@ -43,4 +43,20 @@ describe("catalog coverage + canonical glossary", () => {
       expect(faIR[key as keyof typeof faIR]).toBe(term);
     }
   });
+
+  // F5 (issue #106 review): the glossary binds تطبیق to Pending Reconciliation —
+  // a WRITE whose result is unknown until DK state is read. The EXE-005
+  // recommend-only lapse is the opposite claim (no write happened at all), and
+  // both render on the Actions screen at the same time. Reusing تطبیق there
+  // would read as "never reconciled", i.e. a false execution implication.
+  it("reserves تطبیق for reconciliation — the recommend-only lapse never borrows it", () => {
+    const RECONCILIATION_TERM = "تطبیق";
+    for (const key of ["state.lapsed", "actions.group.lapsed", "actions.lapsed.title"] as const) {
+      expect(faIR[key], `${key} must not overload ${RECONCILIATION_TERM}`).not.toContain(
+        RECONCILIATION_TERM,
+      );
+    }
+    // …and the reconciliation term itself stays exactly where the glossary puts it.
+    expect(faIR["state.pendingReconciliation"]).toContain(RECONCILIATION_TERM);
+  });
 });

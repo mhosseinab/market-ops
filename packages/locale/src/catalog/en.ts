@@ -669,12 +669,14 @@ export const en: Catalog = {
   "actions.group.failed": "Failed",
   "actions.group.lapsed": "No match observed",
   "actions.group.unknown": "Unknown state",
-  "actions.row.select": "Show details for action {id}",
-  "actions.row.selected": "Selected action {id}",
   "actions.list.emptyFiltered": "No actions match this filter; change the filter.",
   "actions.list.error": "Could not load the action list. Try again.",
   "actions.detail.selectPrompt": "Select an action to see its details.",
   "actions.detail.error": "Could not load this action's details. Try again.",
+  "actions.detail.resolving": "Finding the linked action\u2026",
+  "actions.notInPage.title": "Not in the current page",
+  "actions.notInPage.body":
+    "This action is selected but is not in the current page of the queue, so its execution state is not shown here. Set the filter to All or reload the list.",
   "actions.recommendOnly.title": "Awaiting external execution",
   "actions.recommendOnly.body":
     "Tracked recommend-only; a matching price change is observed within 24 hours.",

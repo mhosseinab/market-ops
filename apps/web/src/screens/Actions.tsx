@@ -15,11 +15,13 @@ import { LtrToken } from "../components/LtrToken";
 import { MoneyView } from "../components/MoneyView";
 import { FilterChips, Section } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
+import { GatewayError } from "../data/errors";
 import { formatInstant } from "../data/format";
 import {
   useActionExecution,
   useActions,
   useApprovalCard,
+  useOutcome,
   useOutcomesList,
   useRetryAction,
 } from "../data/hooks";
@@ -28,6 +30,7 @@ import type {
   ActionSummary,
   ExecutionExternalState,
   OutcomeSummary,
+  OutcomeView,
 } from "../data/types";
 
 // Actions (design screen 6 / EXE-003, EXE-005, OUT-001, AUD-001): proposed →
@@ -124,6 +127,45 @@ function unavailableNode(label: string): ReactNode {
   return <span className="muted">{label}</span>;
 }
 
+// Stable per-row element ids so the select control can borrow the row's
+// LTR-ISOLATED identifier cell as its accessible name (aria-labelledby) instead
+// of interpolating a raw UUID into RTL copy. The identifier stays inside
+// <LtrToken>, where `unicode-bidi:isolate` keeps it from corrupting the
+// surrounding Persian text (LOC-005) — and out of the visible button label,
+// which is a plain catalog term.
+const selectControlId = (cardId: string) => `action-select-control-${cardId}`;
+const rowIdCellId = (cardId: string) => `action-id-cell-${cardId}`;
+
+// A single outcome window in the shape the panel renders, normalized from EITHER
+// authoritative read: the account list row (card-exact) or the action-scoped
+// read. Normalizing here keeps the panel from branching on which read answered.
+interface OutcomeWindow {
+  readonly openedAt: string;
+  readonly closesAt: string;
+  readonly result?: OutcomeSummary["result"];
+  readonly confidence?: OutcomeSummary["confidence"];
+}
+
+function windowFromSummary(o: OutcomeSummary): OutcomeWindow {
+  return { openedAt: o.openedAt, closesAt: o.closesAt, result: o.result, confidence: o.confidence };
+}
+
+function windowFromView(o: OutcomeView): OutcomeWindow {
+  return {
+    openedAt: o.openedAt,
+    closesAt: o.closesAt,
+    result: o.result?.result,
+    confidence: o.result?.confidence,
+  };
+}
+
+// OUT-001 absence is a DEFINITIVE claim, so it may only be made from the read
+// that is authoritative for that one action answering "no window" (404 /
+// ErrNoWindow). Any other failure is an unknown, never an absence.
+function isNoWindowAnswer(error: unknown): boolean {
+  return error instanceof GatewayError && error.status === 404;
+}
+
 // Named cell (Products.tsx pattern): a single element keeps the copy-lint JSX-text
 // heuristic and biome's line style from fighting over an inline ternary.
 function TimeCell({ at }: { at?: string }) {
@@ -206,12 +248,17 @@ export function Actions() {
 
   const retry = useRetryAction();
 
-  // OUT-001: the outcome window is matched on the EXACT (actionId, cardId) pair, so
-  // a window opened for one card version never renders under another version of the
-  // same action lineage.
-  const outcome: OutcomeSummary | undefined = outcomesQuery.data?.items.find(
+  // OUT-001: the account list is matched on the EXACT (actionId, cardId) pair, so a
+  // window opened for one card version never renders under another version of the
+  // same action lineage. The list is PAGE-BOUNDED, though, so a miss proves
+  // nothing — the action-scoped read below is the authority for absence.
+  const listWindow: OutcomeSummary | undefined = outcomesQuery.data?.items.find(
     (o) => o.cardId === selectedCardId && o.actionId === selectedActionId,
   );
+
+  // The authoritative per-action window read. Only THIS read may establish that
+  // no window was opened; the page-bounded list never can.
+  const outcomeQuery = useOutcome(selectedActionId);
 
   const columns: readonly Column<ActionSummary>[] = [
     {
@@ -219,24 +266,32 @@ export function Actions() {
       header: "actions.col.select",
       // A real button, so selection is reachable by keyboard and announced by AT
       // (a click handler on the row alone is not).
+      // The visible label is a plain catalog term; the row it acts on is named to
+      // assistive tech by the LTR-isolated ID cell (aria-labelledby), and its
+      // selected/unselected state by aria-pressed. No identifier is interpolated
+      // into copy — that is what LtrToken exists for.
       render: (r) => (
         <button
           type="button"
+          id={selectControlId(r.id)}
           className="btn btn--sm btn--secondary"
           aria-pressed={r.id === selectedCardId}
+          aria-labelledby={`${selectControlId(r.id)} ${rowIdCellId(r.id)}`}
           data-testid={`action-select-${r.id}`}
           onClick={() => selectCard(r.id)}
         >
-          {r.id === selectedCardId
-            ? t("actions.row.selected", { id: r.id })
-            : t("actions.row.select", { id: r.id })}
+          {t("actions.col.select")}
         </button>
       ),
     },
     {
       id: "id",
       header: "actions.col.id",
-      render: (r) => <LtrToken text={r.id} />,
+      render: (r) => (
+        <span id={rowIdCellId(r.id)}>
+          <LtrToken text={r.id} />
+        </span>
+      ),
     },
     {
       id: "mode",
@@ -303,11 +358,11 @@ export function Actions() {
                 ))
             )}
 
-            {selectedRow ? detailFor(selectedRow) : null}
+            {selectedRow ? detailFor(selectedRow) : selectedCardId ? notInPageDetail() : null}
           </div>
 
           <aside className="split__aside">
-            {selectedRow ? (
+            {selectedCardId ? (
               <>
                 <Section titleKey="actions.outcome.title">{outcomeBody()}</Section>
 
@@ -359,6 +414,12 @@ export function Actions() {
                   <p className="muted">{t("actions.audit.independentNote")}</p>
                 </Section>
               </>
+            ) : deepLinkExec.isPending && deepLinkExec.fetchStatus !== "idle" ? (
+              // A legacy `?actionId=` deep link IS a selection; while it resolves
+              // to its card it is reported as resolving, never as no selection.
+              <p className="muted" data-testid="actions-deeplink-resolving">
+                {t("actions.detail.resolving")}
+              </p>
             ) : (
               <p className="muted" data-testid="actions-select-prompt">
                 {t("actions.detail.selectPrompt")}
@@ -372,30 +433,59 @@ export function Actions() {
 
   // The outcome panel distinguishes four states that must never collapse into one
   // another: loading, an explicit query error, a real window, and the truthful
-  // "no window was opened" (a Lapsed or pre-execution action has none — absence is
-  // stated, never implied).
+  // "no window was opened".
+  //
+  // "No window" is a DEFINITIVE claim about OUT-001, so it is gated on the only
+  // read that can support it: the action-scoped read answering 404 (ErrNoWindow).
+  // Neither an in-flight/failed CARD read (which is what supplies the action id)
+  // nor a miss in the PAGE-BOUNDED account list is evidence of absence — both are
+  // unknowns and render as pending/error instead.
   function outcomeBody(): ReactNode {
-    if (outcomesQuery.isPending) {
-      return (
-        <p className="muted" data-testid="outcome-pending">
-          {t("actions.outcome.pending")}
-        </p>
-      );
-    }
-    if (outcomesQuery.isError) {
-      return (
-        <p className="muted" role="alert" data-testid="outcome-error">
-          {t("actions.outcome.error")}
-        </p>
-      );
-    }
-    if (!outcome) {
+    const pending = (
+      <p className="muted" data-testid="outcome-pending">
+        {t("actions.outcome.pending")}
+      </p>
+    );
+    const failed = (
+      <p className="muted" role="alert" data-testid="outcome-error">
+        {t("actions.outcome.error")}
+      </p>
+    );
+
+    // The action id is not known yet / can no longer be known: unknown, not absent.
+    if (cardQuery.isPending) return pending;
+    if (cardQuery.isError) return failed;
+    if (selectedActionId === undefined) return failed;
+
+    if (outcomesQuery.isPending || outcomeQuery.isPending) return pending;
+    // A failed list read is reported as a failed read — never as "no window".
+    if (outcomesQuery.isError) return failed;
+
+    // Prefer the card-EXACT list row when the page happens to carry it; fall back
+    // to the action-scoped read when the window is outside the returned page. The
+    // fallback is accepted only when it NAMES the selected action, so a response
+    // for a previous selection can never render under the current one.
+    const actionWindow =
+      outcomeQuery.data?.actionId === selectedActionId ? outcomeQuery.data : undefined;
+    const win: OutcomeWindow | undefined = listWindow
+      ? windowFromSummary(listWindow)
+      : actionWindow
+        ? windowFromView(actionWindow)
+        : undefined;
+
+    if (win) return outcomeWindowBody(win);
+    // Only ErrNoWindow (404) establishes absence; any other failure is unknown.
+    if (outcomeQuery.isError && isNoWindowAnswer(outcomeQuery.error)) {
       return (
         <p className="muted" data-testid="outcome-none">
           {t("actions.outcome.none")}
         </p>
       );
     }
+    return failed;
+  }
+
+  function outcomeWindowBody(outcome: OutcomeWindow): ReactNode {
     return (
       <>
         <dl className="kv" data-testid="outcome-window">
@@ -434,6 +524,36 @@ export function Actions() {
         </dl>
         <p className="muted">{t("actions.outcome.attributionNote")}</p>
       </>
+    );
+  }
+
+  // A deep-linked (or reloaded) selection whose card is NOT in the returned page.
+  // The queue read is page-bounded, so this is a page boundary, not an absence:
+  // rendering "select an action" would be untrue, and rendering an execution
+  // panel would be a fabricated claim (the list row is the only carrier of the
+  // execution overlay, and a 404 from the action-scoped read cannot be told apart
+  // from "not visible to this org"). So the boundary itself is stated, and the
+  // card-bound audit trail beside it still renders from its own direct read.
+  function notInPageDetail(): ReactNode {
+    if (cardQuery.isPending) {
+      return (
+        <div className="panel" data-testid="action-detail-resolving">
+          <p className="muted">{t("actions.detail.resolving")}</p>
+        </div>
+      );
+    }
+    if (cardQuery.isError) {
+      return (
+        <div className="panel" role="alert" data-testid="action-detail-error">
+          <p className="muted">{t("actions.detail.error")}</p>
+        </div>
+      );
+    }
+    return (
+      <div className="panel" data-testid="action-not-in-page">
+        <p className="panel__title">{t("actions.notInPage.title")}</p>
+        <p className="muted">{t("actions.notInPage.body")}</p>
+      </div>
     );
   }
 

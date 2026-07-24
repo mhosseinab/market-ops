@@ -1,5 +1,6 @@
 import { HttpResponse, http } from "msw";
 import type { ChatStreamEvent } from "../../chat/types";
+import type { OutcomeView } from "../../data/types";
 import {
   actionList,
   approvalCardFor,
@@ -13,7 +14,6 @@ import {
   marketEvent,
   needsReviewQueue,
   offer,
-  outcomeClosed,
   outcomeList,
   previewWithDuplicate,
   productDiagnostics,
@@ -127,7 +127,33 @@ export const handlers = [
   http.get(`${B}/actions`, () => HttpResponse.json(actionList)),
   http.get(`${B}/outcomes/list`, () => HttpResponse.json(outcomeList)),
   http.get(`${B}/actions/execution`, () => HttpResponse.json(execAccepted)),
-  http.get(`${B}/outcomes`, () => HttpResponse.json(outcomeClosed)),
+  // GET /outcomes is the AUTHORITY for one action's OUT-001 window: it answers for
+  // the requested action and 404s (ErrNoWindow) when none was opened. The default
+  // handler must be action-scoped for that reason — a handler that returns the
+  // same window for every actionId would let a screen appear to bind correctly
+  // while it does not, and would make "no window" untestable.
+  http.get(`${B}/outcomes`, ({ request }) => {
+    const actionId = new URL(request.url).searchParams.get("actionId");
+    const found = outcomeList.items.find((o) => o.actionId === actionId);
+    if (!found) {
+      return HttpResponse.json({ code: "EXECUTION_ERROR", message: "no_window" }, { status: 404 });
+    }
+    const view: OutcomeView = {
+      actionId: found.actionId,
+      openedAt: found.openedAt,
+      closesAt: found.closesAt,
+      ...(found.result && found.confidence
+        ? {
+            result: {
+              result: found.result,
+              confidence: found.confidence,
+              computedAt: found.closesAt,
+            },
+          }
+        : {}),
+    };
+    return HttpResponse.json(view);
+  }),
   http.post(`${B}/actions/retry`, () =>
     HttpResponse.json({ actionId: execAccepted.actionId, eligible: true, state: "failed" }),
   ),

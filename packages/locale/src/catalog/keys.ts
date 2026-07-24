@@ -107,7 +107,9 @@ export const MESSAGE_KEYS = [
   // `state.lapsed` must never read as `state.expired` (an expired approval card
   // is a different thing). The awaiting term is the SAME string the existing
   // recommend-only surfaces use ("در انتظار اجرای خارجی") — one term, not a
-  // synonym.
+  // synonym. `state.lapsed` also never borrows تطبیق, which the glossary binds
+  // to Pending Reconciliation (a write whose result is unknown); it reuses the
+  // observation-window wording already in the body copy ("تغییر متناظر").
   "state.awaitingExternalExecution",
   "state.externallyExecuted",
   "state.lapsed",
@@ -715,12 +717,16 @@ export const MESSAGE_KEYS = [
   "actions.group.failed",
   "actions.group.lapsed",
   "actions.group.unknown",
-  "actions.row.select",
-  "actions.row.selected",
   "actions.list.emptyFiltered",
   "actions.list.error",
   "actions.detail.selectPrompt",
   "actions.detail.error",
+  // The queue is page-bounded, so a deep-linked action can be absent from the
+  // returned page. That is its OWN state: never "nothing is selected" (which
+  // would be untrue) and never a fabricated execution detail.
+  "actions.detail.resolving",
+  "actions.notInPage.title",
+  "actions.notInPage.body",
   // EXE-005 detail panels. Each states plainly what did and did NOT happen: an
   // awaiting/lapsed recommend-only action made no marketplace write, and a
   // lapse is a closed observation window, never a failed or executed write.
