@@ -1,9 +1,14 @@
 # Fixture: casing bypass of the `passed` gate rule (issue #19, second remediation)
 #
-# Byte-for-byte the `inconsistent.md` record — S2 `passed` while carrying a
-# `pending-mandatory` MANDATORY gate — with ONE difference: the status token is
-# spelled `Passed` instead of `passed`, in both the status table and the
-# transition log.
+# The same RECORD as `inconsistent.md` — S2 `passed` while carrying a
+# `pending-mandatory` MANDATORY gate — with the status token spelled `Passed`
+# instead of `passed`, in both the status table and the transition log.
+#
+# Not byte-for-byte: `diff inconsistent.md case_variant.md` also shows this
+# header block and the S2 status-table NOTE ("(bypass) casing variant …" vs
+# "runtime boot deferred …"). Both are free-text/comment deltas the validator
+# never reads — the deferred section, the GATE rows and every other row are
+# identical — so the casing is the only difference that could change the verdict.
 #
 # The parity check canonicalises status tokens (spelling is data, not identity),
 # so parity still holds and the record still reads as `passed` to every human

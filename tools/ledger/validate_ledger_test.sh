@@ -34,6 +34,9 @@ PARITY_REOPENED="$HERE/testdata/parity_reopened.md"
 # casing bypass of the gate rule.
 ERASED_EVIDENCE="$HERE/testdata/erased_evidence.md"
 CASE_VARIANT="$HERE/testdata/case_variant.md"
+# Issue #19 cycle-1: the two ways the evidence rule was itself bypassable.
+HOP_LAUNDERED="$HERE/testdata/hop_laundered.md"
+EMPTY_NOTE_GATE="$HERE/testdata/empty_note_gate.md"
 GATE_SATISFIED="$HERE/testdata/gate_satisfied.md"
 LEDGER="$REPO_ROOT/docs/implementation/dk-p0-progress.md"
 
@@ -95,28 +98,46 @@ expect_exit "accepts reopened/regressed cycles" 0 \
 # --- enforcement could be bypassed by DELETING the evidence, or by respelling
 # --- the status token. Both are the same defect class the issue names.
 
-# 9. NEGATIVE: a step leaving an outstanding-verification state (`verify-pending`
+# 8. NEGATIVE: a step leaving an outstanding-verification state (`verify-pending`
 #    / `blocked`) for `passed` with its GATE row and deferred bullet DELETED —
 #    i.e. mandatory verification evidence simply ABSENT — MUST be rejected.
 expect_exit "rejects passed with ABSENT evidence (gate row erased)" 1 \
   python3 "$VALIDATOR" --file "$ERASED_EVIDENCE"
 
-# 10. NEGATIVE: the gate rule must key on the canonical status, not the raw
+# 9. NEGATIVE: the gate rule must key on the canonical status, not the raw
 #     string — `Passed` is the same state as `passed` and MUST be rejected
 #     identically when a pending-mandatory gate contradicts it.
 expect_exit "rejects casing bypass (Passed + pending-mandatory)" 1 \
   python3 "$VALIDATOR" --file "$CASE_VARIANT"
 
-# 11. POSITIVE (anti-over-rejection): the legitimate exit from an outstanding
+# 10. NEGATIVE: the same ABSENT evidence reached through a longer LEGAL chain
+#     (`verify-pending -> blocked -> in-progress -> passed`). Keying the evidence
+#     rule on the immediate predecessor let this route around it; the rule keys
+#     on the step's transition HISTORY, so it MUST be rejected.
+expect_exit "rejects hop-chain laundering (verify-pending -> ... -> passed)" 1 \
+  python3 "$VALIDATOR" --file "$HOP_LAUNDERED"
+
+# 11. NEGATIVE: a `satisfied` GATE row whose evidence note is EMPTY — a state
+#     token standing in for a record — MUST NOT satisfy the evidence rule.
+expect_exit "rejects empty-note satisfied gate (token without a record)" 1 \
+  python3 "$VALIDATOR" --file "$EMPTY_NOTE_GATE"
+
+# 12. POSITIVE (anti-over-rejection): the legitimate exit from an outstanding
 #     verification state — the gate flipped to `satisfied` with its evidence —
 #     MUST be accepted. This is the shape S2 takes once its runtime Verify runs.
 expect_exit "accepts verify-pending -> passed WITH a satisfied gate" 0 \
   python3 "$VALIDATOR" --file "$GATE_SATISFIED"
 
-# 12. The real, now-reconciled orchestration ledger MUST be accepted (parity
+# 13. The real, now-reconciled orchestration ledger MUST be accepted (parity
 #    holds: every non-initial table state has a producing, legal transition).
 expect_exit "accepts the real reconciled ledger" 0 \
   python3 "$VALIDATOR" --file "$LEDGER"
+
+# 14. INPUT ERROR: an unreadable ledger (here: a directory) is neither a clean
+#     run (0) nor a violation (1) — it MUST exit 2 with an actionable message,
+#     never an unhandled traceback.
+expect_exit "exits 2 on an unreadable ledger path (no traceback)" 2 \
+  python3 "$VALIDATOR" --file "$HERE/testdata"
 
 if [ "$fail" -ne 0 ]; then
   echo "ledger validator test: FAILED" >&2

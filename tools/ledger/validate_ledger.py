@@ -47,11 +47,21 @@ Three failure classes, all fail closed:
     the status table, or a ``- S<N>:`` bullet in the human "Deferred verification
     gate" section with no corresponding ``GATE`` row (an unclassified deferral
     could otherwise hide an unverified ``passed``);
-  * **absent** evidence: a step transitioning to ``passed`` OUT of an
-    outstanding-verification state (``verify-pending``/``blocked``) with no
-    ``satisfied`` GATE row. Evidence that is missing is not evidence that is
-    good — without this, the rule above was bypassable by simply DELETING the
-    contradicting gate row (see ``testdata/erased_evidence.md``).
+  * **absent** evidence: a step whose transition HISTORY ever entered an
+    outstanding-verification state (``verify-pending``/``blocked``) and whose
+    replay-derived final state is ``passed``, with no ``satisfied`` GATE row
+    carrying a non-empty evidence note. Evidence that is missing is not evidence
+    that is good — without this, the rule above was bypassable by simply
+    DELETING the contradicting gate row (``testdata/erased_evidence.md``), by
+    routing around it through a longer legal chain
+    (``testdata/hop_laundered.md``), or by writing a contentless ``satisfied``
+    token (``testdata/empty_note_gate.md``).
+
+    This rule does NOT cover a step logged straight ``pending -> passed``, nor a
+    ``passed -> reopened -> passed`` re-pass, nor per-GATE-item erasure when a
+    step has several mandatory items; see ``validate_unlock_evidence`` for the
+    full residual list and why each needs a policy/schema decision rather than a
+    validator tweak.
 
 3. The machine-checked **transition log**, a comment block (issue #20)::
 
@@ -345,7 +355,7 @@ def validate_unlock_evidence(
     gates: dict[str, list[tuple[str, str]]],
     transitions: list[tuple[str, str, str]],
 ) -> list[str]:
-    """Require POSITIVE evidence for a step that leaves an outstanding state.
+    """Require POSITIVE evidence from any step that ever declared one outstanding.
 
     The first remediation of issue #19 rejected `passed` only when a
     contradicting ``pending-mandatory`` GATE row was PRESENT. That makes the
@@ -354,33 +364,78 @@ def validate_unlock_evidence(
     verification evidence is then ABSENT rather than negative, which the issue
     names as an equally-rejectable condition.
 
-    The transition log is the deletion-resistant anchor. Parity already requires
-    a producing transition for every non-initial table state, so a step cannot
-    reach `passed` out of `verify-pending`/`blocked` without leaving a TXN row
-    behind. That row is the trigger: it demands a `satisfied` gate carrying the
-    evidence that the previously-outstanding mandatory verification actually ran.
+    Precisely what this rule guarantees
+    -----------------------------------
+    The trigger is the step's transition HISTORY, not the edge that happens to
+    end at `passed`. The log is replayed per step, recording (a) whether the step
+    was EVER in an outstanding-verification state (``verify-pending`` /
+    ``blocked``) and (b) its derived final state. Every step that was ever
+    outstanding and derives `passed` must carry a `satisfied` GATE row WITH a
+    non-empty evidence note.
 
-    Keyed on the transition rather than on step identity, so it applies
-    consistently to ALL steps, present and future. A step that went straight
-    `pending -> passed` never declared an outstanding mandatory gate and is
-    governed by the existing Rule 1 / Rule 2 pair instead.
+    Keying on the immediate predecessor was not enough: `verify-pending ->
+    blocked -> in-progress -> passed` is a fully legal chain whose last edge
+    leaves `in_progress`, so a predecessor-keyed rule never fired while Rule 1
+    (needs a `pending-mandatory` row) and Rule 2 (needs a deferred bullet) both
+    stay silent once those two lines are deleted — the same unverified `passed`,
+    two extra rows. History-keying closes every re-ordering of that chain, and
+    the non-empty-note requirement stops the rule being satisfied by a
+    contentless ``GATE S<N> | satisfied |`` token standing in for a record.
+
+    What this rule does NOT guarantee (known residuals, deliberately in the open)
+    ---------------------------------------------------------------------------
+    * A step logged straight ``pending -> passed`` is NOT covered here. Rule 1
+      fires only when a `pending-mandatory` row is present and Rule 2 only when a
+      deferred bullet is present; erase both and such a step is currently
+      UNGUARDED. Closing it needs a registry-completeness policy (every step must
+      declare its mandatory-verification classification) — a schema/policy
+      decision, not a validator tweak.
+    * ``passed -> reopened -> passed`` (and the `regressed` twin) is likewise not
+      covered: `reopened`/`regressed` are not outstanding-verification states, and
+      the accepted ``testdata/parity_reopened.md`` fixture pins that as legal
+      today. Treating a re-pass as evidence-demanding is the same policy decision.
+    * A single `satisfied` row satisfies the whole step, so a step with several
+      mandatory gate items can still lose one to erasure. Per-item enforcement
+      needs stable item IDs on GATE rows (registry-schema change).
+    * The rule reads the transition log, which is an ordinary file section. It is
+      deletion-resistant only insofar as parity independently requires a
+      producing transition for every non-initial table state; it is not an
+      immutable history.
     """
     violations: list[str] = []
+    ever_outstanding: set[str] = set()
+    derived: dict[str, str] = {}
     for step, prev, new in transitions:
-        if new != "passed" or prev not in OUTSTANDING_VERIFICATION_STATES:
+        if prev in OUTSTANDING_VERIFICATION_STATES or new in OUTSTANDING_VERIFICATION_STATES:
+            ever_outstanding.add(step)
+        derived[step] = new
+
+    for step in sorted(ever_outstanding):
+        if derived.get(step, INITIAL_STATE) != "passed":
             continue
         entries = gates.get(step, [])
-        if not any(state in SATISFYING_GATES for state, _ in entries):
-            present = ", ".join(sorted({state for state, _ in entries})) or "none"
-            violations.append(
-                f"{step}: transition '{prev} -> passed' claims a previously "
-                f"outstanding MANDATORY verification is now complete, but the "
-                f"verification-gate registry holds no `satisfied` GATE row for "
-                f"{step} (gate rows present: {present}). Mandatory verification "
-                f"evidence is ABSENT, which never satisfies a dependency gate — "
-                f"record the executed checks as `GATE {step} | satisfied | "
-                f"<evidence>` or keep {step} at '{prev}'."
+        satisfying = [(state, note) for state, note in entries if state in SATISFYING_GATES]
+        if any(note.strip() for _, note in satisfying):
+            continue
+        if satisfying:
+            reason = (
+                "the only `satisfied` GATE row(s) carry an EMPTY evidence note — "
+                "a state token is not a record of an executed check"
             )
+        else:
+            present = ", ".join(sorted({state for state, _ in entries})) or "none"
+            reason = (
+                f"the verification-gate registry holds no `satisfied` GATE row "
+                f"for {step} (gate rows present: {present})"
+            )
+        violations.append(
+            f"{step}: the transition log records {step} in an outstanding "
+            f"MANDATORY verification state (verify-pending/blocked) and then "
+            f"derives '{derived[step]}', but {reason}. Mandatory verification "
+            f"evidence is ABSENT, which never satisfies a dependency gate — "
+            f"record the executed checks as `GATE {step} | satisfied | "
+            f"<evidence>` or keep {step} out of `passed`."
+        )
     return violations
 
 
@@ -430,8 +485,12 @@ def validate(text: str) -> list[str]:
     # derives per-step state from the ordered log and must match the table.
     violations.extend(validate_parity(statuses, transitions))
 
-    # Rule 4 — leaving an outstanding-verification state for `passed` requires
-    # POSITIVE evidence, so erasing a gate row cannot launder an unverified step.
+    # Rule 4 — a step whose HISTORY entered an outstanding-verification state and
+    # that derives `passed` requires POSITIVE evidence (a `satisfied` gate row
+    # with a real note), so neither erasing the gate row, nor hopping to `passed`
+    # via extra legal states, nor an empty-note `satisfied` token launders it.
+    # Steps that never declared an outstanding state are NOT covered — see
+    # `validate_unlock_evidence` for that residual.
     violations.extend(validate_unlock_evidence(gates, transitions))
 
     return violations
@@ -450,7 +509,13 @@ def main(argv: list[str] | None = None) -> int:
     if not path.exists():
         print(f"ledger:validate: file not found: {path}", file=sys.stderr)
         return 2
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # An unreadable/undecodable ledger is an input error, not a clean run and
+        # not a violation — exit 2 with the failing seam named, never a traceback.
+        print(f"ledger:validate: cannot read {path}: {exc}", file=sys.stderr)
+        return 2
 
     violations = validate(text)
     if violations:
