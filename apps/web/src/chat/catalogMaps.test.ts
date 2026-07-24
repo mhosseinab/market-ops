@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { buildPseudoCatalog, en, faIR, MESSAGE_KEYS } from "@market-ops/locale";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -46,6 +48,35 @@ describe("closed catalog maps — every mapped value has en/fa-IR/pseudo labels 
   });
 });
 
+// The producer-side mirror of the Python guard
+// (services/llm/tests/test_failure_code_contract.py): the plane DECLARES the
+// failure codes it can emit, and this edge map must cover every one of them. An
+// unmapped code renders the generic `chat.failure.unsupported` copy AND fires the
+// `chat_failure_code` drift alarm on a normal, correct, fail-closed path — which
+// destroys the alarm's ability to distinguish real drift from routine behavior.
+// Read from the plane's source so a new declared code breaks HERE, not in prod.
+// vitest runs with `apps/web` as the cwd; the plane lives two levels up.
+const EMITTABLE_CODES_SOURCE = resolve(
+  process.cwd(),
+  "../../services/llm/src/llm/envelope/models.py",
+);
+
+function declaredEmittableCodes(): string[] {
+  const text = readFileSync(EMITTABLE_CODES_SOURCE, "utf8");
+  const block = /EMITTABLE_FAILURE_CODES:[^{]*\{(.*?)\n\s*\}/s.exec(text);
+  expect(block, "EMITTABLE_FAILURE_CODES not found in the LLM plane source").toBeTruthy();
+  return [...(block?.[1] ?? "").matchAll(/"([A-Z][A-Z0-9_]*)"/g)].map((m) => m[1] ?? "");
+}
+
+describe("FAILURE_CODE_KEY covers every code the LLM plane declares it can emit", () => {
+  it("has no unmapped emittable code (an unmapped one would fire the drift alarm)", () => {
+    const declared = declaredEmittableCodes();
+    expect(declared.length).toBeGreaterThan(0);
+    const unmapped = declared.filter((code) => !(code in FAILURE_CODE_KEY));
+    expect(unmapped).toEqual([]);
+  });
+});
+
 describe("failureMessageKey — closed failure-code map", () => {
   // The stable §12.4 codes the LLM plane emits on the `failure` frame.
   const SUPPORTED = [
@@ -55,6 +86,13 @@ describe("failureMessageKey — closed failure-code map", () => {
     "TOKEN_CEILING",
     "MODEL_PROVIDER_ERROR",
     "MODEL_TRANSIENT_FAILURE",
+    "CONTEXT_SCOPE_MISSING",
+    "CONTEXT_MALFORMED",
+    "CONTEXT_UNAVAILABLE",
+    "CONTEXT_PICKER_UNAVAILABLE",
+    "CONTEXT_NOT_FOUND",
+    "TURN_INCOMPLETE",
+    "INTENT_UNCLASSIFIED",
   ] as const;
 
   it.each(SUPPORTED)("%s resolves to a catalog key, not the raw code", (code) => {

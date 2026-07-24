@@ -240,6 +240,16 @@ export const MESSAGE_KEYS = [
   "chat.failure.tokenCeiling",
   "chat.failure.providerError",
   "chat.failure.transient",
+  // Deterministic turn-context resolution + classification (#108). These fail
+  // CLOSED on normal paths, so each needs actionable copy of its own — the
+  // generic `unsupported` body would also fire the drift alarm.
+  "chat.failure.contextScopeMissing",
+  "chat.failure.contextMalformed",
+  "chat.failure.contextUnavailable",
+  "chat.failure.contextPickerUnavailable",
+  "chat.failure.contextNotFound",
+  "chat.failure.turnIncomplete",
+  "chat.failure.intentUnclassified",
   "chat.failure.unsupported",
 
   // ── S26 screens ──────────────────────────────────────────────────────────

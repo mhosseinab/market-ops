@@ -28,7 +28,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
 from llm.envelope.models import EMITTABLE_FAILURE_CODES
 
 # services/llm/tests/<file> → repo root is four parents up.
@@ -94,17 +93,6 @@ def test_web_catalog_maps_file_exists() -> None:
     assert _CATALOG_MAPS.is_file(), f"missing web edge map: {_CATALOG_MAPS}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "#108 G2 web half: CONTEXT_SCOPE_MISSING, CONTEXT_MALFORMED, "
-        "CONTEXT_UNAVAILABLE, CONTEXT_PICKER_UNAVAILABLE, CONTEXT_NOT_FOUND, "
-        "TURN_INCOMPLETE and the pre-existing INTENT_UNCLASSIFIED still need "
-        "FAILURE_CODE_KEY entries + en/fa-IR catalog copy, which the web/locale "
-        "surface owns. strict=True: this flips to a hard failure the moment they "
-        "land, so the marker cannot outlive the gap."
-    ),
-)
 def test_every_emittable_failure_code_is_mapped_at_the_web_edge() -> None:
     """An emittable code missing from the closed edge map fires the drift alarm."""
     unmapped = set(EMITTABLE_FAILURE_CODES) - _failure_code_key_map()

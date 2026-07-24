@@ -207,6 +207,20 @@ export const en: Catalog = {
   "chat.failure.tokenCeiling": "The response exceeded the length limit.",
   "chat.failure.providerError": "The assistant service returned an error.",
   "chat.failure.transient": "The assistant is temporarily unavailable.",
+  "chat.failure.contextScopeMissing":
+    "The account this request belongs to could not be confirmed. Continue in the structured screens.",
+  "chat.failure.contextMalformed":
+    "The details attached to this request could not be read. Continue in the structured screens.",
+  "chat.failure.contextUnavailable":
+    "The referenced items are unavailable right now. Continue in the structured screens.",
+  "chat.failure.contextPickerUnavailable":
+    "The assistant needs one specific item and no options could be offered. Choose the item in the structured screens.",
+  "chat.failure.contextNotFound":
+    "The item you referred to was not found in this account. Choose it in the structured screens.",
+  "chat.failure.turnIncomplete":
+    "The turn ended without an answer. Use the structured screens for a complete, grounded view.",
+  "chat.failure.intentUnclassified":
+    "The request could not be interpreted. Rephrase it, or use the structured screens.",
   "chat.failure.unsupported": "This response could not be completed.",
 
   "action.retry": "Try again",
