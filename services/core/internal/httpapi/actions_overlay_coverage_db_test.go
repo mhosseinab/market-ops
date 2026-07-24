@@ -15,6 +15,7 @@ import (
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/execution"
@@ -47,6 +48,12 @@ type overlayGapFixture struct {
 	account uuid.UUID
 	// cards in created_at ASCENDING order (cards[len-1] is the newest).
 	cards []db.ApprovalCard
+	// variant / nativeVariant / recommendation back the fixture's cards; they are
+	// retained so a test can add a FURTHER card to the SAME account and drive it
+	// through the real write path (execution.Service.Execute).
+	variant        uuid.UUID
+	nativeVariant  int64
+	recommendation uuid.UUID
 }
 
 // unlapsableApprovalHorizon is how far into the future an overlay fixture's
@@ -137,49 +144,18 @@ func seedOverlayGapAccountApprovedAt(
 		t.Fatalf("insert recommendation: %v", err)
 	}
 
-	rec := recommendation.NewService(pool)
+	f := overlayGapFixture{
+		org: org.ID, account: acct.ID,
+		variant: variant.ID, nativeVariant: nativeVariant, recommendation: recID,
+	}
 	cards := make([]db.ApprovalCard, 0, n)
 	for i := 0; i < n; i++ {
-		actionID := uuid.New()
-		binding := approval.Binding{
-			ActionID: actionID, ParameterVersion: 1, ContextVersion: 1,
-			PolicyVersion: 1, CostProfileVersion: 1, Expiry: time.Now().Add(time.Hour),
-		}
-		card, err := q.InsertApprovalCard(ctx, db.InsertApprovalCardParams{
-			RecommendationID: recID, MarketplaceAccountID: acct.ID, LineageID: uuid.New(),
-			ActionID: actionID, ParameterVersion: 1, ContextVersion: 1, PolicyVersion: 1, CostProfileVersion: 1,
-			EvidenceVersions: []byte("{}"), IdempotencyKey: binding.IdempotencyKey(),
-			State: string(approval.StateDraft), PriceMantissa: int64(95000 + i), PriceCurrency: "IRR", PriceExponent: 0,
-			ExpiresAt: binding.Expiry,
-		})
-		if err != nil {
-			t.Fatalf("insert card %d: %v", i, err)
-		}
-		for _, step := range []struct{ from, to approval.State }{
-			{approval.StateDraft, approval.StateReadyForReview},
-			{approval.StateReadyForReview, approval.StateAwaitingConfirmation},
-			{approval.StateAwaitingConfirmation, approval.StateApproved},
-		} {
-			if _, err := rec.Advance(ctx, card.ID, step.from, step.to, "seed"); err != nil {
-				t.Fatalf("advance card %d %s→%s: %v", i, step.from, step.to, err)
-			}
-		}
-		card, err = q.GetApprovalCard(ctx, card.ID)
-		if err != nil {
-			t.Fatalf("reload card %d: %v", i, err)
-		}
+		card := seedApprovedCardInOverlayAccount(t, pool, q, f, int64(95000+i))
 		// approved_at DESCENDS as created_at ASCENDS: the first card created is the
 		// newest by approved_at, so an approved_at-ordered "newest N" overlay page
 		// covers exactly the cards a created_at-ordered page does NOT.
 		approvedAt := approvedBase.Add(-time.Duration(i) * time.Minute)
-		if _, err := q.InsertRecommendOnlyAction(ctx, db.InsertRecommendOnlyActionParams{
-			CardID: card.ID, ActionID: card.ActionID, MarketplaceAccountID: acct.ID, VariantID: variant.ID,
-			ApprovedPriceMantissa: card.PriceMantissa, ApprovedPriceCurrency: card.PriceCurrency,
-			ApprovedPriceExponent: card.PriceExponent,
-			ApprovedAt:            approvedAt, WindowExpiresAt: approvedAt.Add(24 * time.Hour),
-		}); err != nil {
-			t.Fatalf("track card %d recommend-only: %v", i, err)
-		}
+		trackRecommendOnly(t, q, f, card, card.ActionID, approvedAt)
 		cards = append(cards, card)
 	}
 
@@ -191,7 +167,99 @@ func seedOverlayGapAccountApprovedAt(
 				i, cards[i].CreatedAt, cards[i-1].CreatedAt)
 		}
 	}
-	return overlayGapFixture{org: org.ID, account: acct.ID, cards: cards}
+	f.cards = cards
+	return f
+}
+
+// seedApprovedCardInOverlayAccount adds ONE more single-version approval card to an
+// existing overlay fixture's account/recommendation and drives it to Approved
+// through the REAL §8.4 state machine. It carries its own action id and its own
+// stable idempotency key, so it is independently executable (EXE-002).
+func seedApprovedCardInOverlayAccount(
+	t *testing.T, pool *pgxpool.Pool, q *db.Queries, f overlayGapFixture, priceMantissa int64,
+) db.ApprovalCard {
+	t.Helper()
+	ctx := context.Background()
+	actionID := uuid.New()
+	binding := approval.Binding{
+		ActionID: actionID, ParameterVersion: 1, ContextVersion: 1,
+		PolicyVersion: 1, CostProfileVersion: 1, Expiry: time.Now().Add(time.Hour),
+	}
+	card, err := q.InsertApprovalCard(ctx, db.InsertApprovalCardParams{
+		RecommendationID: f.recommendation, MarketplaceAccountID: f.account, LineageID: uuid.New(),
+		ActionID: actionID, ParameterVersion: 1, ContextVersion: 1, PolicyVersion: 1, CostProfileVersion: 1,
+		EvidenceVersions: []byte("{}"), IdempotencyKey: binding.IdempotencyKey(),
+		State: string(approval.StateDraft), PriceMantissa: priceMantissa, PriceCurrency: "IRR", PriceExponent: 0,
+		ExpiresAt: binding.Expiry,
+	})
+	if err != nil {
+		t.Fatalf("insert card: %v", err)
+	}
+	rec := recommendation.NewService(pool)
+	for _, step := range []struct{ from, to approval.State }{
+		{approval.StateDraft, approval.StateReadyForReview},
+		{approval.StateReadyForReview, approval.StateAwaitingConfirmation},
+		{approval.StateAwaitingConfirmation, approval.StateApproved},
+	} {
+		if _, err := rec.Advance(ctx, card.ID, step.from, step.to, "seed"); err != nil {
+			t.Fatalf("advance card %s→%s: %v", step.from, step.to, err)
+		}
+	}
+	approved, err := q.GetApprovalCard(ctx, card.ID)
+	if err != nil {
+		t.Fatalf("reload card: %v", err)
+	}
+	return approved
+}
+
+// trackRecommendOnly records an EXE-005 recommend-only tracking row for a card
+// through the SAME production query the execution service uses. actionID is passed
+// explicitly so a data-integrity fixture can bind a row whose action id does NOT
+// match its card's action id (the overlay-anomaly case).
+func trackRecommendOnly(
+	t *testing.T, q *db.Queries, f overlayGapFixture, card db.ApprovalCard, actionID uuid.UUID, approvedAt time.Time,
+) {
+	t.Helper()
+	if _, err := q.InsertRecommendOnlyAction(context.Background(), db.InsertRecommendOnlyActionParams{
+		CardID: card.ID, ActionID: actionID, MarketplaceAccountID: f.account, VariantID: f.variant,
+		ApprovedPriceMantissa: card.PriceMantissa, ApprovedPriceCurrency: card.PriceCurrency,
+		ApprovedPriceExponent: card.PriceExponent,
+		ApprovedAt:            approvedAt, WindowExpiresAt: approvedAt.Add(24 * time.Hour),
+	}); err != nil {
+		t.Fatalf("track card %s recommend-only: %v", card.ID, err)
+	}
+}
+
+// seedWriteExecutedCard adds an Approved card to the fixture's account and drives it
+// through the REAL EXE-001/EXE-002 write path (execution.Service.Execute with a
+// write-ENABLED revalidation context and a definitively accepting writer), so the
+// production `action_executions` row is written by production code — never inserted
+// by the test. It returns the executed card version.
+//
+// This is what makes the WRITE half of the page-exact overlay (and its issue #102
+// tenant predicate) load-bearing: without an action_executions row the write query
+// returns zero rows and every assertion over it is vacuous.
+func seedWriteExecutedCard(t *testing.T, pool *pgxpool.Pool, q *db.Queries, f overlayGapFixture) db.ApprovalCard {
+	t.Helper()
+	card := seedApprovedCardInOverlayAccount(t, pool, q, f, 99000)
+	svc := execution.NewService(pool, recommendation.NewService(pool), acceptWriter{},
+		fixedResolver{card: card, nativeVariant: f.nativeVariant})
+	res, err := svc.Execute(context.Background(), card.ID, audit.Actor{ID: "owner-1", Role: "owner", Surface: "screen"})
+	if err != nil {
+		t.Fatalf("execute (write) card %s: %v", card.ID, err)
+	}
+	if !res.DidWrite || res.ExternalState != execution.StateAccepted {
+		t.Fatalf("seed write: didWrite=%v externalState=%q; want a definitive accepted write",
+			res.DidWrite, res.ExternalState)
+	}
+	if _, err := q.GetActionExecutionByAction(context.Background(), card.ActionID); err != nil {
+		t.Fatalf("seed write: no durable action_executions row for action %s: %v", card.ActionID, err)
+	}
+	executed, err := q.GetApprovalCard(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("reload executed card: %v", err)
+	}
+	return executed
 }
 
 // overlayGapServer wires the REAL approval + execution services (read-only: no
@@ -324,6 +392,107 @@ func TestListActions_OverlayCoversEveryReturnedPageRow(t *testing.T) {
 	}
 }
 
+// assertWriteOverlay asserts a projected row faithfully mirrors its DURABLE
+// action_executions row: mode write, the exact EXE-003 externalState, the canonical
+// mapping of that state, and NO recommendOnlyState (a write action never carries a
+// recommend-only tracking state — the never-cut mode separation holds in BOTH
+// directions on the list surface).
+func assertWriteOverlay(t *testing.T, q *db.Queries, item gateway.ActionSummary, actionID uuid.UUID) {
+	t.Helper()
+	if item.ExecutionMode == nil || *item.ExecutionMode != gateway.ExecutionMode(execution.ModeWrite) {
+		t.Fatalf("card %s executionMode = %v; want write", item.Id, printPtr(item.ExecutionMode))
+	}
+	if item.RecommendOnlyState != nil {
+		t.Fatalf("write card %s carries recommendOnlyState %v — a write action is not recommend-only tracked (never-cut)",
+			item.Id, *item.RecommendOnlyState)
+	}
+	if item.ExternalState == nil {
+		t.Fatalf("write card %s carries no externalState", item.Id)
+	}
+	row, err := q.GetActionExecutionByAction(context.Background(), actionID)
+	if err != nil {
+		t.Fatalf("read durable action_executions row for action %s: %v", actionID, err)
+	}
+	if string(*item.ExternalState) != row.ExternalState {
+		t.Fatalf("card %s externalState = %q; durable row is %q", item.Id, *item.ExternalState, row.ExternalState)
+	}
+	want := execution.Canonical(execution.ModeWrite, row.ExternalState)
+	if item.CanonicalState == nil || *item.CanonicalState != gateway.ActionCanonicalState(want) {
+		t.Fatalf("card %s canonicalState = %v; want %q for write external state %q",
+			item.Id, printPtr(item.CanonicalState), want, row.ExternalState)
+	}
+}
+
+// TestListActions_ProjectsWriteModeOverlay is the issue #106 acceptance-#1 WRITE
+// half on the PRODUCTION transport seam: an account whose page carries BOTH a
+// write-executed card and a recommend-only-tracked card must project each with its
+// OWN mode, its own raw state, and the canonical mapping of that state.
+//
+// Before this fixture no test in the repository made the page-exact write overlay
+// query (ListActionExecutionsByCardIDs) return a single row, so its result shape —
+// and its issue #102 tenant predicate — were unverified on the seam GET /actions
+// actually uses.
+func TestListActions_ProjectsWriteModeOverlay(t *testing.T) {
+	pool, q := newIntegrationPool(t)
+	f := seedOverlayGapAccount(t, pool, q, 1)
+	written := seedWriteExecutedCard(t, pool, q, f)
+	srv := overlayGapServer(t, pool, f, "tok-owner")
+
+	items := listActionsWithLimit(t, srv, "tok-owner", f.account.String(), 50).Items
+	byCard := map[uuid.UUID]gateway.ActionSummary{}
+	for _, it := range items {
+		byCard[it.Id] = it
+	}
+
+	writeItem, ok := byCard[written.ID]
+	if !ok {
+		t.Fatalf("write-executed card %s absent from the actions page (%d rows)", written.ID, len(items))
+	}
+	assertWriteOverlay(t, q, writeItem, written.ActionID)
+
+	// The recommend-only card in the SAME page keeps its own mode: both modes are
+	// grouped by canonical state in ONE list (issue #106 acceptance #1).
+	roCard := f.cards[0]
+	roItem, ok := byCard[roCard.ID]
+	if !ok {
+		t.Fatalf("recommend-only card %s absent from the actions page", roCard.ID)
+	}
+	assertRecommendOnlyOverlay(t, q, roItem, roCard.ActionID)
+}
+
+// TestListUnifiedByCardIDs_WriteWinsOverStrayRecommendOnlyRow covers the precedence
+// branch of the page-exact overlay: for ONE card version carrying BOTH a write
+// execution and a recommend-only row, the WRITE wins and is the ONLY projection.
+//
+// A stray recommend-only row must never mask a real external write — that would
+// render an executed action as "awaiting external execution", a false claim in the
+// opposite direction (EXE-003/EXE-005, §4.6).
+func TestListUnifiedByCardIDs_WriteWinsOverStrayRecommendOnlyRow(t *testing.T) {
+	pool, q := newIntegrationPool(t)
+	f := seedOverlayGapAccount(t, pool, q, 1)
+	written := seedWriteExecutedCard(t, pool, q, f)
+	// A stray recommend-only row on the SAME card version, bound to the SAME action.
+	trackRecommendOnly(t, q, f, written, written.ActionID, time.Now().UTC().Add(unlapsableApprovalHorizon))
+
+	svc := execution.NewService(pool, recommendation.NewService(pool), nil, nil)
+	got, err := svc.ListUnifiedByCardIDsForOrg(context.Background(), f.org, f.account, []uuid.UUID{written.ID})
+	if err != nil {
+		t.Fatalf("overlay: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("card %s projected %d overlay rows; want exactly 1 (the write)", written.ID, len(got))
+	}
+	if got[0].Mode != execution.ModeWrite {
+		t.Fatalf("card %s projected mode %q; a stray recommend-only row masked the real write", written.ID, got[0].Mode)
+	}
+	if got[0].ExternalState != execution.StateAccepted {
+		t.Fatalf("card %s externalState = %q; want accepted", written.ID, got[0].ExternalState)
+	}
+	if got[0].RecommendOnlyState != "" {
+		t.Fatalf("write projection carries recommendOnlyState %q (never-cut mode separation)", got[0].RecommendOnlyState)
+	}
+}
+
 // TestListActions_ProjectsTerminalLapsedRecommendOnlyState proves the overlay is
 // faithful for a TERMINAL recommend-only state, not only for awaiting: an action
 // the EXE-005 reconciler LAPSED is projected as lapsed / canonical lapsed at the
@@ -387,6 +556,13 @@ func TestListUnifiedByCardIDs_CallerSuppliedIDsStayAccountScoped(t *testing.T) {
 	pool, q := newIntegrationPool(t)
 	mine := seedOverlayGapAccount(t, pool, q, 1)
 	theirs := seedOverlayGapAccount(t, pool, q, 1)
+	// BOTH halves of the overlay must be load-bearing: each account also holds a
+	// WRITE-executed card, so the write query's account predicate is exercised with
+	// rows that actually exist. Without a foreign action_executions row the write
+	// half returns zero rows and the "foreign card not projected" assertion is
+	// satisfied vacuously — the tenant predicate could be neutralised unnoticed.
+	mineWrite := seedWriteExecutedCard(t, pool, q, mine)
+	theirsWrite := seedWriteExecutedCard(t, pool, q, theirs)
 
 	svc := execution.NewService(pool, recommendation.NewService(pool), nil, nil)
 	ctx := context.Background()
@@ -394,24 +570,37 @@ func TestListUnifiedByCardIDs_CallerSuppliedIDsStayAccountScoped(t *testing.T) {
 	mineCard := mine.cards[0].ID
 	theirsCard := theirs.cards[0].ID
 
-	got, err := svc.ListUnifiedByCardIDsForOrg(ctx, mine.org, mine.account, []uuid.UUID{mineCard, theirsCard})
+	got, err := svc.ListUnifiedByCardIDsForOrg(ctx, mine.org, mine.account,
+		[]uuid.UUID{mineCard, mineWrite.ID, theirsCard, theirsWrite.ID})
 	if err != nil {
 		t.Fatalf("own-account overlay: %v", err)
 	}
-	seen := map[uuid.UUID]bool{}
+	seen := map[uuid.UUID]execution.Mode{}
 	for _, u := range got {
-		seen[u.CardID] = true
+		seen[u.CardID] = u.Mode
 	}
-	if seen[theirsCard] {
-		t.Fatalf("foreign card %s was projected into account %s's overlay — a caller-supplied id set must stay account-scoped (issue #102)",
+	if _, ok := seen[theirsCard]; ok {
+		t.Fatalf("foreign recommend-only card %s was projected into account %s's overlay — a caller-supplied id set must stay account-scoped (issue #102)",
 			theirsCard, mine.account)
 	}
-	if !seen[mineCard] {
+	if _, ok := seen[theirsWrite.ID]; ok {
+		t.Fatalf("foreign WRITE card %s was projected into account %s's overlay — another tenant's execution state (mode/externalState/timing) must never be overlaid onto this caller's actions list (issue #102)",
+			theirsWrite.ID, mine.account)
+	}
+	if mode, ok := seen[mineCard]; !ok {
 		t.Fatalf("own card %s missing from its own overlay (cards seen: %v)", mineCard, seen)
+	} else if mode != execution.ModeRecommendOnly {
+		t.Fatalf("own card %s projected mode %q; want recommend_only", mineCard, mode)
+	}
+	if mode, ok := seen[mineWrite.ID]; !ok {
+		t.Fatalf("own WRITE card %s missing from its own overlay (cards seen: %v) — the write half must return rows for the test to be load-bearing",
+			mineWrite.ID, seen)
+	} else if mode != execution.ModeWrite {
+		t.Fatalf("own write card %s projected mode %q; want write", mineWrite.ID, mode)
 	}
 
 	// A foreign requested account is rejected outright, ids notwithstanding.
-	if _, err := svc.ListUnifiedByCardIDsForOrg(ctx, mine.org, theirs.account, []uuid.UUID{theirsCard}); err == nil {
+	if _, err := svc.ListUnifiedByCardIDsForOrg(ctx, mine.org, theirs.account, []uuid.UUID{theirsCard, theirsWrite.ID}); err == nil {
 		t.Fatalf("foreign requestedAccount was accepted; want ErrAccountNotFound")
 	} else if !errors.Is(err, execution.ErrAccountNotFound) {
 		t.Fatalf("foreign requestedAccount: err = %v; want ErrAccountNotFound", err)
