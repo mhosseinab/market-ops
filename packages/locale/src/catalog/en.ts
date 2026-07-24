@@ -749,8 +749,6 @@ export const en: Catalog = {
     "More actions exist than this page shows; the selection set covers this page only.",
   "bulk.result.state.authorized": "Approved",
   "bulk.result.state.alreadyAuthorized": "Already approved",
-  "bulk.result.state.invalidated": "Invalidated",
-  "bulk.result.state.failed": "Failed",
   "bulk.result.notAMember": "Not in the selection set",
 
   "settings.connection.title": "DK connection",

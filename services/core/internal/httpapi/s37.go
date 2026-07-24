@@ -156,15 +156,21 @@ func (s *gatewayServer) PreviewSelectionSet(
 			errors.Is(err, recommendation.ErrAccountNotFound) ||
 			errors.Is(err, recommendation.ErrLineageNotOwned) {
 			// A foreign account, an unknown/mismatched member, and a selection-set
-			// LINEAGE owned by another tenant (issue #90 blocker 1) are all
-			// indistinguishable to the caller — one uniform not-found. Surfacing the
-			// ownership rejection distinctly would be an existence oracle for another
-			// tenant's lineage ids; it is observable to OPERATORS through the
-			// tenant-isolation counter + structured log, never to the caller.
+			// LINEAGE owned by another tenant (issue #90 blocker 1) collapse to ONE
+			// uniform not-found: the STATUS and the BODY are byte-for-byte identical for
+			// all three (asserted by TestPreviewSelectionSet_NotFoundCausesAreByteIdentical),
+			// so the response text cannot be used to tell "this lineage belongs to
+			// someone else" from "no such member". The distinction is observable to
+			// OPERATORS through the tenant-isolation counter + structured log, never to
+			// the caller.
 			//
-			// The BODY is uniform too, not just the status: the three causes return the
-			// SAME envelope byte-for-byte, so response text cannot be used to
-			// distinguish "this lineage belongs to someone else" from "no such member".
+			// This does NOT make a foreign lineage indistinguishable from an UNCLAIMED
+			// one: an unclaimed lineage id is claimed by this very call and the preview
+			// mints version 1 (a legal create, 200), so a caller already holding a
+			// candidate lineage id can tell "claimed by someone" from "free". That is a
+			// bounded, recorded property of the create semantics (see
+			// recommendation.ErrLineageNotOwned), not something this mapping claims to
+			// close.
 			return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 404, Body: selectionNotFoundErr()}, nil
 		}
 		return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
@@ -197,7 +203,10 @@ func (s *gatewayServer) ListActions(
 			// A foreign account id is a uniform not-found — never another account's queue.
 			return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
 		case errors.Is(err, recommendation.ErrLimitAboveMax):
-			return gateway.ListActionsdefaultJSONResponse{StatusCode: 400, Body: invalidArgErr(err.Error())}, nil
+			// A FIXED client-facing message, symmetric with the cursor arm below: the
+			// internal sentinel's phrasing is a server implementation detail and never
+			// echoed to a caller.
+			return gateway.ListActionsdefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("page limit is above the maximum")}, nil
 		case errors.Is(err, recommendation.ErrInvalidCursor):
 			return gateway.ListActionsdefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("invalid pagination cursor")}, nil
 		default:
@@ -808,10 +817,11 @@ func ptrMoneyAmount(m money.Money) *gateway.MoneyAmount {
 
 // selectionNotFoundErr is the UNIFORM not-found envelope for the selection-set
 // preview: an unknown/mismatched member, a foreign marketplace account, and a
-// selection-set lineage owned by another tenant (issue #90) are indistinguishable
-// to the caller. One fixed message means the response body is not an existence
-// oracle for another tenant's lineage or member ids; the distinction is recorded
-// for operators in the tenant-isolation telemetry instead.
+// selection-set lineage owned by another tenant (issue #90) produce the SAME body,
+// byte for byte, at the same 404. One fixed message — never err.Error() — is what
+// makes that true; the distinction is recorded for operators in the tenant-isolation
+// telemetry instead. (It does not, and does not claim to, hide a CLAIMED lineage
+// from an unclaimed one: claiming a free lineage is a legal create that returns 200.)
 func selectionNotFoundErr() gateway.ErrorEnvelope {
 	return gateway.ErrorEnvelope{Code: "APPROVAL_ERROR", Message: "selection set not found"}
 }

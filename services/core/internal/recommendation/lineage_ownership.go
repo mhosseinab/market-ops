@@ -12,9 +12,23 @@ import (
 // ErrLineageNotOwned is returned when a caller presents a selection-set LINEAGE
 // owned by a DIFFERENT marketplace account (issue #90, PRD §4.6 tenant isolation).
 // It fails CLOSED before any version is minted and before any member of the foreign
-// lineage is read. The transport maps it to the SAME uniform not-found a missing
-// lineage returns, so it never becomes an existence oracle for another tenant's
-// selection sets.
+// lineage is read.
+//
+// What the transport mapping DOES guarantee (asserted by
+// TestPreviewSelectionSet_NotFoundCausesAreByteIdentical): the ownership rejection's
+// STATUS and RESPONSE BODY are byte-for-byte identical to the other not-found causes
+// on this seam — an unknown/mismatched member and a foreign marketplace account — so
+// the response never discloses WHICH of them occurred, and an ownership rejection is
+// never distinguishable from an ordinary bad request by its text.
+//
+// What it does NOT guarantee (issue #90 fix cycle 1, M2): a foreign lineage is still
+// distinguishable from an UNCLAIMED one, because claiming an unclaimed lineage is a
+// legal create — the caller's own preview succeeds and mints version 1, while a
+// lineage live under another tenant is rejected. A caller who already holds a
+// candidate lineage id can therefore learn that it is claimed by someone. The reach
+// is bounded (lineage ids are server-minted v4 UUIDs and are never exposed on another
+// tenant's surface) and closing it would change the create semantics, so it is
+// recorded here rather than silently asserted away.
 var ErrLineageNotOwned = errors.New("recommendation: selection-set lineage is owned by another account")
 
 // BULK-PROTOCOL DESIGN RECORD (b) — DB-ENFORCED LINEAGE→ACCOUNT OWNERSHIP.

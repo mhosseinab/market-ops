@@ -31,9 +31,13 @@ type fakeApproval struct {
 	err         error
 	gotActor    audit.Actor
 
-	editedCard   db.ApprovalCard
-	editErr      error
-	actions      []db.ListApprovalCardsPageRow
+	editedCard db.ApprovalCard
+	editErr    error
+	actions    []db.ListApprovalCardsPageRow
+	// page carries the BOUNDED-READ envelope (issue #90 blocker 3) verbatim: the
+	// fake must not drop HasMore/NextCursor, or the wire fields they exist for
+	// become untestable (fix cycle 1, M5).
+	page         recommendation.ActionsPage
 	rec          db.Recommendation
 	recErr       error
 	preview      recommendation.PreviewResult
@@ -59,7 +63,11 @@ func (f *fakeApproval) EditPriceForOrg(context.Context, uuid.UUID, uuid.UUID, mo
 	return f.editedCard, f.editErr
 }
 func (f *fakeApproval) ListActionsForOrg(context.Context, uuid.UUID, uuid.UUID, string, recommendation.ActionsPageRequest) (recommendation.ActionsPage, error) {
-	return recommendation.ActionsPage{Items: f.actions}, f.err
+	page := f.page
+	if page.Items == nil {
+		page.Items = f.actions
+	}
+	return page, f.err
 }
 func (f *fakeApproval) GetRecommendationForOrg(context.Context, uuid.UUID, uuid.UUID) (db.Recommendation, error) {
 	return f.rec, f.recErr

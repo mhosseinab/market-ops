@@ -161,6 +161,9 @@ func resolveActionsLimit(requested *int32) (int32, error) {
 func (s *Service) ListActionsPage(ctx context.Context, account uuid.UUID, stateFilter string, req ActionsPageRequest) (ActionsPage, error) {
 	limit, err := resolveActionsLimit(req.Limit)
 	if err != nil {
+		// The fail-closed page cap is a never-cut boundary: its refusals are COUNTED,
+		// never inferred from an absence of rows (CLAUDE.md §SRE).
+		s.tel().pageLimitRejected(ctx, seamListActionsPage)
 		return ActionsPage{}, err
 	}
 	params := db.ListApprovalCardsPageParams{
@@ -201,10 +204,23 @@ func (s *Service) ListActionsPage(ctx context.Context, account uuid.UUID, stateF
 	return page, nil
 }
 
+// seamListActionsPage / seamListActions name the bounded-read seams in telemetry.
+// They are stable operator-facing identifiers, never localized copy (LOC-001).
+const (
+	seamListActionsPage = "list_actions_page"
+	seamListActions     = "list_actions"
+	seamBulkConfirm     = "confirm_bulk_selection"
+)
+
 // ListActions returns the account's actions queue: the current (greatest)
 // version per lineage, newest first, bounded by limit (PD-3 item 5). A
 // non-empty stateFilter narrows to that exact §8.4 state; empty returns every
 // state.
+//
+// It FAILS CLOSED on an over-maximum limit exactly as ListActionsPage does (issue
+// #90 fix cycle 1, F9): leaving a silently-clamping read beside a fail-closed one
+// invites the clamp defect straight back. A non-positive limit still means "apply
+// the conservative default" — that is an absent request, not an out-of-contract one.
 //
 // The state predicate is AUTHORITATIVE and applied in SQL, on the current
 // lineage head, BEFORE LIMIT (issue #142) — a page bounds MATCHING rows, never
@@ -212,12 +228,12 @@ func (s *Service) ListActionsPage(ctx context.Context, account uuid.UUID, stateF
 // behind newer non-matching ones. Tenant scoping stays account-scoped exactly
 // as before; the account arg is resolved upstream.
 func (s *Service) ListActions(ctx context.Context, account uuid.UUID, stateFilter string, limit int32) ([]db.ApprovalCard, error) {
-	if limit <= 0 {
-		limit = defaultActionsLimit
+	resolved, err := resolveActionsLimit(&limit)
+	if err != nil {
+		s.tel().pageLimitRejected(ctx, seamListActions)
+		return nil, err
 	}
-	if limit > MaxActionsLimit {
-		limit = MaxActionsLimit
-	}
+	limit = resolved
 	q := db.New(s.pool)
 	if stateFilter == "" {
 		return q.ListApprovalCardsByAccount(ctx, db.ListApprovalCardsByAccountParams{

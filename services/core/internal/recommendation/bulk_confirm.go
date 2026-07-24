@@ -83,6 +83,11 @@ type BulkItemResult struct {
 // false when the bound version is no longer current (any set/evidence change minted
 // a new version); in that case NOTHING is authorized and Items is empty. When Valid,
 // Items carries one durable per-item result for every member of the bound version.
+//
+// ExecutionPending is true only while at least one member carries a LIVE,
+// still-unresolved execution authorization (Approved / Revalidating / Executing). It
+// is NOT implied by an authorized item: a resume whose members have all reached an
+// external result reports already_authorized per item with ExecutionPending false.
 type BulkConfirmOutcome struct {
 	Lineage          uuid.UUID
 	BoundVersion     int32
@@ -128,6 +133,24 @@ type BulkConfirmOutcome struct {
 // releasing it — each member's own confirm re-verifies its own APR-001 binding under
 // its own card-lineage lock, so a member superseded after the snapshot still fails
 // closed.
+//
+// BULK-PROTOCOL DESIGN RECORD (f) — BINDING IS DECIDED AT BIND TIME (issue #90 fix
+// cycle 1, M3). Currency of the bound version is evaluated ONCE, inside the binding
+// transaction, under the lineage lock. A refresh that commits a NEWER version AFTER
+// that point does NOT retract the in-flight confirmation: the loop continues over the
+// version's SEALED membership, so a member dropped by that later version can still be
+// authorized. This is deliberate — the operator approved exactly the membership,
+// dispositions, and aggregate v_bound sealed, and a client-driven narrowing is not
+// retroactive.
+//
+// It is NOT an evidence/policy escape. Every server-side evidence, price, cost,
+// policy, or boundary change mints a NEW CARD version and is caught PER MEMBER by
+// ConfirmIndividual's authoritative-lineage/binding gate, which fails that member
+// closed as invalidated. The only thing this window admits is a client-driven
+// membership NARROWING racing an already-authorized confirmation — asserted, not
+// assumed, by
+// TestConfirmBulkSelection_RefreshDuringMemberLoopDoesNotRetractTheBinding. A stale
+// bound version presented on a LATER call still authorizes nothing.
 func (s *Service) ConfirmBulkSelection(ctx context.Context, account, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (BulkConfirmOutcome, error) {
 	current, members, err := s.bindSelectionVersion(ctx, account, lineage, boundVersion)
 	if err != nil {
@@ -145,7 +168,7 @@ func (s *Service) ConfirmBulkSelection(ctx context.Context, account, lineage uui
 	}
 	out.Valid = true
 	out.Items = make([]BulkItemResult, 0, len(members))
-	authorizedAny := false
+	pendingAny := false
 	for _, m := range members {
 		item := BulkItemResult{
 			VariantID:        m.VariantID,
@@ -160,15 +183,25 @@ func (s *Service) ConfirmBulkSelection(ctx context.Context, account, lineage uui
 			out.Items = append(out.Items, item)
 			continue
 		}
-		s.authorizeBulkMember(ctx, current.MarketplaceAccountID, &item, now, actor)
-		if item.State == BulkItemAuthorized || item.State == BulkItemAlreadyAuthorized {
-			authorizedAny = true
+		// The tenant is the CALLER's own resolved account (threaded down from
+		// ConfirmBulkSelectionForOrg), never a field of a row this loop just read.
+		// bindSelectionVersion already matched the set on that same account, so the
+		// two are provably equal — sourcing it from the caller keeps the tenant
+		// predicate anchored to the authorization rather than to persisted data.
+		if s.authorizeBulkMember(ctx, account, &item, now, actor) {
+			pendingAny = true
 		}
 		out.Items = append(out.Items, item)
 	}
-	// ExecutionPending reports that at least one member now carries a durable,
-	// pending execution authorization — never a bare "the version was valid" signal.
-	out.ExecutionPending = authorizedAny
+	// ExecutionPending reports that at least one member now carries a LIVE,
+	// still-unresolved execution authorization (approval.StateHasPendingExecution:
+	// Approved / Revalidating / Executing) — never a bare "the version was valid"
+	// signal, and never a member whose write has already produced an external result.
+	// A resume over members whose executions have all terminated (accepted, rejected,
+	// failed, or awaiting reconciliation) reports each item already_authorized — the
+	// authorization IS sealed — while ExecutionPending is false, because nothing is in
+	// flight (issue #90 fix cycle 1, M1).
+	out.ExecutionPending = pendingAny
 	return out, nil
 }
 
@@ -223,11 +256,17 @@ func (s *Service) bindSelectionVersion(ctx context.Context, account, lineage uui
 // NEVER approves directly: it re-resolves the recommendation's current card, enforces
 // tenant integrity, and delegates to ConfirmIndividual, whose gates fail closed for a
 // superseded, expired, non-control-bearing, or already-decided card.
-func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, item *BulkItemResult, now time.Time, actor audit.Actor) {
+//
+// It returns whether this member now carries a LIVE, still-unresolved execution
+// authorization (approval.StateHasPendingExecution) — the ONLY input to the
+// outcome's ExecutionPending. A sealed-but-terminated member (already_authorized on
+// a card that has reached an external result) returns false: its authorization
+// stands, but nothing is in flight.
+func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, item *BulkItemResult, now time.Time, actor audit.Actor) bool {
 	if item.RecommendationID == uuid.Nil {
 		item.State = BulkItemInvalidated
 		item.Reason = "no_recommendation"
-		return
+		return false
 	}
 	card, err := db.New(s.pool).GetCurrentApprovalCardByRecommendation(ctx, item.RecommendationID)
 	if err != nil {
@@ -235,25 +274,25 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 			// No card ⇒ nothing to authorize; fail closed rather than fabricate one.
 			item.State = BulkItemInvalidated
 			item.Reason = "no_live_card"
-			return
+			return false
 		}
 		item.State = BulkItemFailed
 		item.Reason = "card_lookup_failed"
-		return
+		return false
 	}
 	// Tenant integrity (never-cut): only authorize a card that belongs to the SAME
 	// account as the selection set. A cross-account card is rejected, never approved.
 	if card.MarketplaceAccountID != account {
 		item.State = BulkItemInvalidated
 		item.Reason = "account_mismatch"
-		return
+		return false
 	}
 
 	domainCard, err := cardFromDB(card)
 	if err != nil {
 		item.State = BulkItemFailed
 		item.Reason = "card_decode_failed"
-		return
+		return false
 	}
 	// Present the card's OWN authoritative binding: the operator authorized the
 	// reviewed selection version, and each member rides its pre-existing structured
@@ -285,27 +324,37 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 			if approval.StateHasAuthorized(approval.State(card.State)) {
 				item.State = BulkItemAlreadyAuthorized
 				item.Reason = "already_authorized"
-				return
+				// The idempotency boundary (§4.6): "this replay authorized nothing a
+				// second time" is COUNTED, not merely implied by the absence of a
+				// duplicate intent.
+				s.tel().sealedAuthorizationOnResume(ctx, seamBulkConfirm)
+				// Sealed ≠ in flight: only a card still upstream of an external result
+				// (Approved / Revalidating / Executing) contributes to ExecutionPending.
+				// A member whose write already produced a result — accepted, rejected,
+				// failed, or awaiting reconciliation — stays already_authorized while
+				// reporting nothing pending (issue #90 fix cycle 1, M1).
+				return approval.StateHasPendingExecution(approval.State(card.State))
 			}
 			item.State = BulkItemInvalidated
 			item.Reason = "not_control_bearing"
-			return
+			return false
 		case errors.Is(err, pgx.ErrNoRows):
 			item.State = BulkItemInvalidated
 			item.Reason = "no_live_card"
-			return
+			return false
 		default:
 			// A transient error (e.g. a dispatch/store failure rolled the individual
 			// confirm back): the card stays a live control, so a resume retries it.
 			item.State = BulkItemFailed
 			item.Reason = "authorize_failed"
-			return
+			return false
 		}
 	}
 	if outcome.State == approval.StateApproved {
 		item.State = BulkItemAuthorized
 		item.Reason = "authorized"
-		return
+		// Freshly activated: the intent enqueued by this call is live by construction.
+		return approval.StateHasPendingExecution(approval.StateApproved)
 	}
 	// Invalidated / Expired: the member's binding changed or lapsed — fail closed,
 	// no execution.
@@ -315,6 +364,7 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 	} else {
 		item.Reason = string(outcome.State)
 	}
+	return false
 }
 
 // uuidFromPg converts a nullable pgtype.UUID member column to a plain uuid.UUID; an

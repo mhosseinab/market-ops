@@ -171,3 +171,73 @@ func TestConfirmBulkSelection_ResumeLeavesNeverAuthorizedMembersInvalidated(t *t
 		t.Fatalf("expired member enqueued %d intents; want 0", got)
 	}
 }
+
+// TestConfirmBulkSelection_ResumeAfterAllExecutionsFailedReportsNoExecutionPending is
+// the issue #90 fix-cycle-1 M1 regression: `executionPending` must report a LIVE
+// pending execution authorization, not merely "some member was authorized at some
+// point". A resume over a set whose ONLY member's execution has definitively FAILED
+// still (correctly) reports already_authorized per item — but nothing is pending, so
+// the outcome-level flag must be false. Reporting true there told the operator an
+// execution was in flight when the write had already terminated.
+func TestConfirmBulkSelection_ResumeAfterAllExecutionsFailedReportsNoExecutionPending(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	svc := recommendation.NewService(pool).SetExecutionDispatcher(realDispatcherFor(t, pool))
+
+	_, account, variant := seedTenant(t, q)
+	card := awaitingCard(t, svc, account, variant)
+	lineage, version := previewExecutableSet(t, svc, account, variant, card)
+
+	first, err := svc.ConfirmBulkSelection(ctx, account, lineage, version, time.Now().UTC(), testActor())
+	if err != nil {
+		t.Fatalf("first confirm: %v", err)
+	}
+	if !first.ExecutionPending {
+		t.Fatalf("first confirm: executionPending=false; want true (the member IS newly approved)")
+	}
+
+	// The single member's execution runs to a DEFINITIVE failure.
+	advanceCard(t, svc, card.ID, approval.StateRevalidating, approval.StateExecuting, approval.StateFailed)
+
+	resume, err := svc.ConfirmBulkSelection(ctx, account, lineage, version, time.Now().UTC(), testActor())
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	item := itemFor(t, resume.Items, card.RecommendationID)
+	if item.State != recommendation.BulkItemAlreadyAuthorized {
+		t.Fatalf("failed-execution member = %s; want already_authorized (the authorization is still sealed)", item.State)
+	}
+	if resume.ExecutionPending {
+		t.Fatalf("resume over an all-failed set reported executionPending=true; nothing is pending (card state=%s)",
+			reloadState(t, svc, card.ID))
+	}
+}
+
+// TestConfirmBulkSelection_ResumeWhileExecutionInFlightStillReportsPending is the
+// positive half of M1: a member that is sealed-authorized AND still carries a live
+// intent (Approved / Revalidating / Executing) keeps `executionPending` true, so the
+// narrowed predicate did not silently turn the flag off for a genuinely in-flight
+// bulk.
+func TestConfirmBulkSelection_ResumeWhileExecutionInFlightStillReportsPending(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	svc := recommendation.NewService(pool).SetExecutionDispatcher(realDispatcherFor(t, pool))
+
+	_, account, variant := seedTenant(t, q)
+	card := awaitingCard(t, svc, account, variant)
+	lineage, version := previewExecutableSet(t, svc, account, variant, card)
+
+	if _, err := svc.ConfirmBulkSelection(ctx, account, lineage, version, time.Now().UTC(), testActor()); err != nil {
+		t.Fatalf("first confirm: %v", err)
+	}
+	for _, live := range []approval.State{approval.StateRevalidating, approval.StateExecuting} {
+		advanceCard(t, svc, card.ID, live)
+		resume, err := svc.ConfirmBulkSelection(ctx, account, lineage, version, time.Now().UTC(), testActor())
+		if err != nil {
+			t.Fatalf("resume with member in %s: %v", live, err)
+		}
+		if !resume.ExecutionPending {
+			t.Fatalf("resume with member in %s reported executionPending=false; the intent is still live", live)
+		}
+	}
+}

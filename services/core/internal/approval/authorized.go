@@ -57,3 +57,53 @@ var authorizedStates = map[State]bool{
 // fails closed (false): it never claims an authorization that cannot be proven from
 // the §8.4 machine.
 func StateHasAuthorized(s State) bool { return authorizedStates[s] }
+
+// LIVE pending execution (issue #90 fix cycle 1, M1).
+//
+// "Has this card's control been activated?" (StateHasAuthorized) and "is an
+// execution still IN FLIGHT under that authorization?" are DIFFERENT questions, and
+// conflating them made the bulk-confirmation outcome untruthful: a resume over
+// members whose writes had already terminated (Failed, Rejected, Accepted, or
+// PendingReconciliation) reported `executionPending` true, telling the operator a
+// write was in flight when none was.
+//
+// The rule: an execution intent is PENDING from the moment the control is activated
+// (Approved) until the §8.4 machine records an external RESULT. Approved,
+// Revalidating and Executing are pending; every terminal external result is not —
+// including PendingReconciliation, whose name refers to the RECONCILIATION owed on
+// an unknown result (EXE-003), not to a still-running write. Pending is therefore a
+// strict subset of sealed-authorized, and each state carries an EXPLICIT decision
+// below so a future §8.4 state cannot silently fall into either bucket.
+
+// pendingExecutionStates is the explicit, per-state decision table. Every member of
+// AllStates appears exactly once (asserted by
+// TestStateHasPendingExecutionCoversEveryState).
+var pendingExecutionStates = map[State]bool{
+	// Never activated: there is no execution intent at all.
+	StateDraft:                false,
+	StateReadyForReview:       false,
+	StateAwaitingConfirmation: false,
+	StateBlocked:              false,
+	StateExpired:              false,
+	// Voided: the authorization no longer stands, so no intent may be pending on it.
+	StateInvalidated: false,
+
+	// Live: the control was activated and no external result has been recorded yet.
+	StateApproved:     true,
+	StateRevalidating: true,
+	StateExecuting:    true,
+
+	// An external RESULT exists. The authorization remains sealed
+	// (StateHasAuthorized), but nothing is in flight: a definitively Failed or
+	// Rejected write is done, an Accepted one succeeded, and PendingReconciliation
+	// owes a reconciliation — never a running write (EXE-003).
+	StateAccepted:              false,
+	StateRejected:              false,
+	StatePendingReconciliation: false,
+	StateFailed:                false,
+}
+
+// StateHasPendingExecution reports whether a card in state s carries a LIVE,
+// still-unresolved execution authorization. An unknown state fails closed (false):
+// it never claims a pending execution that cannot be proven from the §8.4 machine.
+func StateHasPendingExecution(s State) bool { return pendingExecutionStates[s] }

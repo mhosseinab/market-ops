@@ -12,7 +12,11 @@ T = TypeVar("T", bound="BulkApprovalConfirmRequest")
 @_attrs_define
 class BulkApprovalConfirmRequest:
     """A bulk approval confirmation bound to ONE exact selection-set version (CHAT-052). The server rejects it when the
-    bound version is no longer current (any set/evidence change mints a new version).
+    bound version is no longer current (any set/evidence change mints a new version). Currency is evaluated ONCE, at
+    bind time, under the per-lineage lock: a refresh that commits a new version after the binding decision does not
+    retract the in-flight confirmation, and members of the bound version stay authorized even if the later version drops
+    them. Per-member safety is unaffected — every server-side evidence/price/cost/policy/boundary change mints a new
+    card version and is rejected per-member by the individual confirm's authoritative-binding gate.
     BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful ONLY together with
     `selectionSetLineage`: versions are monotonic WITHIN one lineage and version numbers from different lineages are NOT
     comparable. Never order, range, or diff versions across lineages, and never accept a bare version without its

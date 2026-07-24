@@ -2,6 +2,7 @@ import { faIR } from "@market-ops/locale";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
+import { formatCount } from "../data/format";
 import type { ObservationTarget, ObservedOffer } from "../data/types";
 import {
   bulkValid,
@@ -174,10 +175,18 @@ describe("Bulk approval (journey 3 — SERVER-minted selection set, APR-001 at s
     fireEvent.click(screen.getByTestId("bulk-approve"));
 
     // The row renders the server's `failed` state — the client would have shown a
-    // pending/authorized outcome from its own candidate state.
+    // pending/authorized outcome from its own candidate state. The copy is the
+    // CANONICAL glossary term, not a bulk-specific duplicate of it (F7).
     const failed = await screen.findByTestId("result-failed", undefined, { timeout: 5000 });
-    expect(failed).toHaveTextContent(faIR["bulk.result.state.failed"]);
+    expect(failed).toHaveTextContent(faIR["state.failed"]);
     expect(screen.queryByTestId("result-authorized")).toBeNull();
+
+    // The post-confirm summary counts the SERVER's authorized items (F8). This
+    // confirmation authorized NOTHING, so an overstated "1 approved" — the count the
+    // local candidate state would have produced — must not be announced.
+    const summary = await screen.findByTestId("bulk-recommend-only", undefined, { timeout: 5000 });
+    expect(summary).toHaveTextContent(formatCount(0, "fa-IR"));
+    expect(summary).not.toHaveTextContent(formatCount(1, "fa-IR"));
   });
 
   it("surfaces a failed preview and approves NOTHING (no client-minted fallback identity)", async () => {

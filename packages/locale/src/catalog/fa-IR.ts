@@ -745,8 +745,6 @@ export const faIR: Catalog = {
     "اقدام‌های بیشتری از آنچه در این صفحه دیده می‌شود وجود دارد؛ مجموعهٔ انتخاب فقط همین صفحه را دربر می‌گیرد.",
   "bulk.result.state.authorized": "تاییدشده",
   "bulk.result.state.alreadyAuthorized": "پیش‌تر تاییدشده",
-  "bulk.result.state.invalidated": "باطل‌شده",
-  "bulk.result.state.failed": "ناموفق",
   "bulk.result.notAMember": "خارج از مجموعهٔ انتخاب",
 
   "settings.connection.title": "اتصال دیجی‌کالا",

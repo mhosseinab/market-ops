@@ -1435,9 +1435,28 @@ paths:
         (PRD §7.5, CHAT-051/052). The request binds the selection-set lineage and
         the exact version it previewed; the server rejects the confirmation when
         that version is no longer current (any set or evidence change mints a new
-        version). A valid bulk confirmation reports `executionPending` true —
-        per-item execution lands in S18. This never approves from free text and
-        never re-queries the set (no drift).
+        version). This never approves from free text and never re-queries the set
+        (no drift).
+
+        BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated
+        ONCE, inside the transaction that holds the per-lineage lock, before any
+        member is authorized; the lock is released before the per-member
+        authorization loop so one member's failure cannot roll back another's. A
+        refresh that commits a NEW version AFTER that point does not retract the
+        in-flight confirmation: the operator authorized the bound version's exact
+        sealed membership, and members of that version continue to be authorized
+        even if a later version narrows the set. Nothing about the members
+        themselves escapes revalidation — every server-side evidence, price, cost,
+        policy, or boundary change mints a NEW card version and is caught
+        per-member by the individual confirm's authoritative-binding gate (APR-001),
+        so such a member fails closed as `invalidated`. Only a client-driven
+        membership NARROWING racing an in-flight confirmation is unobserved, and
+        that narrowing is not retroactive.
+
+        `executionPending` reports a LIVE, still-unresolved execution
+        authorization on at least one member — it is NOT implied by a valid
+        confirmation, and it is false once every member's write has produced an
+        external result.
       requestBody:
         required: true
         content:
@@ -2039,9 +2058,10 @@ paths:
             Maximum actions to return in this page. Optional: when omitted the
             server applies a conservative default (200). A value ABOVE the hard
             maximum (500) is REJECTED with a 400 — it is never silently clamped,
-            because a clamped page is indistinguishable from a complete one.
-            Values below 1 fall back to the default. Use `hasMore`/`nextCursor`
-            to read beyond one page.
+            because a clamped page is indistinguishable from a complete one. The
+            valid range is 1..500 (`minimum`/`maximum` below); omit the parameter
+            to take the default rather than sending a value below 1. Use
+            `hasMore`/`nextCursor` to read beyond one page.
           schema:
             type: integer
             format: int32
@@ -5006,7 +5026,14 @@ components:
       description: >-
         A bulk approval confirmation bound to ONE exact selection-set version
         (CHAT-052). The server rejects it when the bound version is no longer
-        current (any set/evidence change mints a new version).
+        current (any set/evidence change mints a new version). Currency is
+        evaluated ONCE, at bind time, under the per-lineage lock: a refresh that
+        commits a new version after the binding decision does not retract the
+        in-flight confirmation, and members of the bound version stay authorized
+        even if the later version drops them. Per-member safety is unaffected —
+        every server-side evidence/price/cost/policy/boundary change mints a new
+        card version and is rejected per-member by the individual confirm's
+        authoritative-binding gate.
 
         BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion`
         is meaningful ONLY together with `selectionSetLineage`: versions are
@@ -5063,8 +5090,13 @@ components:
         empty. When `valid`, each executable member is durably authorized through
         the same §8.4 individual-confirm path and reported in `items` with an
         explicit per-item state; blocked/warning members are `excluded` and never
-        execute. `executionPending` is true only when at least one member now
-        carries a durable, pending execution authorization.
+        execute. `executionPending` is true only when at least one member carries a
+        LIVE, still-unresolved execution authorization (approved, revalidating, or
+        executing). It is NOT implied by an authorized item: a resume whose members
+        have all reached an external result (accepted, rejected, failed, or
+        pending_reconciliation) reports `already_authorized` per item — the
+        authorization is sealed — with `executionPending` false, because nothing is
+        in flight.
       required:
         - selectionSetLineage
         - boundVersion
@@ -5086,6 +5118,11 @@ components:
           type: boolean
         executionPending:
           type: boolean
+          description: >-
+            True only while at least one member carries a LIVE, still-unresolved
+            execution authorization (approved / revalidating / executing). False
+            once every member's write has produced an external result, even though
+            those members still report `already_authorized`.
         items:
           type: array
           description: >-

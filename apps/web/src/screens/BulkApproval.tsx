@@ -125,14 +125,21 @@ function candidateSlug(c: Candidate): string {
 
 // Per-item result copy, keyed by the SERVER's BulkApprovalItemState. Every state the
 // contract can return has an explicit entry, so a state can never render blank or be
-// silently treated as success. `excluded` reuses the existing glossary term.
+// silently treated as success. Canonical glossary terms are REUSED, never duplicated
+// under a bulk-specific key: `invalidated` and `failed` are the same §8.4 states the
+// rest of the app renders, so they read from `state.*` (design/README.md glossary is
+// the single source for state copy). `excluded` likewise reuses its existing term.
 const ITEM_STATE_META: Record<BulkApprovalItemState, { tone: string; labelKey: MessageKey }> = {
   authorized: { tone: "pos", labelKey: "bulk.result.state.authorized" },
   already_authorized: { tone: "pos", labelKey: "bulk.result.state.alreadyAuthorized" },
   excluded: { tone: "info", labelKey: "bulk.result.excluded" },
-  invalidated: { tone: "warn", labelKey: "bulk.result.state.invalidated" },
-  failed: { tone: "risk", labelKey: "bulk.result.state.failed" },
+  invalidated: { tone: "warn", labelKey: "state.invalidated" },
+  failed: { tone: "risk", labelKey: "state.failed" },
 };
+
+// The item states that mean the SERVER durably authorized the member. The post-confirm
+// summary counts these, never a locally reconstructed number.
+const AUTHORIZED_ITEM_STATES: readonly BulkApprovalItemState[] = ["authorized", "already_authorized"];
 
 // Named cell (Products.tsx pattern): single-element render. The observed raw price
 // (LTR evidence) when present, else an explicit unavailable node — never blanked.
@@ -328,6 +335,15 @@ export function BulkApproval() {
     for (const item of result?.items ?? []) map.set(item.recommendationId, item);
     return map;
   }, [result]);
+
+  // The post-confirm summary is SERVER-authoritative (issue #90 fix cycle 1, F8):
+  // it counts the items the server actually reported as authorized. Announcing the
+  // local `counts.executable` overstated a partial failure — every member the server
+  // invalidated or failed was still announced as approved.
+  const authorizedCount = useMemo(
+    () => (result?.items ?? []).filter((i) => AUTHORIZED_ITEM_STATES.includes(i.state)).length,
+    [result],
+  );
 
   const unavailable = t("common.notAvailable");
 
@@ -528,6 +544,12 @@ export function BulkApproval() {
           }}
         />
 
+        {memberPayload.length === 0 ? (
+          <p className="muted" role="status" data-testid="bulk-preview-empty">
+            {t("bulk.preview.empty")}
+          </p>
+        ) : null}
+
         {selectionPreview.isPending ? (
           <p className="muted" role="status" data-testid="bulk-preview-pending">
             {t("bulk.preview.pending")}
@@ -579,7 +601,7 @@ export function BulkApproval() {
         {result?.valid && result.executionPending ? (
           <p className="success-note" data-testid="bulk-recommend-only">
             {t("bulk.result.recommendOnly", {
-              count: formatCount(counts.executable, locale),
+              count: formatCount(authorizedCount, locale),
             })}
           </p>
         ) : null}

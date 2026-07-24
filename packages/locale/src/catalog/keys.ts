@@ -778,8 +778,6 @@ export const MESSAGE_KEYS = [
   "bulk.candidates.incomplete",
   "bulk.result.state.authorized",
   "bulk.result.state.alreadyAuthorized",
-  "bulk.result.state.invalidated",
-  "bulk.result.state.failed",
   "bulk.result.notAMember",
 
   // Settings (admin levels §8.3)

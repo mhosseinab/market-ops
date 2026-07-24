@@ -59,13 +59,31 @@ def sync_detailed(
      Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The
     request binds the selection-set lineage and the exact version it previewed; the server rejects the
     confirmation when that version is no longer current (any set or evidence change mints a new
-    version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in
-    S18. This never approves from free text and never re-queries the set (no drift).
+    version). This never approves from free text and never re-queries the set (no drift).
+    BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the
+    transaction that holds the per-lineage lock, before any member is authorized; the lock is released
+    before the per-member authorization loop so one member's failure cannot roll back another's. A
+    refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the
+    operator authorized the bound version's exact sealed membership, and members of that version
+    continue to be authorized even if a later version narrows the set. Nothing about the members
+    themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary
+    change mints a NEW card version and is caught per-member by the individual confirm's authoritative-
+    binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven
+    membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not
+    retroactive.
+    `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member —
+    it is NOT implied by a valid confirmation, and it is false once every member's write has produced an
+    external result.
 
     Args:
         body (BulkApprovalConfirmRequest): A bulk approval confirmation bound to ONE exact
             selection-set version (CHAT-052). The server rejects it when the bound version is no
-            longer current (any set/evidence change mints a new version).
+            longer current (any set/evidence change mints a new version). Currency is evaluated ONCE,
+            at bind time, under the per-lineage lock: a refresh that commits a new version after the
+            binding decision does not retract the in-flight confirmation, and members of the bound
+            version stay authorized even if the later version drops them. Per-member safety is
+            unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card
+            version and is rejected per-member by the individual confirm's authoritative-binding gate.
             BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful
             ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and
             version numbers from different lineages are NOT comparable. Never order, range, or diff
@@ -123,13 +141,31 @@ def sync(
      Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The
     request binds the selection-set lineage and the exact version it previewed; the server rejects the
     confirmation when that version is no longer current (any set or evidence change mints a new
-    version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in
-    S18. This never approves from free text and never re-queries the set (no drift).
+    version). This never approves from free text and never re-queries the set (no drift).
+    BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the
+    transaction that holds the per-lineage lock, before any member is authorized; the lock is released
+    before the per-member authorization loop so one member's failure cannot roll back another's. A
+    refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the
+    operator authorized the bound version's exact sealed membership, and members of that version
+    continue to be authorized even if a later version narrows the set. Nothing about the members
+    themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary
+    change mints a NEW card version and is caught per-member by the individual confirm's authoritative-
+    binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven
+    membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not
+    retroactive.
+    `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member —
+    it is NOT implied by a valid confirmation, and it is false once every member's write has produced an
+    external result.
 
     Args:
         body (BulkApprovalConfirmRequest): A bulk approval confirmation bound to ONE exact
             selection-set version (CHAT-052). The server rejects it when the bound version is no
-            longer current (any set/evidence change mints a new version).
+            longer current (any set/evidence change mints a new version). Currency is evaluated ONCE,
+            at bind time, under the per-lineage lock: a refresh that commits a new version after the
+            binding decision does not retract the in-flight confirmation, and members of the bound
+            version stay authorized even if the later version drops them. Per-member safety is
+            unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card
+            version and is rejected per-member by the individual confirm's authoritative-binding gate.
             BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful
             ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and
             version numbers from different lineages are NOT comparable. Never order, range, or diff
@@ -182,13 +218,31 @@ async def asyncio_detailed(
      Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The
     request binds the selection-set lineage and the exact version it previewed; the server rejects the
     confirmation when that version is no longer current (any set or evidence change mints a new
-    version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in
-    S18. This never approves from free text and never re-queries the set (no drift).
+    version). This never approves from free text and never re-queries the set (no drift).
+    BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the
+    transaction that holds the per-lineage lock, before any member is authorized; the lock is released
+    before the per-member authorization loop so one member's failure cannot roll back another's. A
+    refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the
+    operator authorized the bound version's exact sealed membership, and members of that version
+    continue to be authorized even if a later version narrows the set. Nothing about the members
+    themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary
+    change mints a NEW card version and is caught per-member by the individual confirm's authoritative-
+    binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven
+    membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not
+    retroactive.
+    `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member —
+    it is NOT implied by a valid confirmation, and it is false once every member's write has produced an
+    external result.
 
     Args:
         body (BulkApprovalConfirmRequest): A bulk approval confirmation bound to ONE exact
             selection-set version (CHAT-052). The server rejects it when the bound version is no
-            longer current (any set/evidence change mints a new version).
+            longer current (any set/evidence change mints a new version). Currency is evaluated ONCE,
+            at bind time, under the per-lineage lock: a refresh that commits a new version after the
+            binding decision does not retract the in-flight confirmation, and members of the bound
+            version stay authorized even if the later version drops them. Per-member safety is
+            unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card
+            version and is rejected per-member by the individual confirm's authoritative-binding gate.
             BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful
             ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and
             version numbers from different lineages are NOT comparable. Never order, range, or diff
@@ -244,13 +298,31 @@ async def asyncio(
      Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The
     request binds the selection-set lineage and the exact version it previewed; the server rejects the
     confirmation when that version is no longer current (any set or evidence change mints a new
-    version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in
-    S18. This never approves from free text and never re-queries the set (no drift).
+    version). This never approves from free text and never re-queries the set (no drift).
+    BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the
+    transaction that holds the per-lineage lock, before any member is authorized; the lock is released
+    before the per-member authorization loop so one member's failure cannot roll back another's. A
+    refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the
+    operator authorized the bound version's exact sealed membership, and members of that version
+    continue to be authorized even if a later version narrows the set. Nothing about the members
+    themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary
+    change mints a NEW card version and is caught per-member by the individual confirm's authoritative-
+    binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven
+    membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not
+    retroactive.
+    `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member —
+    it is NOT implied by a valid confirmation, and it is false once every member's write has produced an
+    external result.
 
     Args:
         body (BulkApprovalConfirmRequest): A bulk approval confirmation bound to ONE exact
             selection-set version (CHAT-052). The server rejects it when the bound version is no
-            longer current (any set/evidence change mints a new version).
+            longer current (any set/evidence change mints a new version). Currency is evaluated ONCE,
+            at bind time, under the per-lineage lock: a refresh that commits a new version after the
+            binding decision does not retract the in-flight confirmation, and members of the bound
+            version stay authorized even if the later version drops them. Per-member safety is
+            unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card
+            version and is rejected per-member by the individual confirm's authoritative-binding gate.
             BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful
             ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and
             version numbers from different lineages are NOT comparable. Never order, range, or diff
