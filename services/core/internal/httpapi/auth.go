@@ -24,7 +24,7 @@ type AuthService interface {
 	Login(ctx context.Context, email, password string) (auth.Session, error)
 	Resolve(ctx context.Context, token string) (auth.Principal, error)
 	Logout(ctx context.Context, token string) error
-	// ListUsers returns the organization's user roster (PD-3 item 7, S37).
+	// ListUsers returns the organization's user roster (PD-3 item 7).
 	ListUsers(ctx context.Context, organizationID uuid.UUID) ([]db.User, error)
 }
 

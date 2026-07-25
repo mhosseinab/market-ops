@@ -1,4 +1,4 @@
-// Command seede2e provisions ONE owner user with a KNOWN password for the S32
+// Command seede2e provisions ONE owner user with a KNOWN password for the
 // system-test suites (kill-switch Playwright journeys, the adversarial
 // containment replay) that must authenticate against a REAL running gateway.
 // It is test/CI-only infrastructure — it is never invoked by

@@ -50,7 +50,7 @@ const (
 	// item 6). Owner-only, structured, versioned governance write; recorded here
 	// so a guardrail change is transcript-independently reproducible.
 	EventGuardrailChange EventType = "guardrail_change"
-	// EventWatchlistChange — an EXT-007 priority-watchlist entry was added (S37).
+	// EventWatchlistChange — an EXT-007 priority-watchlist entry was added.
 	// Cap-enforced, structured write; recorded atomically with the insert.
 	EventWatchlistChange EventType = "watchlist_change"
 )

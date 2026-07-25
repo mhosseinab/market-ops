@@ -1,6 +1,6 @@
 -- +goose Up
 -- +goose StatementBegin
--- Issue #41 (S13): keep an observation target's DENORMALISED identity routing ids
+-- Issue #41: keep an observation target's DENORMALISED identity routing ids
 -- in lock-step with its canonical Confirmed identity.
 --
 -- observation_targets copies the identity's native_variant_id / native_product_id

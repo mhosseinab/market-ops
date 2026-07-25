@@ -1,4 +1,4 @@
-// Package catalog implements owned catalog + owned-offer sync (S10, CAT-001,
+// Package catalog implements owned catalog + owned-offer sync (CAT-001,
 // ACC-004/ACC-005): idempotent initial import and incremental synchronization of
 // the four separate canonical entities — Product, Variant, Listing, Owned Offer
 // — each keyed by a stable DK native identifier so repeated and REORDERED

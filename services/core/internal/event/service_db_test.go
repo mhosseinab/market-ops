@@ -19,7 +19,7 @@ import (
 
 // setOwnedSeller binds (or clears, when sellerID is empty) the account's
 // authoritative owned DK seller identity (owned_seller_id). marketplace_accounts is
-// not an append-only table, so this write mirrors what provisioning/sync (S10) does.
+// not an append-only table, so this write mirrors what provisioning/sync does.
 func setOwnedSeller(t *testing.T, q *db.Queries, account uuid.UUID, sellerID string) {
 	t.Helper()
 	owned := pgtype.Text{}
@@ -67,7 +67,7 @@ func seedVariant(t *testing.T, q *db.Queries) (account, variant uuid.UUID) {
 	}
 	// Provision the account's AUTHORITATIVE owned DK seller identity (issue #212):
 	// a validated decimal Seller.ID string — the exact representation Route C writes
-	// to native_seller_id. This is what account provisioning/sync (S10) must bind;
+	// to native_seller_id. This is what account provisioning/sync must bind;
 	// the owned-offer exclusion compares against THIS, not the native_account_id
 	// handle. A fresh value per account keeps it distinct across the shared test DB.
 	setOwnedSeller(t, q, acct.ID, strconv.FormatInt(int64(uuid.New().ID()), 10))

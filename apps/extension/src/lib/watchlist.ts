@@ -49,7 +49,7 @@ export interface WatchlistGateway {
   listWatchlist(credential: string, marketplaceAccountId: string): Promise<WatchlistListOutcome>;
 }
 
-// HttpWatchlistGateway is the real S37-backed implementation. It follows the
+// HttpWatchlistGateway is the real gateway-backed implementation. It follows the
 // exact discipline of gateway.ts's other credential-scoped calls: Bearer the
 // capture credential, map a non-200 to a fail-closed outcome, and treat a
 // network error or an unparseable body as fail-closed — never a guessed success.

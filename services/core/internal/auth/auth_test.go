@@ -231,7 +231,7 @@ func TestResolveEmptyAndExpired(t *testing.T) {
 	}
 }
 
-// TestListUsersScopesToOrganization is PD-3 item 7 (S37): ListUsers returns
+// TestListUsersScopesToOrganization is PD-3 item 7: ListUsers returns
 // every user in the named organization, in a stable order, and never leaks a
 // user from a DIFFERENT organization (cross-org containment for the roster
 // read).
