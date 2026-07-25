@@ -38,10 +38,12 @@ const MAX_EXPONENT = 20;
 // at least ~20 hours and typically well over a day of genuine retrying before
 // the extension gives up.
 //
-// Giving up terminates into `unknown` (not paired) — NEVER `revoked`. The
-// authority never confirmed anything, so the popup must not claim a completed
-// kill switch; the distinction is carried by the
-// `credential_revocation{outcome:"abandoned_unconfirmed"}` metric.
+// Spending the budget terminates into the explicit "could not confirm"
+// QUARANTINE (capability `revocation_unconfirmed`) — NEVER `revoked`, and never
+// a silent discard: the credential material is retained there and the revoke
+// keeps being retried. The authority never confirmed anything, so the popup must
+// not claim a completed kill switch; the distinction is carried by the
+// `credential_revocation{outcome:"quarantined_unconfirmed"}` metric.
 export const REVOCATION_MAX_ATTEMPTS = 48;
 
 // The DURABLE AGE BOUND on a pending revocation (issue #149, fix 3).

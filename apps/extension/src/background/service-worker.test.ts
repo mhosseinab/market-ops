@@ -2319,6 +2319,104 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
     expect(outcomes).not.toContain("confirmed");
     expect(await capabilityTransitions()).not.toContain("revoked");
   });
+
+  // ---- fix cycle 2 ----
+
+  // B5. The bounded quarantine list evicts its OLDEST entry at the cap. The
+  // eviction was counted and warn-logged, but nothing DURABLE recorded that an
+  // outstanding revocation had been abandoned: `PopupState.revocationUnconfirmed`
+  // fell back to false and `resolveQuarantine` promoted the capability to a
+  // terminal `revoked` once the REMAINING entries confirmed. The popup then
+  // rendered a completed kill switch on a device where the evicted credential is
+  // still live at the authority — the exact user-visible falsehood #149 is about.
+  it("B5: a cap-EVICTED quarantine entry leaves a durable trace, so a later clean sweep NEVER reports a terminal `revoked`", async () => {
+    const { MAX_QUARANTINED_REVOCATIONS } = await import("../lib/storage");
+    const { REVOCATION_MAX_ATTEMPTS } = await import("../lib/revocation-backoff");
+    storage = installChromeMock().storage;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let confirmed = false;
+    const rf = revokeFetch(() =>
+      confirmed ? new Response(null, { status: 204 }) : genericProxy401(),
+    );
+    vi.stubGlobal("fetch", rf.fetch);
+
+    // The quarantine is already AT its cap: every one of these revokes is
+    // outstanding and unconfirmable (the deploy window decision (b) contemplates).
+    const seeded = Array.from({ length: MAX_QUARANTINED_REVOCATIONS }, (_, i) =>
+      quarantineA({
+        credential: `cap-cred-hex-${i}`,
+        credentialId: `qqqqqqqq-0000-0000-0000-00000000000${i}`,
+        nextAttemptAt: "2030-01-01T00:00:00Z", // only the 9th revoke moves anything
+      }),
+    );
+    storage.set(KEY_REVOCATION_UNCONFIRMED, seeded);
+    storage.set(KEY_CAPABILITY, "revocation_unconfirmed");
+    // …and a NINTH revoke exhausts its budget, so it quarantines too.
+    seedPending({ attempts: REVOCATION_MAX_ATTEMPTS - 1 });
+
+    const send = await loadWorker();
+    await settle();
+
+    // The oldest entry was evicted, observably.
+    const ids = quarantineRecords(storage).map((e) => e.credentialId);
+    expect(ids).toHaveLength(MAX_QUARANTINED_REVOCATIONS);
+    expect(ids).not.toContain("qqqqqqqq-0000-0000-0000-000000000000");
+    expect(ids).toContain(CRED.credentialId);
+    expect(await revocationOutcomes()).toContain("quarantine_evicted");
+    expect(
+      warn.mock.calls.some((c) =>
+        String(c[0]).includes("credential_revocation_quarantine_evicted"),
+      ),
+    ).toBe(true);
+    // The eviction left a DURABLE trace, so the abandoned revocation stays
+    // VISIBLE even once every remaining entry is resolved.
+    const evicted = await send({ kind: "getState" });
+    if (!("state" in evicted)) throw new Error("expected state");
+    expect(evicted.state.revocationUnconfirmed).toBe(true);
+
+    // The gateway now recovers and confirms every entry it is still given.
+    confirmed = true;
+    makeQuarantineDue();
+    rf.revokeCalls.length = 0;
+    const respawned = await loadWorker();
+    await settle();
+
+    // The evicted credential was never presented to the authority again…
+    expect(rf.revokeCalls).not.toContain("Bearer cap-cred-hex-0");
+    expect(quarantineRecords(storage)).toEqual([]);
+    // …so the kill switch is NOT complete, and the popup must not claim it is.
+    const state = await respawned({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).not.toBe("revoked");
+    expect(state.state.capability).toBe("revocation_unconfirmed");
+    expect(state.state.degradation).not.toBe("credential_revoked");
+    expect(state.state.revocationUnconfirmed).toBe(true);
+    expect(await capabilityTransitions()).not.toContain("revoked");
+  });
+
+  // B6 (upheld). readQuarantine dropped entries with no `credentialId`, and the
+  // drop was persisted by the next writeQuarantine — a credential discard with no
+  // metric and no log, the one remaining unaudited discard in the quarantine store.
+  it("B6: a malformed quarantine entry is never dropped SILENTLY — the discard is counted and logged", async () => {
+    storage = installChromeMock().storage;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rf = revokeFetch(genericProxy401);
+    vi.stubGlobal("fetch", rf.fetch);
+    const malformed = quarantineA();
+    delete malformed.credentialId;
+    storage.set(KEY_CAPABILITY, "revocation_unconfirmed");
+    storage.set(KEY_REVOCATION_UNCONFIRMED, [malformed, quarantineA()]);
+
+    await loadWorker();
+    await settle();
+
+    expect(await revocationOutcomes()).toContain("quarantine_malformed_dropped");
+    expect(
+      warn.mock.calls.some((c) =>
+        String(c[0]).includes("credential_revocation_quarantine_malformed"),
+      ),
+    ).toBe(true);
+  });
 });
 
 // Issue #149, fix 3 — the two carried-over HIGH blockers.
@@ -2473,6 +2571,197 @@ describe("service worker — #149 F1/F2: the kill switch never fails OPEN", () =
     expect(after.state.capability).not.toBe("ready");
     expect(after.state.capability).toBe("unknown");
     expect(surviving.get(KEY_CREDENTIAL)).toBeUndefined();
+  });
+
+  // B1-partial (fix cycle 2). The cycle-1 last-resort discard fired whenever the
+  // CAPABILITY MIRROR write failed — even when a durable pending marker AND the
+  // credential both survived. That state needs no repair: getCapability treats
+  // the marker as authoritative over a stale stored `ready`, so it is already
+  // fail-closed, and the marker + credential are the ONLY material the SERVER
+  // revoke can still be made with. Discarding them destroyed a revoke that was
+  // fully alive at the authority — one EXT-009 defeat traded for another.
+  it("B1-partial: a Revoke whose CAPABILITY mirror write fails but whose durable marker SURVIVES is never discarded — a later boot still completes the revoke at the authority", async () => {
+    const mock = installChromeMock();
+    const storage = mock.storage;
+    const revokeCalls: string[] = [];
+    let gatewayUp = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/ext/pairing/claim")) {
+          return new Response(JSON.stringify(CRED), { status: 200 });
+        }
+        if (url.includes("/ext/pairing/self-revoke")) {
+          if (!gatewayUp) throw new Error("gateway unreachable");
+          revokeCalls.push(
+            (init?.headers as Record<string, string> | undefined)?.authorization ?? "",
+          );
+          return new Response(null, { status: 204 });
+        }
+        if (url.includes("/ext/owned-targets")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        return new Response(null, { status: 202 });
+      }),
+    );
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await settle();
+
+    // Revoke #1 lands durably and stays pending — the gateway is unreachable.
+    await send({ kind: "revoke" });
+    await settle();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeDefined();
+
+    // Storage now rejects every `set`, so the capability MIRROR write is what
+    // fails — and the user presses Revoke a SECOND time, because the popup still
+    // says "awaiting confirmation".
+    const chromeMock = (
+      globalThis as unknown as { chrome: { storage: { local: { set: ReturnType<typeof vi.fn> } } } }
+    ).chrome;
+    chromeMock.storage.local.set = vi.fn(async () => {
+      throw new Error("QUOTA_BYTES quota exceeded");
+    });
+    await send({ kind: "revoke" });
+    await settle();
+
+    // NOTHING was destroyed: the marker already holds capture off (it overrides a
+    // stale stored `ready`), and it plus the credential are what a retry needs.
+    expect(storage.get(KEY_CREDENTIAL)).toBeDefined();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeDefined();
+    const { snapshotMetrics } = await import("../lib/observability");
+    const outcomes = snapshotMetrics()
+      .filter((s) => s.name === "credential_revocation")
+      .map((s) => String(s.labels.outcome));
+    expect(outcomes).toContain("local_storage_error_marker_retained");
+    expect(outcomes).not.toContain("local_storage_error_discarded");
+    // Capture is off regardless — the marker override, not the discard, is what
+    // fails this closed.
+    const during = await send({ kind: "getState" });
+    if (!("state" in during)) throw new Error("expected state");
+    expect(during.state.capability).not.toBe("ready");
+
+    // COUNTERFACTUAL: the revoke was still completable. Storage recovers, the
+    // gateway comes back, and the respawned worker reaches the AUTHORITY.
+    chromeMock.storage.local.set = vi.fn(async (obj: Record<string, unknown>) => {
+      for (const [k, v] of Object.entries(obj)) storage.set(k, v);
+    });
+    gatewayUp = true;
+    storage.set(KEY_REVOCATION_PENDING, {
+      ...(storage.get(KEY_REVOCATION_PENDING) as Record<string, unknown>),
+      nextAttemptAt: "2020-01-01T00:00:00Z", // due
+    });
+    const respawned = await loadWorker();
+    await settle();
+
+    expect(revokeCalls).toContain(`Bearer ${CRED.credential}`);
+    const after = await respawned({ kind: "getState" });
+    if (!("state" in after)) throw new Error("expected state");
+    expect(after.state.capability).toBe("revoked");
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+  });
+
+  // Upheld (cycle 2). The `local_storage_error_recovered` MIDDLE path — the small
+  // fail-closed writes landing after the shed — shipped with no test at all,
+  // including the `if (!existing)` guard that keeps a repeatedly-failing write
+  // from resetting the marker's AGE bound (the bound is what stops a marker,
+  // which BLOCKS re-pairing, from outliving a device that never reaches the
+  // authority). The shed itself must be observable too (CLAUDE.md: load shedding
+  // is explicit and prioritized, observed, never silent).
+  it("recovered middle path: a retried fail-closed write keeps the marker and never resets its age bound, and the telemetry shed is observed", async () => {
+    const mock = installChromeMock();
+    const storage = mock.storage;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.includes("/ext/pairing/claim")) {
+          return new Response(JSON.stringify(CRED), { status: 200 });
+        }
+        if (url.includes("/ext/pairing/self-revoke")) throw new Error("gateway unreachable");
+        if (url.includes("/ext/owned-targets")) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200 });
+        }
+        return new Response(null, { status: 202 });
+      }),
+    );
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await settle();
+    await send({ kind: "revoke" });
+    await settle();
+    const first = storage.get(KEY_REVOCATION_PENDING) as Record<string, unknown>;
+    expect(first).toBeDefined();
+    const requestedAt = String(first.requestedAt);
+
+    // The NEXT durable write rejects exactly once; the retried, smaller writes
+    // inside the fallback land.
+    const chromeMock = (
+      globalThis as unknown as { chrome: { storage: { local: { set: ReturnType<typeof vi.fn> } } } }
+    ).chrome;
+    let failed = false;
+    chromeMock.storage.local.set = vi.fn(async (obj: Record<string, unknown>) => {
+      if (!failed) {
+        failed = true;
+        throw new Error("QUOTA_BYTES quota exceeded");
+      }
+      for (const [k, v] of Object.entries(obj)) storage.set(k, v);
+    });
+
+    await send({ kind: "revoke" });
+    await settle();
+
+    // The revoke stays durably retryable, and its AGE BOUND is NOT extended by a
+    // failing write.
+    const marker = storage.get(KEY_REVOCATION_PENDING) as Record<string, unknown>;
+    expect(marker).toBeDefined();
+    expect(marker.requestedAt).toBe(requestedAt);
+    expect(storage.get(KEY_CREDENTIAL)).toBeDefined();
+    expect(storage.get(KEY_CAPABILITY)).toBe("revocation_pending");
+    const { snapshotMetrics } = await import("../lib/observability");
+    const outcomes = snapshotMetrics()
+      .filter((s) => s.name === "credential_revocation")
+      .map((s) => String(s.labels.outcome));
+    expect(outcomes).toContain("local_storage_error_recovered");
+    expect(outcomes).not.toContain("local_storage_error_discarded");
+    // The advisory-telemetry shed is OBSERVED, not silent.
+    expect(outcomes).toContain("telemetry_shed");
+  });
+
+  // Upheld (cycle 2). failClosedDurably's no-credential branch wrote
+  // `revocation_unconfirmed` UNCONDITIONALLY, unlike its three siblings, so it
+  // could rewrite a terminal `revoked` (a CONFIRMED kill switch) back into "could
+  // not confirm". The override is stated to be one-way — more restrictive only.
+  it("the no-credential fallback never rewrites a CONFIRMED `revoked` into `revocation_unconfirmed`", async () => {
+    const mock = installChromeMock();
+    const storage = mock.storage;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 202 })),
+    );
+    // A completed, confirmed revocation: no credential, no marker, no quarantine.
+    storage.set(KEY_CAPABILITY, "revoked");
+    const send = await loadWorker();
+
+    // `remove` now rejects, so the repeat Revoke's own durable write fails and
+    // the fallback runs with NO credential present.
+    const chromeMock = (
+      globalThis as unknown as {
+        chrome: { storage: { local: { remove: ReturnType<typeof vi.fn> } } };
+      }
+    ).chrome;
+    chromeMock.storage.local.remove = vi.fn(async () => {
+      throw new Error("QUOTA_BYTES quota exceeded");
+    });
+
+    const resp = await send({ kind: "revoke" });
+    await settle();
+
+    if (!("state" in resp)) throw new Error("expected state");
+    expect(storage.get(KEY_CAPABILITY)).toBe("revoked");
+    expect(resp.state.capability).toBe("revoked");
   });
 
   // F2. `demoteToRevoked` did not mirror the #253 owned-target teardown that

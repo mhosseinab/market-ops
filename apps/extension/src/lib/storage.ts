@@ -88,6 +88,18 @@ export const KEY_REVOCATION_UNCONFIRMED = "revocationUnconfirmed";
 // beyond it the OLDEST entry is evicted under its own counted outcome + warn
 // log, never silently.
 export const MAX_QUARANTINED_REVOCATIONS = 8;
+// The DURABLE trace of a quarantine entry dropped at that cap (issue #149, fix
+// cycle 2). The eviction was counted and warn-logged, but nothing durable
+// recorded that an outstanding revocation had been ABANDONED — so once the
+// REMAINING entries confirmed, the capability was promoted to a terminal
+// `revoked` and the popup reported a completed kill switch on a device where the
+// evicted credential may still be live at the authority.
+//
+// It is a bare boolean: bounded, non-secret, and carrying NO credential material
+// (the eviction's whole point is that the material is gone). It keeps
+// PopupState.revocationUnconfirmed true and makes the quarantine's resolution
+// paths REFUSE the terminal `revoked` — the honest state is "could not confirm".
+export const KEY_REVOCATION_ABANDONED = "revocationAbandoned";
 // Durable operational-telemetry outbox (issue #162): bounded, allow-listed metric
 // snapshots that must survive an MV3 worker restart and be exported to an
 // operational sink. Persisted here so the storage audit walks it too — a batch

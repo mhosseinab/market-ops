@@ -70,7 +70,19 @@ export type MetricName =
   //                           OLDEST outstanding revocation was dropped. A
   //                           revocation we can no longer pursue, so it is
   //                           counted and warn-logged with the evicted
-  //                           credentialId (never the secret);
+  //                           credentialId (never the secret), AND recorded
+  //                           durably so the popup keeps reporting it;
+  //   terminal_withheld_abandoned
+  //                         — a quarantine sweep would have promoted the
+  //                           capability to a terminal `revoked`/`unknown`, but a
+  //                           cap-EVICTED revocation is still unconfirmed at the
+  //                           authority. The terminal is refused and the honest
+  //                           `revocation_unconfirmed` stands;
+  //   quarantine_malformed_dropped
+  //                         — a quarantine entry with no credentialId was
+  //                           dropped: it can never be retried, resolved or
+  //                           removed, so it is discarded — counted and logged,
+  //                           never a silent discard of credential material;
   //   quarantine_retry_pending
   //                         — a quarantined retry ran and was still not
   //                           authoritative;
@@ -98,8 +110,20 @@ export type MetricName =
   //                           landed on retry (after shedding the telemetry
   //                           outbox), so the revoke stays durably retryable and
   //                           capture stays off across a worker restart;
+  //   local_storage_error_marker_retained
+  //                         — same failure, the small writes rejected too, but a
+  //                           durable pending marker for the stored credential
+  //                           SURVIVED. That state is already fail-closed (the
+  //                           marker overrides a stale stored `ready`) and still
+  //                           retryable, so NOTHING is discarded — a later boot
+  //                           can still complete the revoke at the authority;
+  //   telemetry_shed / telemetry_shed_failed
+  //                         — the advisory telemetry outbox was shed (or could
+  //                           not be) to free quota for the kill switch. Load
+  //                           shedding is explicit and OBSERVED (CLAUDE.md),
+  //                           never silent;
   //   local_storage_error_discarded
-  //                         — same failure, and even those writes rejected, so
+  //                         — same failure, no durable marker survived either, so
   //                           the credential material (and the stale stored
   //                           capability) were REMOVED — `remove` frees quota —
   //                           leaving a respawned worker nothing to capture with.
