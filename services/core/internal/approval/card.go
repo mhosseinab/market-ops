@@ -47,8 +47,8 @@ type Control struct {
 	RecommendationID uuid.UUID
 	CardVersion      int64
 	Binding          Binding
-	// IdempotencyKey is the stable EXE-002 handoff key carried into execution
-	// (S18). It is derived from the binding, so a duplicate confirmation of the
+	// IdempotencyKey is the stable EXE-002 handoff key carried into execution.
+	// It is derived from the binding, so a duplicate confirmation of the
 	// same parameters reuses the same key (one execution record).
 	IdempotencyKey string
 }

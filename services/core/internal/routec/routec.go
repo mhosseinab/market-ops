@@ -37,7 +37,7 @@ const Host = "api.digikala.com"
 const (
 	// MaxPriorityCap is the absolute ceiling on priority targets per account.
 	MaxPriorityCap = 200
-	// DefaultPriorityCap is the starting cap before the S35 throughput test
+	// DefaultPriorityCap is the starting cap before the gated live throughput test
 	// measures real safe capacity. The scheduler raises the cap ONLY after that
 	// gated measurement, never on its own.
 	DefaultPriorityCap = 50
@@ -97,7 +97,7 @@ type Config struct {
 	Backoff Backoff
 	// Breaker holds the trip thresholds for each fault signal.
 	Breaker BreakerConfig
-	// MeasuredPriorityCap is the S35-measured safe capacity; 0 until measured.
+	// MeasuredPriorityCap is the live-probe-measured safe capacity; 0 until measured.
 	MeasuredPriorityCap int
 }
 

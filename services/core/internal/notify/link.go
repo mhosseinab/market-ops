@@ -6,7 +6,7 @@ import "strings"
 // ROUTES key "today") the daily digest CTA links to. It is the SINGLE source for
 // that path on the backend: a cross-plane drift test (digest_link_test.go) asserts
 // it stays a member of the web ROUTES registry, so a rename on either plane fails
-// CI. Issue #127 (S19): the prior link targeted an unregistered /briefing route.
+// CI. Issue #127: the prior link targeted an unregistered /briefing route.
 const TodayRoutePath = "/today"
 
 // BriefingLinkURL builds the digest deep-link to the authoritative Today/briefing

@@ -101,7 +101,7 @@ type Result struct {
 }
 
 // Approvable reports whether this result is eligible to be bound to an approval
-// control downstream (S17). It fails CLOSED: a simulation is NEVER approvable, a
+// control downstream. It fails CLOSED: a simulation is NEVER approvable, a
 // result with any blocker or no proposal is not approvable, AND the verified
 // margin readiness must be exactly Complete (CST-003 / PRD §9.2 — Partial, Stale,
 // Missing, or an unset/unknown state can never yield an approval control). This

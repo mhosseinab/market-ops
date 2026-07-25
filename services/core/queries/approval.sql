@@ -160,7 +160,7 @@ ORDER BY projected.created_at DESC, projected.id DESC
 LIMIT sqlc.arg('page_limit');
 
 -- name: ListApprovalCardsByAccount :many
--- Grouped multi-row actions queue for an account (PD-3 item 5, S37), newest
+-- Grouped multi-row actions queue for an account (PD-3 item 5), newest
 -- first. The authoritative projection is PD-4 rule (1) for issue #106:
 --
 --     current lineage heads  UNION  card versions that carry an execution

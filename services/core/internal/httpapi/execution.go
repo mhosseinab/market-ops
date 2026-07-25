@@ -49,7 +49,7 @@ type ExecutionService interface {
 	// rule (1) projection a page may carry SEVERAL card versions of one action and
 	// only the card id addresses the exact version an execution was bound to.
 	ListUnifiedByCardIDsForOrg(ctx context.Context, organizationID, account uuid.UUID, cardIDs []uuid.UUID) ([]execution.UnifiedAction, error)
-	// ListPendingReconciliationForOrg backs GET /ops/queues (PD-3 item 8, S37),
+	// ListPendingReconciliationForOrg backs GET /ops/queues (PD-3 item 8),
 	// scoped to the caller's account.
 	ListPendingReconciliationForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]db.ActionExecution, error)
 }
@@ -59,7 +59,7 @@ type ExecutionService interface {
 // outcome is a uniform not-found.
 type OutcomeService interface {
 	GetForOrg(ctx context.Context, organizationID, actionID uuid.UUID) (outcome.View, error)
-	// ListByAccountForOrg backs GET /outcomes/list (PD-3 item 5, S37), scoped to
+	// ListByAccountForOrg backs GET /outcomes/list (PD-3 item 5), scoped to
 	// the caller's account.
 	ListByAccountForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]db.ListOutcomeWindowsByAccountRow, error)
 }

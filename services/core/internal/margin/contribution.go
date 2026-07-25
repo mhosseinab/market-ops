@@ -9,7 +9,7 @@ import (
 )
 
 // Engine errors. Every failure is typed so the transport and the recommendation
-// assembler (S17) can turn it into a structured blocker rather than free text.
+// assembler can turn it into a structured blocker rather than free text.
 var (
 	// ErrMissingRequiredComponent — a hard-required component (COGS or
 	// commission, §9.2) was not supplied. No contribution number exists without
@@ -123,7 +123,7 @@ type Contribution struct {
 // recommendation: only Complete readiness qualifies (PRD §9.2 / CST-003). Partial
 // may be shown as analysis but never exposes an approval control; Stale/Missing
 // block outright. This is the readiness gate the recommendation/approval planes
-// (S17) rely on.
+// rely on.
 func (c Contribution) Executable() bool { return c.Readiness == cost.StateComplete }
 
 // IsPositive reports whether the contribution is strictly greater than zero. It

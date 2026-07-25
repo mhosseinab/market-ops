@@ -1,6 +1,6 @@
 """Authoring for the §12.5 grounding / factual-support + currency + injection sets.
 
-Run with ``uv run python services/llm/fixtures/evals/s24_authoring.py`` from the
+Run with ``uv run python services/llm/fixtures/evals/grounding_authoring.py`` from the
 repo root to (re)emit the JSONL the S24 harness measures:
 
 * 100 pricing-event cases            (``pricing/pricing_events.jsonl``)

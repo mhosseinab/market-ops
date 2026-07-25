@@ -47,6 +47,14 @@ const (
 	logKeyOwnerAccountID  = "owner_account_id"
 )
 
+// Seam names for the bounded-read and sealed-authorization telemetry above. They
+// are stable operator-facing identifiers, never localized copy (LOC-001).
+const (
+	seamListActionsPage = "list_actions_page"
+	seamListActions     = "list_actions"
+	seamBulkConfirm     = "confirm_bulk_selection"
+)
+
 // tel returns this Service's selection telemetry: the injected one when a test wired
 // its own meter provider / log handler, else the process-wide instance built once.
 // Counter construction failures degrade to a no-op counter: a metric wiring hiccup

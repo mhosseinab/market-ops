@@ -158,6 +158,100 @@ func TestChatLocaleStaleRejectedNoDraft(t *testing.T) {
 	}
 }
 
+// TestChatSameLocaleCurrentVersionContinuationSucceeds is the POSITIVE half of the
+// issue #415 hoist: hoisting the version check ahead of the same-locale idempotence
+// branch makes `localeVersion` required on EVERY continuation, so a NORMAL
+// same-locale continuation carrying the MATCHING version must still succeed end to
+// end at the transport boundary — 200, proxied to the LLM plane, turn persisted,
+// version handed to the store intact and NO transition flag invented. Over-tightening
+// (409-ing legitimate traffic) is a regression in its own right (§4.6 idempotency).
+func TestChatSameLocaleCurrentVersionContinuationSucceeds(t *testing.T) {
+	existing := uuid.New()
+	store := newConvStore()
+	store.conv = conversation.Conversation{
+		ID:     existing,
+		Locale: &conversation.LocaleBinding{Locale: "fa-IR", Version: 3},
+	}
+	llm := finalLLM()
+	srv := localeServer(t, store, llm)
+
+	rec := postChatRaw(srv, `{"message":"چرا؟","conversationId":"`+existing.String()+
+		`","locale":"fa-IR","localeVersion":3}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("caught-up same-locale continuation = %d, want 200 (no over-tightening)", rec.Code)
+	}
+	if llm.started != 1 {
+		t.Fatalf("a legitimate continuation must reach the LLM plane, started = %d", llm.started)
+	}
+	begins, userTurns, _ := store.snapshot()
+	if len(begins) != 1 || begins[0].Locale == nil {
+		t.Fatalf("the declared locale must reach the store, got %+v", begins)
+	}
+	if begins[0].Locale.Version == nil || *begins[0].Locale.Version != 3 {
+		t.Fatalf("the matching locale version must reach the store intact, got %+v", begins[0].Locale.Version)
+	}
+	if begins[0].Locale.Transition {
+		t.Fatal("a same-locale continuation must NOT be flagged as a transition")
+	}
+	if len(userTurns) != 1 {
+		t.Fatalf("an accepted continuation must persist its turn, got %d", len(userTurns))
+	}
+}
+
+// TestChatSameLocaleStaleVersionRejectedNoCard is the issue #415 boundary
+// regression: a continuation declaring the SAME locale the conversation is already
+// bound to, but at an outdated version (the A→B→A shape), must reach the store with
+// its declared version INTACT — the transport may never drop the version that makes
+// the staleness detectable — and its rejection must be a canonical 409 that never
+// proxies, persists no turn, and carries no card/envelope payload from which a Draft
+// or approval control could be read (LOC-001, §4.6).
+func TestChatSameLocaleStaleVersionRejectedNoCard(t *testing.T) {
+	existing := uuid.New()
+	store := newConvStore()
+	// The conversation is bound to fa-IR at version 3 after an A→B→A sequence.
+	store.conv = conversation.Conversation{
+		ID:     existing,
+		Locale: &conversation.LocaleBinding{Locale: "fa-IR", Version: 3},
+	}
+	store.beginErr = conversation.ErrLocaleVersionStale
+	llm := finalLLM()
+	srv := localeServer(t, store, llm)
+
+	// The client still believes it is on version 1 and declares the SAME locale.
+	rec := postChatRaw(srv, `{"message":"چرا؟","conversationId":"`+existing.String()+
+		`","locale":"fa-IR","localeVersion":1}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale same-locale continuation = %d, want 409", rec.Code)
+	}
+	assertErrorCode(t, rec, "CONVERSATION_LOCALE_STALE")
+
+	begins, userTurns, assistant := store.snapshot()
+	if len(begins) != 1 || begins[0].Locale == nil {
+		t.Fatalf("the declared locale must reach the store, got %+v", begins)
+	}
+	if begins[0].Locale.Locale != "fa-IR" {
+		t.Fatalf("declared locale = %q, want the wire value verbatim", begins[0].Locale.Locale)
+	}
+	if begins[0].Locale.Version == nil || *begins[0].Locale.Version != 1 {
+		t.Fatalf("the declared locale version must reach the store intact, got %+v", begins[0].Locale.Version)
+	}
+	if llm.started != 0 {
+		t.Fatal("a stale same-locale continuation must NEVER reach the LLM plane (no Draft)")
+	}
+	if len(userTurns) != 0 || len(assistant) != 0 {
+		t.Fatalf("a stale rejection must persist no turn, got user=%v assistant=%d", userTurns, len(assistant))
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	for _, forbidden := range []string{"cards", "card", "envelope", "draft", "approval"} {
+		if _, present := body[forbidden]; present {
+			t.Fatalf("a stale rejection response must carry no %q payload, body = %s", forbidden, rec.Body.String())
+		}
+	}
+}
+
 // TestChatLocaleSilentRelabelRejected: a continuation whose locale differs from the
 // conversation's current bound locale WITHOUT an explicit transition is rejected
 // (409) and never proxied — the bound locale is never silently relabeled.
