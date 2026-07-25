@@ -4,9 +4,9 @@
 #
 # This is NOT the dev stack (compose.dev.yml, which adds the full observability
 # trio + Spotlight + Mailpit for local development) and NOT the production
-# topology (compose.prod.yml — digest-pinned images, Caddy TLS in front of the
-# same Nginx layer, a forward-only one-shot goose migration service instead of
-# the destructive `migrate` below). It is the minimal set of REAL
+# topology (compose.prod.yml — digest-pinned images, the same Nginx ingress with
+# TLS terminated on it, a forward-only one-shot goose migration service instead
+# of the destructive `migrate` below). It is the minimal set of REAL
 # services the five S32 system suites need: Postgres, mockdk (the offline DK
 # stand-in, PRD §12.5/§19.3 — never live DK), core, the LLM plane, the built
 # web static bundle, and an Nginx ingress that unifies web+gateway under ONE

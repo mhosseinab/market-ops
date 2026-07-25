@@ -8,8 +8,8 @@ and the production release sequence.
 > topology, and the production Compose topology are available. The registry
 > workflow (`.github/workflows/release.yml`) builds, Trivy-scans, and publishes
 > immutable multi-platform images; `deploy/compose.prod.yml`,
-> `deploy/caddy/Caddyfile` (TLS termination) and `deploy/goose.Dockerfile` (the
-> forward-only schema migration runner) exist and are described below.
+> `deploy/nginx/nginx.prod.conf` (TLS termination) and `deploy/goose.Dockerfile`
+> (the forward-only schema migration runner) exist and are described below.
 >
 > Production deployment is still **not complete**: WAL backup/restore tooling,
 > the production observability stack, and production user bootstrap do not
@@ -28,8 +28,7 @@ Production and the reliable local integration topology use one browser origin:
 
 ```mermaid
 flowchart LR
-    Browser[SPA or extension] --> Caddy[Caddy TLS ingress]
-    Caddy --> Nginx[Nginx: SPA + /api proxy]
+    Browser[SPA or extension] --> Nginx[Nginx: TLS + SPA + /api proxy]
     Nginx --> Web[SPA static files]
     Nginx --> Core[Go gateway]
     Core --> DB[(PostgreSQL 18)]
@@ -38,12 +37,21 @@ flowchart LR
     Core --> DK[DK Seller API]
 ```
 
-Caddy terminates TLS and proxies the whole origin to Nginx, which serves the SPA
-and `/api` — so the browser still sees exactly one origin. The split keeps the
-published `market-ops-nginx` image (which bakes the SPA and sets the security
-headers) byte-identical to the artifact CI scanned, while satisfying PRD §19.3's
-Caddy ingress decision. Only Caddy publishes host ports; in the local
-integration topology (`compose.test.yml`) Nginx is the edge and there is no TLS.
+Nginx is the single ingress: it terminates TLS, serves the SPA, and proxies
+`/api` to core, so the browser sees exactly one origin. There is no second proxy
+in front of it. `deploy/nginx/nginx.prod.conf` adds the TLS listener, the
+HTTP→HTTPS redirect and the ACME challenge path to the same configuration the
+integration stack runs; certificates come from the one-shot `certbot` service.
+The local integration topology (`compose.test.yml`) uses the same Nginx layer
+with no TLS.
+
+> The read-only documents — PRD §19.3, `dk-p0-plan.md`,
+> `dk-p0-implementation-steps.md` (S34) and `dk-p0-agent-guidelines.md` — still
+> name **Caddy** as the ingress. That is stale: this repository has no Caddy
+> configuration and never has, the ingress is Nginx (`deploy/nginx/`), and
+> `release.yml` builds and scans `market-ops-nginx`. The divergence is logged as
+> E-2 in `docs/implementation/dk-p0-escalations.md`; correcting the frozen PRD
+> needs a deliberate re-freeze, so it is not done here.
 
 PostgreSQL, core, and the LLM plane publish no ports at all. The LLM plane must
 never receive `DATABASE_URL`, the DK seller token, or
@@ -584,9 +592,9 @@ All boxes below must be satisfied before the first live deployment:
 - [x] LLM image installs from the uv lock without editable source mounts
       (`uv sync --frozen --no-dev --package market-ops-llm --no-editable`)
 - [x] production Nginx configuration serves the SPA and proxies `/api`
-- [x] TLS termination and certificate renewal are configured
-      (`deploy/caddy/Caddyfile`; ACME via Caddy, certificates persisted in the
-      `caddy_data` volume)
+- [x] TLS termination and certificate renewal are configured for Nginx
+      (`deploy/nginx/nginx.prod.conf`; certificates issued and renewed by the
+      one-shot `certbot` service, persisted in the `letsencrypt` volume)
 - [ ] the TLS configuration has been exercised against the real domain
 - [x] production Nginx configuration exposes the `/healthz` probe
 - [x] PostgreSQL 18 mounts `/var/lib/postgresql`, not the legacy
@@ -652,14 +660,32 @@ with a named message rather than booting a half-wired stack.
    80/443 publicly, and deny public access to PostgreSQL, core, LLM, SMTP relay,
    and telemetry backends.
 
-4. **Configure DNS.** Point the domain’s A/AAAA records at the VPS and verify
-   resolution *before* the first `up`. Caddy requests a certificate for
-   `DK_DOMAIN` on startup, so ports 80 and 443 must already be publicly
-   reachable and DNS must already resolve — otherwise the ACME challenge fails
-   and repeated retries burn the Let's Encrypt rate limit for that name. No
-   certificate is installed by hand; renewal is automatic. The `caddy_data`
-   volume holds the issued certificates and the ACME account key: back it up,
-   and never delete it casually.
+4. **Configure DNS, then issue the certificate.** Point the domain’s A/AAAA
+   records at the VPS and verify resolution *before* the first `up`. Nginx will
+   not start without a certificate on disk, so issue one first with port 80 free:
+
+   ```sh
+   $COMPOSE run --rm --service-ports certbot certonly --standalone \
+     --cert-name market-ops -d "$DK_DOMAIN" \
+     --email "$DK_ACME_EMAIL" --agree-tos --no-eff-email
+   ```
+
+   `--cert-name market-ops` is required, not cosmetic: it fixes the live
+   directory to a domain-independent path that `nginx.prod.conf` names as a
+   literal. The Nginx image sets its own `ENTRYPOINT`, so the base image's
+   envsubst step never runs and a templated path would not be expanded.
+
+   Renew from cron, using the webroot the running Nginx already serves on
+   port 80:
+
+   ```sh
+   $COMPOSE run --rm certbot renew --webroot -w /var/www/certbot
+   $COMPOSE exec nginx nginx -s reload
+   ```
+
+   The `letsencrypt` volume holds the issued certificates and the ACME account
+   key: back it up with the database, and never delete it casually — re-issuing
+   burns the Let's Encrypt rate limit for that hostname.
 
 5. **Install secrets.** Put per-service environment files outside the checkout,
    owned by the deployment account and readable only by it. Split secrets so the
@@ -704,7 +730,7 @@ with a named message rather than booting a half-wired stack.
    database** and loads development fixtures.
 
 10. **Start the stack.** Compose ordering brings up PostgreSQL, then migrations,
-    then core and the LLM plane, then Nginx, then Caddy:
+    then core and the LLM plane, then Nginx:
 
     ```sh
     $COMPOSE up -d --wait

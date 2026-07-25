@@ -9,12 +9,14 @@
 #
 # Topology (DEPLOYMENT.md §1):
 #
-#   internet → caddy (TLS) → nginx (SPA + /api proxy) → core → postgres
-#                                                        core → llm
+#   internet → nginx (TLS + SPA + /api proxy) → core → postgres
+#                                               core → llm
 #
-# Only caddy is internet-facing. postgres, core and llm sit on an internal
-# network with no published ports, so the database and the LLM plane are not
-# reachable from outside the host even if the edge is compromised.
+# Nginx is the single ingress and the TLS terminator. There is no second proxy
+# in front of it: it serves the SPA, proxies /api to core, and holds the
+# certificate. Only nginx is internet-facing — postgres, core and llm publish no
+# ports at all, so they are unreachable from outside the host even if the edge
+# is compromised.
 #
 # What this file deliberately does NOT do: WAL archiving to the isolated backup
 # destination, and the observability stack. Both are required by S34's Verify
@@ -144,60 +146,78 @@ services:
     networks: [internal]
     restart: unless-stopped
 
-  # ─── Nginx — SPA static bundle + same-origin /api proxy ────────────────
-  # The SPA is baked into this image at build time with
-  # VITE_GATEWAY_BASE_URL=/api, so the browser makes same-origin calls and core
-  # needs no CORS headers (it sends none).
+  # ─── Nginx — TLS termination, SPA bundle, same-origin /api proxy ───────
+  # The single ingress and the only service publishing host ports. The SPA is
+  # baked into this image at build time with VITE_GATEWAY_BASE_URL=/api, so the
+  # browser makes same-origin calls and core needs no CORS headers (it sends
+  # none). nginx.prod.conf adds the TLS listener, the HTTP→HTTPS redirect and
+  # the ACME challenge path to the baked-in configuration.
   nginx:
     image: ${NGINX_IMAGE:?NGINX_IMAGE must be set (digest-pinned)}
+    volumes:
+      - ./nginx/nginx.prod.conf:/etc/nginx/nginx.conf:ro
+      # Certificates issued by the certbot service below. Read-only here: the
+      # ingress consumes certificates, it never writes them.
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+    ports:
+      - "80:80"
+      - "443:8443"
     depends_on:
       - core
     healthcheck:
-      # /api/healthz proxies to core:8080/healthz, so this probe covers BOTH
-      # the ingress and the gateway behind it.
+      # The unpublished plain listener on 8080: /api/healthz proxies to
+      # core:8080/healthz, so this probe covers BOTH the ingress and the gateway
+      # behind it, without needing a certificate inside the container.
       test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/api/healthz"]
       interval: 10s
       timeout: 5s
       retries: 18
       start_period: 15s
-    networks: [edge, internal]
+    networks: [internal]
     restart: unless-stopped
 
-  # ─── Caddy — TLS termination and the only published ports ──────────────
-  caddy:
-    image: caddy:2.10-alpine
-    environment:
-      DK_DOMAIN: ${DK_DOMAIN:?DK_DOMAIN must be set (the public hostname, e.g. ops.example.com)}
-      DK_ACME_EMAIL: ${DK_ACME_EMAIL:?DK_ACME_EMAIL must be set (ACME registration contact)}
+  # ─── certbot — certificate issuance and renewal ────────────────────────
+  # Never started by `up`: it is a one-shot tool, run explicitly (see
+  # DEPLOYMENT.md §10). `profiles` keeps it out of the default set so it cannot
+  # be brought up by accident.
+  #
+  # `--cert-name market-ops` is load-bearing, not cosmetic: it fixes the live
+  # directory to a domain-independent path so nginx.prod.conf can name the
+  # certificate as a literal string. This image's ENTRYPOINT bypasses the base
+  # image's envsubst step, so a templated path would never be expanded.
+  #
+  #   first issuance (before nginx is up, port 80 free):
+  #     docker compose ... run --rm --service-ports certbot certonly \
+  #       --standalone --cert-name market-ops -d "$DK_DOMAIN" \
+  #       --email "$DK_ACME_EMAIL" --agree-tos --no-eff-email
+  #   renewal (nginx serving /.well-known over port 80):
+  #     docker compose ... run --rm certbot renew --webroot -w /var/www/certbot
+  #     docker compose ... exec nginx nginx -s reload
+  certbot:
+    image: certbot/certbot:v5.0.0
+    profiles: ["certs"]
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      # Issued certificates and ACME account keys. Losing this volume means
-      # re-issuing on next start, which burns Let's Encrypt rate limit.
-      - caddy_data:/data
-      - caddy_config:/config
+      - letsencrypt:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
     ports:
       - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    depends_on:
-      nginx:
-        condition: service_healthy
-    networks: [edge]
-    restart: unless-stopped
+    networks: [internal]
+    restart: "no"
 
 networks:
-  # Internet-facing. Only caddy publishes host ports; nginx joins so caddy can
-  # reach it, and for no other reason.
-  edge:
-  # Inbound isolation comes from publishing NO ports on this network, not from
-  # Docker's `internal: true`. That flag also blocks EGRESS, which would cut
-  # core off from the DK Seller API (DK_API_BASE_URL) and, once the provider
-  # gate opens, the LLM plane from its OpenAI-compatible endpoint. Restricting
-  # outbound traffic belongs in the host firewall, where it can allow the DK
-  # host specifically instead of severing everything.
+  # Inbound isolation comes from publishing NO ports for postgres, core and llm,
+  # not from Docker's `internal: true`. That flag also blocks EGRESS, which
+  # would cut core off from the DK Seller API (DK_API_BASE_URL) and, once the
+  # provider gate opens, the LLM plane from its OpenAI-compatible endpoint.
+  # Restricting outbound traffic belongs in the host firewall, where it can
+  # allow the DK host specifically instead of severing everything.
   internal:
 
 volumes:
   pgdata:
-  caddy_data:
-  caddy_config:
+  # Issued certificates and the ACME account key. Losing this volume means
+  # re-issuing on next start, which burns the Let's Encrypt rate limit for the
+  # hostname — back it up with the database.
+  letsencrypt:
+  certbot_www:
