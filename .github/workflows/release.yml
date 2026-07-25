@@ -91,6 +91,14 @@ jobs:
             dockerfile: deploy/nginx/Dockerfile
             platform: linux/arm64
             arch: arm64
+          - image: goose
+            dockerfile: deploy/goose.Dockerfile
+            platform: linux/amd64
+            arch: amd64
+          - image: goose
+            dockerfile: deploy/goose.Dockerfile
+            platform: linux/arm64
+            arch: arm64
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -173,7 +181,7 @@ jobs:
               exit 1
             fi
           }
-          for component in core llm nginx; do
+          for component in core llm nginx goose; do
             image="ghcr.io/mhosseinab/market-ops-${component}"
             assert_missing "${image}:${RELEASE_VERSION}"
             assert_missing "${image}:git-${SHA8}"
@@ -241,11 +249,33 @@ jobs:
           cache-to: type=gha,mode=max,scope=release-nginx-publish
           provenance: mode=max
           sbom: true
+      - name: Publish goose
+        id: goose
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: deploy/goose.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/mhosseinab/market-ops-goose:${{ needs.metadata.outputs.version }}
+            ghcr.io/mhosseinab/market-ops-goose:git-${{ needs.metadata.outputs.sha8 }}
+          build-args: |
+            VERSION=${{ needs.metadata.outputs.version }}
+            REVISION=${{ needs.metadata.outputs.revision }}
+            CREATED=${{ needs.metadata.outputs.created }}
+          cache-from: |
+            type=gha,scope=release-goose-amd64
+            type=gha,scope=release-goose-arm64
+          cache-to: type=gha,mode=max,scope=release-goose-publish
+          provenance: mode=max
+          sbom: true
       - name: Materialize digest-pinned references
         env:
           CORE_DIGEST: ${{ steps.core.outputs.digest }}
           LLM_DIGEST: ${{ steps.llm.outputs.digest }}
           NGINX_DIGEST: ${{ steps.nginx.outputs.digest }}
+          GOOSE_DIGEST: ${{ steps.goose.outputs.digest }}
         shell: bash
         run: |
           mkdir -p image-digests
@@ -253,6 +283,7 @@ jobs:
             echo "CORE_IMAGE=ghcr.io/mhosseinab/market-ops-core@${CORE_DIGEST}"
             echo "LLM_IMAGE=ghcr.io/mhosseinab/market-ops-llm@${LLM_DIGEST}"
             echo "NGINX_IMAGE=ghcr.io/mhosseinab/market-ops-nginx@${NGINX_DIGEST}"
+            echo "GOOSE_IMAGE=ghcr.io/mhosseinab/market-ops-goose@${GOOSE_DIGEST}"
           } >image-digests/images.env
       - name: Upload digest-pinned image references
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0

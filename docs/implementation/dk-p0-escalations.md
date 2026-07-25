@@ -8,6 +8,59 @@ asks for a decision. Nothing here is actioned until the product owner rules.
 
 ---
 
+## E-2 — The frozen PRD names Caddy; the repo has always used Nginx (open)
+
+**Raised:** 2026-07-25, while authoring the production deployment artifacts.
+**Touches:** `docs/PRD.md` §19.3 (frozen product baseline), `dk-p0-plan.md`,
+`dk-p0-implementation-steps.md` S34, `dk-p0-agent-guidelines.md`.
+**Decision needed from:** product owner — the PRD is read-only and only a
+deliberate re-freeze changes it.
+
+### The divergence
+
+PRD §19.3 records the deployment decision as "Docker Compose on one production
+VPS plus isolated backup destination; **Caddy ingress**". Four other documents
+repeat it: the plan's directory tree (`deploy/ … Caddy`), the S34 step script
+("Caddyfile with TLS"), the agent guidelines' delivery-choices list, and the
+`platform_reliability` charter.
+
+The repository does not implement it and never has:
+
+| | |
+|---|---|
+| Ingress config | `deploy/nginx/nginx.conf` + `deploy/nginx/Dockerfile` |
+| Published image | `market-ops-nginx` (`release.yml` builds and Trivy-scans it) |
+| Integration stack | `compose.test.yml` runs `nginx:1.30.4-alpine-slim` |
+| Caddy config | none — `git log --diff-filter=A -- 'deploy/caddy/*'` returns nothing |
+
+The visible history is squashed at `c7e76df`, so the commit that made the swap
+is not recoverable from this repo; `deploy/nginx/` is present from that import
+onward. `DEPLOYMENT.md` — the newest operator document — already described an
+Nginx ingress and listed "approved TLS termination and certificate renewal are
+configured for **Nginx**" in its readiness gate, so the working decision was
+Nginx well before this entry.
+
+### Why it needed escalating rather than fixing silently
+
+The stale references caused a real defect: the production topology was first
+authored with a Caddy container in front of Nginx, because §19.3 was treated as
+authoritative over the working tree. That is two proxies where the project had
+deliberately settled on one. It was caught in review and removed.
+
+Anyone reading §19.3 or the S34 step script next will make the same mistake.
+
+### The question
+
+Is Nginx the intended ingress — in which case §19.3, the plan, the S34 step
+script, and the agent guidelines should be corrected at the next re-freeze — or
+was the move to Nginx an undocumented drift that should be reverted to Caddy?
+
+Implementation-side documents that are not read-only (`dk-p0-monorepo.md` §8,
+`DEPLOYMENT.md`, the `platform_reliability` charter) have been updated to
+describe Nginx and to point here. No read-only document was edited.
+
+---
+
 ## E-1 — Does the Python LLM plane earn its own runtime? (open)
 
 **Raised:** 2026-07-25, during the source de-stepping pass.

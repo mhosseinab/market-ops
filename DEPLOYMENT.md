@@ -4,15 +4,20 @@ This guide covers a fresh local environment, a same-origin local integration
 deployment, SPA and Chrome-extension artifacts, external-service configuration,
 and the production release sequence.
 
-> **Current release status:** local infrastructure and the same-origin
-> integration topology are available. Production deployment is **not runnable
-> from this repository yet**: the gated S34 production Compose file, production
-> images, TLS Nginx configuration, registry workflow, WAL backup/restore tooling, and
-> production user bootstrap do not exist. The extension builds and can be loaded
-> unpacked, but its production gateway host permission and several runtime data
-> seams are also unfinished. The production section below is therefore an exact
-> readiness and execution checklist, not a claim that the missing artifacts are
-> already present.
+> **Current release status:** local infrastructure, the same-origin integration
+> topology, and the production Compose topology are available. The registry
+> workflow (`.github/workflows/release.yml`) builds, Trivy-scans, and publishes
+> immutable multi-platform images; `deploy/compose.prod.yml`,
+> `deploy/nginx/nginx.prod.conf` (TLS termination) and `deploy/goose.Dockerfile`
+> (the forward-only schema migration runner) exist and are described below.
+>
+> Production deployment is still **not complete**: WAL backup/restore tooling,
+> the production observability stack, and production user bootstrap do not
+> exist, and no deployment has been executed — S34 remains `pending` and gated
+> on an explicit human "go". The extension builds and can be loaded unpacked,
+> but its production gateway host permission and several runtime data seams are
+> also unfinished. The readiness checklist in §9 is the authoritative list of
+> what is and is not done; an unticked box is a genuine gap, not a formality.
 
 Do not use test fixtures, the mock DK server, Mailpit, Spotlight, the seeded
 owner, or any example credential in production.
@@ -23,7 +28,7 @@ Production and the reliable local integration topology use one browser origin:
 
 ```mermaid
 flowchart LR
-    Browser[SPA or extension] --> Nginx[Nginx ingress]
+    Browser[SPA or extension] --> Nginx[Nginx: TLS + SPA + /api proxy]
     Nginx --> Web[SPA static files]
     Nginx --> Core[Go gateway]
     Core --> DB[(PostgreSQL 18)]
@@ -32,9 +37,26 @@ flowchart LR
     Core --> DK[DK Seller API]
 ```
 
-Only the Nginx edge should be internet-facing. PostgreSQL and the LLM plane remain on the
-private container network. The LLM plane must never receive `DATABASE_URL`, the
-DK seller token, or `CONNECTOR_ENCRYPTION_KEY`.
+Nginx is the single ingress: it terminates TLS, serves the SPA, and proxies
+`/api` to core, so the browser sees exactly one origin. There is no second proxy
+in front of it. `deploy/nginx/nginx.prod.conf` adds the TLS listener, the
+HTTP→HTTPS redirect and the ACME challenge path to the same configuration the
+integration stack runs; certificates come from the one-shot `certbot` service.
+The local integration topology (`compose.test.yml`) uses the same Nginx layer
+with no TLS.
+
+> The read-only documents — PRD §19.3, `dk-p0-plan.md`,
+> `dk-p0-implementation-steps.md` (S34) and `dk-p0-agent-guidelines.md` — still
+> name **Caddy** as the ingress. That is stale: this repository has no Caddy
+> configuration and never has, the ingress is Nginx (`deploy/nginx/`), and
+> `release.yml` builds and scans `market-ops-nginx`. The divergence is logged as
+> E-2 in `docs/implementation/dk-p0-escalations.md`; correcting the frozen PRD
+> needs a deliberate re-freeze, so it is not done here.
+
+PostgreSQL, core, and the LLM plane publish no ports at all. The LLM plane must
+never receive `DATABASE_URL`, the DK seller token, or
+`CONNECTOR_ENCRYPTION_KEY`; `deploy/compose.prod.yml` omits all three from its
+`environment:` block deliberately.
 
 ## 2. What you need
 
@@ -423,8 +445,22 @@ Expected outputs:
 | unpacked Chrome extension | `apps/extension/dist/` |
 | zipped Chrome extension | `apps/extension/build/market-ops-extension.zip` |
 
-The production image build and registry-push workflow is not implemented yet;
-these local artifacts are not a substitute for immutable production images.
+These local artifacts are not a substitute for immutable production images.
+Production images come from `.github/workflows/release.yml`, which publishes
+only when a strict-semver `v*` tag is pushed on a commit reachable from
+`origin/main`:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Any other trigger — including a pull request — runs the build-and-scan matrix
+with `push: false` and skips publication entirely, so a green "container
+release" run on a branch has produced **no** images. The workflow also refuses
+to overwrite an existing tag, and uploads an `image-digests-<version>` artifact
+containing the `CORE_IMAGE`/`LLM_IMAGE`/`NGINX_IMAGE`/`GOOSE_IMAGE` digest
+references to paste into the production environment file.
 
 ## 7. Build and install the Chrome extension
 
@@ -548,18 +584,30 @@ control topology is part of the missing S34 deployment work.
 All boxes below must be satisfied before the first live deployment:
 
 - [ ] explicit human S34 “go” recorded
-- [ ] `deploy/compose.prod.yml` authored and reviewed
-- [ ] pinned, immutable core and LLM production images authored
-- [ ] core image runs as non-root with a minimal/distroless runtime
-- [ ] LLM image installs from the uv lock without editable source mounts
-- [ ] production Nginx configuration serves the SPA and proxies `/api`
-- [ ] approved TLS termination and certificate renewal are configured for Nginx
-- [ ] production Nginx configuration exposes the S34 `/healthz` probe
-- [ ] PostgreSQL 18 mounts `/var/lib/postgresql`, not the legacy
+- [x] `deploy/compose.prod.yml` authored
+- [ ] `deploy/compose.prod.yml` reviewed by a human operator
+- [x] pinned, immutable core and LLM production images authored
+- [x] core image runs as non-root with a minimal/distroless runtime
+      (`gcr.io/distroless/static-debian12:nonroot`, `USER nonroot:nonroot`)
+- [x] LLM image installs from the uv lock without editable source mounts
+      (`uv sync --frozen --no-dev --package market-ops-llm --no-editable`)
+- [x] production Nginx configuration serves the SPA and proxies `/api`
+- [x] TLS termination and certificate renewal are configured for Nginx
+      (`deploy/nginx/nginx.prod.conf`; certificates issued and renewed by the
+      one-shot `certbot` service, persisted in the `letsencrypt` volume)
+- [ ] the TLS configuration has been exercised against the real domain
+- [x] production Nginx configuration exposes the `/healthz` probe
+- [x] PostgreSQL 18 mounts `/var/lib/postgresql`, not the legacy
       `/var/lib/postgresql/data` path
+- [x] a forward-only application-schema migration runner exists
+      (`deploy/goose.Dockerfile`; goose v3.27.2, entrypoint `goose`, command
+      `up`) and is wired as a one-shot `migrate` service that core waits on
 - [ ] WAL archiving targets an isolated destination
 - [ ] backup retention and a scratch restore drill are implemented
-- [ ] CI builds, scans, signs or attests as required, and pushes immutable tags
+- [x] CI builds, scans, and attests (SBOM + `provenance: mode=max`), and pushes
+      immutable tags that it refuses to overwrite
+- [ ] the production observability stack is deployed (`compose.prod.yml` ships
+      no collector; keep `OTEL_ENABLED=false` until it does)
 - [ ] production user bootstrap/invitation is implemented without `seede2e`
 - [ ] authenticated SMTP relay support is implemented or a trusted local relay
       is provisioned
@@ -574,25 +622,70 @@ All boxes below must be satisfied before the first live deployment:
 
 ## 10. Production deployment sequence
 
-The commands in this section become executable only after the missing S34
-artifacts exist. Keep `<release>`, `<domain>`, and paths explicit; do not deploy
-`latest`.
+The Compose topology, TLS ingress, and migration runner these steps use now
+exist; the backup, observability, and user-bootstrap steps still reference work
+that does not. Keep `<release>`, `<domain>`, and paths explicit; deploy by
+digest, never by tag and never `latest`.
+
+Copy `deploy/.env.prod.example` to a file outside the checkout that only the
+deployment account can read, fill in every value, and pass it explicitly to
+every command below:
+
+```sh
+export ENVFILE=/etc/market-ops/prod.env
+export COMPOSE="docker compose --env-file $ENVFILE -f deploy/compose.prod.yml"
+```
+
+Compose refuses to start with a required value unset — each one fails the parse
+with a named message rather than booting a half-wired stack.
 
 1. **Record authorization.** Record the human go/no-go, release commit, intended
    immutable image tags, maintenance window, operator, and rollback owner.
 
-2. **Build and verify.** Run CI on the exact release commit. Build the SPA with
-   `VITE_GATEWAY_BASE_URL=/api`, run both browser production-clean assertions,
-   build minimal core/LLM images, scan them, and push immutable tags.
+2. **Build and verify.** Run CI on the exact release commit, then publish by
+   pushing a strict-semver tag reachable from `origin/main`:
+
+   ```sh
+   git tag v0.1.0 && git push origin v0.1.0
+   ```
+
+   The workflow builds core, LLM, Nginx (which bakes the SPA with
+   `VITE_GATEWAY_BASE_URL=/api`) and the goose migration runner for amd64 and
+   arm64, blocks on HIGH/CRITICAL Trivy findings, and pushes immutable tags.
+   Download the `image-digests-v0.1.0` artifact and paste its four
+   `*_IMAGE=...@sha256:...` lines into `$ENVFILE`.
 
 3. **Provision the host.** Patch the OS, create a non-root deploy account,
    install Docker/Compose, allow inbound 22 from approved operator networks and
    80/443 publicly, and deny public access to PostgreSQL, core, LLM, SMTP relay,
    and telemetry backends.
 
-4. **Configure DNS.** Point the domain’s A/AAAA records at the VPS and verify
-   resolution before starting Nginx. Install the approved certificate and
-   renewal mechanism; the public ingress needs reachable ports 80 and 443.
+4. **Configure DNS, then issue the certificate.** Point the domain’s A/AAAA
+   records at the VPS and verify resolution *before* the first `up`. Nginx will
+   not start without a certificate on disk, so issue one first with port 80 free:
+
+   ```sh
+   $COMPOSE run --rm --service-ports certbot certonly --standalone \
+     --cert-name market-ops -d "$DK_DOMAIN" \
+     --email "$DK_ACME_EMAIL" --agree-tos --no-eff-email
+   ```
+
+   `--cert-name market-ops` is required, not cosmetic: it fixes the live
+   directory to a domain-independent path that `nginx.prod.conf` names as a
+   literal. The Nginx image sets its own `ENTRYPOINT`, so the base image's
+   envsubst step never runs and a templated path would not be expanded.
+
+   Renew from cron, using the webroot the running Nginx already serves on
+   port 80:
+
+   ```sh
+   $COMPOSE run --rm certbot renew --webroot -w /var/www/certbot
+   $COMPOSE exec nginx nginx -s reload
+   ```
+
+   The `letsencrypt` volume holds the issued certificates and the ACME account
+   key: back it up with the database, and never delete it casually — re-issuing
+   burns the Let's Encrypt rate limit for that hostname.
 
 5. **Install secrets.** Put per-service environment files outside the checkout,
    owned by the deployment account and readable only by it. Split secrets so the
@@ -603,11 +696,12 @@ artifacts exist. Keep `<release>`, `<domain>`, and paths explicit; do not deploy
 6. **Validate configuration.** On the host, fetch the exact release and run:
 
    ```sh
-   docker compose -f deploy/compose.prod.yml config --quiet
+   $COMPOSE config --quiet
    ```
 
    Review image digests, mounts, networks, health checks, restart policies,
-   resource limits, and secret-file paths.
+   resource limits, and secret-file paths. Do not print the resolved config into
+   a shared log — it contains every substituted secret.
 
 7. **Prepare PostgreSQL.** Mount one persistent volume at
    `/var/lib/postgresql` for PostgreSQL 18’s major-version directory layout.
@@ -618,17 +712,36 @@ artifacts exist. Keep `<release>`, `<domain>`, and paths explicit; do not deploy
    instance, run integrity checks, and preserve the drill log. A backup that has
    not been restored is not release evidence.
 
-9. **Run migrations once.** Run Goose application migrations and River
-   migrations as explicit one-shot jobs before starting the new core. Never run
-   `task db:reset` or load development fixtures in production.
+9. **Run migrations once.** The `migrate` service applies the Goose application
+   schema as a one-shot job; core waits on it via
+   `condition: service_completed_successfully`, and River's own job-queue schema
+   is applied by `cmd/core` at boot. To run it ahead of the stack and read the
+   log before anything serves traffic:
 
-10. **Start private services, then ingress.** Start PostgreSQL, telemetry, LLM,
-    and core; wait for health checks; then start Nginx:
+   ```sh
+   $COMPOSE run --rm migrate status
+   $COMPOSE run --rm migrate up
+   ```
+
+   `deploy/goose.Dockerfile` can only migrate forward: its entrypoint is goose
+   and its command is `up`. Re-running `up` on an already-migrated database is a
+   no-op that preserves data. Never run `task db:reset` in production — that is
+   `deploy/migrate.Dockerfile`, the integration-stack image, and it **drops the
+   database** and loads development fixtures.
+
+10. **Start the stack.** Compose ordering brings up PostgreSQL, then migrations,
+    then core and the LLM plane, then Nginx:
 
     ```sh
-    docker compose -f deploy/compose.prod.yml up -d --wait
-    docker compose -f deploy/compose.prod.yml ps
+    $COMPOSE up -d --wait
+    $COMPOSE ps
     ```
+
+    `--wait` blocks on health checks. Note that `core` has no container health
+    check — it is distroless with no shell to run one. The Nginx health check
+    calls `/api/healthz`, which proxies through to core, so a healthy Nginx
+    proves the whole edge→gateway path rather than merely that a process
+    started.
 
 11. **Verify TLS and same-origin routing.** From outside the VPS:
 
@@ -675,7 +788,8 @@ If the release fails:
 2. keep marketplace writes dark; revoke extension credentials if capture is
    implicated
 3. collect core, LLM, Nginx, job, and migration logs without logging secrets
-4. switch Compose back to the previous immutable image tags
+4. switch the `*_IMAGE` digests in `$ENVFILE` back to the previous release's
+   `images.env` values and re-run `$COMPOSE up -d --wait`
 5. roll back schema only when the reviewed migration policy says the down path
    is safe; otherwise roll the application forward with a compatibility fix
 6. run `docker compose ... up -d --wait` and repeat health/TLS/smoke checks
