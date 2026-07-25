@@ -1,0 +1,203 @@
+# deploy/compose.prod.yml — single-VPS production topology (PRD §19.3).
+#
+# This is NOT compose.dev.yml (the laptop stack: observability trio, Mailpit,
+# Spotlight, mock DK) and NOT compose.test.yml (the disposable integration
+# stack, which runs services from mounted source via `go run`/`uv run` and whose
+# one-shot `migrate` service DROPS the database). Everything here runs from an
+# immutable, digest-pinned image built and Trivy-scanned by
+# .github/workflows/release.yml; nothing mounts repository source.
+#
+# Topology (DEPLOYMENT.md §1):
+#
+#   internet → caddy (TLS) → nginx (SPA + /api proxy) → core → postgres
+#                                                        core → llm
+#
+# Only caddy is internet-facing. postgres, core and llm sit on an internal
+# network with no published ports, so the database and the LLM plane are not
+# reachable from outside the host even if the edge is compromised.
+#
+# What this file deliberately does NOT do: WAL archiving to the isolated backup
+# destination, and the observability stack. Both are required by S34's Verify
+# block and neither is present here — see DEPLOYMENT.md §9 for the outstanding
+# checklist items. Bringing this stack up satisfies the TLS/health line of that
+# gate and nothing beyond it.
+#
+# Image references are digest-pinned by the operator from the `images.env`
+# artifact the release workflow uploads. Tags are mutable; digests are not.
+# Every required value fails the `docker compose config` parse when unset
+# rather than defaulting to something that would quietly work in the wrong way.
+
+name: market-ops-prod
+
+services:
+  # ─── PostgreSQL 18 — deterministic-core system of record ────────────────
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER must be set}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB must be set}
+    volumes:
+      # PostgreSQL 18+ stores PGDATA under a major-version directory
+      # (/var/lib/postgresql/18/docker). Mount the PARENT, not the legacy
+      # /var/lib/postgresql/data path, so a future pg_upgrade can operate
+      # across version directories without crossing a mount boundary.
+      - pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [internal]
+    restart: unless-stopped
+
+  # ─── Application schema migrations — one-shot, forward-only ─────────────
+  # `cmd/core` applies River's OWN job-queue schema at boot and nothing else,
+  # so the 41 goose migrations run here before core starts. Forward-only by
+  # construction: the image entrypoint is goose and the command is `up`
+  # (deploy/goose.Dockerfile). Never point this at `task db:reset`.
+  migrate:
+    image: ${GOOSE_IMAGE:?GOOSE_IMAGE must be set (digest-pinned migration runner)}
+    environment:
+      GOOSE_DRIVER: postgres
+      GOOSE_DBSTRING: ${DATABASE_URL:?DATABASE_URL must be set}
+      GOOSE_MIGRATION_DIR: /migrations
+    command: ["up"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+    # A migration runner must never be restarted by the supervisor: a partially
+    # applied migration re-run on a loop is how a schema gets corrupted.
+    restart: "no"
+
+  # ─── Go deterministic core — gateway, money, policy, approval, execution ─
+  core:
+    image: ${CORE_IMAGE:?CORE_IMAGE must be set (digest-pinned)}
+    environment:
+      APP_ENV: prod
+      HTTP_ADDR: ":8080"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      # base64 of exactly 32 bytes. DK access/refresh tokens are sealed at rest
+      # with this key: changing it without a re-encryption procedure makes every
+      # stored token unreadable.
+      CONNECTOR_ENCRYPTION_KEY: ${CONNECTOR_ENCRYPTION_KEY:?CONNECTOR_ENCRYPTION_KEY must be set}
+      DK_API_BASE_URL: ${DK_API_BASE_URL:?DK_API_BASE_URL must be set}
+      LLM_SERVICE_URL: http://llm:8100
+      LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:?LLM_GATEWAY_TOKEN must be set}
+      APP_BASE_URL: ${APP_BASE_URL:?APP_BASE_URL must be set (absolute https:// origin used in digest email links)}
+      CHAT_KILL_SWITCH: ${CHAT_KILL_SWITCH:-false}
+      CHAT_KILL_SWITCH_ACCOUNTS: ${CHAT_KILL_SWITCH_ACCOUNTS:-}
+      SMTP_ADDR: ${SMTP_ADDR:-localhost:1025}
+      # Empty ⇒ the daily digest job is not wired at all. That is the intended
+      # default: the beta never sends mail without an explicit sender.
+      NOTIFY_FROM_ADDR: ${NOTIFY_FROM_ADDR:-}
+      NOTIFY_LOCALE: ${NOTIFY_LOCALE:-fa-IR}
+      NOTIFY_REGION: ${NOTIFY_REGION:-IR}
+      CURRENCY_CONTRACT_VERSION: ${CURRENCY_CONTRACT_VERSION:-v1}
+      OTEL_ENABLED: ${OTEL_ENABLED:-false}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    # No healthcheck: the image is distroless/static — no shell, no wget, no
+    # curl — so a container-level probe is impossible without shipping a probe
+    # binary purely to be probed. The nginx healthcheck below calls
+    # /api/healthz, which proxies straight through to this service, so
+    # `up -d --wait` still blocks until core genuinely serves traffic. That is a
+    # stronger check than a self-probe: it proves the whole edge→core path.
+    networks: [internal]
+    restart: unless-stopped
+
+  # ─── Python LLM plane — read + Draft-only, no DB credential ─────────────
+  llm:
+    image: ${LLM_IMAGE:?LLM_IMAGE must be set (digest-pinned)}
+    environment:
+      # The SAME credential core presents on every call into this plane.
+      LLM_GATEWAY_TOKEN: ${LLM_GATEWAY_TOKEN:?LLM_GATEWAY_TOKEN must be set}
+      # `mock` makes no paid calls and is the correct production value until the
+      # gated provider benchmark selects an endpoint (PRD §4.1 unit economics).
+      # Setting openai_compatible before that gate is a budget decision, not a
+      # deployment one.
+      LLM_PROVIDER_KIND: ${LLM_PROVIDER_KIND:-mock}
+      LLM_PROVIDER_BASE_URL: ${LLM_PROVIDER_BASE_URL:-}
+      LLM_PROVIDER_API_KEY: ${LLM_PROVIDER_API_KEY:-}
+      LLM_PROVIDER_MODEL: ${LLM_PROVIDER_MODEL:-mock-model}
+      LLM_CHAT_DISABLED_GLOBAL: ${LLM_CHAT_DISABLED_GLOBAL:-false}
+      # LangSmith ships prompts and completions to an external service. Off
+      # unless that transfer has been explicitly approved.
+      LLM_LANGSMITH_TRACING: "false"
+    # DELIBERATE OMISSION, not an oversight: this service never receives
+    # DATABASE_URL, CONNECTOR_ENCRYPTION_KEY, or any DK seller token. The LLM
+    # plane holds a read+Draft-only credential and no database access (PRD §8,
+    # §12.3). Adding either variable here breaks a never-cut invariant.
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    networks: [internal]
+    restart: unless-stopped
+
+  # ─── Nginx — SPA static bundle + same-origin /api proxy ────────────────
+  # The SPA is baked into this image at build time with
+  # VITE_GATEWAY_BASE_URL=/api, so the browser makes same-origin calls and core
+  # needs no CORS headers (it sends none).
+  nginx:
+    image: ${NGINX_IMAGE:?NGINX_IMAGE must be set (digest-pinned)}
+    depends_on:
+      - core
+    healthcheck:
+      # /api/healthz proxies to core:8080/healthz, so this probe covers BOTH
+      # the ingress and the gateway behind it.
+      test: ["CMD", "wget", "-q", "-O-", "http://127.0.0.1:8080/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 15s
+    networks: [edge, internal]
+    restart: unless-stopped
+
+  # ─── Caddy — TLS termination and the only published ports ──────────────
+  caddy:
+    image: caddy:2.10-alpine
+    environment:
+      DK_DOMAIN: ${DK_DOMAIN:?DK_DOMAIN must be set (the public hostname, e.g. ops.example.com)}
+      DK_ACME_EMAIL: ${DK_ACME_EMAIL:?DK_ACME_EMAIL must be set (ACME registration contact)}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Issued certificates and ACME account keys. Losing this volume means
+      # re-issuing on next start, which burns Let's Encrypt rate limit.
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    depends_on:
+      nginx:
+        condition: service_healthy
+    networks: [edge]
+    restart: unless-stopped
+
+networks:
+  # Internet-facing. Only caddy publishes host ports; nginx joins so caddy can
+  # reach it, and for no other reason.
+  edge:
+  # Inbound isolation comes from publishing NO ports on this network, not from
+  # Docker's `internal: true`. That flag also blocks EGRESS, which would cut
+  # core off from the DK Seller API (DK_API_BASE_URL) and, once the provider
+  # gate opens, the LLM plane from its OpenAI-compatible endpoint. Restricting
+  # outbound traffic belongs in the host firewall, where it can allow the DK
+  # host specifically instead of severing everything.
+  internal:
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
