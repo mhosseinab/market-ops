@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from llm.envelope.contract import PICKER_HINT_KEY, PICKER_TITLE_KEY
 from llm.envelope.grounding import CANONICAL_QUALITY_KEYS, CANONICAL_STATE_KEYS
 
 # services/llm/tests/<file> → repo root is four parents up.
@@ -34,6 +35,13 @@ def test_every_canonical_state_key_exists_in_catalog() -> None:
     catalog = _catalog_keys()
     missing = CANONICAL_STATE_KEYS - catalog
     assert not missing, f"canonical state keys not present in fa-IR catalog: {sorted(missing)}"
+
+
+def test_picker_card_copy_keys_exist_in_catalog() -> None:
+    """The picker card's surrounding copy is catalog keys, never literals (§11)."""
+    catalog = _catalog_keys()
+    missing = {PICKER_TITLE_KEY, PICKER_HINT_KEY} - catalog
+    assert not missing, f"picker copy keys not present in fa-IR catalog: {sorted(missing)}"
 
 
 def test_quality_keys_are_a_catalog_backed_subset_of_state_keys() -> None:

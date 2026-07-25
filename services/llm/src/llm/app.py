@@ -22,6 +22,7 @@ from __future__ import annotations
 import hmac
 import uuid
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -29,10 +30,11 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from llm.config import ProviderKind, Settings, load_settings
+from llm.contextres.ports import CandidatePort, NoCandidatePort
 from llm.envelope.models import ChatStreamEvent, StreamEventKind
 from llm.intents.classifier import IntentClassifier
 from llm.intents.keyword_mock import default_keyword_intent
-from llm.metrics import ContainmentMetrics
+from llm.metrics import ContainmentMetrics, ContextResolutionMetrics
 from llm.observability import configure_observability
 from llm.orchestrator.agent import build_agent
 from llm.orchestrator.graph import TurnGraph, TurnState, build_turn_graph
@@ -42,7 +44,52 @@ from llm.tools.registry import ToolRegistry, build_registry
 
 
 class ChatRequest(BaseModel):
-    """A conversation turn from the gateway. Free text carries no authority."""
+    """A conversation turn from the gateway. Free text carries no authority.
+
+    ``organization_id`` + ``marketplace_account_id`` are the turn's SCOPE — the
+    ONLY source of the context resolver's
+    :class:`~llm.contextres.models.RequestScope`. The tenant fields carried
+    inside :attr:`context` are untrusted DATA validated against that scope, never
+    the scope itself (PRD §12, §4.6 identity quarantine).
+
+    The two are asserted by the gateway under the inbound bearer credential
+    (issue #167), but they are NOT equally strong:
+
+    * ``organization_id`` is the caller's authenticated organization;
+    * ``marketplace_account_id`` is the account the GATEWAY RESOLVED for the turn
+      (``services/core/internal/httpapi/chat.go``: the stored conversation
+      governs; a request account contradicting it is denied; an omitted one
+      inherits the stored value). It is authoritative in that a caller cannot
+      choose it freely — not a bearer-asserted identity in the same sense as the
+      organization.
+
+    KNOWN GAP (pre-existing, tracked outside this plane, #108 G3): a NEW
+    conversation may be opened naming an account owned by ANOTHER organization —
+    ``CreateConversation`` performs no org-ownership check and
+    ``migrations/0005_conversation.sql`` carries only an FK to
+    ``marketplace_accounts(id)``. On that path the turn's scope account and the
+    context payload's account provenance trace to the same unvalidated row, so
+    the resolver's scope check ALONE is not sufficient tenant authorization for
+    an authoritative read. A consumer of ``active_context`` (108c) must not treat
+    it as such.
+
+    ``extra="ignore"`` is retained DELIBERATELY at this level: the gateway is a
+    co-evolving producer that already sends top-level keys this plane does not
+    model (``locale``, and more as the contract grows additively), and rejecting
+    them would break every turn on an additive producer change.
+
+    :attr:`context` is deliberately UNTYPED here — the transport carries it
+    verbatim and :class:`~llm.contextres.turn.TurnContext` (still ``extra=
+    "forbid"``) validates it inside ``resolve_turn_context``. Typing it at this
+    boundary would make FastAPI reject a malformed payload with a 422 BEFORE the
+    resolver ran, and the gateway reads any non-2xx as a transport error
+    (``provider_unavailable``): a context contract mismatch would surface as "LLM
+    plane down" with no §12.4 structured failure, no screens-only deep link, and
+    — worst — no ``llm_context_resolution_total`` event, leaving the fail-closed
+    seam invisible in telemetry. Rejection still happens; it happens where it is
+    structured, observable and recoverable. A misspelled key inside ``context``
+    is still never silently dropped: dropping it would lose the turn's subject.
+    """
 
     model_config = ConfigDict(extra="ignore")
 
@@ -51,6 +98,9 @@ class ChatRequest(BaseModel):
     marketplace_account_id: str | None = None
     user_id: str | None = None
     organization_id: str | None = None
+    # The gateway's authoritative bound context (CHAT-007). Read-only business
+    # data: it carries no approval authority and never advances an action.
+    context: dict[str, Any] | None = None
 
 
 class AppState:
@@ -61,6 +111,12 @@ class AppState:
         self.observability = configure_observability(settings)
         self.registry: ToolRegistry = build_registry()
         self.metrics = ContainmentMetrics()
+        self.resolution_metrics = ContextResolutionMetrics()
+        # Candidate supply for explicit entity references. The production default
+        # is the fail-closed stub: it supplies NOTHING, so an explicit reference
+        # resolves to a structured picker or NOT_FOUND — never a guessed subject.
+        # The gateway-backed read implementation is sub-scope 108c of issue #108.
+        self.candidate_port: CandidatePort = NoCandidatePort()
         # The agent model (answers) and the classifier model are separate roles.
         # In production both resolve to the SAME configured OpenAI-compatible
         # endpoint; with the mock they carry different deterministic scripts so a
@@ -72,7 +128,12 @@ class AppState:
         classifier_model = build_chat_model(settings, mock_script=_classifier_mock_script(settings))
         self.classifier = IntentClassifier(classifier_model)
         self.turn_graph: TurnGraph = build_turn_graph(
-            self.agent, settings, self.classifier, self.metrics
+            self.agent,
+            settings,
+            self.classifier,
+            self.metrics,
+            candidate_port=self.candidate_port,
+            resolution_metrics=self.resolution_metrics,
         )
 
 
@@ -183,6 +244,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     return app
 
 
+def _turn_context_state(context: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Project the gateway's raw context onto JSON-safe graph state, as-of stamped.
+
+    Graph state holds JSON-safe business data ONLY — never a pydantic instance.
+    The payload is NOT validated here: ``resolve_turn_context`` owns that, so a
+    malformed context fails closed structurally instead of 422-ing the turn.
+
+    The as-of instant is stamped HERE from the server clock and ALWAYS overrides
+    any client-supplied ``now``: a turn's freshness is not something a caller may
+    assert. A back-dated ``now`` would move every "today/this week" boundary and
+    let a historical window read as the current one (§12.3: never claim current
+    state from stale evidence). Stamping once at the transport also keeps the
+    resolver pure — it never reads a clock — so a turn's time resolution is
+    reproducible from graph state alone.
+    """
+    if context is None:
+        return None
+    return {**context, "now": _utc_now()}
+
+
+def _utc_now() -> str:
+    """The turn's as-of instant (RFC 3339 UTC), read once at the boundary."""
+    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 async def _stream_turn(state: AppState, req: ChatRequest) -> AsyncIterator[str]:
     """Yield SSE frames for a turn: conversation, token(s), final | failure.
 
@@ -198,8 +284,11 @@ async def _stream_turn(state: AppState, req: ChatRequest) -> AsyncIterator[str]:
 
     turn_state: TurnState = {
         "message": req.message,
+        # The AUTHENTICATED scope of the turn (never taken from `context`).
+        "organization_id": req.organization_id,
         "marketplace_account_id": req.marketplace_account_id,
         "conversation_id": conversation_id,
+        "turn_context": _turn_context_state(req.context),
     }
     async for chunk in state.turn_graph.astream_turn(turn_state):
         if chunk.kind == "token" and chunk.token is not None:

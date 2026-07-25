@@ -16,8 +16,15 @@ import { reportUnsupportedValue } from "../app/unsupportedTelemetry";
 
 /**
  * §12.4 structured-failure codes the LLM plane emits on the `failure` frame
- * (services/llm graph `_HARD_BOUNDS` + the transient fail-closed state). The set
- * is CLOSED at the edge; anything else is treated as an unknown/unsupported code.
+ * (services/llm graph `_HARD_BOUNDS`, the transient fail-closed state, and the
+ * deterministic turn-context resolver). The set is CLOSED at the edge; anything
+ * else is treated as an unknown/unsupported code.
+ *
+ * The plane declares its emittable set in `llm.envelope.models`
+ * (EMITTABLE_FAILURE_CODES); catalogMaps.test.ts asserts this map covers it, and
+ * services/llm/tests/test_failure_code_contract.py asserts the same from the
+ * producer side — so a new code cannot reach the surface unmapped (which would
+ * fire the drift alarm below on a normal, correct, fail-closed path).
  */
 export const FAILURE_CODE_KEY: Record<string, MessageKey> = {
   TURN_RECURSION_LIMIT: "chat.failure.recursionLimit",
@@ -26,6 +33,13 @@ export const FAILURE_CODE_KEY: Record<string, MessageKey> = {
   TOKEN_CEILING: "chat.failure.tokenCeiling",
   MODEL_PROVIDER_ERROR: "chat.failure.providerError",
   MODEL_TRANSIENT_FAILURE: "chat.failure.transient",
+  CONTEXT_SCOPE_MISSING: "chat.failure.contextScopeMissing",
+  CONTEXT_MALFORMED: "chat.failure.contextMalformed",
+  CONTEXT_UNAVAILABLE: "chat.failure.contextUnavailable",
+  CONTEXT_PICKER_UNAVAILABLE: "chat.failure.contextPickerUnavailable",
+  CONTEXT_NOT_FOUND: "chat.failure.contextNotFound",
+  TURN_INCOMPLETE: "chat.failure.turnIncomplete",
+  INTENT_UNCLASSIFIED: "chat.failure.intentUnclassified",
 };
 
 /** Localized body shown for an unknown/unsupported failure code (never the raw value). */

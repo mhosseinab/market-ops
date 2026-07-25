@@ -204,6 +204,20 @@ export const faIR: Catalog = {
   "chat.failure.tokenCeiling": "پاسخ از حد مجاز طول فراتر رفت.",
   "chat.failure.providerError": "سرویس دستیار خطا بازگرداند.",
   "chat.failure.transient": "دستیار موقتاً در دسترس نیست.",
+  "chat.failure.contextScopeMissing":
+    "حساب مربوط به این درخواست تشخیص داده نشد. از صفحه‌های ساختاریافته ادامه دهید.",
+  "chat.failure.contextMalformed":
+    "اطلاعات همراه این درخواست خوانده نشد. از صفحه‌های ساختاریافته ادامه دهید.",
+  "chat.failure.contextUnavailable":
+    "موارد ارجاع‌شده در حال حاضر در دسترس نیست. از صفحه‌های ساختاریافته ادامه دهید.",
+  "chat.failure.contextPickerUnavailable":
+    "دستیار به یک مورد مشخص نیاز دارد و گزینه‌ای برای انتخاب در دسترس نیست. مورد را در صفحه‌های ساختاریافته انتخاب کنید.",
+  "chat.failure.contextNotFound":
+    "موردی که به آن اشاره کردید در این حساب یافت نشد. آن را در صفحه‌های ساختاریافته انتخاب کنید.",
+  "chat.failure.turnIncomplete":
+    "این نوبت بدون پاسخ به پایان رسید. برای نمای کامل و مستند از صفحه‌های ساختاریافته استفاده کنید.",
+  "chat.failure.intentUnclassified":
+    "درخواست تفسیر نشد. آن را بازنویسی کنید یا از صفحه‌های ساختاریافته استفاده کنید.",
   "chat.failure.unsupported": "این پاسخ کامل نشد.",
 
   "action.retry": "تلاش دوباره",

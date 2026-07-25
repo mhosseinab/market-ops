@@ -22,7 +22,7 @@ from pydantic import (
     field_validator,
 )
 
-from llm.flows.deep_links import validate_recovery_route
+from llm.flows.deep_links import SCREENS_FALLBACK, validate_recovery_route
 
 # ISO-4217 alpha-3 currency code (LTR technical identifier).
 CurrencyCode = Annotated[str, StringConstraints(min_length=3, max_length=3, pattern=r"^[A-Z]{3}$")]
@@ -169,6 +169,49 @@ class TurnFailure(BaseModel):
         if v is None:
             return v
         return validate_recovery_route(v)
+
+
+def screens_failure(code: str, message: str) -> TurnFailure:
+    """The §12.4 structured failure carrying the canonical screens-only deep link.
+
+    One factory shared by every fail-closed seam in the turn (the orchestrator's
+    hard bounds and the context-resolution node), so a failure can never reach a
+    client without the deterministic recovery route (issue #56).
+    """
+    return TurnFailure(code=code, message=message, deep_link=SCREENS_FALLBACK)
+
+
+# Every ``failure.code`` this plane can put on a §12.4 ``failure`` frame — the
+# AUTHORITATIVE declaration of that set. It is not a hand-maintained copy: the
+# contract test (``tests/test_failure_code_contract.py``) scans the emitting
+# modules' own source and asserts this set is EXACTLY the literals they emit, and
+# pins which modules may construct a :class:`TurnFailure` at all — so a new code
+# or a new emitter breaks the guard instead of drifting.
+#
+# The set exists because each code crosses a service boundary AS DATA into the
+# web edge's CLOSED ``FAILURE_CODE_KEY`` map (``apps/web/src/chat/catalogMaps.ts``).
+# A code missing there renders the generic unsupported copy AND fires the
+# ``chat_failure_code`` drift alarm on a normal fail-closed path, which would
+# stop that alarm from distinguishing real drift from correct behavior.
+EMITTABLE_FAILURE_CODES: frozenset[str] = frozenset(
+    {
+        # Hard bounds and provider/transport failures (orchestrator/graph.py).
+        "TURN_RECURSION_LIMIT",
+        "TOOL_CALL_LIMIT",
+        "TOOL_TIMEOUT",
+        "TOKEN_CEILING",
+        "MODEL_PROVIDER_ERROR",
+        "MODEL_TRANSIENT_FAILURE",
+        "INTENT_UNCLASSIFIED",
+        "TURN_INCOMPLETE",
+        # Deterministic context resolution (orchestrator/context_node.py).
+        "CONTEXT_SCOPE_MISSING",
+        "CONTEXT_MALFORMED",
+        "CONTEXT_UNAVAILABLE",
+        "CONTEXT_PICKER_UNAVAILABLE",
+        "CONTEXT_NOT_FOUND",
+    }
+)
 
 
 class StreamEventKind(StrEnum):
