@@ -2510,6 +2510,55 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
     expect(await capabilityTransitions()).not.toContain("revoked");
   });
 
+  // B7 NEVER-PROMOTE. The abandoned-flag half of the guard (B7 / B7 NEGATIVE /
+  // B7 TIMER) is only ONE of its two parts. The other is the never-promote check
+  // the three sibling fail-closed branches carry: `unknown`, `disabled` and
+  // `revocation_unconfirmed` are left exactly as they are, because only a state
+  // that was capturing (`ready`) or actively revoking (`revocation_pending`) has
+  // a revoke to settle. Dropping that check — reaching the terminal
+  // unconditionally once nothing is abandoned — left the whole suite green while
+  // a second Revoke press promoted a resting `revocation_unconfirmed` straight
+  // to terminal `revoked`, rendering the `credential_revoked` degradation for a
+  // kill switch no authority ever confirmed. That resting state is
+  // production-reachable with NO abandoned flag involved: `failClosedDurably`
+  // writes it whenever a Revoke's storage mirror fails with no credential left
+  // to retry with (`local_storage_error_recovered`).
+  it.each(["revocation_unconfirmed", "unknown", "disabled"] as const)(
+    "B7 NEVER-PROMOTE: a repeat Revoke from a resting `%s` is `already_cleared` — it never promotes to terminal `revoked`",
+    async (seeded) => {
+      storage = installChromeMock().storage;
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const rf = revokeFetch(() => new Response(null, { status: 204 }));
+      vi.stubGlobal("fetch", rf.fetch);
+      // Nothing abandoned, nothing quarantined, no credential, no marker: the
+      // ONLY thing standing between this branch and a fabricated terminal is the
+      // never-promote check.
+      storage.set(KEY_CAPABILITY, seeded);
+
+      const send = await loadWorker();
+      await settle();
+      const resp = await send({ kind: "revoke" });
+      await settle();
+      if (!("state" in resp)) throw new Error("expected state");
+
+      // The resting state is left EXACTLY as it was — more restrictive is
+      // allowed, promotion to a completed kill switch is not.
+      expect(resp.state.capability).toBe(seeded);
+      expect(resp.state.capability).not.toBe("revoked");
+      expect(storage.get(KEY_CAPABILITY)).toBe(seeded);
+      expect(storage.get(KEY_CAPABILITY)).not.toBe("revoked");
+      // The popup must never claim the kill switch completed.
+      expect(resp.state.degradation).not.toBe("credential_revoked");
+      expect(await capabilityTransitions()).not.toContain("revoked");
+      // The repeat is still the idempotent, bounded outcome — withholding the
+      // terminal does not make the event unobservable.
+      const outcomes = await revocationOutcomes();
+      expect(outcomes).toContain("already_cleared");
+      expect(outcomes).not.toContain("orphaned");
+      expect(outcomes).not.toContain("confirmed");
+    },
+  );
+
   // B7 TIMER. The user-driven repeat Revoke is not the only route to that
   // terminal: the boot-time pending retry reaches the identical situation (a
   // marker whose credential material is gone) through `demoteToRevoked`, and it
@@ -2519,7 +2568,7 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
   // revocation is outstanding; only a positively-proven one does not.
   it("B7 TIMER: the BOOT-tick orphan resolution also withholds terminal `revoked` while a revocation is abandoned", async () => {
     storage = installChromeMock().storage;
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const rf = revokeFetch(genericProxy401);
     vi.stubGlobal("fetch", rf.fetch);
     // A durable marker whose credential is gone, over a stored `ready` that the
@@ -2547,6 +2596,12 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
     expect(storage.get(KEY_CAPABILITY)).toBe("revocation_unconfirmed");
     expect(await capabilityTransitions()).not.toContain("revoked");
     expect(await revocationOutcomes()).toContain("terminal_withheld_abandoned");
+    // The STRUCTURED LOG too, as B5 / B7 / B8 assert: the counter alone left the
+    // warn deletable with the suite still green, and a fallback that engages
+    // without an emitted signal is always a bug (CLAUDE.md).
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes("credential_revocation_terminal_withheld")),
+    ).toBe(true);
   });
 
   // B8. The expiry terminal's abandoned-withholding branch (the other half of the
