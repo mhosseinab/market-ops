@@ -45,6 +45,16 @@ ON CONFLICT (id) DO NOTHING;
 -- MONEY (PRD §9.1): every amount below is an exact (mantissa, currency,
 -- exponent) triple — IRR, exponent 0. Raw marketplace price evidence stays
 -- quarantined as verbatim text/value/unit and is never promoted to Money.
+-- Representation is not enough: every seeded CONTRIBUTION is also DERIVED, not
+-- authored. §9.2 contribution = net proceeds − Σ deductions, and the sole
+-- production oracle (internal/httpapi/policy.go) takes the candidate price as
+-- BOTH net proceeds and rate base, so for these SKUs
+--     contribution(price) = price − Σ (in-force cost_profiles amounts).
+-- Because cost_profiles carries only absolute amounts (no rate column), that
+-- function is strictly increasing in price: a proposed price BELOW the current
+-- price ALWAYS yields a lower proposed contribution. The numbers below are the
+-- margin engine's own output, and internal/devseed recomputes them from these
+-- very rows on every DB test run (issue #84 / PRD §4.6 money correctness).
 -- ===========================================================================
 
 -- One product carrying both journey variants.
@@ -290,7 +300,12 @@ ON CONFLICT (variant_id) DO NOTHING;
 INSERT INTO margin_readiness (variant_id, marketplace_account_id, state, missing_components, stale_components)
 VALUES ('00000000-0000-0000-0000-0000000000b2',
         '00000000-0000-0000-0000-000000000003',
-        'missing', '["unit_cost"]'::jsonb, '[]'::jsonb)
+        -- Variant B has NO cost profile at all, so both HARD-REQUIRED components
+        -- are missing. The tokens must be members of cost.Component
+        -- (cogs|commission|fulfillment|shipping|packaging|promotion|ads|returns);
+        -- an out-of-enum token here contradicts what cost.Service.GetReadiness
+        -- derives and overwrites.
+        'missing', '["cogs","commission"]'::jsonb, '[]'::jsonb)
 ON CONFLICT (variant_id) DO NOTHING;
 
 INSERT INTO margin_readiness (variant_id, marketplace_account_id, state, missing_components, stale_components)
@@ -357,10 +372,15 @@ VALUES ('00000000-0000-0000-0000-000000000301',
         '00000000-0000-0000-0000-0000000000b1',
         '00000000-0000-0000-0000-000000000311', 1,
         '00000000-0000-0000-0000-000000000201', 'maximize_contribution',
+        -- Contributions are DERIVED from the rows above, never authored:
+        -- deductions = cogs 9,800,000 + commission 1,300,000 = 11,100,000.
+        --   current  = 15,000,000 − 11,100,000 = 3,900,000
+        --   proposed = 14,200,000 − 11,100,000 = 3,100,000
+        -- Both stay strictly above zero (no zero crossing, §9.3).
         15000000, 'IRR', 0,
         true, 14200000, 'IRR', 0,
-        true, 2100000, 'IRR', 0,
-        true, 2450000, 'IRR', 0,
+        true, 3900000, 'IRR', 0,
+        true, 3100000, 'IRR', 0,
         true, 13000000, 16000000, 'IRR', 0,
         'complete', 'verified', '00000000-0000-0000-0000-0000000000e1',
         '["journey-fixture/observation/a"]'::jsonb, now() - interval '30 minutes',
@@ -394,10 +414,14 @@ VALUES ('00000000-0000-0000-0000-000000000302',
         '00000000-0000-0000-0000-0000000000b3',
         '00000000-0000-0000-0000-000000000312', 1,
         NULL, 'maximize_contribution',
+        -- Derived as above: deductions = cogs 15,200,000 + commission
+        -- 1,900,000 = 17,100,000.
+        --   current  = 22,000,000 − 17,100,000 = 4,900,000
+        --   proposed = 21,300,000 − 17,100,000 = 4,200,000
         22000000, 'IRR', 0,
         true, 21300000, 'IRR', 0,
         true, 4900000, 'IRR', 0,
-        true, 5300000, 'IRR', 0,
+        true, 4200000, 'IRR', 0,
         true, 20000000, 24000000, 'IRR', 0,
         'complete', 'verified', '00000000-0000-0000-0000-0000000000e3',
         '["journey-fixture/observation/c"]'::jsonb, now() - interval '20 minutes',
