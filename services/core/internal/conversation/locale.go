@@ -61,12 +61,16 @@ type localeResolution struct {
 //     path — it never infers a locale.)
 //   - First binding (no current): establishes version 1. A version claimed against a
 //     binding-less conversation is stale (the client's world view is wrong).
-//   - Same locale as current: an idempotent no-op, regardless of the version the
-//     client believes — re-sending the same locale is never a spurious transition
-//     (retry-safe), and the web sends the active locale on EVERY turn.
-//   - Different locale: a transition. It is rejected as STALE unless the declared
-//     version equals the current version, and rejected as TRANSITION-REQUIRED unless
-//     it carries an explicit transition; only then does it append the next version.
+//   - Continuation on a bound conversation: the declared version is validated FIRST
+//     (issue #415). A missing or mismatched version is STALE, whether or not the
+//     declared locale happens to equal the current one — after an A→B→A sequence
+//     locale equality would otherwise mask a client two versions behind.
+//   - Same locale at the current version: an idempotent no-op — re-sending the same
+//     locale is never a spurious transition (retry-safe), and the web sends the
+//     active locale on EVERY turn.
+//   - Different locale at the current version: a transition, rejected as
+//     TRANSITION-REQUIRED unless it carries an explicit transition; only then does
+//     it append the next version.
 func resolveLocale(current *LocaleBinding, req *RequestedLocale) (localeResolution, error) {
 	if req == nil {
 		if current == nil {
@@ -87,18 +91,28 @@ func resolveLocale(current *LocaleBinding, req *RequestedLocale) (localeResoluti
 		}, nil
 	}
 
-	if current.Locale == req.Locale {
-		// Same locale: idempotent continuation (retry-safe). The version the client
-		// believes is irrelevant — the bound locale already matches.
-		return localeResolution{binding: *current}, nil
-	}
-
-	// A different locale — a transition. Stale takes precedence over the missing
-	// explicit-transition flag: a client operating against an outdated version is
-	// wrong about the world before it is wrong about intent.
+	// FRESHNESS FIRST (issue #415, the locale twin of #115). A continuation must
+	// prove it is operating against the conversation's CURRENT version before its
+	// declared locale is compared. Locale equality is not freshness: after an A→B→A
+	// sequence the bound locale matches a client that is two versions behind, and
+	// treating that as an idempotent continuation lets the turn proxy against an
+	// outdated world view. A missing version is the same failure — an unversioned
+	// claim cannot prove anything. Staleness also precedes the missing
+	// explicit-transition flag: a client wrong about the world is wrong before it is
+	// wrong about intent.
 	if req.Version == nil || *req.Version != current.Version {
 		return localeResolution{}, ErrLocaleVersionStale
 	}
+
+	if current.Locale == req.Locale {
+		// Same locale at the current version: idempotent continuation (retry-safe). A
+		// genuine retry — and the web re-declaring the locale already bound on every
+		// turn — never consumes a version.
+		return localeResolution{binding: *current}, nil
+	}
+
+	// A different locale at the current version — a transition, which must be
+	// explicit; a conversation is never silently relabeled.
 	if !req.Transition {
 		return localeResolution{}, ErrLocaleTransitionRequired
 	}
