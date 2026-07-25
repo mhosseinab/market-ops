@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -245,12 +246,52 @@ func (s *gatewayServer) ListActions(
 		summary := toActionSummary(r)
 		// Both keys must match: the card id addresses the exact version, and the
 		// action id confirms the execution belongs to this card's action.
-		if u, ok := overlay[r.ID]; ok && u.ActionID == r.ActionID {
-			applyExecutionOverlay(&summary, u)
+		//
+		// A mismatch is a DATA-INTEGRITY anomaly, not a routine case: nothing in the
+		// schema ties action_executions.action_id / recommend_only_actions.action_id
+		// to approval_cards(id = card_id).action_id, so the binding is code-enforced
+		// only. Dropping the untrustworthy overlay is the right display choice, but
+		// the dropped row then renders as a PRE-EXECUTION card — the same false "not
+		// executed yet" claim the fail-closed 503 above exists to prevent, reached
+		// through a data-integrity door. So the drop is reported (counter + structured
+		// log) rather than swallowed: quarantine over silence (§4.6, EXE-005).
+		if u, ok := overlay[r.ID]; ok {
+			if u.ActionID == r.ActionID {
+				applyExecutionOverlay(&summary, u)
+			} else {
+				s.reportOverlayActionMismatch(ctx, req.Params.MarketplaceAccountId, r, u)
+			}
 		}
 		items = append(items, summary)
 	}
 	return gateway.ListActions200JSONResponse(gateway.ActionList{Items: items}), nil
+}
+
+// reportOverlayActionMismatch emits the observable signal for an execution overlay
+// dropped because its action id disagreed with the action id of the card version it
+// was fetched for (issue #106). It changes NOTHING about the response — the row is
+// still rendered without execution fields — it only makes the drop visible.
+//
+// The metric carries no labels; the diagnosing identifiers are stable-key structured
+// log fields (technical UUIDs only — no marketplace free text, no locale copy, no
+// approval-control material), so the anomaly is reproducible from telemetry without
+// giving the counter unbounded cardinality.
+func (s *gatewayServer) reportOverlayActionMismatch(
+	ctx context.Context, account uuid.UUID, card db.ApprovalCard, u execution.UnifiedAction,
+) {
+	recordActionOverlayMismatch(ctx)
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.WarnContext(ctx, "action overlay dropped: overlay action id does not match the card version's action id",
+		slog.String("event", "action_overlay_action_id_mismatch"),
+		slog.String("marketplace_account_id", account.String()),
+		slog.String("card_id", card.ID.String()),
+		slog.String("card_action_id", card.ActionID.String()),
+		slog.String("overlay_action_id", u.ActionID.String()),
+		slog.String("overlay_mode", string(u.Mode)),
+	)
 }
 
 // applyExecutionOverlay enriches an action summary with its execution overlay

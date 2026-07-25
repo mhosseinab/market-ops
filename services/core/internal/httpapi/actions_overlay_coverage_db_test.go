@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -266,6 +267,15 @@ func seedWriteExecutedCard(t *testing.T, pool *pgxpool.Pool, q *db.Queries, f ov
 // writer, no resolver) with a session principal for the fixture's org.
 func overlayGapServer(t *testing.T, pool *pgxpool.Pool, f overlayGapFixture, token string) *http.Server {
 	t.Helper()
+	return overlayGapServerWithLogger(t, pool, f, token, testLogger())
+}
+
+// overlayGapServerWithLogger is overlayGapServer with an explicit structured
+// logger, so a test can assert the boundary's structured anomaly output.
+func overlayGapServerWithLogger(
+	t *testing.T, pool *pgxpool.Pool, f overlayGapFixture, token string, logger *slog.Logger,
+) *http.Server {
+	t.Helper()
 	fa := newFakeAuth()
 	fa.principals[token] = auth.Principal{
 		UserID:         uuid.New(),
@@ -276,7 +286,7 @@ func overlayGapServer(t *testing.T, pool *pgxpool.Pool, f overlayGapFixture, tok
 	}
 	rec := recommendation.NewService(pool)
 	exec := execution.NewService(pool, rec, nil, nil)
-	return NewServer(":0", BuildInfo{}, testLogger(),
+	return NewServer(":0", BuildInfo{}, logger,
 		WithAuth(fa), WithApproval(rec), WithExecution(exec), WithCookieSecure(false))
 }
 

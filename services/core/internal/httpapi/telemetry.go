@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"time"
@@ -44,6 +45,37 @@ func newREDMetrics() *redMetrics {
 		h, _ = noopMeter.Int64Histogram("http.server.request.duration")
 	}
 	return &redMetrics{duration: h, tracer: otel.Tracer(instrumentationName)}
+}
+
+// actionOverlayMismatchMetric counts execution overlays DROPPED by GET /actions
+// because the overlay row's action id disagreed with the action id of the card
+// version it is bound to (issue #106). Dropping the row is the correct display
+// choice — an execution whose action id disagrees with its card is not trustworthy
+// evidence about that card — but the drop leaves the row rendered as a
+// pre-execution card, so it must be observable rather than silent (§4.6: quarantine
+// over silence, no unobserved fallback).
+//
+// The referential invariant (action_executions.action_id / recommend_only_actions
+// .action_id == approval_cards(id = card_id).action_id) has no schema constraint
+// behind it, so a non-zero series here is a data-integrity anomaly to investigate,
+// never routine.
+const actionOverlayMismatchMetric = "gateway.action_overlay_action_id_mismatch"
+
+// recordActionOverlayMismatch increments the anomaly counter. It carries NO
+// attributes: the diagnosing identifiers (card id, both action ids, account) are
+// unbounded values and belong in the structured log, never in a metric dimension
+// (cardinality invariant, mirroring internal/observation's drift sink). It reads
+// the CURRENT global meter provider and degrades to a no-op instrument, so
+// telemetry wiring never breaks a read path.
+func recordActionOverlayMismatch(ctx context.Context) {
+	c, err := otel.Meter(instrumentationName).Int64Counter(
+		actionOverlayMismatchMetric,
+		metric.WithDescription("execution overlays dropped from GET /actions because the overlay row's action id disagreed with its card version's action id (issue #106 data-integrity anomaly)"),
+	)
+	if err != nil {
+		c, _ = noopMeter.Int64Counter(actionOverlayMismatchMetric)
+	}
+	c.Add(ctx, 1)
 }
 
 // routeLabel bounds metric/trace cardinality: the gateway mounts EXACT paths, so
