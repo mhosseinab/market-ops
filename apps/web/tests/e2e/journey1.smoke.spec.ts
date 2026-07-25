@@ -29,9 +29,13 @@ import { expect, type Page, test } from "@playwright/test";
 //     a 4xx/5xx on any required op both (a) trips the response guard and (b)
 //     prevents the server-backed assertions (capability → Supported, sync-state
 //     → completed, a product ROW, a readiness value) from ever becoming true.
-//   • "Products passes on chrome alone": there is no `.toolbar__search` assertion
-//     — the pass condition is a real `.data-table__row` plus a server-derived
-//     `product-row-readiness` value, which exist ONLY when the data seam loads.
+//   • "Products passes on chrome alone": the pass condition is a real
+//     `.data-table__row` plus a server-derived `product-row-readiness` value,
+//     which exist ONLY when the data seam loads. The search box is used solely to
+//     SCOPE that row (see below) — it is never itself the pass condition.
+//   • "Products passes on the dev fixture's own seeded rows": the row assertions
+//     are scoped to the mockdk catalog's native variant id, which is disjoint
+//     from every id the fixture seeds, so only a real import satisfies them.
 
 const GATEWAY = process.env.VITE_GATEWAY_BASE_URL ?? "http://localhost:8080";
 
@@ -48,6 +52,16 @@ const REQUIRED_OP = [
   "/cost/readiness",
 ];
 const HARD_FAIL_STATUS = new Set([401, 403, 500]);
+
+// The native variant id of the FIRST item in the deterministic mockdk catalog
+// fixture (services/core/cmd/mockdk, MOCKDK_CATALOG=1 → dto `id` 1001/1002/1003).
+// It is deliberately DISJOINT from the dev fixture's own 9_000_00x range
+// (services/core/fixtures/dev_seed.sql), so a row carrying it can ONLY have come
+// from connect→sync importing the catalog — never from the seed. Scoping the
+// Products assertions to it is what stops the seed from satisfying this journey
+// vicariously (issue #84 cycle-2 blocker 1); it mirrors how journey 3 scopes to
+// `rowC`. A technical identifier, not copy — never a localized string.
+const SYNCED_NATIVE_VARIANT_ID = "1001";
 
 function guardRequiredOps(page: Page): string[] {
   const failures: string[] = [];
@@ -175,6 +189,32 @@ test("journey 1: authenticate → connect → probe → sync → a canonical Pro
   const readiness = page.getByTestId("product-row-readiness").first();
   await expect(readiness).toBeVisible();
   await expect(readiness).toHaveAttribute("data-state", /^(complete|partial|stale|missing)$/);
+
+  // ── SCOPED to a row ONLY THE SYNC can produce. ──────────────────────────────
+  // The assertions above are screen-wide, and the dev fixture seeds its own
+  // products on this same account for journeys 2-4 — so on their own they are
+  // satisfiable WITHOUT any catalog import. Narrow the table to the mockdk
+  // catalog's native variant id (disjoint from every seeded id) and re-assert
+  // there: with an empty import this filter yields ZERO rows and the journey goes
+  // red, which is the whole point of the gate.
+  const search = page.locator(".toolbar__search");
+  await expect(search).toBeVisible();
+  await search.fill(SYNCED_NATIVE_VARIANT_ID);
+
+  // Exactly one row survives the filter, and it is the SYNCED variant: the filter
+  // matches on the native ids (LTR technical identifiers), so no seeded row can
+  // stand in for it.
+  const syncedRow = page.locator(".data-table__row", {
+    hasText: SYNCED_NATIVE_VARIANT_ID,
+  });
+  await expect(syncedRow).toHaveCount(1);
+  await expect(page.locator(".data-table__row")).toHaveCount(1);
+
+  // The server-derived readiness verdict on THAT row — `/cost/readiness` resolved
+  // for a variant that exists only because the sync imported it.
+  const syncedReadiness = syncedRow.getByTestId("product-row-readiness");
+  await expect(syncedReadiness).toBeVisible();
+  await expect(syncedReadiness).toHaveAttribute("data-state", /^(complete|partial|stale|missing)$/);
 
   // No required operation returned 401/403/500 anywhere in the journey.
   expect(failures, `required-op failures: ${failures.join(", ")}`).toEqual([]);
