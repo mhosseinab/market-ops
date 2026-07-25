@@ -89,7 +89,7 @@ describe("Actions — multi-mode queue discovery (issue #106)", () => {
     // The recommend-only rows carry EXE-005 terms…
     expect(screen.getByText(faIR["state.awaitingExternalExecution"])).toBeInTheDocument();
     expect(screen.getByText(faIR["state.externallyExecuted"])).toBeInTheDocument();
-    // "بدون تطبیق" is BOTH the row state and its group heading — assert presence,
+    // "بدون تغییر متناظر" is BOTH the row state and its group heading — assert presence,
     // not uniqueness, and rely on the group-membership test above for placement.
     expect(screen.getAllByText(faIR["state.lapsed"]).length).toBeGreaterThan(0);
     // …and are labelled recommend-only, never as a marketplace write.
@@ -387,6 +387,78 @@ describe("Actions — F6: a deep-linked action outside the page is never 'nothin
 
     expect(await screen.findByTestId("actions-deeplink-resolving")).toBeInTheDocument();
     expect(screen.queryByTestId("actions-select-prompt")).toBeNull();
+  });
+});
+
+// ── Fix cycle 2 (issue #106 review) ─────────────────────────────────────────
+// The outcome window belongs to the EXACT card version that was executed. The
+// action-scoped read answers per ACTION, and the domain mints a NEWER Draft on
+// the same action id after an execution (PD-4 rule 1), so that read may describe
+// a different, executed version of the same lineage. Rendering it beside a
+// pre-execution card is a false execution claim (EXE-005 / OUT-001).
+describe("Actions — W-B1: an outcome window never renders under a pre-execution card version", () => {
+  it("W-B1: renders NO outcome window for a card version that carries no execution overlay", async () => {
+    renderRoute("/actions");
+    await selectCard(CARD_ID_PROPOSED);
+
+    // The main panel says the card was not executed…
+    expect(await screen.findByTestId("action-proposed")).toBeInTheDocument();
+    // …so the aside may never show an opened/closing/result window beside it,
+    // even though this card's ACTION does have one (the executed sibling version).
+    expect(await screen.findByTestId("outcome-none-card")).toHaveTextContent(
+      faIR["actions.outcome.noneForCard"],
+    );
+    expect(screen.queryByTestId("outcome-window")).toBeNull();
+    expect(screen.queryByTestId("outcome-result")).toBeNull();
+    // The absence claim is CARD-scoped: "no window for this action" would itself
+    // be untrue for a Draft head whose action does have one.
+    expect(screen.queryByTestId("outcome-none")).toBeNull();
+  });
+
+  it("W-B1: makes no outcome claim for a card version outside the returned page", async () => {
+    // The deep-linked card is not in the page, so whether it carries an execution
+    // overlay is UNKNOWN — the action-scoped read cannot stand in for it.
+    onlyRow(actionWriteAccepted);
+    renderRoute(`/actions?cardId=${CARD_ID_EXTERNALLY_EXECUTED}`);
+
+    expect(await screen.findByTestId("outcome-out-of-page")).toBeInTheDocument();
+    expect(screen.queryByTestId("outcome-window")).toBeNull();
+    expect(screen.queryByTestId("outcome-none")).toBeNull();
+  });
+});
+
+describe("Actions — W-B3: a FAILED legacy actionId deep link is never 'nothing selected'", () => {
+  it("W-B3: renders the detail error when the legacy deep-link read fails", async () => {
+    server.use(
+      http.get(`${BASE}/actions/execution`, () =>
+        HttpResponse.json({ code: "EXECUTION_ERROR", message: "no_execution" }, { status: 404 }),
+      ),
+    );
+    renderRoute(`/actions?actionId=${ACTION_ID}`);
+
+    expect(await screen.findByTestId("actions-deeplink-error")).toHaveTextContent(
+      faIR["actions.detail.error"],
+    );
+    // NEGATIVE: a selection that was made and could not be resolved is never
+    // reported as no selection at all.
+    expect(screen.queryByTestId("actions-select-prompt")).toBeNull();
+  });
+});
+
+describe("Actions — S-1: OUT-001 absence comes only from the outcome handler's answer", () => {
+  it("S-1: treats a 404 that is NOT ErrNoWindow as unknown, never as 'no window'", async () => {
+    // A transport/routing 404 (unregistered route, proxy rewrite) carries no
+    // EXECUTION_ERROR code: it is a failed read, not an absence answer.
+    server.use(
+      http.get(`${BASE}/outcomes`, () =>
+        HttpResponse.json({ code: "NOT_FOUND", message: "no route" }, { status: 404 }),
+      ),
+    );
+    renderRoute("/actions");
+    await selectCard(CARD_ID_AWAITING);
+
+    expect(await screen.findByTestId("outcome-error")).toBeInTheDocument();
+    expect(screen.queryByTestId("outcome-none")).toBeNull();
   });
 });
 

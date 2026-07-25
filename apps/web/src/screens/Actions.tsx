@@ -15,7 +15,7 @@ import { LtrToken } from "../components/LtrToken";
 import { MoneyView } from "../components/MoneyView";
 import { FilterChips, Section } from "../components/primitives";
 import { ViewState } from "../components/ViewState";
-import { GatewayError } from "../data/errors";
+import { isNoOutcomeWindow } from "../data/errors";
 import { formatInstant } from "../data/format";
 import {
   useActionExecution,
@@ -159,13 +159,6 @@ function windowFromView(o: OutcomeView): OutcomeWindow {
   };
 }
 
-// OUT-001 absence is a DEFINITIVE claim, so it may only be made from the read
-// that is authoritative for that one action answering "no window" (404 /
-// ErrNoWindow). Any other failure is an unknown, never an absence.
-function isNoWindowAnswer(error: unknown): boolean {
-  return error instanceof GatewayError && error.status === 404;
-}
-
 // Named cell (Products.tsx pattern): a single element keeps the copy-lint JSX-text
 // heuristic and biome's line style from fighting over an inline ternary.
 function TimeCell({ at }: { at?: string }) {
@@ -248,17 +241,26 @@ export function Actions() {
 
   const retry = useRetryAction();
 
-  // OUT-001: the account list is matched on the EXACT (actionId, cardId) pair, so a
-  // window opened for one card version never renders under another version of the
-  // same action lineage. The list is PAGE-BOUNDED, though, so a miss proves
-  // nothing — the action-scoped read below is the authority for absence.
+  // OUT-001: the account list is matched on the EXACT (actionId, cardId) pair, so
+  // a list row is card-version-exact. The list is PAGE-BOUNDED, though, so a miss
+  // proves nothing — the action-scoped read below covers the page boundary. That
+  // read is only ACTION-exact, hence the overlay gate on it.
   const listWindow: OutcomeSummary | undefined = outcomesQuery.data?.items.find(
     (o) => o.cardId === selectedCardId && o.actionId === selectedActionId,
   );
 
-  // The authoritative per-action window read. Only THIS read may establish that
-  // no window was opened; the page-bounded list never can.
-  const outcomeQuery = useOutcome(selectedActionId);
+  // A card version that carries an execution overlay is the only one an outcome
+  // window can belong to. This gate is what keeps the ACTION-scoped read below
+  // from being consulted for a pre-execution card: the domain mints a NEWER Draft
+  // on the same action id after an execution, so that read can answer with the
+  // executed SIBLING version's window — rendering it beside a "not executed" card
+  // would be a false execution claim.
+  const selectedHasExecution = selectedRow?.executionMode !== undefined;
+
+  // The authoritative per-action window read, requested ONLY for an executed card
+  // version. Only THIS read may establish that no window was opened for the
+  // action; the page-bounded list never can.
+  const outcomeQuery = useOutcome(selectedHasExecution ? selectedActionId : undefined);
 
   const columns: readonly Column<ActionSummary>[] = [
     {
@@ -420,6 +422,12 @@ export function Actions() {
               <p className="muted" data-testid="actions-deeplink-resolving">
                 {t("actions.detail.resolving")}
               </p>
+            ) : deepLinkExec.isError ? (
+              // …and when that resolution FAILS the selection still happened: it is
+              // an unresolved selection, never "nothing selected".
+              <p className="muted" role="alert" data-testid="actions-deeplink-error">
+                {t("actions.detail.error")}
+              </p>
             ) : (
               <p className="muted" data-testid="actions-select-prompt">
                 {t("actions.detail.selectPrompt")}
@@ -436,10 +444,15 @@ export function Actions() {
   // "no window was opened".
   //
   // "No window" is a DEFINITIVE claim about OUT-001, so it is gated on the only
-  // read that can support it: the action-scoped read answering 404 (ErrNoWindow).
+  // read that can support it: the action-scoped read answering ErrNoWindow.
   // Neither an in-flight/failed CARD read (which is what supplies the action id)
   // nor a miss in the PAGE-BOUNDED account list is evidence of absence — both are
   // unknowns and render as pending/error instead.
+  //
+  // Every claim here is scoped to what its source can actually establish: the
+  // ACTION-scoped read answers per action lineage, and a lineage can hold both an
+  // executed card version and a newer pre-execution Draft head, so it is consulted
+  // only for a card version that itself carries an execution overlay.
   function outcomeBody(): ReactNode {
     const pending = (
       <p className="muted" data-testid="outcome-pending">
@@ -451,6 +464,30 @@ export function Actions() {
         {t("actions.outcome.error")}
       </p>
     );
+
+    // The selected ROW is authoritative about its OWN card version. With no
+    // execution overlay nothing was executed for THIS version, so no window can
+    // belong to it — a CARD-scoped absence, because the action's executed sibling
+    // version may well own one (which is why "no window for this action" would be
+    // untrue here). No other read can change that answer.
+    if (selectedRow && !selectedHasExecution) {
+      return (
+        <p className="muted" data-testid="outcome-none-card">
+          {t("actions.outcome.noneForCard")}
+        </p>
+      );
+    }
+
+    // The selected card version is outside the returned page, so whether it was
+    // executed is UNKNOWN — and the action-scoped read cannot stand in for it.
+    // Nothing is claimed: neither a window nor an absence.
+    if (!selectedRow) {
+      return (
+        <p className="muted" data-testid="outcome-out-of-page">
+          {t("actions.outcome.unknownOutOfPage")}
+        </p>
+      );
+    }
 
     // The action id is not known yet / can no longer be known: unknown, not absent.
     if (cardQuery.isPending) return pending;
@@ -475,7 +512,7 @@ export function Actions() {
 
     if (win) return outcomeWindowBody(win);
     // Only ErrNoWindow (404) establishes absence; any other failure is unknown.
-    if (outcomeQuery.isError && isNoWindowAnswer(outcomeQuery.error)) {
+    if (outcomeQuery.isError && isNoOutcomeWindow(outcomeQuery.error)) {
       return (
         <p className="muted" data-testid="outcome-none">
           {t("actions.outcome.none")}

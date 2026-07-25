@@ -64,3 +64,13 @@ export function asGatewayError(error: unknown): GatewayError | null {
 export function isUnauthenticated(error: unknown): boolean {
   return error instanceof GatewayError && error.status === 401;
 }
+
+// The OUT-001 "no outcome window was opened" ANSWER from the outcome read — the
+// gateway's ErrNoWindow mapping (EXECUTION_ERROR at 404). Absence is a definitive
+// claim, so it is recognized by the machine `code` as well as the status: a 404
+// produced anywhere else (an unregistered route after a contract change, a proxy
+// path rewrite) is a failed read, and must render as unknown rather than as an
+// absence claim the transport never made.
+export function isNoOutcomeWindow(error: unknown): boolean {
+  return error instanceof GatewayError && error.status === 404 && error.code === "EXECUTION_ERROR";
+}
