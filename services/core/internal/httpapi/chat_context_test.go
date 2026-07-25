@@ -75,6 +75,68 @@ func TestChatStaleContextVersionRejectedNoDraft(t *testing.T) {
 	}
 }
 
+// TestChatSameEntityStaleContextVersionRejectedNoCard is the issue #115 boundary
+// regression: a continuation declaring the SAME kind/entity the conversation is
+// already bound to, but at an outdated version (the A→B→A shape), must reach the
+// store with its declared version INTACT — the transport may never drop the version
+// that makes the staleness detectable — and its rejection must be a canonical 409
+// that never proxies, persists no turn, and carries no card/envelope payload from
+// which a Draft or approval control could be read (CHAT-007, §4.6).
+func TestChatSameEntityStaleContextVersionRejectedNoCard(t *testing.T) {
+	fa := newFakeAuth()
+	ownerSession(fa)
+	existing := uuid.New()
+	entity := "v-1"
+	store := newConvStore()
+	// The conversation is bound to product/v-1 at version 3 after an A→B→A sequence.
+	store.conv = conversation.Conversation{
+		ID:      existing,
+		Context: &conversation.ContextBinding{Kind: "product", EntityID: &entity, Version: 3},
+	}
+	store.beginErr = conversation.ErrContextVersionStale
+	llm := &fakeLLMChat{frames: "data: {\"kind\":\"final\",\"envelope\":{\"summary\":\"ok\"}}\n\n"}
+	srv := chatServer(t, fa,
+		WithChatKillSwitch(NewStaticKillSwitch(false, nil)),
+		WithLLMChat(llm),
+		WithChatConversations(store),
+	)
+
+	// The client still believes it is on version 1 and declares the SAME entity.
+	rec := postChat(srv, `{"message":"price it","conversationId":"`+existing.String()+
+		`","context":{"kind":"product","entityId":"v-1","contextVersion":1}}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale same-entity context = %d, want 409", rec.Code)
+	}
+	assertErrorCode(t, rec, "CONVERSATION_CONTEXT_STALE")
+
+	begins, userTurns, assistant := store.snapshot()
+	if len(begins) != 1 || begins[0].Context == nil {
+		t.Fatalf("the declared binding must reach the store, got %+v", begins)
+	}
+	if begins[0].Context.Kind != "product" || begins[0].Context.EntityID == nil ||
+		*begins[0].Context.EntityID != "v-1" {
+		t.Fatalf("declared binding = %+v, want product/v-1 verbatim", begins[0].Context)
+	}
+	if begins[0].Context.Version == nil || *begins[0].Context.Version != 1 {
+		t.Fatalf("the declared context version must reach the store intact, got %+v", begins[0].Context.Version)
+	}
+	if llm.started != 0 {
+		t.Fatal("a stale same-entity context must NEVER reach the LLM plane (no Draft)")
+	}
+	if len(userTurns) != 0 || len(assistant) != 0 {
+		t.Fatalf("a stale rejection must persist no turn, got user=%v assistant=%d", userTurns, len(assistant))
+	}
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	for _, forbidden := range []string{"cards", "card", "envelope", "draft", "approval"} {
+		if _, present := body[forbidden]; present {
+			t.Fatalf("a stale rejection response must carry no %q payload, body = %s", forbidden, rec.Body.String())
+		}
+	}
+}
+
 // TestChatSilentRelabelRejected: a continuation whose declared context differs
 // from the conversation's current context WITHOUT an explicit transition is
 // rejected (409) and never proxied — the conversation is never silently relabeled.

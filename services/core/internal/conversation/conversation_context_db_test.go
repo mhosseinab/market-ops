@@ -26,6 +26,116 @@ func countBindings(t *testing.T, pool *pgxpool.Pool, convID uuid.UUID) int {
 	return n
 }
 
+// countMessages reads how many append-only turns a conversation has (proves a
+// rejected turn writes NOTHING — no user turn, no proxy, no Draft).
+func countMessages(t *testing.T, store *conversation.Store, convID uuid.UUID) int {
+	t.Helper()
+	msgs, err := store.Messages(context.Background(), convID)
+	if err != nil {
+		t.Fatalf("read messages: %v", err)
+	}
+	return len(msgs)
+}
+
+// TestContextBindingABAStaleVersionRejected is the issue #115 regression on a REAL
+// PostgreSQL: after an A→B→A transition sequence, a client still holding the old
+// version declares the SAME kind and SAME entity as the current binding. Entity
+// equality is not freshness — the turn must be rejected as stale and write NOTHING
+// (no binding row, no user turn), so no card-leading continuation can proxy against
+// an outdated world view (CHAT-007, §4.6 append-only + versioning).
+func TestContextBindingABAStaleVersionRejected(t *testing.T) {
+	pool, q := newPool(t)
+	store := conversation.NewStore(pool)
+	ctx := context.Background()
+	org, user := seedOrgUser(t, q)
+
+	// A: product/v-1 at version 1.
+	conv, err := store.BeginTurn(ctx, conversation.OpenParams{
+		OrganizationID: org, UserID: user,
+		Context: &conversation.RequestedContext{Kind: "product", EntityID: strPtr("v-1")},
+	}, "A")
+	if err != nil {
+		t.Fatalf("bind A: %v", err)
+	}
+
+	// B: explicit transition to event/e-9 at version 2.
+	if _, err := store.BeginTurn(ctx, conversation.OpenParams{
+		OrganizationID: org, UserID: user, ConversationID: &conv.ID,
+		Context: &conversation.RequestedContext{
+			Kind: "event", EntityID: strPtr("e-9"), Version: i32Ptr(1), Transition: true,
+		},
+	}, "B"); err != nil {
+		t.Fatalf("transition to B: %v", err)
+	}
+
+	// A again: explicit transition BACK to product/v-1 at version 3.
+	back, err := store.BeginTurn(ctx, conversation.OpenParams{
+		OrganizationID: org, UserID: user, ConversationID: &conv.ID,
+		Context: &conversation.RequestedContext{
+			Kind: "product", EntityID: strPtr("v-1"), Version: i32Ptr(2), Transition: true,
+		},
+	}, "A again")
+	if err != nil {
+		t.Fatalf("transition back to A: %v", err)
+	}
+	if back.Context == nil || back.Context.Version != 3 {
+		t.Fatalf("ABA binding = %+v, want product/v-1 version 3", back.Context)
+	}
+	if n := countBindings(t, pool, conv.ID); n != 3 {
+		t.Fatalf("binding rows after ABA = %d, want 3", n)
+	}
+	bindingsBefore, messagesBefore := 3, countMessages(t, store, conv.ID)
+
+	// The defect: a client still holding version 1 sends the SAME kind and entity as
+	// the CURRENT binding. Old code accepted it as an idempotent no-op.
+	if _, err := store.BeginTurn(ctx, conversation.OpenParams{
+		OrganizationID: org, UserID: user, ConversationID: &conv.ID,
+		Context: &conversation.RequestedContext{Kind: "product", EntityID: strPtr("v-1"), Version: i32Ptr(1)},
+	}, "stale ABA"); !errors.Is(err, conversation.ErrContextVersionStale) {
+		t.Fatalf("stale same-entity (ABA) err = %v, want ErrContextVersionStale", err)
+	}
+	if n := countBindings(t, pool, conv.ID); n != bindingsBefore {
+		t.Fatalf("a stale rejection must write no binding row, rows = %d, want %d", n, bindingsBefore)
+	}
+	if n := countMessages(t, store, conv.ID); n != messagesBefore {
+		t.Fatalf("a stale rejection must append no turn, messages = %d, want %d", n, messagesBefore)
+	}
+
+	// A same-entity continuation that supplies NO version cannot prove freshness
+	// either: reject and write nothing.
+	if _, err := store.BeginTurn(ctx, conversation.OpenParams{
+		OrganizationID: org, UserID: user, ConversationID: &conv.ID,
+		Context: &conversation.RequestedContext{Kind: "product", EntityID: strPtr("v-1")},
+	}, "unversioned"); !errors.Is(err, conversation.ErrContextVersionStale) {
+		t.Fatalf("unversioned same-entity err = %v, want ErrContextVersionStale", err)
+	}
+	if n := countBindings(t, pool, conv.ID); n != bindingsBefore {
+		t.Fatalf("an unversioned rejection must write no binding row, rows = %d", n)
+	}
+	if n := countMessages(t, store, conv.ID); n != messagesBefore {
+		t.Fatalf("an unversioned rejection must append no turn, messages = %d", n)
+	}
+
+	// RETRY SAFETY: a caught-up client at the CURRENT version is still an idempotent
+	// no-op — it appends its turn and consumes NO new binding version.
+	caught, err := store.BeginTurn(ctx, conversation.OpenParams{
+		OrganizationID: org, UserID: user, ConversationID: &conv.ID,
+		Context: &conversation.RequestedContext{Kind: "product", EntityID: strPtr("v-1"), Version: i32Ptr(3)},
+	}, "current")
+	if err != nil {
+		t.Fatalf("current same-entity continuation rejected: %v", err)
+	}
+	if caught.Context == nil || caught.Context.Version != 3 {
+		t.Fatalf("caught-up binding = %+v, want version 3 unchanged", caught.Context)
+	}
+	if n := countBindings(t, pool, conv.ID); n != bindingsBefore {
+		t.Fatalf("a retry must not append a binding version, rows = %d", n)
+	}
+	if n := countMessages(t, store, conv.ID); n != messagesBefore+1 {
+		t.Fatalf("an accepted retry must append its turn, messages = %d, want %d", n, messagesBefore+1)
+	}
+}
+
 // TestContextBindingAppendOnlyVersioning is the CHAT-007 durability proof: a first
 // turn binds version 1; a same-context turn is an idempotent no-op; an explicit
 // transition APPENDS version 2 (the version-1 row is never mutated); a stale

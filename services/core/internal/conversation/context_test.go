@@ -38,7 +38,10 @@ func TestResolveContext(t *testing.T) {
 		}
 	})
 
-	t.Run("same context re-send is an idempotent no-op", func(t *testing.T) {
+	t.Run("same context re-send at the CURRENT version is an idempotent no-op", func(t *testing.T) {
+		// RETRY SAFETY (§4.6 idempotency): a genuine retry — same kind, same entity,
+		// MATCHING version — stays a no-op. Rejecting this would turn every legitimate
+		// retry into a 409, which is a regression, not a fix.
 		res, err := resolveContext(&product1, &RequestedContext{
 			Kind: "product", EntityID: strPtr("v-1"), Version: i32Ptr(1),
 		})
@@ -53,14 +56,59 @@ func TestResolveContext(t *testing.T) {
 		}
 	})
 
-	t.Run("same context re-send with a stale version is still a retry no-op", func(t *testing.T) {
-		// The context matches the current binding exactly; a version the client
-		// believes is behind is a harmless retry, never a spurious transition.
+	t.Run("same entity re-send at the current version WITH a transition flag stays a no-op", func(t *testing.T) {
+		// Retry safety again: a picker re-selecting the entity already bound is not a
+		// transition — it must not consume a version.
+		res, err := resolveContext(&product1, &RequestedContext{
+			Kind: "product", EntityID: strPtr("v-1"), Version: i32Ptr(1), Transition: true,
+		})
+		if err != nil || res.append || res.binding.Version != 1 {
+			t.Fatalf("same-entity re-selection must be a no-op, got %+v err=%v", res, err)
+		}
+	})
+
+	t.Run("same entity with a MISSING version is stale (issue #115)", func(t *testing.T) {
+		// A continuation that supplies NO version cannot prove it is operating against
+		// the conversation's current binding. Fail closed (PD-4): the matching entity
+		// is not evidence the client's world view is current.
 		res, err := resolveContext(&product1, &RequestedContext{
 			Kind: "product", EntityID: strPtr("v-1"), Version: nil,
 		})
-		if err != nil || res.append {
-			t.Fatalf("same-context retry must be a no-op, got append=%v err=%v", res.append, err)
+		if !errors.Is(err, ErrContextVersionStale) {
+			t.Fatalf("unversioned same-entity continuation err = %v, want ErrContextVersionStale (resolved %+v)", err, res)
+		}
+		if res.append {
+			t.Fatal("a stale rejection must never append a binding version")
+		}
+	})
+
+	t.Run("same entity after an ABA transition with the OLD version is stale (issue #115)", func(t *testing.T) {
+		// IDENTITY, not EQUALITY. The conversation ran product/v-1 (v1) → event/e-9
+		// (v2) → back to product/v-1 (v3). A client still holding version 1 declares
+		// the SAME kind and SAME entity as the current binding, so the entity-equality
+		// idempotence branch accepted it and let a card-leading turn proxy against an
+		// outdated world view. Version, not entity equality, decides freshness.
+		currentA := ContextBinding{Kind: "product", EntityID: strPtr("v-1"), Version: 3}
+		res, err := resolveContext(&currentA, &RequestedContext{
+			Kind: "product", EntityID: strPtr("v-1"), Version: i32Ptr(1),
+		})
+		if !errors.Is(err, ErrContextVersionStale) {
+			t.Fatalf("stale same-entity (ABA) continuation err = %v, want ErrContextVersionStale (resolved %+v)", err, res)
+		}
+		if res.append {
+			t.Fatal("a stale rejection must never append a binding version")
+		}
+	})
+
+	t.Run("same entity after an ABA transition at the CURRENT version is a retry no-op", func(t *testing.T) {
+		// The positive half of the ABA case: once the client has caught up to version
+		// 3, the same-entity continuation is idempotent again.
+		currentA := ContextBinding{Kind: "product", EntityID: strPtr("v-1"), Version: 3}
+		res, err := resolveContext(&currentA, &RequestedContext{
+			Kind: "product", EntityID: strPtr("v-1"), Version: i32Ptr(3),
+		})
+		if err != nil || res.append || res.binding.Version != 3 {
+			t.Fatalf("current same-entity continuation must be a no-op, got %+v err=%v", res, err)
 		}
 	})
 

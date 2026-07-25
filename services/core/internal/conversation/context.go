@@ -57,13 +57,15 @@ type contextResolution struct {
 //   - No declared context: a no-op that keeps the current binding.
 //   - First binding (no current): establishes version 1. A version claimed against
 //     a binding-less conversation is stale (the client's world view is wrong).
-//   - Same entity as current: an idempotent no-op, regardless of the version the
-//     client believes — a re-send of the same context is never a spurious
-//     transition (retry-safe).
-//   - Different entity: a transition. It is rejected as STALE unless the declared
-//     version equals the current version, and rejected as TRANSITION-REQUIRED
-//     unless it carries an explicit transition; only then does it append the next
-//     version.
+//   - Continuation on a bound conversation: the declared version is validated FIRST
+//     (issue #115). A missing or mismatched version is STALE, whether or not the
+//     declared entity happens to equal the current one — after an A→B→A sequence
+//     entity equality would otherwise mask a client two versions behind.
+//   - Same entity at the current version: an idempotent no-op — a re-send of the
+//     same context is never a spurious transition (retry-safe).
+//   - Different entity at the current version: a transition, rejected as
+//     TRANSITION-REQUIRED unless it carries an explicit transition; only then does
+//     it append the next version.
 func resolveContext(current *ContextBinding, req *RequestedContext) (contextResolution, error) {
 	if req == nil {
 		if current == nil {
@@ -84,18 +86,27 @@ func resolveContext(current *ContextBinding, req *RequestedContext) (contextReso
 		}, nil
 	}
 
-	if current.Kind == req.Kind && strPtrEq(current.EntityID, req.EntityID) {
-		// Same context: idempotent continuation (retry-safe). The version the client
-		// believes is irrelevant — the bound entity already matches.
-		return contextResolution{binding: *current}, nil
-	}
-
-	// A different entity — a transition. Stale takes precedence over the missing
-	// explicit-transition flag: a client operating against an outdated version is
-	// wrong about the world before it is wrong about intent.
+	// FRESHNESS FIRST (issue #115). A continuation must prove it is operating against
+	// the conversation's CURRENT version before its declared entity is compared.
+	// Entity equality is not freshness: after an A→B→A sequence the bound entity
+	// matches a client that is two versions behind, and treating that as an
+	// idempotent continuation lets a card-leading turn proxy against an outdated
+	// world view. A missing version is the same failure — an unversioned claim cannot
+	// prove anything. Staleness also precedes the missing explicit-transition flag: a
+	// client wrong about the world is wrong before it is wrong about intent.
 	if req.Version == nil || *req.Version != current.Version {
 		return contextResolution{}, ErrContextVersionStale
 	}
+
+	if current.Kind == req.Kind && strPtrEq(current.EntityID, req.EntityID) {
+		// Same context at the current version: idempotent continuation (retry-safe).
+		// A genuine retry — and a picker re-selecting the entity already bound — never
+		// consumes a version.
+		return contextResolution{binding: *current}, nil
+	}
+
+	// A different entity at the current version — a transition, which must be
+	// explicit; a conversation is never silently relabeled.
 	if !req.Transition {
 		return contextResolution{}, ErrContextTransitionRequired
 	}
