@@ -133,4 +133,28 @@ describe("storage audit — the unconfirmed-revocation quarantine record (#149)"
     });
     expect(offenders.length).toBeGreaterThan(0);
   });
+
+  // B2 (fix cycle 1): the quarantine store is a BOUNDED LIST, so the audit must
+  // cover EVERY entry. Auditing only the first would let a secret's new home
+  // escape simply by being the second outstanding revocation.
+  it("audits EVERY entry of the bounded quarantine LIST, not just the first", () => {
+    const clean = {
+      credential: "cap-cred-hex",
+      credentialId: "33333333-3333-3333-3333-333333333333",
+      marketplaceAccountId: "11111111-1111-1111-1111-111111111111",
+      credentialExpiresAt: "2026-08-01T00:00:00Z",
+      requestedAt: "2026-07-25T00:00:00Z",
+      attempts: 48,
+      evidence: "unconfirmed_generic_401",
+      nextAttemptAt: "2026-07-25T01:00:00Z",
+    };
+    expect(auditNoSellerToken({ [KEY_REVOCATION_UNCONFIRMED]: [clean, clean] })).toEqual([]);
+
+    const offenders = auditNoSellerToken({
+      [KEY_REVOCATION_UNCONFIRMED]: [clean, { ...clean, lastSeenUrl: "https://x/", jwt: "leak" }],
+    });
+    expect(offenders.join(" ")).toContain("lastSeenUrl");
+    expect(offenders.join(" ")).toContain("[1]");
+    expect(offenders.join(" ")).toContain("jwt");
+  });
 });

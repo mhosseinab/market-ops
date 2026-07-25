@@ -120,6 +120,17 @@ function gatewayFetchMock(rows: unknown[], targetsStatus = 200) {
   });
 }
 
+// The unconfirmed-revocation QUARANTINE store is a BOUNDED LIST keyed by
+// credentialId (#149): a second unconfirmable revocation must never evict the
+// first. A legacy single-record snapshot (written by an earlier build, or seeded
+// by a test as such a build would have) reads as a one-element list, so this
+// helper reads EITHER durable shape.
+function quarantineRecords(storage: Map<string, unknown>): Array<Record<string, unknown>> {
+  const raw = storage.get("revocationUnconfirmed");
+  if (raw === undefined || raw === null) return [];
+  return (Array.isArray(raw) ? raw : [raw]) as Array<Record<string, unknown>>;
+}
+
 type Sender = { tab?: { id: number } };
 
 async function loadWorker(): Promise<(msg: ExtMessage, sender?: Sender) => Promise<ExtResponse>> {
@@ -130,7 +141,11 @@ async function loadWorker(): Promise<(msg: ExtMessage, sender?: Sender) => Promi
       chrome: { runtime: { onMessage: { addListener: ReturnType<typeof vi.fn> } } };
     }
   ).chrome;
-  const handler = chromeMock.runtime.onMessage.addListener.mock.calls[0]?.[0] as (
+  // The MOST RECENTLY registered listener — i.e. the worker instance that was
+  // just (re-)imported. A restart test drives the RESPAWNED worker; taking
+  // calls[0] would keep talking to the pre-teardown instance (and its surviving
+  // in-memory state), which is precisely what such a test must not do.
+  const handler = chromeMock.runtime.onMessage.addListener.mock.calls.at(-1)?.[0] as (
     msg: ExtMessage,
     sender: unknown,
     sendResponse: (r: ExtResponse) => void,
@@ -1228,7 +1243,7 @@ describe("service worker — #149 pending revocation never leaks a live credenti
       // clock-driven terminal `revoked`, or the credential being discarded.
       const material =
         (storage.get(KEY_CREDENTIAL) as { credential?: string } | undefined)?.credential ??
-        (storage.get("revocationUnconfirmed") as { credential?: string } | undefined)?.credential;
+        (quarantineRecords(storage)[0] as { credential?: string } | undefined)?.credential;
       expect(material).toBe(CRED.credential);
       const state = await send({ kind: "getState" });
       if (!("state" in state)) throw new Error("expected state");
@@ -1495,7 +1510,7 @@ describe("service worker — #149 cycle 2: a locally-resolved revocation is neve
     // answer ever reaches a terminal `revoked`.
     const material =
       (storage.get(KEY_CREDENTIAL) as { credential?: string } | undefined)?.credential ??
-      (storage.get("revocationUnconfirmed") as { credential?: string } | undefined)?.credential;
+      (quarantineRecords(storage)[0] as { credential?: string } | undefined)?.credential;
     expect(material).toBe(CRED.credential);
     const state = await send({ kind: "getState" });
     if (!("state" in state)) throw new Error("expected state");
@@ -1537,9 +1552,9 @@ describe("service worker — #149 cycle 2: a locally-resolved revocation is neve
     expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
     expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
     // Relocated, NOT destroyed — that is the whole point of the quarantine.
-    expect(
-      (storage.get("revocationUnconfirmed") as { credential?: string } | undefined)?.credential,
-    ).toBe(CRED.credential);
+    expect((quarantineRecords(storage)[0] as { credential?: string } | undefined)?.credential).toBe(
+      CRED.credential,
+    );
     const outcomes = await revocationOutcomes();
     expect(outcomes).toContain("quarantined_unconfirmed");
     expect(outcomes).not.toContain("confirmed");
@@ -1905,7 +1920,7 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
     // durable quarantine record, which is what keeps the retry possible.
     expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
     expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
-    const q = storage.get(KEY_REVOCATION_UNCONFIRMED) as Record<string, unknown>;
+    const q = quarantineRecords(storage)[0] as Record<string, unknown>;
     expect(q).toBeDefined();
     expect(q.credential).toBe(CRED.credential);
     expect(q.credentialId).toBe(CRED.credentialId);
@@ -1936,7 +1951,7 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
     if (!("state" in state)) throw new Error("expected state");
     expect(state.state.capability).toBe("revocation_unconfirmed");
     expect(state.state.capability).not.toBe("revoked");
-    const q = storage.get(KEY_REVOCATION_UNCONFIRMED) as Record<string, unknown>;
+    const q = quarantineRecords(storage)[0] as Record<string, unknown>;
     expect(q.evidence).toBe("unconfirmed_transport");
     expect(await revocationOutcomes()).toContain("quarantined_unconfirmed");
   });
@@ -1955,7 +1970,7 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
 
     // The quarantined retry is scheduled — move its persisted schedule into the
     // past, which IS "time passed" (the record is the only clock that matters).
-    const persisted = storage.get(KEY_REVOCATION_UNCONFIRMED) as Record<string, unknown>;
+    const persisted = quarantineRecords(storage)[0] as Record<string, unknown>;
     storage.set(KEY_REVOCATION_UNCONFIRMED, {
       ...persisted,
       nextAttemptAt: new Date(Date.now() - 1000).toISOString(),
@@ -2181,6 +2196,129 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
     if (!("state" in paired)) throw new Error(`pairing was refused: ${JSON.stringify(paired)}`);
     expect(paired.state.capability).toBe("ready");
   });
+
+  // ---- fix cycle 1: the quarantine store holds MORE THAN ONE outstanding
+  // revocation, and a repeat Revoke never fabricates a terminal `revoked` ----
+
+  const CRED_A = {
+    credential: "cap-cred-hex-A",
+    credentialId: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  };
+
+  function quarantineA(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      credential: CRED_A.credential,
+      credentialId: CRED_A.credentialId,
+      marketplaceAccountId: CRED.marketplaceAccountId,
+      credentialExpiresAt: CRED.expiresAt,
+      requestedAt: "2026-07-20T00:00:00Z",
+      attempts: 48,
+      evidence: "unconfirmed_generic_401",
+      nextAttemptAt: "2020-01-01T00:00:00Z", // already due
+      ...over,
+    };
+  }
+
+  // Re-arm every quarantined revoke: "time passed" is expressed through the
+  // PERSISTED schedule, which is the only clock the retry consults.
+  function makeQuarantineDue(): void {
+    const due = new Date(Date.now() - 60_000).toISOString();
+    storage.set(
+      KEY_REVOCATION_UNCONFIRMED,
+      quarantineRecords(storage).map((e) => ({ ...e, nextAttemptAt: due })),
+    );
+  }
+
+  // B2. The quarantine store was SINGLE-SLOT: `store.set(KEY_REVOCATION_
+  // UNCONFIRMED, record)` with no read-before-write. During the deploy window
+  // decision (b) contemplates, the self-revoke route is unmounted so EVERY
+  // revoke is unconfirmable — and the second one silently overwrote the first,
+  // destroying credential A's material AND its outstanding revocation with no
+  // metric, no log and no capability transition, while A's server row stayed
+  // live for the rest of its TTL.
+  it("B2: a SECOND unconfirmable revocation never evicts the FIRST — both stay quarantined and BOTH keep being pursued", async () => {
+    const { REVOCATION_MAX_ATTEMPTS } = await import("../lib/revocation-backoff");
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(genericProxy401);
+    vi.stubGlobal("fetch", rf.fetch);
+    // Credential A's revoke is already quarantined.
+    storage.set(KEY_CAPABILITY, "revocation_unconfirmed");
+    storage.set(KEY_REVOCATION_UNCONFIRMED, quarantineA());
+
+    const send = await loadWorker();
+    // Re-pairing from quarantine is permitted BY DESIGN (decision (a)) …
+    const paired = await send({ kind: "pair", code: "code-123" });
+    if (!("state" in paired)) throw new Error(`pairing was refused: ${JSON.stringify(paired)}`);
+    await settle();
+
+    // … and credential B's revoke is unconfirmable too, so it also quarantines.
+    seedPending({ attempts: REVOCATION_MAX_ATTEMPTS - 1 });
+    const send2 = await loadWorker();
+    await settle();
+
+    // BOTH records survive — neither credential's outstanding revoke was lost.
+    const ids = quarantineRecords(storage).map((e) => e.credentialId);
+    expect(ids).toContain(CRED_A.credentialId);
+    expect(ids).toContain(CRED.credentialId);
+    const a = quarantineRecords(storage).find((e) => e.credentialId === CRED_A.credentialId);
+    expect(a?.credential).toBe(CRED_A.credential);
+
+    const state = await send2({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("revocation_unconfirmed");
+    expect(state.state.revocationUnconfirmed).toBe(true);
+
+    // A is STILL PURSUED after B joined the quarantine — that is the whole point
+    // of keeping it: the authority still gets to kill A's server row.
+    makeQuarantineDue();
+    rf.revokeCalls.length = 0;
+    await loadWorker();
+    await settle();
+    expect(rf.revokeCalls).toContain(`Bearer ${CRED_A.credential}`);
+    expect(rf.revokeCalls).toContain(`Bearer ${CRED.credential}`);
+    expect(await revocationOutcomes()).not.toContain("confirmed");
+  });
+
+  // B4. `revokeLocked`'s no-credential branch never consulted the quarantine. In
+  // quarantine KEY_CREDENTIAL is already gone, so a repeat Revoke fired that
+  // branch and overwrote the honest `revocation_unconfirmed` with terminal
+  // `revoked` — the popup rendering a completed kill switch the authority never
+  // confirmed, while the quarantine record was still outstanding, and telemetry
+  // emitting `already_cleared` (indistinguishable from an idempotent repeat of a
+  // genuinely confirmed revoke).
+  it("B4: a REPEAT Revoke while quarantined never folds the quarantine into a terminal `revoked`", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(genericProxy401);
+    vi.stubGlobal("fetch", rf.fetch);
+    storage.set(KEY_CAPABILITY, "revocation_unconfirmed");
+    // Not due yet, so ONLY the user's repeat Revoke can drive an attempt.
+    storage.set(KEY_REVOCATION_UNCONFIRMED, quarantineA({ nextAttemptAt: "2030-01-01T00:00:00Z" }));
+
+    const send = await loadWorker();
+    await settle();
+    expect(rf.revokeCalls).toEqual([]);
+
+    const resp = await send({ kind: "revoke" });
+    await settle();
+    if (!("state" in resp)) throw new Error("expected state");
+
+    // The state stays HONEST — never a kill switch it did not achieve.
+    expect(resp.state.capability).toBe("revocation_unconfirmed");
+    expect(resp.state.capability).not.toBe("revoked");
+    expect(resp.state.degradation).not.toBe("credential_revoked");
+    expect(resp.state.revocationUnconfirmed).toBe(true);
+    expect(storage.get(KEY_CAPABILITY)).toBe("revocation_unconfirmed");
+    // The quarantine is still outstanding, and the repeat FORCED a retry of it.
+    expect(quarantineRecords(storage).map((e) => e.credentialId)).toEqual([CRED_A.credentialId]);
+    expect(rf.revokeCalls).toContain(`Bearer ${CRED_A.credential}`);
+    // Telemetry can tell this apart from an idempotent repeat of a CONFIRMED
+    // revoke — the two are not the same operational event.
+    const outcomes = await revocationOutcomes();
+    expect(outcomes).toContain("quarantine_repeat");
+    expect(outcomes).not.toContain("already_cleared");
+    expect(outcomes).not.toContain("confirmed");
+    expect(await capabilityTransitions()).not.toContain("revoked");
+  });
 });
 
 // Issue #149, fix 3 — the two carried-over HIGH blockers.
@@ -2261,7 +2399,80 @@ describe("service worker — #149 F1/F2: the kill switch never fails OPEN", () =
     await send({ kind: "capture", product });
     await settle();
     expect(gatewayCalls.filter((u) => u.includes("/observation/capture"))).toEqual([]);
-    expect(storage.get(KEY_CAPABILITY)).not.toBe(undefined); // pre-failure value only
+    // 5. The DURABLE snapshot is fail-closed too, by VALUE: `set` is broken, so
+    //    the fallback exhausts the options a broken-quota store still has —
+    //    `remove` FREES quota — leaving no credential a respawn could capture
+    //    with and no stored `ready` for it to read back.
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+    expect(storage.get(KEY_CAPABILITY)).not.toBe("ready");
+  });
+
+  // B1 (fix cycle 1). The F1 gate was MEMORY-ONLY: `localCaptureLock` is
+  // module-level state that dies with the MV3 worker. After a Revoke whose
+  // durable writes rejected, the surviving snapshot was
+  // {credential, capability:"ready"} with NO marker — so MV3's idle teardown
+  // plus the next respawn read `ready`, re-synced owned targets and UPLOADED
+  // with the credential the user had just asked to revoke, and no durable marker
+  // existed for `retryPendingRevocation` to reconcile from either. The kill
+  // switch has to survive the worker, not merely the worker's lifetime.
+  it("B1: a Revoke whose durable writes fail still fails CLOSED after a WORKER RESTART — the respawned worker never captures with the revoked-by-request credential", async () => {
+    const mock = installChromeMock();
+    const storage = mock.storage;
+    const gatewayCalls: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const url = String(input);
+        if (url.includes("/ext/pairing/claim")) {
+          return new Response(JSON.stringify(CRED), { status: 200 });
+        }
+        gatewayCalls.push(url);
+        if (url.includes("/ext/owned-targets")) {
+          return new Response(JSON.stringify({ items: [ownedTargetRow(product)] }), {
+            status: 200,
+          });
+        }
+        return new Response(null, { status: 202 });
+      }),
+    );
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await settle();
+
+    // Storage breaks exactly when the revoke needs to record itself. `remove`
+    // keeps working, as it does in a real QUOTA_BYTES failure — removing frees
+    // quota rather than consuming it.
+    const chromeMock = (
+      globalThis as unknown as { chrome: { storage: { local: { set: ReturnType<typeof vi.fn> } } } }
+    ).chrome;
+    const brokenSet = vi.fn(async () => {
+      throw new Error("QUOTA_BYTES quota exceeded");
+    });
+    chromeMock.storage.local.set = brokenSet;
+    await send({ kind: "revoke" });
+    await settle();
+
+    // MV3 tears the worker down on idle. Memory (including localCaptureLock) is
+    // gone; chrome.storage.local survives, and quota has since been freed.
+    const surviving = storage;
+    chromeMock.storage.local.set = vi.fn(async (obj: Record<string, unknown>) => {
+      for (const [k, v] of Object.entries(obj)) surviving.set(k, v);
+    });
+    gatewayCalls.length = 0;
+    const respawned = await loadWorker();
+    await settle();
+    await respawned({ kind: "capture", product });
+    await settle();
+
+    // The respawned worker never uploads with the revoked-by-request credential.
+    expect(gatewayCalls.filter((u) => u.includes("/observation/capture"))).toEqual([]);
+    // …and its capability VALUE is the honest fail-closed one — asserting it is
+    // merely DEFINED would pass over exactly the bug (`ready` is defined).
+    const after = await respawned({ kind: "getState" });
+    if (!("state" in after)) throw new Error("expected state");
+    expect(after.state.capability).not.toBe("ready");
+    expect(after.state.capability).toBe("unknown");
+    expect(surviving.get(KEY_CREDENTIAL)).toBeUndefined();
   });
 
   // F2. `demoteToRevoked` did not mirror the #253 owned-target teardown that

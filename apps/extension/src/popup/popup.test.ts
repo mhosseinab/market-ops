@@ -223,6 +223,34 @@ describe("popup — the unconfirmed-revocation state never borrows another state
     expect(document.querySelector('[data-role="degradation"]')).toBeNull();
   });
 
+  // B3 (fix cycle 1). The pairing input was gated on `unknown || revoked`, so a
+  // popup rendered in `revocation_unconfirmed` was INERT — no pairing input, no
+  // capture toggle. The service worker permits the re-pair (handlePair refuses
+  // only on the PENDING marker), but the popup is the only surface a user has,
+  // so a user whose gateway was down when they pressed Revoke was locked out
+  // until the quarantined credential's 30-day expiry fired. That is exactly the
+  // permanent re-pair block binding decision (a) forbids, reached through the UI
+  // instead of the state machine. No new copy is needed: the pairing input
+  // reuses `ext.pairing.placeholder` / `ext.pairing.submit`.
+  it("B3: the pairing input RENDERS in `revocation_unconfirmed` — the quarantine never permanently blocks re-pair", async () => {
+    await loadPopup(async () => ({ ok: true, state: unconfirmedState() }));
+
+    const input = document.querySelector<HTMLInputElement>("#pairing-code");
+    expect(input).not.toBeNull();
+    expect(input?.placeholder).toBe("کد جفت‌سازی");
+    expect(Array.from(document.querySelectorAll("button")).map((b) => b.textContent)).toContain(
+      "جفت‌سازی",
+    );
+    // The outstanding revocation stays VISIBLE alongside it — re-pairing does
+    // not make a possibly-live credential disappear (EXT-009).
+    expect(document.querySelector('[data-role="revocation-unconfirmed"]')).not.toBeNull();
+    // …and the state still borrows NEITHER of the two states it is not.
+    const note = document.querySelector('[data-role="degradation"]');
+    expect(note?.textContent).toBe("revocation_unconfirmed");
+    expect(note?.textContent).not.toBe("دسترسی لغو شد — برای ادامه دوباره جفت‌سازی کنید.");
+    expect(note?.textContent).not.toBe("ضبط خاموش است — در انتظار تایید لغو دسترسی از سرور.");
+  });
+
   it("shows NO indicator when there is no outstanding unconfirmed revocation", async () => {
     await loadPopup(async () => ({ ok: true, state: readyState() }));
     expect(document.querySelector('[data-role="revocation-unconfirmed"]')).toBeNull();

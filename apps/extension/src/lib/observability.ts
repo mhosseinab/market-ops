@@ -57,6 +57,20 @@ export type MetricName =
   //                           destroyed the credential and so guaranteed the
   //                           server row could never be killed;
   //   quarantine_deferred   — a quarantined retry was inside its backoff window;
+  //   quarantine_repeat     — the user pressed Revoke AGAIN while a revoke was
+  //                           quarantined (the quarantine holds the material, so
+  //                           KEY_CREDENTIAL is already gone). It forces one
+  //                           immediate retry and leaves the state at
+  //                           `revocation_unconfirmed`. Distinct from
+  //                           `already_cleared` on purpose: folding the two lost
+  //                           the difference between an idempotent repeat of a
+  //                           CONFIRMED revoke and one the authority never
+  //                           confirmed;
+  //   quarantine_evicted    — the bounded quarantine list was at its cap and the
+  //                           OLDEST outstanding revocation was dropped. A
+  //                           revocation we can no longer pursue, so it is
+  //                           counted and warn-logged with the evicted
+  //                           credentialId (never the secret);
   //   quarantine_retry_pending
   //                         — a quarantined retry ran and was still not
   //                           authoritative;
@@ -74,9 +88,25 @@ export type MetricName =
   //                           (an offline user pressing Pair must not end their
   //                           own revoke). The marker's AGE bound still applies;
   //   local_storage_error   — a user Revoke's DURABLE writes failed (e.g.
-  //                           QUOTA_BYTES). Capture is gated OFF in memory and
-  //                           the popup still gets a response; counted so the
-  //                           kill switch never fails open silently;
+  //                           QUOTA_BYTES) and NOTHING durable was possible even
+  //                           after shedding advisory telemetry. Capture is gated
+  //                           OFF in memory for this worker lifetime only, and the
+  //                           popup still gets a response; counted so the kill
+  //                           switch never fails open silently;
+  //   local_storage_error_recovered
+  //                         — same failure, but the small fail-closed writes
+  //                           landed on retry (after shedding the telemetry
+  //                           outbox), so the revoke stays durably retryable and
+  //                           capture stays off across a worker restart;
+  //   local_storage_error_discarded
+  //                         — same failure, and even those writes rejected, so
+  //                           the credential material (and the stale stored
+  //                           capability) were REMOVED — `remove` frees quota —
+  //                           leaving a respawned worker nothing to capture with.
+  //                           A last-resort fail-closed discard: the SERVER-side
+  //                           revoke can no longer be pursued, which is why it is
+  //                           its own outcome plus a warn log. Lands on `unknown`,
+  //                           never `revoked`;
   //   retry_error           — a storage failure aborted a retry. The durable
   //                           marker is untouched, so the next due tick retries;
   //                           counted so the abort is never silent;

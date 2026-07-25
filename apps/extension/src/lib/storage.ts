@@ -67,16 +67,27 @@ export const KEY_LAST_UPLOAD = "lastUploadAt";
 // credential material stays in KEY_CREDENTIAL (one store for the secret), which
 // is exactly why a failed revoke must NOT clear that key.
 export const KEY_REVOCATION_PENDING = "revocationPending";
-// Durable QUARANTINE record for a revocation that could not be confirmed (issue
+// Durable QUARANTINE store for revocations that could not be confirmed (issue
 // #149, fix 3). Distinct from KEY_REVOCATION_PENDING on purpose:
 //   - the pending marker BLOCKS re-pairing; the quarantine record must NOT, so a
 //     user is never locked out of the extension by an authority that never
 //     answered;
 //   - it holds the credential MATERIAL, because the quarantined revoke keeps
 //     retrying — silently discarding the credential is what defeated EXT-009.
-// It is JSON-safe so it survives an MV3 worker restart byte-identically, and it
-// is walked by the storage audit exactly like KEY_CREDENTIAL.
+// It holds a BOUNDED LIST keyed by credentialId, not a single slot: re-pairing
+// from quarantine is permitted, so a user CAN accumulate more than one
+// outstanding revocation (during a deploy window where the self-revoke route is
+// unmounted, EVERY revoke is unconfirmable). A single slot meant the second
+// revoke silently overwrote the first — destroying its material and its
+// outstanding revocation with no metric and no log, exactly the EXT-009 defeat
+// this issue is about. It is JSON-safe so it survives an MV3 worker restart
+// byte-identically, and it is walked by the storage audit exactly like
+// KEY_CREDENTIAL.
 export const KEY_REVOCATION_UNCONFIRMED = "revocationUnconfirmed";
+// The cap on that list. Bounded storage is the rule (never unbounded growth);
+// beyond it the OLDEST entry is evicted under its own counted outcome + warn
+// log, never silently.
+export const MAX_QUARANTINED_REVOCATIONS = 8;
 // Durable operational-telemetry outbox (issue #162): bounded, allow-listed metric
 // snapshots that must survive an MV3 worker restart and be exported to an
 // operational sink. Persisted here so the storage audit walks it too — a batch
@@ -161,17 +172,23 @@ export function auditNoSellerToken(snapshot: Record<string, unknown>): string[] 
     }
   }
   // The quarantine record is the OTHER place credential material lives (#149),
-  // so it gets the same allow-list treatment — never a weaker one.
+  // so it gets the same allow-list treatment — never a weaker one. EVERY entry
+  // of the bounded list is audited (and a legacy single-record snapshot is
+  // audited as the one-element list it is), so a new home for a secret can never
+  // escape the audit by arriving as the second entry.
   const quarantined = snapshot[KEY_REVOCATION_UNCONFIRMED];
-  if (quarantined && typeof quarantined === "object") {
-    for (const key of Object.keys(quarantined as object)) {
+  const entries = Array.isArray(quarantined) ? quarantined : [quarantined];
+  entries.forEach((entry, i) => {
+    if (!entry || typeof entry !== "object") return;
+    const at = Array.isArray(quarantined)
+      ? `${KEY_REVOCATION_UNCONFIRMED}[${i}]`
+      : KEY_REVOCATION_UNCONFIRMED;
+    for (const key of Object.keys(entry as object)) {
       if (!ALLOWED_UNCONFIRMED_REVOCATION_KEYS.has(key)) {
-        offenders.push(
-          `${KEY_REVOCATION_UNCONFIRMED}.${key} (not an allow-listed quarantined-revocation field)`,
-        );
+        offenders.push(`${at}.${key} (not an allow-listed quarantined-revocation field)`);
       }
     }
-  }
+  });
   return offenders;
 }
 
@@ -230,6 +247,8 @@ export interface PendingRevocation {
 //
 // Every field is allow-listed by ALLOWED_UNCONFIRMED_REVOCATION_KEYS above and
 // JSON-safe, so the record survives an MV3 worker restart byte-identically.
+// Records are stored as a BOUNDED LIST keyed by credentialId (see
+// KEY_REVOCATION_UNCONFIRMED) — one per outstanding unconfirmable revocation.
 export interface UnconfirmedRevocation {
   // The capture credential the retry must present. NEVER a seller-API token
   // (EXT-001) — it is the same material KEY_CREDENTIAL held, just relocated.

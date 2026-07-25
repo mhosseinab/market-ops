@@ -205,8 +205,21 @@ function render(state: PopupState): void {
     root.appendChild(outstanding);
   }
 
-  // Pairing input (shown when not yet paired / revoked).
-  if (state.capability === "unknown" || state.capability === "revoked") {
+  // Pairing input (shown when not yet paired / revoked / quarantined).
+  //
+  // `revocation_unconfirmed` is included deliberately (#149): the service worker
+  // PERMITS the re-pair — handlePair refuses only on the *pending* marker — and
+  // the popup is the only surface a user has. Gating it out meant a user whose
+  // gateway was down when they pressed Revoke could not re-pair until the
+  // quarantined credential's expiry, i.e. the permanent re-pair block the
+  // quarantine terminal exists to avoid, reached through the UI instead of the
+  // state machine. No new copy is needed — this reuses the pairing catalog keys,
+  // and the outstanding-revocation indicator above stays visible alongside it.
+  if (
+    state.capability === "unknown" ||
+    state.capability === "revoked" ||
+    state.capability === "revocation_unconfirmed"
+  ) {
     const input = document.createElement("input");
     input.id = "pairing-code";
     input.placeholder = t("ext.pairing.placeholder");
