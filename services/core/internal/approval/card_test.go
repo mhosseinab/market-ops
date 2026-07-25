@@ -213,7 +213,7 @@ func revalidatingCard(t *testing.T, now time.Time, binding Binding) Card {
 }
 
 // TestRevalidate_AdvancesToExecuting_WhenBindingMatches proves the §8.4
-// Revalidating → Executing boundary is CROSSED (S18) only when every bound
+// Revalidating → Executing boundary is CROSSED only when every bound
 // version still matches the server-resolved current binding.
 func TestRevalidate_AdvancesToExecuting_WhenBindingMatches(t *testing.T) {
 	now := time.Now()

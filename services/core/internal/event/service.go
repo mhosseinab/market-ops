@@ -61,7 +61,7 @@ var ErrEvidenceFieldInapplicable = errors.New("event: cited observation does not
 // (EVT-003), maintains the versioned materiality thresholds (EVT-002), computes
 // the ranked Today feed (EVT-004), and stores relevance feedback (EVT-005). It
 // owns no money calculation — exposure arrives already computed from the margin
-// plane (S16); price signals are raw evidence (money quarantine).
+// plane; price signals are raw evidence (money quarantine).
 type Service struct {
 	pool     *pgxpool.Pool
 	now      func() time.Time

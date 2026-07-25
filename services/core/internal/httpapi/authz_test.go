@@ -87,7 +87,7 @@ func TestPD3HandlersMapForeignAccountToUniform404(t *testing.T) {
 	}
 }
 
-// TestMachinePrincipalCannotWriteGuardrailsEditPriceOrBulkMint is the S37
+// TestMachinePrincipalCannotWriteGuardrailsEditPriceOrBulkMint is the
 // end-to-end (transport-level) twin of
 // perm.TestGatewayCannotWriteGuardrailsEditPriceOrBulkMint: the read/Draft-only
 // LLM machine credential, presented as a Bearer token against the SCREENS

@@ -1,5 +1,5 @@
 -- +goose Up
--- Issue #201 (S8): make email canonicalization IDENTICAL across storage write,
+-- Issue #201: make email canonicalization IDENTICAL across storage write,
 -- global uniqueness, and login lookup.
 --
 -- Root cause: the write path used `lower(btrim(email))` and the unique index

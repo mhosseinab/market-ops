@@ -73,7 +73,7 @@ type CreateIdentityCandidateParams struct {
 	NativeProductID      int64
 }
 
-// Market Product Identity queries (S11, CAT-002, §6.5 journey 4, §16).
+// Market Product Identity queries (CAT-002, §6.5 journey 4, §16).
 // market_product_identities is a current-state table (state transitions UPDATE in
 // place); the append-only history is market_product_identity_decisions and the
 // append-only event log is recommendation_invalidation_events.

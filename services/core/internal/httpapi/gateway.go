@@ -26,10 +26,10 @@ type gatewayServer struct {
 	// observation backs the /observation/* routes (PRD §7.3). Nil until wired; the
 	// handlers fail closed with a structured error when it is absent.
 	observation ObservationService
-	// catalog backs the /catalog/* Products read-model routes (S26, PRD §6.1). Nil
+	// catalog backs the /catalog/* Products read-model routes (PRD §6.1). Nil
 	// until wired; the handlers fail closed with a structured error when absent.
 	catalog CatalogService
-	// diagnostics backs GET /catalog/product-diagnostics (S26, LST-001). Nil until
+	// diagnostics backs GET /catalog/product-diagnostics (LST-001). Nil until
 	// wired; the handler fails closed with a structured error when absent, so no
 	// listing/image diagnostic is served on an unwired plane. Read-only: the service
 	// exposes no write/generate/publish path.
@@ -85,10 +85,10 @@ type gatewayServer struct {
 	// Draft-only routes and its read envelope (perm.GatewayCan). Empty ⇒ no machine
 	// principal can authenticate (the Draft routes are unreachable, fail closed).
 	gatewayToken string
-	// guardrail backs the /guardrails routes (PD-3 item 6, S37). Nil ⇒ those
+	// guardrail backs the /guardrails routes (PD-3 item 6). Nil ⇒ those
 	// routes fail closed with a structured error.
 	guardrail GuardrailService
-	// watchlistSvc backs the /watchlist routes (EXT-007, S37). Nil ⇒ those routes
+	// watchlistSvc backs the /watchlist routes (EXT-007). Nil ⇒ those routes
 	// fail closed with a structured error.
 	watchlistSvc WatchlistService
 	// logger emits the structured boundary logs for the S23 handlers/job. Nil-safe.

@@ -1,4 +1,4 @@
--- EXT-007 priority watchlist (S37). Add is idempotent (ON CONFLICT DO NOTHING —
+-- EXT-007 priority watchlist. Add is idempotent (ON CONFLICT DO NOTHING —
 -- a duplicate variant returns no new row, never a second entry and never an
 -- error). The cap (MaxEntries) is enforced in Go (internal/watchlist) by counting
 -- INSIDE the insert transaction, after acquiring an account-scoped transaction

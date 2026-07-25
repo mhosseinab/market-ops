@@ -643,7 +643,7 @@ WHERE tier = $1 AND active = true
 ORDER BY marketplace_account_id, native_variant_id
 `
 
-// Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
+// Route C scheduler enumeration (OBS-005/§10.2): every ACTIVE target in a
 // cadence tier, across all accounts, in a stable order. A target deactivated by
 // identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
 // a reopened identity stops being fetched. Ordered by account then native id so

@@ -118,7 +118,7 @@ export const offer: ObservedOffer = {
   routes: ["route_c"],
 };
 
-// A canonical Products row (S26): confirmed + watched variant with a Supported
+// A canonical Products row: confirmed + watched variant with a Supported
 // owned offer and one deterministic market offer.
 export const catalogProductRow: CatalogProductRow = {
   variantId: VARIANT_ID,
@@ -749,7 +749,7 @@ export const readinessComplete: MarginReadiness = {
   computedAt: "2026-07-17T09:00:00Z",
 };
 
-// READ-ONLY listing/image diagnostics (S26, LST-001): a passing title plus the
+// READ-ONLY listing/image diagnostics (LST-001): a passing title plus the
 // dark-posture description/image results (not_observed → warn). Each row NAMES its
 // entity + field + rule; nothing generates content.
 export const productDiagnostics: ListingDiagnosticsReport = {

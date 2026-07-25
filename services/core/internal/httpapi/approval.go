@@ -40,7 +40,7 @@ type ApprovalService interface {
 	// rejection) is preserved unchanged.
 	ConfirmBulkSelectionForOrg(ctx context.Context, organizationID, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (recommendation.BulkConfirmOutcome, error)
 	// EditPriceForOrg mints a new card version with the edited price (CHAT-044,
-	// PD-3 item 2, S37), scoped to the caller's account.
+	// PD-3 item 2), scoped to the caller's account.
 	EditPriceForOrg(ctx context.Context, organizationID, cardID uuid.UUID, newPrice money.Money, now time.Time) (db.ApprovalCard, error)
 	// ListActionsForOrg returns ONE bounded, keyset-paginated page of the caller's
 	// own account's actions queue (PD-3 item 5, S37; issue #90 blocker 3). A foreign
@@ -49,7 +49,7 @@ type ApprovalService interface {
 	// the queue is never silently truncated.
 	ListActionsForOrg(ctx context.Context, organizationID, account uuid.UUID, stateFilter string, req recommendation.ActionsPageRequest) (recommendation.ActionsPage, error)
 	// GetRecommendationForOrg returns a single recommendation's full PRC-001
-	// record (PD-3 items 1/3, S37), scoped to the caller's account.
+	// record (PD-3 items 1/3), scoped to the caller's account.
 	GetRecommendationForOrg(ctx context.Context, organizationID, id uuid.UUID) (db.Recommendation, error)
 	// PreviewBulkSelectionForOrg mints a SERVER-side selection-set preview version
 	// (PD-3 item 4, S37 hard safety precondition), scoped to the caller's account.

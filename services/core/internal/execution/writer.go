@@ -47,7 +47,7 @@ func NewHTTPWriter(baseURL, token string, client *http.Client) *HTTPWriter {
 }
 
 // batchVariantUpdatePath is the DK batch price-update endpoint (the mockdk serves
-// the same route). The exact request/response contract is validation-gated (S35);
+// the same route). The exact request/response contract is validation-gated;
 // this writer reads only the HTTP status and a batch handle.
 const batchVariantUpdatePath = "/open-api/v1/batch/variant/update"
 

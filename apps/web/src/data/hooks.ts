@@ -129,7 +129,7 @@ export function useAllCatalogProducts() {
   });
 }
 
-// The single-variant canonical Product row backing Product detail (S26).
+// The single-variant canonical Product row backing Product detail.
 export function useCatalogProduct(variantId: string | undefined) {
   const { marketplaceAccountId } = useAccount();
   return useQuery({
@@ -146,7 +146,7 @@ export function useCatalogProduct(variantId: string | undefined) {
   });
 }
 
-// The READ-ONLY listing/image diagnostics report for a variant (S26, LST-001).
+// The READ-ONLY listing/image diagnostics report for a variant (LST-001).
 // Real contract data derived from captured catalog rows; the screen renders these
 // pass/warn results and never triggers a write, generation, or auto-fix.
 export function useProductDiagnostics(variantId: string | undefined) {
