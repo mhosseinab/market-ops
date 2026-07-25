@@ -15,13 +15,44 @@ import type { PendingRevocation } from "./storage";
 //   - jitter derived from the CREDENTIAL ID (not Math.random), which is both
 //     reproducible and genuinely de-synchronising — two extensions hold
 //     different credential ids and therefore never retry on the same schedule;
-//   - the credential's authoritative expiry remains the HARD bound (settled in
-//     the service worker); this only decides *when* the next attempt may run.
+//   - the marker's lifetime bound is the ATTEMPT COUNT, not the device clock
+//     (see REVOCATION_MAX_ATTEMPTS); this only decides *when* the next attempt
+//     may run.
 
 export const REVOCATION_RETRY_BASE_MS = 60_000;
 export const REVOCATION_RETRY_CEILING_MS = 60 * 60_000;
 // Guards 2 ** exponent against a pathological persisted attempt count.
 const MAX_EXPONENT = 20;
+
+// The HARD lifetime bound on an unconfirmed revocation (issue #149, G1).
+//
+// A pending marker may not live forever: it keeps the credential material on the
+// device and blocks re-pairing. But the bound must NOT be the device clock. The
+// credential's `expiresAt` can only be judged against a clock the extension does
+// not control, and a forward-skewed one would end the revoke early while the
+// server row is live for its real remaining TTL — the exact #149 impact.
+//
+// The attempt COUNT is clock-independent: it only advances when a real request
+// was made and came back non-authoritative. With the backoff above (1-minute
+// base, 1-hour ceiling reached at attempt 7, jitter in [0.5, 1]) 48 attempts is
+// at least ~20 hours and typically well over a day of genuine retrying before
+// the extension gives up.
+//
+// Giving up terminates into `unknown` (not paired) — NEVER `revoked`. The
+// authority never confirmed anything, so the popup must not claim a completed
+// kill switch; the distinction is carried by the
+// `credential_revocation{outcome:"abandoned_unconfirmed"}` metric.
+export const REVOCATION_MAX_ATTEMPTS = 48;
+
+// revocationAttemptsExhausted reports whether the clock-independent attempt
+// budget for an unconfirmed revocation is spent. It fails CLOSED on a
+// non-finite/absent count (a marker written by an older or partially-written
+// build): such a marker cannot be scheduled meaningfully, so it is treated as
+// still having budget rather than being abandoned on the spot.
+export function revocationAttemptsExhausted(attempts: number): boolean {
+  if (!Number.isFinite(attempts)) return false;
+  return attempts >= REVOCATION_MAX_ATTEMPTS;
+}
 
 // hashFraction maps a string to a stable fraction in [0, 1) via FNV-1a. It is
 // used ONLY to spread retry timing; it is never an identifier and never logged.

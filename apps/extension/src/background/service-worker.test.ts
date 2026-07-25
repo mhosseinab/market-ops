@@ -1106,6 +1106,14 @@ describe("service worker — #149 pending revocation never leaks a live credenti
     expect(rf2.calls.some((c) => c.url.includes("/ext/pairing/self-revoke"))).toBe(true);
     expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
     expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    // G2: rebuilding a marker is a local reconstruction, not an authoritative
+    // event — it must be counted under its OWN outcome so telemetry can tell
+    // the reconciliation apart from the confirmation that followed it.
+    const { snapshotMetrics } = await import("../lib/observability");
+    const outcomes = snapshotMetrics()
+      .filter((s) => s.name === "credential_revocation")
+      .map((s) => String(s.labels.outcome));
+    expect(outcomes).toContain("marker_reconstructed");
     const state = await send({ kind: "getState" });
     if (!("state" in state)) throw new Error("expected state");
     expect(state.state.capability).toBe("revoked");
@@ -1194,6 +1202,16 @@ describe("service worker — #149 pending revocation never leaks a live credenti
       if (!("state" in state)) throw new Error("expected state");
       expect(state.state.capability).toBe("revocation_pending");
       expect(state.state.capability).not.toBe("revoked");
+      // G2: the refusal is OBSERVABLE. A credential-discarding decision that
+      // emits nothing is an unproven seam (CLAUDE.md: a fallback engaging
+      // without an emitted event is always a bug).
+      const { snapshotMetrics } = await import("../lib/observability");
+      const outcomes = snapshotMetrics()
+        .filter((s) => s.name === "credential_revocation")
+        .map((s) => String(s.labels.outcome));
+      expect(outcomes).toContain("expiry_unverified");
+      expect(outcomes).not.toContain("expired_local_clock");
+      expect(outcomes).not.toContain("confirmed");
     } finally {
       vi.mocked(Date.now).mockRestore();
     }
@@ -1308,5 +1326,364 @@ describe("service worker — #149 pending revocation never leaks a live credenti
     // point of the distinct outcome.
     expect(revocationOutcomes).not.toContain("confirmed");
     expect(revocationOutcomes).not.toContain("expired");
+  });
+});
+
+// Issue #149, review cycle 2. Findings G1–G5: every remaining branch that
+// reaches a TERMINAL state without an authoritative server answer. The class
+// under test is one bug on five branches — a locally-resolved revocation that is
+// neither observable nor tested. Each test below is a NEGATIVE first: the kill
+// switch must never claim more than the authority confirmed, must never promote
+// a capability upward, and must never let a local resolution look like a
+// confirmation in telemetry.
+describe("service worker — #149 cycle 2: a locally-resolved revocation is never a confirmed one (G1–G5)", () => {
+  const KEY_REVOCATION_PENDING = "revocationPending";
+  const KEY_TELEMETRY_OUTBOX = "telemetryOutbox";
+  const product = parsedProduct();
+  let storage: Map<string, unknown>;
+
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  function alarmHandler(): (a: { name: string }) => void {
+    const chromeMock = (
+      globalThis as unknown as {
+        chrome: { alarms: { onAlarm: { addListener: ReturnType<typeof vi.fn> } } };
+      }
+    ).chrome;
+    return chromeMock.alarms.onAlarm.addListener.mock.calls[0]?.[0] as (a: {
+      name: string;
+    }) => void;
+  }
+
+  // A fetch mock that counts self-revoke requests and answers them with a
+  // per-test status, so a test can prove an attempt was (or was not) MADE —
+  // the core of G1: an expiry shortcut must never skip an available authority.
+  function revokeFetch(status: () => number) {
+    const revokeCalls: string[] = [];
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/ext/pairing/claim")) {
+        return new Response(JSON.stringify(CRED), { status: 200 });
+      }
+      if (url.includes("/ext/pairing/self-revoke")) {
+        const auth = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+        revokeCalls.push(auth);
+        const s = status();
+        return new Response(s === 204 ? null : "{}", { status: s });
+      }
+      if (url.includes("/ext/owned-targets")) {
+        return new Response(JSON.stringify({ items: [ownedTargetRow(product)] }), { status: 200 });
+      }
+      return new Response(null, { status: 202 });
+    });
+    return { fetch, revokeCalls };
+  }
+
+  // Seeds the exact durable state an MV3 worker would find on a cold start with
+  // an unconfirmed revocation outstanding: a credential, the pending capability,
+  // and a durable marker whose retry is already due.
+  function seedPending(over: Record<string, unknown> = {}): void {
+    storage.set(KEY_CREDENTIAL, CRED);
+    storage.set(KEY_CAPABILITY, "revocation_pending");
+    storage.set(KEY_REVOCATION_PENDING, {
+      requestedAt: "2026-07-20T00:00:00Z",
+      credentialId: CRED.credentialId,
+      marketplaceAccountId: CRED.marketplaceAccountId,
+      credentialExpiresAt: CRED.expiresAt,
+      attempts: 1,
+      serverContacted: true,
+      nextAttemptAt: "2020-01-01T00:00:00Z", // already due
+      ...over,
+    });
+  }
+
+  async function revocationOutcomes(): Promise<string[]> {
+    const { snapshotMetrics } = await import("../lib/observability");
+    return snapshotMetrics()
+      .filter((s) => s.name === "credential_revocation")
+      .map((s) => String(s.labels.outcome));
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  // G1. The expiry shortcut was evaluated BEFORE the request, so a device clock
+  // pushed past the credential's expiry finalized the revoke as `revoked`
+  // without ever asking the authority that was sitting there ready to answer.
+  // `serverContacted` did not save it: ANY real HTTP response sets that flag
+  // (a single 503 during a deploy sets it forever), and reaching the gateway is
+  // not evidence the clock is right.
+  it("G1: a skewed-forward clock never SKIPS an available authority — the attempt runs first and wins", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => 204);
+    vi.stubGlobal("fetch", rf.fetch);
+    seedPending();
+    // The device clock is a full day past the credential's expiry.
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(CRED.expiresAt) + 24 * 60 * 60 * 1000);
+
+    const send = await loadWorker();
+    await settle();
+
+    // The authoritative answer was ASKED FOR — the previous code made ZERO calls.
+    expect(rf.revokeCalls).toEqual([`Bearer ${CRED.credential}`]);
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("revoked");
+    const outcomes = await revocationOutcomes();
+    // …and it is recorded as what it is: a real server confirmation.
+    expect(outcomes).toContain("confirmed");
+    expect(outcomes).not.toContain("expired_local_clock");
+  });
+
+  // G1. The other half: a skewed clock plus a NON-authoritative answer must
+  // leave the revoke visibly pending with its credential intact, never a
+  // terminal `revoked` the server never agreed to.
+  it("G1: a skewed-forward clock plus a non-authoritative answer NEVER finalizes as revoked", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => 503);
+    vi.stubGlobal("fetch", rf.fetch);
+    seedPending();
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse(CRED.expiresAt) + 24 * 60 * 60 * 1000);
+
+    const send = await loadWorker();
+    await settle();
+
+    expect(rf.revokeCalls.length).toBe(1);
+    // The credential material is the ONLY thing a retry can be made with.
+    expect(storage.get(KEY_CREDENTIAL)).toBeDefined();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeDefined();
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("revocation_pending");
+    expect(state.state.capability).not.toBe("revoked");
+    const outcomes = await revocationOutcomes();
+    // G2: the refused-expiry branch is OBSERVABLE and distinct.
+    expect(outcomes).toContain("expiry_unverified");
+    expect(outcomes).not.toContain("expired_local_clock");
+    expect(outcomes).not.toContain("confirmed");
+  });
+
+  // G1 (the marker's lifetime bound). A pending marker may not live forever, but
+  // the bound must be CLOCK-INDEPENDENT and must terminate into a state that is
+  // NOT `revoked` — the popup may never claim a kill switch the authority never
+  // confirmed. `unknown` (not_paired) is honest: capture is off, nothing is
+  // claimed about the server row, and the user can pair again.
+  it("G1: the clock-independent attempt budget terminates into `unknown`, NEVER `revoked`", async () => {
+    const { REVOCATION_MAX_ATTEMPTS } = await import("../lib/revocation-backoff");
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => 503);
+    vi.stubGlobal("fetch", rf.fetch);
+    seedPending({ attempts: REVOCATION_MAX_ATTEMPTS - 1 });
+
+    const send = await loadWorker();
+    await settle();
+
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("unknown");
+    expect(state.state.capability).not.toBe("revoked");
+    expect(state.state.degradation).toBe("not_paired");
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    const outcomes = await revocationOutcomes();
+    expect(outcomes).toContain("abandoned_unconfirmed");
+    expect(outcomes).not.toContain("confirmed");
+    expect(outcomes).not.toContain("expired_local_clock");
+  });
+
+  // G1 (RESIDUAL, stated and pinned). The device clock still gates WHEN a retry
+  // becomes due (revocationRetryDue), so a forward-skewed clock can burn the
+  // attempt budget faster than real time would. This test pins the boundary of
+  // that residual: acceleration can only ever reach the `unknown` terminal —
+  // there is no clock-influenced path to a terminal `revoked` at all.
+  it("G1 residual: a skewed clock can only ACCELERATE exhaustion into `unknown`, never reach `revoked`", async () => {
+    const { REVOCATION_MAX_ATTEMPTS } = await import("../lib/revocation-backoff");
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => 503);
+    vi.stubGlobal("fetch", rf.fetch);
+    seedPending({
+      attempts: REVOCATION_MAX_ATTEMPTS - 1,
+      // Not due for years by a correct clock…
+      nextAttemptAt: "2030-01-01T00:00:00Z",
+    });
+    // …but the device clock says it is long past, AND past the expiry.
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2031-01-01T00:00:00Z"));
+
+    const send = await loadWorker();
+    await settle();
+
+    expect(rf.revokeCalls.length).toBe(1); // the skew let the attempt run early
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("unknown");
+    expect(state.state.capability).not.toBe("revoked");
+    const outcomes = await revocationOutcomes();
+    expect(outcomes).toContain("abandoned_unconfirmed");
+    expect(outcomes).not.toContain("confirmed");
+  });
+
+  // G3. The flush alarm ran the durable upload-queue flush DOWNSTREAM of the
+  // revocation retry with no `.catch`. retryPendingRevocation writes to
+  // chrome.storage, and chrome.storage.local.set CAN reject (QUOTA_BYTES). The
+  // rejection escaped the `void`-ed chain, so flush() and pumpTelemetry() never
+  // ran for that tick — and because the failing write is deterministic, the
+  // durable upload queue stopped draining indefinitely with no observable
+  // signal. That also inverts CLAUDE.md's load-shedding priority: the
+  // revocation path must never starve the upload path.
+  it("G3: a storage failure inside the revocation retry never kills flush/telemetry, and is observable", async () => {
+    const mock = installChromeMock();
+    storage = mock.storage;
+    const rf = revokeFetch(() => 503);
+    vi.stubGlobal("fetch", rf.fetch);
+    seedPending({ attempts: 0, serverContacted: false });
+
+    const send = await loadWorker();
+    await settle();
+
+    // Move the durable retry schedule into the past so the tick below actually
+    // ATTEMPTS (otherwise it defers inside the backoff window and never writes).
+    const marker = storage.get(KEY_REVOCATION_PENDING) as Record<string, unknown>;
+    storage.set(KEY_REVOCATION_PENDING, {
+      ...marker,
+      nextAttemptAt: new Date(Date.now() - 1000).toISOString(),
+    });
+
+    // The marker write now fails deterministically, exactly like a quota error.
+    const chromeMock = (
+      globalThis as unknown as {
+        chrome: { storage: { local: { set: ReturnType<typeof vi.fn> } } };
+      }
+    ).chrome;
+    chromeMock.storage.local.set.mockImplementation(async (obj: Record<string, unknown>) => {
+      if (KEY_REVOCATION_PENDING in obj) throw new Error("QUOTA_BYTES quota exceeded");
+      for (const [k, v] of Object.entries(obj)) storage.set(k, v);
+    });
+    storage.delete(KEY_TELEMETRY_OUTBOX);
+
+    alarmHandler()({ name: "queue-flush" });
+    await settle();
+
+    // The downstream chain still ran for this tick — the telemetry pump sits
+    // AFTER flush(), so a persisted batch proves flush() was not skipped.
+    expect(storage.get(KEY_TELEMETRY_OUTBOX)).toBeDefined();
+    // …and the failure is a counted, distinct outcome, never a silent swallow.
+    expect(await revocationOutcomes()).toContain("retry_error");
+    void send;
+  });
+
+  // G4. The orphan branch repaired the capability only when it was LITERALLY
+  // `revocation_pending`. Compose the two teardown windows the F6/F7 tests
+  // already establish (marker durable while the capability write was lost;
+  // credential material evicted) and the marker is removed while the stored
+  // capability stays `ready` — so right after a user revoke the popup renders
+  // capture ON with no degradation note, and nav-shim injection resumes on a
+  // just-revoked, unpaired extension.
+  it("G4: an orphan resolution NEVER leaves a stored `ready` capability behind", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => 500);
+    vi.stubGlobal("fetch", rf.fetch);
+    seedPending();
+    // The credential material is gone (eviction / a partial clear)…
+    storage.delete(KEY_CREDENTIAL);
+    // …and the capability write of the revoke was lost to a teardown.
+    storage.set(KEY_CAPABILITY, "ready");
+
+    const send = await loadWorker();
+    await settle();
+
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).not.toBe("ready");
+    expect(state.state.capability).toBe("revoked");
+    expect(state.state.degradation).toBe("credential_revoked");
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    expect(await revocationOutcomes()).toContain("orphaned");
+  });
+
+  // G4 (the other half of "never promote"). The repair may only ever make the
+  // capability MORE restrictive. A user-disabled extension whose orphaned marker
+  // is cleaned up stays DISABLED — the repair is not licence to rewrite an
+  // unrelated state.
+  it("G4: the orphan repair never rewrites unknown/disabled — it only refuses to promote", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => 500);
+    vi.stubGlobal("fetch", rf.fetch);
+    seedPending();
+    storage.delete(KEY_CREDENTIAL);
+    storage.set(KEY_CAPABILITY, "disabled");
+
+    const send = await loadWorker();
+    await settle();
+
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("disabled");
+    expect(state.state.capability).not.toBe("ready");
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+  });
+
+  // G5. handleRevoke's no-credential branch discarded a DURABLE pending marker
+  // and reported a completed kill switch with NO metric at all, while the
+  // timer-driven sibling emitted `orphaned` for the identical situation.
+  // Telemetry could not distinguish a user-initiated orphan resolution from a
+  // genuine confirmed revocation.
+  it("G5: a user revoke that finds a live marker but no credential is ORPHANED, never confirmed", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => 500);
+    vi.stubGlobal("fetch", rf.fetch);
+    seedPending();
+
+    // Boot with the credential still present, so the timer-driven path settles
+    // to `pending` — it must NOT be the thing that emits `orphaned` here. Only
+    // then does the credential vanish, so the USER-driven branch under test is
+    // the sole possible source of the outcome.
+    const send = await loadWorker();
+    await settle();
+    expect(await revocationOutcomes()).not.toContain("orphaned");
+    storage.delete(KEY_CREDENTIAL);
+    const revokesBefore = rf.revokeCalls.length;
+
+    const { snapshotMetrics } = await import("../lib/observability");
+    const resp = await send({ kind: "revoke" });
+
+    if (!("state" in resp)) throw new Error("expected state");
+    expect(resp.state.capability).toBe("revoked");
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    // No server round-trip was possible — there was nothing to present.
+    expect(rf.revokeCalls.length).toBe(revokesBefore);
+    const outcomes = snapshotMetrics()
+      .filter((s) => s.name === "credential_revocation")
+      .map((s) => String(s.labels.outcome));
+    expect(outcomes).toContain("orphaned");
+    expect(outcomes).not.toContain("confirmed");
+    const transitions = snapshotMetrics().filter(
+      (s) => s.name === "capability_transition" && s.labels.to === "revoked",
+    );
+    expect(transitions.length).toBeGreaterThan(0);
+  });
+
+  // G5 (the idempotent repeat). Revoking again after a COMPLETED revoke has no
+  // marker and no credential. It is still a terminal `revoked`, so it still gets
+  // its own bounded, documented outcome — but a distinct one, so a repeat can
+  // never be mistaken for a genuine orphan resolution.
+  it("G5: a repeat revoke with no marker and no credential is `already_cleared`, never `orphaned`", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => 204);
+    vi.stubGlobal("fetch", rf.fetch);
+    storage.set(KEY_CAPABILITY, "revoked");
+
+    const send = await loadWorker();
+    const resp = await send({ kind: "revoke" });
+
+    if (!("state" in resp)) throw new Error("expected state");
+    expect(resp.state.capability).toBe("revoked");
+    const outcomes = await revocationOutcomes();
+    expect(outcomes).toContain("already_cleared");
+    expect(outcomes).not.toContain("orphaned");
+    expect(outcomes).not.toContain("confirmed");
   });
 });

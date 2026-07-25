@@ -33,17 +33,29 @@ export type MetricName =
   //   pending               — no authoritative answer; retried under backoff;
   //   deferred              — a retry was skipped because it is inside its
   //                           backoff window (bounded load, not a drop);
-  //   expiry_unverified     — the credential looks expired by the DEVICE clock,
-  //                           but the gateway has never been reached from this
-  //                           device, so the expiry shortcut was REFUSED;
-  //   expired_local_clock   — expiry finalized the revoke. Named for what it
-  //                           actually is: a device-clock judgment (backed by at
-  //                           least one real gateway round-trip), never a server
-  //                           confirmation;
+  //   expiry_unverified     — an attempt was made and came back NON-authoritative
+  //                           while the credential also looks expired by the
+  //                           DEVICE clock. The clock is not authoritative, so
+  //                           the revoke stays pending; this records that the
+  //                           shortcut was REFUSED. The device clock can never
+  //                           produce a terminal `revoked` (issue #149, G1);
+  //   abandoned_unconfirmed — the CLOCK-INDEPENDENT attempt budget
+  //                           (REVOCATION_MAX_ATTEMPTS) was spent without the
+  //                           authority ever confirming. The credential and
+  //                           marker are discarded and the capability lands on
+  //                           `unknown` — deliberately NOT `revoked`, because
+  //                           nothing confirmed the server row is dead;
+  //   retry_error           — a storage failure aborted a retry. The durable
+  //                           marker is untouched, so the next due tick retries;
+  //                           counted so the abort is never silent;
   //   orphaned              — the pending marker's credential material is gone,
-  //                           so no retry can ever succeed. The ONLY path to
-  //                           `revoked` without a confirmation or an expiry
-  //                           check, hence its own outcome;
+  //                           so no retry can ever succeed. A path to `revoked`
+  //                           without a server confirmation, hence its own
+  //                           outcome. Emitted by BOTH the timer-driven retry and
+  //                           the user-driven revoke, which reach it identically;
+  //   already_cleared       — a revoke arrived with no marker and no credential:
+  //                           an idempotent repeat of one that already completed,
+  //                           distinct from a genuine `orphaned` resolution;
   //   marker_reconstructed  — a `revocation_pending` capability was found with no
   //                           durable marker and the marker was rebuilt from the
   //                           stored credential, so the revoke is not stranded.
