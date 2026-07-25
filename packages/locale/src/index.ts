@@ -16,6 +16,7 @@ export {
   REGION_IR,
   type RegionConfig,
 } from "./config";
+export { ltrIsolate } from "./format/bidi";
 export { type CalendarParts, formatDate, type Instant, toCalendarParts } from "./format/dates";
 
 export { normalizeDigits, parseNumericInput } from "./format/digits";

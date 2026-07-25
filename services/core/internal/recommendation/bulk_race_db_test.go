@@ -84,6 +84,29 @@ func TestConfirmBulkSelection_LoserOfAConcurrentConfirmReportsSealedAuthorizatio
 		approval.StateAwaitingConfirmation, approval.StateApproved, "concurrent winner"); err != nil {
 		t.Fatalf("winner advance: %v", err)
 	}
+	// The winner is a concurrent BULK confirmation of the SAME selection, so it also
+	// appends that selection's provenance ledger row on its OWN transaction — exactly
+	// what confirmIndividual does (issue #87, prior finding 1). Without this the
+	// fixture models a winner no production path produces: a card driven to Approved
+	// with NO bulk provenance at all, which is an INDIVIDUAL approval, and which must
+	// (and now does) fail closed rather than report already_authorized. Modelling the
+	// winner faithfully keeps this test's assertion exactly as strong as it was; see
+	// TestConfirmBulkSelection_IndividuallyApprovedCardIsNotAlreadyAuthorizedForASelection
+	// for the case where provenance is genuinely absent.
+	if _, err := winner.Exec(ctx, `
+		INSERT INTO bulk_action_bindings (
+			selection_set_member_id, selection_set_id, selection_set_lineage_id,
+			selection_set_version, marketplace_account_id, variant_id,
+			recommendation_id, offer_identity, card_id, action_id)
+		SELECT m.id, m.selection_set_id, s.lineage_id, s.version, m.marketplace_account_id,
+		       m.variant_id, m.recommendation_id, m.offer_identity, $3, $4
+		  FROM selection_set_members m
+		  JOIN selection_sets s ON s.id = m.selection_set_id
+		 WHERE s.lineage_id = $1 AND s.version = $2 AND m.recommendation_id = $5`,
+		lineage, version, card.ID, card.ActionID, card.RecommendationID,
+	); err != nil {
+		t.Fatalf("winner append bulk provenance: %v", err)
+	}
 
 	type outcome struct {
 		out recommendation.BulkConfirmOutcome

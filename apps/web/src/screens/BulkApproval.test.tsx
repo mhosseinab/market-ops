@@ -425,6 +425,50 @@ describe("Bulk approval (journey 3 — SERVER-minted selection set, APR-001 at s
     expect(screen.getByTestId("bulk-include-8842213:seller-1")).toBeInTheDocument();
   });
 
+  it("gives every sibling offer's include control its OWN accessible name (issue #87, prior finding 9)", async () => {
+    // Two EXECUTABLE sibling offers on one target: both carry an include control.
+    // Before the fix both controls were labelled with the bare column header
+    // ("Include"), so an assistive-technology user heard the SAME name twice and
+    // could not tell which offer they were excluding — the #87 identity-collapse
+    // defect reappearing in the accessibility layer.
+    withExecutableCandidate();
+    const one: ObservedOffer = {
+      ...offer,
+      id: "o-1",
+      offerIdentity: "8842213:seller-1",
+      quality: "verified",
+    };
+    const two: ObservedOffer = {
+      ...offer,
+      id: "o-2",
+      offerIdentity: "8842213:seller-2",
+      quality: "verified",
+    };
+    server.use(
+      http.get(`${BASE}/observation/observed-offers`, () =>
+        HttpResponse.json({ items: [two, one] }),
+      ),
+    );
+    renderRoute("/bulk");
+
+    const first = await screen.findByTestId("bulk-include-8842213:seller-1");
+    const second = screen.getByTestId("bulk-include-8842213:seller-2");
+    const nameOf = (el: HTMLElement) => el.getAttribute("aria-label") ?? "";
+
+    expect(nameOf(first)).not.toBe("");
+    expect(nameOf(first)).not.toBe(nameOf(second));
+    // Each name NAMES its own offer identity, LTR-isolated as a technical
+    // identifier (LOC-005) — and is built from a catalog key with named slots, so
+    // the assertion is against the localized catalog, never a literal.
+    expect(nameOf(first)).toContain("8842213:seller-1");
+    expect(nameOf(second)).toContain("8842213:seller-2");
+    expect(nameOf(first)).toContain("⁦"); // LRI
+    expect(nameOf(first)).toContain("⁩"); // PDI
+    // It is a real localized message, not the bare column header.
+    expect(nameOf(first)).not.toBe(faIR["bulk.col.include"]);
+    expect(nameOf(first)).toContain(faIR["bulk.col.offer"]);
+  });
+
   it("bounds the readiness fan-out to one page regardless of target count (§17.2, #245)", async () => {
     const targets = makeTargets(BULK_READINESS_PAGE_SIZE + 6);
     let readinessCalls = 0;

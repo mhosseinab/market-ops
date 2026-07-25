@@ -16,6 +16,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
+	"github.com/mhosseinab/market-ops/services/core/internal/reservation"
 )
 
 // Sentinel errors. Each is a stable value the transport maps to a precise status
@@ -620,6 +621,23 @@ func (s *Service) commitWriteResult(ctx context.Context, card db.ApprovalCard, r
 		}
 	}
 
+	// BULK-PROTOCOL DESIGN RECORD (a) — RELEASE ON A TERMINAL EXTERNAL RESULT (issue
+	// #87, prior finding 2), on THIS transaction so the release commits atomically
+	// with the result that justifies it.
+	//
+	// extState.Terminal() is exactly {accepted, rejected, failed} — it EXCLUDES
+	// pending_reconciliation, EXE-003's fail-closed state for an UNKNOWN outcome. That
+	// exclusion is the point: releasing on an unknown result would infer "no write is
+	// in flight" from "we do not know whether the write landed", and admit a second
+	// write to a variant whose first write may already have been accepted. Such a
+	// reservation is released only when reconciliation RESOLVES the unknown, or when
+	// its bounded window lapses into an AUDITED takeover.
+	if extState.Terminal() {
+		if err := s.releaseVariantReservation(ctx, q, card, releaseReasonFor(extState)); err != nil {
+			return err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		s.tel.auditWriteFailed(ctx, card.ActionID, err)
 		return err
@@ -692,6 +710,13 @@ func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard,
 		CardSnapshot: cardSnapshot(card), Detail: map[string]any{"state": StateAwaitingExternalExecution, "window_expires_at": now.Add(matchWindow)},
 	}); err != nil {
 		s.tel.auditWriteFailed(ctx, card.ActionID, err)
+		return ExecuteResult{}, err
+	}
+	// BULK-PROTOCOL DESIGN RECORD (a) — release the variant (issue #87). A
+	// recommend-only action performs NO external write (this is the P0 dark default,
+	// §20.2), so nothing can be in flight and holding the variant would strand it: no
+	// later approval on that variant could ever execute.
+	if err := s.releaseVariantReservation(ctx, q, card, reservation.ReasonRecommendOnly); err != nil {
 		return ExecuteResult{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {

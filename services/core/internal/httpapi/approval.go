@@ -144,13 +144,23 @@ func (s *gatewayServer) ConfirmBulkApproval(
 	}
 	items := make([]gateway.BulkApprovalItemResult, 0, len(outcome.Items))
 	for _, it := range outcome.Items {
-		items = append(items, gateway.BulkApprovalItemResult{
+		item := gateway.BulkApprovalItemResult{
 			VariantId:        it.VariantID,
 			RecommendationId: it.RecommendationID,
 			Disposition:      gateway.SelectionSetDisposition(it.Disposition),
 			State:            gateway.BulkApprovalItemState(it.State),
 			Reason:           it.Reason,
-		})
+		}
+		// The SERVER-SEALED offer identity of the bound version's member (issue #87
+		// criterion D): preview and execution report the SAME explicit identity. It is
+		// emitted only when the member actually carries one — an absent field is
+		// EXPLICIT ABSENCE (a recommendation with no evidence observation, or a version
+		// sealed before #87), never an empty stand-in for another offer.
+		if it.OfferIdentity != "" {
+			offer := it.OfferIdentity
+			item.OfferIdentity = &offer
+		}
+		items = append(items, item)
 	}
 	result := gateway.BulkApprovalConfirmResult{
 		SelectionSetLineage: req.Body.SelectionSetLineage,

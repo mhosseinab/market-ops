@@ -33,6 +33,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/approval"
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/reservation"
 )
 
 // BulkItemState is a per-member bulk-confirmation outcome. Only Authorized and
@@ -84,6 +85,16 @@ type BulkItemResult struct {
 	Disposition      Disposition
 	State            BulkItemState
 	Reason           string
+	// OfferIdentity is the SERVER-SEALED observed-offer identity of the member,
+	// read from the sealed member row of the BOUND version (issue #87 criterion D,
+	// BULK-PROTOCOL DESIGN RECORD (e)). Preview and execution therefore report the
+	// SAME explicit identity: it is never re-derived by a lookup-by-target at confirm
+	// time, which could resolve a different sibling offer if the target's observations
+	// changed after the operator reviewed the preview.
+	//
+	// "" is EXPLICIT ABSENCE (a member sealed from a recommendation with no evidence
+	// observation, or a version sealed before #87), never a stand-in for another offer.
+	OfferIdentity string
 }
 
 // BulkConfirmOutcome is the authoritative result of a bulk confirmation. Valid is
@@ -181,6 +192,9 @@ func (s *Service) ConfirmBulkSelection(ctx context.Context, account, lineage uui
 			VariantID:        m.VariantID,
 			RecommendationID: uuidFromPg(m.RecommendationID),
 			Disposition:      Disposition(m.Disposition),
+			// From the SEALED member row of the bound version — not a fresh
+			// lookup-by-target (issue #87 criterion D).
+			OfferIdentity: m.OfferIdentity,
 		}
 		if item.Disposition != DispositionExecutable {
 			// Blocked / warning members are never approvable in bulk — reported and
@@ -195,7 +209,7 @@ func (s *Service) ConfirmBulkSelection(ctx context.Context, account, lineage uui
 		// bindSelectionVersion already matched the set on that same account, so the
 		// two are provably equal — sourcing it from the caller keeps the tenant
 		// predicate anchored to the authorization rather than to persisted data.
-		if s.authorizeBulkMember(ctx, account, &item, now, actor) {
+		if s.authorizeBulkMember(ctx, account, provenanceOf(current, m), &item, now, actor) {
 			pendingAny = true
 		}
 		out.Items = append(out.Items, item)
@@ -269,7 +283,11 @@ func (s *Service) bindSelectionVersion(ctx context.Context, account, lineage uui
 // outcome's ExecutionPending. A sealed-but-terminated member (already_authorized on
 // a card that has reached an external result) returns false: its authorization
 // stands, but nothing is in flight.
-func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, item *BulkItemResult, now time.Time, actor audit.Actor) bool {
+// It carries the member's sealed `prov` (issue #87): on the fresh-authorization arm it
+// is appended as the durable bulk provenance ledger row, and on the sealed-authorization
+// arm it is the exact provenance a replay must MATCH before `already_authorized` may
+// be reported (prior finding 1).
+func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, prov bulkProvenance, item *BulkItemResult, now time.Time, actor audit.Actor) bool {
 	if item.RecommendationID == uuid.Nil {
 		item.State = BulkItemInvalidated
 		item.Reason = "no_recommendation"
@@ -306,7 +324,7 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 	// control. ConfirmIndividual re-verifies control-bearing, authoritative-current,
 	// and expiry against the live card, so a changed/superseded/expired member fails
 	// closed here — bulk cannot approve what an individual confirm could not.
-	outcome, err := s.ConfirmIndividual(ctx, card.ID, domainCard.Binding, now, actor)
+	outcome, err := s.confirmIndividual(ctx, card.ID, domainCard.Binding, now, actor, &prov)
 	if err != nil {
 		switch {
 		case errors.Is(err, approval.ErrNoControl), errors.Is(err, ErrRejectedTransition):
@@ -358,6 +376,33 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 				return false
 			}
 			if approval.StateHasAuthorized(state) {
+				// PRIOR FINDING 1 (issue #87): "the control was activated" is NOT
+				// evidence that THIS selection activated it. `already_authorized` is a
+				// claim about this selection, so it requires this selection's own
+				// durable provenance to match EXACTLY — set, member, lineage, version,
+				// variant, recommendation, and sealed offer identity.
+				switch matchBulkBinding(ctx, db.New(s.pool), prov) {
+				case bindingAbsent:
+					// The card WAS authorized, but not by this selection: an individual
+					// §8.4 confirmation, or a different selection set. Reporting
+					// already_authorized here told the operator this selection had done
+					// something it never did. Fail closed instead — the card is not a
+					// bindable control for THIS selection, and (like every other
+					// invalidated member) it is not retriable into execution. It is NOT
+					// `failed`: `failed` promises a resume can still authorize it, and
+					// no resume of this selection ever will.
+					s.tel().bulkProvenanceMismatch(ctx, seamBulkConfirm, prov.SetID, prov.MemberID)
+					item.State = BulkItemInvalidated
+					item.Reason = "authorized_outside_selection"
+					return false
+				case bindingUndetermined:
+					// The provenance read failed: the outcome is UNKNOWN. Never guessed
+					// in either direction — report an undetermined result and let a
+					// resume re-derive it (quarantine over inference, §4.6).
+					item.State = BulkItemFailed
+					item.Reason = "binding_read_failed"
+					return false
+				}
 				item.State = BulkItemAlreadyAuthorized
 				item.Reason = "already_authorized"
 				// The idempotency boundary (§4.6): "this replay authorized nothing a
@@ -373,6 +418,21 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, it
 			}
 			item.State = BulkItemInvalidated
 			item.Reason = "not_control_bearing"
+			return false
+		case errors.Is(err, reservation.ErrVariantReserved):
+			// BULK-PROTOCOL DESIGN RECORD (a) / prior finding 2: another card already
+			// holds an in-flight write on this owned VARIANT — the sibling-offer /
+			// two-selection-lineages case. The confirmation rolled back entirely, so
+			// the member's card is still a LIVE control and NOTHING was dispatched:
+			// this is `failed`'s exact documented meaning (transient, resume-safe,
+			// nothing half-committed), not `invalidated`. A resume authorizes it once
+			// the holder reaches a DEFINITE external result.
+			//
+			// The reason is a stable, non-localized diagnostic key so an operator can
+			// tell this apart from a store/dispatch failure (§4.6: errors are
+			// actionable and name the failing seam).
+			item.State = BulkItemFailed
+			item.Reason = "variant_reservation_held"
 			return false
 		case errors.Is(err, pgx.ErrNoRows):
 			item.State = BulkItemInvalidated

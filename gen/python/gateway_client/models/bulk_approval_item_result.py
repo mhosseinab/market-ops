@@ -8,6 +8,7 @@ from attrs import define as _attrs_define
 
 from ..models.bulk_approval_item_state import BulkApprovalItemState
 from ..models.selection_set_disposition import SelectionSetDisposition
+from ..types import UNSET, Unset
 
 T = TypeVar("T", bound="BulkApprovalItemResult")
 
@@ -46,7 +47,17 @@ class BulkApprovalItemResult:
                 attempting a member whose EXECUTION failed is the reconciliation-gated retry path's decision (an unknown result
                 must reconcile first; only a definitively reconciled failure is retry-eligible, EXE-003), never a second bulk
                 authorization.
-            reason (str): A stable, non-localized diagnostic reason for the item's state.
+            reason (str): A stable, non-localized diagnostic reason for the item's state. `variant_reservation_held` reports
+                BULK-PROTOCOL DESIGN RECORD (a): another card already holds the durable (account, variant) execution
+                reservation, so this member was NOT dispatched; it is resume-safe and authorizes once the holder reaches a
+                definite external result. `authorized_outside_selection` reports that the member's control was activated by an
+                INDIVIDUAL confirmation or a DIFFERENT selection set, so this selection may not claim it (issue #87).
+            offer_identity (str | Unset): The SERVER-SEALED observed-offer identity of this member, read from the sealed
+                member row of the BOUND selection-set version — the SAME value the preview reported (issue #87 criterion D). It
+                is never re-derived by a lookup-by-target at confirm time, which could resolve a different sibling offer if the
+                target's observations changed after the operator reviewed the preview.
+                An empty string is EXPLICIT ABSENCE, never a stand-in for another offer. ADDITIVE and OPTIONAL: it is not in
+                `required`, and it is never a client assertion.
     """
 
     variant_id: UUID
@@ -54,6 +65,7 @@ class BulkApprovalItemResult:
     disposition: SelectionSetDisposition
     state: BulkApprovalItemState
     reason: str
+    offer_identity: str | Unset = UNSET
 
     def to_dict(self) -> dict[str, Any]:
         variant_id = str(self.variant_id)
@@ -66,6 +78,8 @@ class BulkApprovalItemResult:
 
         reason = self.reason
 
+        offer_identity = self.offer_identity
+
         field_dict: dict[str, Any] = {}
 
         field_dict.update(
@@ -77,6 +91,8 @@ class BulkApprovalItemResult:
                 "reason": reason,
             }
         )
+        if offer_identity is not UNSET:
+            field_dict["offerIdentity"] = offer_identity
 
         return field_dict
 
@@ -93,12 +109,15 @@ class BulkApprovalItemResult:
 
         reason = d.pop("reason")
 
+        offer_identity = d.pop("offerIdentity", UNSET)
+
         bulk_approval_item_result = cls(
             variant_id=variant_id,
             recommendation_id=recommendation_id,
             disposition=disposition,
             state=state,
             reason=reason,
+            offer_identity=offer_identity,
         )
 
         return bulk_approval_item_result

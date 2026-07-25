@@ -132,6 +132,12 @@ func sealSelectionVersion(
 			VariantID:            v.VariantID,
 			RecommendationID:     optionalUUID(v.RecommendationID),
 			Disposition:          string(v.Disposition),
+			// The SERVER-SEALED observed-offer identity (issue #87, design record (e)).
+			// Sealing it on the member row is what lets the authoritative confirmation
+			// report the SAME identity the preview showed, without a lookup-by-target
+			// that could resolve a different sibling offer if the target's observations
+			// changed in between (criterion D).
+			OfferIdentity: v.OfferIdentity,
 		}); err != nil {
 			return db.SelectionSet{}, err
 		}
@@ -150,6 +156,16 @@ func sealSelectionVersion(
 // changed member, count, or aggregate changes the hash. Because membership is
 // immutable per version, this digest is fixed for a version — binding the version
 // at confirm transitively binds this fingerprint.
+//
+// OFFER IDENTITY IS DELIBERATELY NOT HASHED HERE (issue #87, CST-002). The sealed
+// offer identity of a member is a PURE FUNCTION of its recommendation id — a
+// recommendation is append-only, so a given id's evidence observation, and therefore
+// its offer identity, is immutable. The recommendation id is ALREADY hashed, so the
+// identity is bound transitively and adding it would buy no discrimination while
+// changing the digest of every version sealed BEFORE #87: a historical
+// recommendation's fingerprint could no longer be reproduced, which is a
+// reproducibility REGRESSION, not an improvement. This is asserted, not assumed, by
+// TestMembershipFingerprint_IsUnaffectedByOfferIdentity.
 func MembershipFingerprint(views []PreviewMemberView, aggregate *money.Money) []byte {
 	ordered := make([]PreviewMemberView, len(views))
 	copy(ordered, views)

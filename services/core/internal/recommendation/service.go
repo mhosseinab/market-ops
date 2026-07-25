@@ -370,6 +370,26 @@ type ConfirmOutcome struct {
 // append-only approval_card_states transition AdvanceTx already records; it must not
 // masquerade as an activation.
 func (s *Service) ConfirmIndividual(ctx context.Context, cardID uuid.UUID, presented approval.Binding, now time.Time, actor audit.Actor) (ConfirmOutcome, error) {
+	return s.confirmIndividual(ctx, cardID, presented, now, actor, nil)
+}
+
+// confirmIndividual is ConfirmIndividual's implementation, with one addition: an
+// OPTIONAL bulk provenance record (issue #87, prior finding 1). When a bulk
+// confirmation drives this path, `prov` describes the sealed selection-set member the
+// authorization is being performed FOR, and its ledger row is appended on THIS
+// transaction — atomically with the Approved state and the AUD-001 confirmation event.
+//
+// Atomicity is the point. An authorization without durable provenance is exactly the
+// state prior finding 1 describes: a later confirmation of ANOTHER selection would
+// find the card approved and claim `already_authorized` for a selection that never
+// authorized it. So the ledger append is inside the same fail-closed sequence as the
+// audit append — if it fails, the whole confirmation rolls back and the card stays a
+// live control that a resume can retry.
+//
+// prov is nil for the individual (non-bulk) path: an individual confirmation writes NO
+// bulk provenance, which is precisely why it can never be mistaken for a selection's
+// authorization afterwards.
+func (s *Service) confirmIndividual(ctx context.Context, cardID uuid.UUID, presented approval.Binding, now time.Time, actor audit.Actor, prov *bulkProvenance) (ConfirmOutcome, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return ConfirmOutcome{}, err
@@ -467,6 +487,30 @@ func (s *Service) ConfirmIndividual(ctx context.Context, cardID uuid.UUID, prese
 			CardSnapshot: confirmationSnapshot(advanced),
 			Detail:       confirmationDetail(presented),
 		}); err != nil {
+			return ConfirmOutcome{}, err
+		}
+		// The bulk provenance ledger row (issue #87, prior finding 1) — appended on
+		// THIS transaction, so `already_authorized` can never be reported for a
+		// selection whose authorization left no durable trace. Fails closed with the
+		// rest of the confirmation.
+		if prov != nil {
+			if err := recordBulkBinding(ctx, q, *prov, advanced); err != nil {
+				return ConfirmOutcome{}, err
+			}
+		}
+		// BULK-PROTOCOL DESIGN RECORD (a) — the durable (account, variant) EXECUTION
+		// reservation, ACQUIRED BEFORE DISPATCH (issue #87, prior finding 2). It is
+		// taken on THIS transaction, so it commits atomically with the authorization
+		// and a rollback of the authorization releases it automatically; and it is
+		// taken BEFORE the intent is enqueued, so a variant that already has an
+		// in-flight write never gets a second one.
+		//
+		// It is the only guard at this level that bounds TWO CARDS on ONE VARIANT: the
+		// FROM-guarded advance and the card-id-unique intent each bound ONE CARD, which
+		// is why two sibling-offer selection lineages could previously both dispatch.
+		// ErrVariantReserved rolls the whole confirmation back, leaving the card a LIVE
+		// control that a resume retries once the first write reaches a definite result.
+		if err := s.reserveVariantForCard(ctx, q, advanced, now); err != nil {
 			return ConfirmOutcome{}, err
 		}
 		if s.dispatcher != nil {

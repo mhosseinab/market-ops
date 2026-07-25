@@ -51,6 +51,44 @@ func (q *Queries) CountSelectionSetMembers(ctx context.Context, selectionSetID u
 	return count, err
 }
 
+const getBulkActionBindingForMember = `-- name: GetBulkActionBindingForMember :one
+SELECT id, selection_set_member_id, selection_set_id, selection_set_lineage_id, selection_set_version, marketplace_account_id, variant_id, recommendation_id, offer_identity, card_id, action_id, created_at FROM bulk_action_bindings
+WHERE selection_set_id = $1 AND selection_set_member_id = $2
+`
+
+type GetBulkActionBindingForMemberParams struct {
+	SelectionSetID       uuid.UUID
+	SelectionSetMemberID uuid.UUID
+}
+
+// The durable provenance a replay must match EXACTLY (prior finding 1). A card that
+// was approved individually, or through a DIFFERENT selection set, has NO row here
+// for this (set, member) pair — so it can never be reported `already_authorized` for
+// this selection on the strength of being approved at all.
+//
+// BULK-PROTOCOL DESIGN RECORD (d): the lookup is by the (set, member) PAIR. It never
+// orders, ranges, or diffs a version, and never accepts a bare version — version
+// counters are monotonic only WITHIN one lineage and are not comparable across them.
+func (q *Queries) GetBulkActionBindingForMember(ctx context.Context, arg GetBulkActionBindingForMemberParams) (BulkActionBinding, error) {
+	row := q.db.QueryRow(ctx, getBulkActionBindingForMember, arg.SelectionSetID, arg.SelectionSetMemberID)
+	var i BulkActionBinding
+	err := row.Scan(
+		&i.ID,
+		&i.SelectionSetMemberID,
+		&i.SelectionSetID,
+		&i.SelectionSetLineageID,
+		&i.SelectionSetVersion,
+		&i.MarketplaceAccountID,
+		&i.VariantID,
+		&i.RecommendationID,
+		&i.OfferIdentity,
+		&i.CardID,
+		&i.ActionID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getCurrentSelectionSet = `-- name: GetCurrentSelectionSet :one
 SELECT id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at, membership_fingerprint FROM selection_sets
 WHERE lineage_id = $1
@@ -116,6 +154,35 @@ func (q *Queries) GetCurrentSelectionSetForAccount(ctx context.Context, arg GetC
 	return i, err
 }
 
+const getRecommendationSealedOfferIdentity = `-- name: GetRecommendationSealedOfferIdentity :one
+SELECT COALESCE(o.offer_identity, '')::text AS offer_identity
+FROM recommendations r
+LEFT JOIN observations o ON o.id = r.evidence_observation_id
+WHERE r.id = $1
+LIMIT 1
+`
+
+// BULK-PROTOCOL DESIGN RECORD (e) — the SERVER's own sealed offer identity for a
+// recommendation (issue #87, OBS-004). The identity comes from the recommendation's
+// OWN persisted evidence observation, never from the request and never from a
+// lookup-by-target (a target may carry MANY offer identities — picking one by target
+// is the #87 defect itself).
+//
+// Returns ” — EXPLICIT ABSENCE — when the recommendation is not observation-driven
+// (evidence_observation_id IS NULL) or its evidence observation is no longer
+// readable. Absence is never inferred into some other offer's identity.
+//
+// CST-002 / historical reproducibility: recommendations are append-only, so a given
+// recommendation id's evidence_observation_id is immutable and this resolution is a
+// PURE FUNCTION of the recommendation id. Re-running it for a historical member
+// reproduces exactly the identity that was sealed.
+func (q *Queries) GetRecommendationSealedOfferIdentity(ctx context.Context, id uuid.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, getRecommendationSealedOfferIdentity, id)
+	var offer_identity string
+	err := row.Scan(&offer_identity)
+	return offer_identity, err
+}
+
 const getSelectionSet = `-- name: GetSelectionSet :one
 SELECT id, marketplace_account_id, lineage_id, version, name, criteria, member_count, aggregate_impact_known, aggregate_impact_mantissa, aggregate_impact_currency, aggregate_impact_exponent, created_at, membership_fingerprint FROM selection_sets WHERE id = $1
 `
@@ -152,6 +219,74 @@ func (q *Queries) GetSelectionSetLineage(ctx context.Context, lineageID uuid.UUI
 	row := q.db.QueryRow(ctx, getSelectionSetLineage, lineageID)
 	var i SelectionSetLineage
 	err := row.Scan(&i.LineageID, &i.MarketplaceAccountID, &i.CreatedAt)
+	return i, err
+}
+
+const insertBulkActionBinding = `-- name: InsertBulkActionBinding :one
+INSERT INTO bulk_action_bindings (
+    selection_set_member_id, selection_set_id, selection_set_lineage_id,
+    selection_set_version, marketplace_account_id, variant_id, recommendation_id,
+    offer_identity, card_id, action_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (selection_set_id, selection_set_member_id) DO NOTHING
+RETURNING id, selection_set_member_id, selection_set_id, selection_set_lineage_id, selection_set_version, marketplace_account_id, variant_id, recommendation_id, offer_identity, card_id, action_id, created_at
+`
+
+type InsertBulkActionBindingParams struct {
+	SelectionSetMemberID  uuid.UUID
+	SelectionSetID        uuid.UUID
+	SelectionSetLineageID uuid.UUID
+	SelectionSetVersion   int32
+	MarketplaceAccountID  uuid.UUID
+	VariantID             uuid.UUID
+	RecommendationID      uuid.UUID
+	OfferIdentity         string
+	CardID                uuid.UUID
+	ActionID              uuid.UUID
+}
+
+// The APPEND-ONLY bulk provenance ledger row (issue #87, prior findings 1 and 3).
+// It records that THIS selection-set version authorized THIS member's card, and it
+// is what a later replay checks before reporting `already_authorized`.
+//
+// Every duplicated provenance column is verified AT THE DATABASE against the
+// referenced member and selection set (migration 0049's composite FKs + the
+// bulk_action_bindings_provenance trigger), so a forged row — one claiming a
+// set/lineage/version/variant/recommendation/offer the member does not have — is
+// rejected by PostgreSQL, not merely by Go.
+//
+// ON CONFLICT DO NOTHING on (selection_set_id, selection_set_member_id): a replayed
+// confirmation collapses to exactly ONE binding per member (design record (c)).
+// NEVER DO UPDATE — the ledger is audit-class and append-only (§4.6); re-pointing an
+// existing binding is the forgery prior finding 1 describes.
+func (q *Queries) InsertBulkActionBinding(ctx context.Context, arg InsertBulkActionBindingParams) (BulkActionBinding, error) {
+	row := q.db.QueryRow(ctx, insertBulkActionBinding,
+		arg.SelectionSetMemberID,
+		arg.SelectionSetID,
+		arg.SelectionSetLineageID,
+		arg.SelectionSetVersion,
+		arg.MarketplaceAccountID,
+		arg.VariantID,
+		arg.RecommendationID,
+		arg.OfferIdentity,
+		arg.CardID,
+		arg.ActionID,
+	)
+	var i BulkActionBinding
+	err := row.Scan(
+		&i.ID,
+		&i.SelectionSetMemberID,
+		&i.SelectionSetID,
+		&i.SelectionSetLineageID,
+		&i.SelectionSetVersion,
+		&i.MarketplaceAccountID,
+		&i.VariantID,
+		&i.RecommendationID,
+		&i.OfferIdentity,
+		&i.CardID,
+		&i.ActionID,
+		&i.CreatedAt,
+	)
 	return i, err
 }
 
@@ -229,9 +364,10 @@ func (q *Queries) InsertSelectionSet(ctx context.Context, arg InsertSelectionSet
 
 const insertSelectionSetMember = `-- name: InsertSelectionSetMember :one
 INSERT INTO selection_set_members (
-    selection_set_id, marketplace_account_id, variant_id, recommendation_id, disposition
-) VALUES ($1, $2, $3, $4, $5)
-RETURNING id, selection_set_id, variant_id, recommendation_id, disposition, created_at, marketplace_account_id
+    selection_set_id, marketplace_account_id, variant_id, recommendation_id, disposition,
+    offer_identity
+) VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, selection_set_id, variant_id, recommendation_id, disposition, created_at, marketplace_account_id, offer_identity
 `
 
 type InsertSelectionSetMemberParams struct {
@@ -240,12 +376,21 @@ type InsertSelectionSetMemberParams struct {
 	VariantID            uuid.UUID
 	RecommendationID     pgtype.UUID
 	Disposition          string
+	OfferIdentity        string
 }
 
 // marketplace_account_id is the tenant key (issue #102): it MUST equal the owning
 // selection_set's account and — enforced by migration 0025's composite FKs and the
 // recommendation-account trigger — the variant's and (when present) the
 // recommendation's account, so a cross-account member is rejected at the DB.
+//
+// BULK-PROTOCOL DESIGN RECORD (e) — SEALED OFFER IDENTITY (issue #87).
+// offer_identity is the SERVER-SEALED observed-offer identity of this member,
+// resolved by GetRecommendationSealedOfferIdentity from the member's OWN
+// recommendation evidence. It is NEVER a client assertion: a client-supplied
+// offerIdentity is only a SELECTOR validated against this value, and a mismatch
+// fails closed as the same uniform not-found an unknown member produces. ” is
+// EXPLICIT ABSENCE (a recommendation with no evidence observation), never inference.
 func (q *Queries) InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error) {
 	row := q.db.QueryRow(ctx, insertSelectionSetMember,
 		arg.SelectionSetID,
@@ -253,6 +398,7 @@ func (q *Queries) InsertSelectionSetMember(ctx context.Context, arg InsertSelect
 		arg.VariantID,
 		arg.RecommendationID,
 		arg.Disposition,
+		arg.OfferIdentity,
 	)
 	var i SelectionSetMember
 	err := row.Scan(
@@ -263,12 +409,13 @@ func (q *Queries) InsertSelectionSetMember(ctx context.Context, arg InsertSelect
 		&i.Disposition,
 		&i.CreatedAt,
 		&i.MarketplaceAccountID,
+		&i.OfferIdentity,
 	)
 	return i, err
 }
 
 const listSelectionSetMembers = `-- name: ListSelectionSetMembers :many
-SELECT id, selection_set_id, variant_id, recommendation_id, disposition, created_at, marketplace_account_id FROM selection_set_members
+SELECT id, selection_set_id, variant_id, recommendation_id, disposition, created_at, marketplace_account_id, offer_identity FROM selection_set_members
 WHERE selection_set_id = $1
 ORDER BY created_at, id
 `
@@ -290,6 +437,7 @@ func (q *Queries) ListSelectionSetMembers(ctx context.Context, selectionSetID uu
 			&i.Disposition,
 			&i.CreatedAt,
 			&i.MarketplaceAccountID,
+			&i.OfferIdentity,
 		); err != nil {
 			return nil, err
 		}

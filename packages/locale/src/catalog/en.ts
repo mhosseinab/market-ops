@@ -772,6 +772,8 @@ export const en: Catalog = {
   "bulk.status.warning": "Warning",
   "bulk.status.blocked": "Blocked",
   "bulk.col.include": "Include",
+  "bulk.col.include.aria.offer": "Include offer {offer} for SKU {sku}",
+  "bulk.col.include.aria.sku": "Include SKU {sku}",
   "bulk.col.product": "Product",
   "bulk.col.sku": "SKU",
   "bulk.col.offer": "Offer",

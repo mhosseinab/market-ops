@@ -217,6 +217,16 @@ func (s *Service) ReconcilePending(ctx context.Context, actionID uuid.UUID, reso
 	}); err != nil {
 		return err
 	}
+	// BULK-PROTOCOL DESIGN RECORD (a) — this is the ONLY path by which a write that
+	// parked in pending_reconciliation frees its (account, variant) execution
+	// reservation (issue #87, prior finding 2). The write path deliberately does NOT
+	// release on an UNKNOWN outcome; reconciliation is what turns that unknown into a
+	// DEFINITE result, and only then may another card write the variant. Released on
+	// THIS transaction, so it commits atomically with the terminal state that
+	// justifies it.
+	if err := releaseVariantReservation(ctx, tq, card, s.now()); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 

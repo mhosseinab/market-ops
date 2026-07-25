@@ -43,6 +43,10 @@ type fakeApproval struct {
 	preview      recommendation.PreviewResult
 	previewErr   error
 	previewCalls int
+	// previewMembers captures EXACTLY what the transport handed the service, so the
+	// issue #87 record-(e) wire tests can assert that an omitted offerIdentity stays
+	// "not asserted" and a supplied one is passed through verbatim as a selector.
+	previewMembers []recommendation.PreviewMemberInput
 }
 
 func (f *fakeApproval) GetCardForOrg(context.Context, uuid.UUID, uuid.UUID) (db.ApprovalCard, error) {
@@ -72,8 +76,9 @@ func (f *fakeApproval) ListActionsForOrg(context.Context, uuid.UUID, uuid.UUID, 
 func (f *fakeApproval) GetRecommendationForOrg(context.Context, uuid.UUID, uuid.UUID) (db.Recommendation, error) {
 	return f.rec, f.recErr
 }
-func (f *fakeApproval) PreviewBulkSelectionForOrg(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, map[string]string, []recommendation.PreviewMemberInput) (recommendation.PreviewResult, error) {
+func (f *fakeApproval) PreviewBulkSelectionForOrg(_ context.Context, _, _, _ uuid.UUID, _ string, _ map[string]string, members []recommendation.PreviewMemberInput) (recommendation.PreviewResult, error) {
 	f.previewCalls++
+	f.previewMembers = members
 	return f.preview, f.previewErr
 }
 

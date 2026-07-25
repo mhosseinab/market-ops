@@ -29,6 +29,7 @@ type selectionTelemetry struct {
 	ownershipRejection metric.Int64Counter
 	pageLimitRejection metric.Int64Counter
 	sealedAuthResume   metric.Int64Counter
+	provenanceMismatch metric.Int64Counter
 }
 
 const selectionInstrumentation = "github.com/mhosseinab/market-ops/services/core/internal/recommendation"
@@ -40,11 +41,14 @@ const (
 	metricLineageOwnershipRejected = "recommendation.selection_lineage_ownership_rejected"
 	metricPageLimitRejected        = "recommendation.actions_page_limit_rejected"
 	metricSealedAuthResume         = "recommendation.bulk_member_sealed_authorization"
+	metricBulkProvenanceMismatch   = "recommendation.bulk_binding_provenance_mismatch"
 
 	logKeySeam            = "seam"
 	logKeyLineageID       = "lineage_id"
 	logKeyCallerAccountID = "caller_account_id"
 	logKeyOwnerAccountID  = "owner_account_id"
+	logKeySelectionSetID  = "selection_set_id"
+	logKeyMemberID        = "selection_set_member_id"
 )
 
 // tel returns this Service's selection telemetry: the injected one when a test wired
@@ -91,6 +95,8 @@ func newSelectionTelemetry(mp metric.MeterProvider, logger *slog.Logger) *select
 			"bounded actions-page reads refused for an over-maximum limit (fail closed, §17)"),
 		sealedAuthResume: counter(metricSealedAuthResume,
 			"bulk members reported already_authorized on a resume (sealed authorization, §4.6 idempotency)"),
+		provenanceMismatch: counter(metricBulkProvenanceMismatch,
+			"authorized members refused an already_authorized report because THIS selection has no matching durable provenance (issue #87, §4.6 idempotency/audit)"),
 	}
 }
 
@@ -121,4 +127,21 @@ func (t *selectionTelemetry) pageLimitRejected(ctx context.Context, seam string)
 // implied by the absence of a duplicate intent.
 func (t *selectionTelemetry) sealedAuthorizationOnResume(ctx context.Context, seam string) {
 	t.sealedAuthResume.Add(ctx, 1, metric.WithAttributes(attribute.String(logKeySeam, seam)))
+}
+
+// bulkProvenanceMismatch records a member whose §8.4 control WAS activated but whose
+// activation carries no durable provenance for THIS selection set (issue #87, prior
+// finding 1) — an individual confirmation, or a different selection. It is the
+// boundary between "authorized" and "authorized BY THIS SELECTION", and it fails
+// closed, so it is counted rather than inferred from the absence of a ledger row.
+//
+// Ids only: no PII, no raw marketplace text, no approval-control secrets, and no
+// localized copy as a diagnostic identifier (LOC-001 — this plane is locale-neutral).
+func (t *selectionTelemetry) bulkProvenanceMismatch(ctx context.Context, seam string, set, member uuid.UUID) {
+	t.provenanceMismatch.Add(ctx, 1, metric.WithAttributes(attribute.String(logKeySeam, seam)))
+	t.logger.WarnContext(ctx, "bulk member is authorized but carries no durable provenance for this selection (fail closed)",
+		logKeySeam, seam,
+		logKeySelectionSetID, set.String(),
+		logKeyMemberID, member.String(),
+	)
 }

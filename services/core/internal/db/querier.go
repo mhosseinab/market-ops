@@ -370,6 +370,15 @@ type Querier interface {
 	// sweep (Snapshot -> State -> PlanSweep). A missing row means the window is
 	// untouched: the caller treats pgx.ErrNoRows as zero spend (full headroom).
 	GetBudgetUsage(ctx context.Context, arg GetBudgetUsageParams) (GetBudgetUsageRow, error)
+	// The durable provenance a replay must match EXACTLY (prior finding 1). A card that
+	// was approved individually, or through a DIFFERENT selection set, has NO row here
+	// for this (set, member) pair — so it can never be reported `already_authorized` for
+	// this selection on the strength of being approved at all.
+	//
+	// BULK-PROTOCOL DESIGN RECORD (d): the lookup is by the (set, member) PAIR. It never
+	// orders, ranges, or diffs a version, and never accepts a bare version — version
+	// counters are monotonic only WITHIN one lineage and are not comparable across them.
+	GetBulkActionBindingForMember(ctx context.Context, arg GetBulkActionBindingForMemberParams) (BulkActionBinding, error)
 	// Single-variant canonical Product row backing Product detail (S26, PRD §6.1).
 	// Same canonical projection as ListCatalogProducts, scoped to ONE variant. Both
 	// the account AND the variant id must match (cross-account fail-closed): a foreign
@@ -508,6 +517,21 @@ type Querier interface {
 	// another account matches no row, so a foreign recommendation is indistinguishable
 	// from a missing one (no existence oracle) and is never disclosed.
 	GetRecommendationForAccount(ctx context.Context, arg GetRecommendationForAccountParams) (Recommendation, error)
+	// BULK-PROTOCOL DESIGN RECORD (e) — the SERVER's own sealed offer identity for a
+	// recommendation (issue #87, OBS-004). The identity comes from the recommendation's
+	// OWN persisted evidence observation, never from the request and never from a
+	// lookup-by-target (a target may carry MANY offer identities — picking one by target
+	// is the #87 defect itself).
+	//
+	// Returns '' — EXPLICIT ABSENCE — when the recommendation is not observation-driven
+	// (evidence_observation_id IS NULL) or its evidence observation is no longer
+	// readable. Absence is never inferred into some other offer's identity.
+	//
+	// CST-002 / historical reproducibility: recommendations are append-only, so a given
+	// recommendation id's evidence_observation_id is immutable and this resolution is a
+	// PURE FUNCTION of the recommendation id. Re-running it for a historical member
+	// reproduces exactly the identity that was sealed.
+	GetRecommendationSealedOfferIdentity(ctx context.Context, id uuid.UUID) (string, error)
 	GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error)
 	// The authoritative owner of a selection-set lineage. Exactly one row per lineage
 	// for its whole life (migration 0045); the composite FK on selection_sets makes any
@@ -535,6 +559,10 @@ type Querier interface {
 	// The account a variant belongs to — used to recompute readiness for a variant
 	// when the caller only has the variant id (e.g. the readiness read endpoint).
 	GetVariantAccountID(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	// The (account, variant) a card's reservation is keyed on, resolved from the card's
+	// OWN recommendation — never from a request field. A card and its recommendation are
+	// account-bound by migration 0025's composite FK, so this pair is authoritative.
+	GetVariantForCard(ctx context.Context, id uuid.UUID) (GetVariantForCardRow, error)
 	// The READ-ONLY listing/image diagnostics source projection for one variant (S26,
 	// LST-001). It reads ONLY already-captured canonical catalog data — the variant +
 	// product titles, whether a Listing presence row exists, and the variant's capture
@@ -545,6 +573,39 @@ type Querier interface {
 	// CROSS-ACCOUNT FAIL-CLOSED: both the account ($1) and the variant id ($2) must
 	// match; a foreign or unknown variant returns no row (pgx.ErrNoRows -> 404).
 	GetVariantListingForDiagnostics(ctx context.Context, arg GetVariantListingForDiagnosticsParams) (GetVariantListingForDiagnosticsRow, error)
+	// Unlocked read of the current holder (diagnostics / assertions).
+	GetVariantReservation(ctx context.Context, arg GetVariantReservationParams) (ExecutionVariantReservation, error)
+	// BULK-PROTOCOL DESIGN RECORD (a) — DURABLE (account, variant) EXECUTION RESERVATION
+	// (issue #87, prior finding 2; PRD §7.5 EXE-002 "one execution record per action",
+	// §4.6 idempotency + reconciliation).
+	//
+	// What #90 established: binding a (lineage, version) pair under the per-lineage lock
+	// is the SELECTION reservation, and each member is authorized through its own §8.4
+	// confirm with its own card-id-unique execution intent. What it did NOT establish,
+	// and this owns: a durable EXECUTION reservation spanning the window between
+	// authorization and terminal external result, so two different selection sets — or a
+	// bulk and an individual confirmation — cannot hold concurrent in-flight writes for
+	// the SAME owned variant. Card-level guards bound one CARD; they do not bound two
+	// cards on one variant.
+	//
+	// Lifecycle: ACQUIRED BEFORE DISPATCH, RELEASED ON A TERMINAL EXTERNAL RESULT.
+	//
+	// FAIL-CLOSED on an unknown result: `pending_reconciliation` (EXE-003's fail-closed
+	// state for an UNKNOWN outcome) does NOT release. Releasing it would infer "no write
+	// is in flight" from "we do not know whether the write landed", and permit a second
+	// concurrent write on a variant whose first write may have been accepted at the
+	// marketplace. Quarantine over inference (§4.6). Release happens only when the
+	// outcome is DEFINITE (accepted / rejected / failed), when the action is
+	// recommend-only (no external write exists), or via a bounded, AUDITED expiry
+	// takeover.
+	//
+	// MONEY: no monetary column here. Every value is an identity or a timestamp.
+	// The current holder of (account, variant), row-locked. Absent ⇒ pgx.ErrNoRows: the
+	// variant is unreserved. Taking the row lock FIRST is what makes the acquire decision
+	// atomic against a concurrent acquirer: two confirmations racing on one variant
+	// serialize here, and the loser observes the winner's LIVE reservation rather than a
+	// stale "unreserved" read.
+	GetVariantReservationForUpdate(ctx context.Context, arg GetVariantReservationForUpdateParams) (ExecutionVariantReservation, error)
 	GetWatchlistEntry(ctx context.Context, arg GetWatchlistEntryParams) (WatchlistEntry, error)
 	GetWriteVerification(ctx context.Context, marketplaceAccountID uuid.UUID) (AccountWriteVerification, error)
 	// Analytics event queries (PRD §18). analytics_events is APPEND-ONLY: INSERT and
@@ -569,6 +630,21 @@ type Querier interface {
 	InsertBriefing(ctx context.Context, arg InsertBriefingParams) (Briefing, error)
 	// Appends one ranked event snapshot to a briefing, preserving the Today order.
 	InsertBriefingEvent(ctx context.Context, arg InsertBriefingEventParams) (BriefingEvent, error)
+	// The APPEND-ONLY bulk provenance ledger row (issue #87, prior findings 1 and 3).
+	// It records that THIS selection-set version authorized THIS member's card, and it
+	// is what a later replay checks before reporting `already_authorized`.
+	//
+	// Every duplicated provenance column is verified AT THE DATABASE against the
+	// referenced member and selection set (migration 0049's composite FKs + the
+	// bulk_action_bindings_provenance trigger), so a forged row — one claiming a
+	// set/lineage/version/variant/recommendation/offer the member does not have — is
+	// rejected by PostgreSQL, not merely by Go.
+	//
+	// ON CONFLICT DO NOTHING on (selection_set_id, selection_set_member_id): a replayed
+	// confirmation collapses to exactly ONE binding per member (design record (c)).
+	// NEVER DO UPDATE — the ledger is audit-class and append-only (§4.6); re-pointing an
+	// existing binding is the forgery prior finding 1 describes.
+	InsertBulkActionBinding(ctx context.Context, arg InsertBulkActionBindingParams) (BulkActionBinding, error)
 	// APPEND-ONLY: the only write path to this table is INSERT. Raw item JSON kept
 	// verbatim as evidence (plan §4.7). No UPDATE/DELETE query exists by design.
 	InsertCatalogPayloadSnapshot(ctx context.Context, arg InsertCatalogPayloadSnapshotParams) error
@@ -666,6 +742,11 @@ type Querier interface {
 	// nothing and the service surfaces a not-found — no existence oracle, still
 	// append-only (EVT-005).
 	InsertRelevanceFeedbackForOrg(ctx context.Context, arg InsertRelevanceFeedbackForOrgParams) (EventRelevanceFeedback, error)
+	// APPEND-ONLY provenance of one reservation lifecycle transition (§4.6). The mutable
+	// projection above can be reconstructed entirely from these rows, so the audit trail
+	// never depends on it (AUD-001). `reason` is a stable, NON-LOCALIZED diagnostic key —
+	// never Persian copy, never marketplace free text.
+	InsertReservationEvent(ctx context.Context, arg InsertReservationEventParams) (ExecutionReservationEvent, error)
 	// membership_fingerprint is the canonical hash of the exact membership + aggregate
 	// computed by the atomic create BEFORE any write. It is set once at INSERT and never
 	// UPDATEd (selection_sets is append-only), so a version's fingerprint is immutable —
@@ -684,6 +765,14 @@ type Querier interface {
 	// selection_set's account and — enforced by migration 0025's composite FKs and the
 	// recommendation-account trigger — the variant's and (when present) the
 	// recommendation's account, so a cross-account member is rejected at the DB.
+	//
+	// BULK-PROTOCOL DESIGN RECORD (e) — SEALED OFFER IDENTITY (issue #87).
+	// offer_identity is the SERVER-SEALED observed-offer identity of this member,
+	// resolved by GetRecommendationSealedOfferIdentity from the member's OWN
+	// recommendation evidence. It is NEVER a client assertion: a client-supplied
+	// offerIdentity is only a SELECTOR validated against this value, and a mismatch
+	// fails closed as the same uniform not-found an unknown member produces. '' is
+	// EXPLICIT ABSENCE (a recommendation with no evidence observation), never inference.
 	InsertSelectionSetMember(ctx context.Context, arg InsertSelectionSetMemberParams) (SelectionSetMember, error)
 	// Opens the DURABLE urgent-delivery outbox row for a bypass (execution/safety)
 	// notification. Inserted in the SAME transaction that commits the notification, so a
@@ -693,6 +782,10 @@ type Querier interface {
 	// "already enqueued" — no duplicate logical email). APPEND on this projection; state
 	// is mutated only by the guarded transitions below (never on notifications/audit).
 	InsertUrgentOutbox(ctx context.Context, arg InsertUrgentOutboxParams) (NotificationUrgentOutbox, error)
+	// First acquire for a variant that has never been reserved. A concurrent acquirer
+	// that inserted first raises a unique violation on the primary key, which the caller
+	// reports as HELD — never as a silent success.
+	InsertVariantReservation(ctx context.Context, arg InsertVariantReservationParams) (ExecutionVariantReservation, error)
 	InsertWatchlistEntry(ctx context.Context, arg InsertWatchlistEntryParams) (WatchlistEntry, error)
 	// The S35 write-verification flag for an account. Returns false when there is no
 	// row (writes OFF by default) — the two-key write gate's second key.
@@ -1046,6 +1139,8 @@ type Querier interface {
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)
+	// The append-only lifecycle of one variant's reservations, oldest first.
+	ListReservationEventsForVariant(ctx context.Context, arg ListReservationEventsForVariantParams) ([]ExecutionReservationEvent, error)
 	ListSelectionSetMembers(ctx context.Context, selectionSetID uuid.UUID) ([]SelectionSetMember, error)
 	// Durable, FAIRLY-PAGED forward drain for the market-event producer (issue #212 +
 	// REOPEN residual). Returns the target's append-only observations that lie STRICTLY
@@ -1233,6 +1328,12 @@ type Querier interface {
 	// machine token; last_status_code is the numeric relay code (0 when none). The ambiguity
 	// marker is cleared with the release: the next attempt starts its own window.
 	ReleaseDigestDeliveryToPending(ctx context.Context, arg ReleaseDigestDeliveryToPendingParams) (NotificationDigestDelivery, error)
+	// Release the reservation HELD BY A SPECIFIC CARD on a terminal external result.
+	// FROM-guarded on card_id so a late release from a displaced holder can never free a
+	// reservation a DIFFERENT card has since acquired. Already-released rows match no row
+	// (released_at IS NULL predicate), so a duplicate release is a no-op rather than a
+	// rewrite of the release reason — the first release is the historical fact.
+	ReleaseVariantReservation(ctx context.Context, arg ReleaseVariantReservationParams) (ExecutionVariantReservation, error)
 	RenameOrganization(ctx context.Context, arg RenameOrganizationParams) (Organization, error)
 	// Reopen a Confirmed mapping on a merge/split/redirect/variant-conflict signal
 	// (§16). Guarded WHERE state='confirmed' AND active so only a live Confirmed
@@ -1305,6 +1406,22 @@ type Querier interface {
 	// Advance a recommend-only action to a terminal EXE-005 state. FROM-guarded on
 	// the awaiting state so a resolved action is not re-resolved.
 	SetRecommendOnlyState(ctx context.Context, arg SetRecommendOnlyStateParams) (RecommendOnlyAction, error)
+	// Acquire a variant whose existing reservation is NO LONGER LIVE, FROM-guarded so the
+	// guard is evaluated by the DATABASE and not by a read the caller performed earlier.
+	// Exactly three conditions release the row to a new acquirer:
+	//
+	//   1. released_at IS NOT NULL — a terminal external result already released it;
+	//   2. expires_at <= @now — the bounded window lapsed (an AUDITED takeover; the
+	//      caller appends an `expired_takeover` event naming the displaced holder, so a
+	//      takeover is never a silent recovery, §4.6);
+	//   3. card_id = @card_id — the SAME card re-acquiring. Idempotent by construction: a
+	//      replayed confirmation of one card must not deadlock against its own live
+	//      reservation.
+	//
+	// Any other state matches NO row, returns pgx.ErrNoRows, and the caller fails closed
+	// with "held". This is a mutable projection on a NEW table with a genuine lifecycle —
+	// no UPDATE is introduced on observations, actions, audit records, or outcome_windows.
+	TakeOverVariantReservation(ctx context.Context, arg TakeOverVariantReservationParams) (ExecutionVariantReservation, error)
 	// Advances conversations.updated_at for a conversation owned by the caller's
 	// organization. This is the ONLY UPDATE in this file: it touches NO message row
 	// and NO retention/pinned state, and a foreign conversation matches nothing and

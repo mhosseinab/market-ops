@@ -821,6 +821,13 @@ export const MESSAGE_KEYS = [
   "bulk.status.warning",
   "bulk.status.blocked",
   "bulk.col.include",
+  // Per-ROW accessible names for the include control (issue #87, prior finding 9).
+  // Sibling offers on one target previously shared the bare column header as their
+  // accessible name, so an assistive-technology user could not tell which offer they
+  // were excluding. Named slots only; the technical identifiers are LTR-isolated by
+  // the caller (LOC-005).
+  "bulk.col.include.aria.offer",
+  "bulk.col.include.aria.sku",
   "bulk.col.product",
   "bulk.col.sku",
   "bulk.col.offer",

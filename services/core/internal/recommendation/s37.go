@@ -275,14 +275,34 @@ var ErrUnknownMember = errors.New("recommendation: unknown or mismatched selecti
 type PreviewMemberInput struct {
 	VariantID        uuid.UUID
 	RecommendationID uuid.UUID
+	// OfferIdentity is an OPTIONAL client SELECTOR (issue #87, BULK-PROTOCOL DESIGN
+	// RECORD (e)) — never an assertion the server acts on. It is ADDITIVE: the empty
+	// string means "not asserted", so the pre-#87 {VariantID, RecommendationID} shape
+	// keeps working unchanged and this field is NEVER behaviorally required.
+	//
+	// When non-empty it is compared to the identity the SERVER seals from the named
+	// recommendation's own evidence. A mismatch fails closed as ErrUnknownMember —
+	// the SAME uniform not-found an unknown member produces, so it is no existence
+	// oracle for the real identity. It can therefore NARROW (reject) but never WIDEN
+	// or REDIRECT what gets authorized.
+	OfferIdentity string
 }
 
 // PreviewMemberView is one resolved member of a selection-set preview, with its
-// SERVER-derived disposition.
+// SERVER-derived disposition and SERVER-SEALED offer identity.
 type PreviewMemberView struct {
 	VariantID        uuid.UUID
 	RecommendationID uuid.UUID
 	Disposition      Disposition
+	// OfferIdentity is the observed-offer identity SEALED by the server from this
+	// member's own recommendation evidence (issue #87 criterion D, OBS-004). It is
+	// resolved from the recommendation — which names exactly ONE evidence observation
+	// — and NEVER by a lookup-by-target: a target may carry many offer identities, and
+	// picking one by target is the #87 defect itself.
+	//
+	// "" is EXPLICIT ABSENCE (a recommendation that is not observation-driven), never
+	// a stand-in for some other offer (quarantine over inference, §4.6).
+	OfferIdentity string
 }
 
 // PreviewResult is the server-minted bulk selection-set preview (PD-3 item 4).
@@ -381,8 +401,32 @@ func (s *Service) resolveBulkMembers(ctx context.Context, q *db.Queries, account
 		if row.MarketplaceAccountID != account || row.VariantID != m.VariantID {
 			return nil, nil, ErrUnknownMember
 		}
+		// BULK-PROTOCOL DESIGN RECORD (e) — the offer identity is SEALED HERE, from
+		// the server's OWN persisted state, on the SAME transaction that seals the
+		// version. It is read from the recommendation's evidence observation, so it is
+		// a pure function of the recommendation id and reproduces identically on a
+		// historical replay (CST-002).
+		sealedOffer, err := q.GetRecommendationSealedOfferIdentity(ctx, m.RecommendationID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, nil, ErrUnknownMember
+			}
+			return nil, nil, err
+		}
+		// The client's value is a SELECTOR, validated against the sealed value — never
+		// an input. A mismatch fails closed as the SAME uniform not-found an unknown
+		// member produces (no existence oracle), and the whole preview rolls back, so
+		// no partially-sealed version can be observed or bound.
+		if m.OfferIdentity != "" && m.OfferIdentity != sealedOffer {
+			return nil, nil, ErrUnknownMember
+		}
 		disp := dispositionOf(row)
-		views = append(views, PreviewMemberView{VariantID: m.VariantID, RecommendationID: m.RecommendationID, Disposition: disp})
+		views = append(views, PreviewMemberView{
+			VariantID:        m.VariantID,
+			RecommendationID: m.RecommendationID,
+			Disposition:      disp,
+			OfferIdentity:    sealedOffer,
+		})
 		contribs = append(contribs, memberContribution{
 			Available: row.ProposedContributionAvailable,
 			Mantissa:  row.ProposedContributionMantissa.Int64,

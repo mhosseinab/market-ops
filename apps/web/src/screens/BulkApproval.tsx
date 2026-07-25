@@ -1,4 +1,4 @@
-import type { MessageKey } from "@market-ops/locale";
+import { ltrIsolate, type MessageKey } from "@market-ops/locale";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useLocale, useT } from "../app/i18n";
@@ -121,6 +121,27 @@ function candidateKey(c: Candidate): string {
 // (native variant + seller), else the target's native variant id.
 function candidateSlug(c: Candidate): string {
   return c.offer ? c.offer.offerIdentity : String(c.target.nativeVariantId);
+}
+
+// The include control's per-ROW accessible name (issue #87, prior finding 9).
+//
+// Sibling offers on one target share a product, a SKU, and a column header — the ONLY
+// thing that distinguishes their controls is the offer identity, so that is what the
+// name must carry. A target with no observed offer has no identity to name and falls
+// back to its SKU, which is unambiguous for that row because such a target contributes
+// exactly one placeholder row.
+//
+// Both identifiers are wrapped in a Unicode LTR isolate: an aria-label is a plain
+// string with no CSS, so `LtrToken`'s `unicode-bidi: isolate` does not apply and a
+// Latin identifier interpolated into RTL copy would otherwise be reordered (LOC-005).
+// Copy comes from catalog keys with NAMED slots — zero string literals.
+function includeControlLabel(
+  t: (key: MessageKey, vars?: Record<string, unknown>) => string,
+  c: Candidate,
+): string {
+  const sku = ltrIsolate(String(c.target.nativeVariantId));
+  if (!c.offer) return t("bulk.col.include.aria.sku", { sku });
+  return t("bulk.col.include.aria.offer", { offer: ltrIsolate(c.offer.offerIdentity), sku });
 }
 
 // Per-item result copy, keyed by the SERVER's BulkApprovalItemState. Every state the
@@ -373,7 +394,14 @@ export function BulkApproval() {
         return (
           <input
             type="checkbox"
-            aria-label={t("bulk.col.include")}
+            // Issue #87, prior finding 9: every sibling offer's control needs its
+            // OWN accessible name. Sharing the bare column header ("Include") meant
+            // an assistive-technology user heard the same name for every offer on a
+            // target and could not tell which one they were excluding — the #87
+            // identity collapse resurfacing in the accessibility layer. Catalog keys
+            // with NAMED slots (zero string literals), and the identifiers are
+            // LTR-isolated because an aria-label carries no CSS (LOC-005).
+            aria-label={includeControlLabel(t, c)}
             data-testid={`bulk-include-${candidateSlug(c)}`}
             checked={included(key)}
             onChange={() =>

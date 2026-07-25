@@ -772,6 +772,8 @@ export const faIR: Catalog = {
   "bulk.status.warning": "هشدار",
   "bulk.status.blocked": "مسدود",
   "bulk.col.include": "شامل",
+  "bulk.col.include.aria.offer": "شامل کردن آگهی {offer} برای شناسه کالا {sku}",
+  "bulk.col.include.aria.sku": "شامل کردن شناسه کالا {sku}",
   "bulk.col.product": "کالا",
   "bulk.col.sku": "شناسه کالا",
   "bulk.col.offer": "آگهی",
