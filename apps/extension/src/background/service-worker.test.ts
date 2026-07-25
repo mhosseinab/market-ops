@@ -1767,6 +1767,7 @@ describe("service worker — #149 cycle 2: a locally-resolved revocation is neve
 describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED, never assumed", () => {
   const KEY_REVOCATION_PENDING = "revocationPending";
   const KEY_REVOCATION_UNCONFIRMED = "revocationUnconfirmed";
+  const KEY_REVOCATION_ABANDONED = "revocationAbandoned";
   const product = parsedProduct();
   let storage: Map<string, unknown>;
 
@@ -1830,6 +1831,16 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
     return snapshotMetrics()
       .filter((s) => s.name === "credential_revocation")
       .map((s) => String(s.labels.outcome));
+  }
+
+  // The COUNT for one revocation outcome, not merely its presence: a per-read
+  // increment and a once-per-persistence increment are indistinguishable
+  // otherwise.
+  async function revocationOutcomeCount(outcome: string): Promise<number> {
+    const { snapshotMetrics } = await import("../lib/observability");
+    return snapshotMetrics()
+      .filter((s) => s.name === "credential_revocation" && s.labels.outcome === outcome)
+      .reduce((n, s) => n + s.value, 0);
   }
 
   async function capabilityTransitions(): Promise<string[]> {
@@ -2392,6 +2403,14 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
     expect(state.state.degradation).not.toBe("credential_revoked");
     expect(state.state.revocationUnconfirmed).toBe(true);
     expect(await capabilityTransitions()).not.toContain("revoked");
+    // The WITHHELD terminal is emitted, not merely reflected in the state: a
+    // fallback that engages without an emitted signal is always a bug
+    // (CLAUDE.md), and `terminal_withheld_abandoned` is the only thing telling an
+    // operator this device holds a revocation it can no longer pursue.
+    expect(await revocationOutcomes()).toContain("terminal_withheld_abandoned");
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes("credential_revocation_terminal_withheld")),
+    ).toBe(true);
   });
 
   // B6 (upheld). readQuarantine dropped entries with no `credentialId`, and the
@@ -2416,6 +2435,246 @@ describe("service worker — #149 fix 3: unconfirmed revocations are QUARANTINED
         String(c[0]).includes("credential_revocation_quarantine_malformed"),
       ),
     ).toBe(true);
+  });
+
+  // ---- fix cycle 3 ----
+
+  // B7. `revokeLocked`'s no-credential / no-quarantine branch was the ONE
+  // fail-closed branch in the file without the never-clobber guard its three
+  // siblings carry, and the one terminal that never consulted the durable
+  // abandoned flag. Seeded with EXACTLY the state B5 leaves behind — flag set,
+  // quarantine swept empty, capability withheld at `revocation_unconfirmed` — a
+  // repeat Revoke promoted straight to terminal `revoked`, so the popup rendered
+  // a COMPLETED kill switch on a device whose cap-evicted credential may still
+  // be live at the authority, and `resolveQuarantine`'s withholding became
+  // permanently inert (it early-returns unless the capability still reads
+  // `revocation_unconfirmed`).
+  it("B7: a repeat Revoke never fabricates a terminal `revoked` while a cap-EVICTED revocation is still abandoned", async () => {
+    storage = installChromeMock().storage;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rf = revokeFetch(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", rf.fetch);
+    // The post-B5 resting state: nothing left to retry, but a revocation the
+    // authority never confirmed was abandoned at the cap.
+    storage.set(KEY_CAPABILITY, "revocation_unconfirmed");
+    storage.set(KEY_REVOCATION_ABANDONED, true);
+
+    const send = await loadWorker();
+    await settle();
+    const resp = await send({ kind: "revoke" });
+    await settle();
+    if (!("state" in resp)) throw new Error("expected state");
+
+    // The kill switch is NOT complete and the popup must not claim it is.
+    expect(resp.state.capability).not.toBe("revoked");
+    expect(resp.state.capability).toBe("revocation_unconfirmed");
+    expect(resp.state.degradation).not.toBe("credential_revoked");
+    expect(resp.state.revocationUnconfirmed).toBe(true);
+    expect(storage.get(KEY_CAPABILITY)).toBe("revocation_unconfirmed");
+    expect(await capabilityTransitions()).not.toContain("revoked");
+    // The withholding is OBSERVED — a fallback engaging silently is always a bug
+    // (CLAUDE.md), and this outcome is the only signal an operator gets.
+    expect(await revocationOutcomes()).toContain("terminal_withheld_abandoned");
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes("credential_revocation_terminal_withheld")),
+    ).toBe(true);
+  });
+
+  // B7 NEGATIVE. Withholding a terminal must never fail OPEN. This branch removes
+  // the pending marker on its way through, and the marker is what
+  // `getCapability` uses to override a stale stored `ready` — so a withheld
+  // terminal that left the capability untouched would put capture back ON with
+  // no credential at all. The withheld state is `revocation_unconfirmed`: more
+  // restrictive than what it replaced, never less.
+  it("B7 NEGATIVE: withholding the terminal never leaves a CAPTURING capability behind", async () => {
+    storage = installChromeMock().storage;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rf = revokeFetch(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", rf.fetch);
+    // The composed teardown the F6/F7 tests establish: the credential is gone but
+    // the capability write was lost, so the STORED capability is still `ready`.
+    storage.set(KEY_CAPABILITY, "ready");
+    storage.set(KEY_REVOCATION_ABANDONED, true);
+
+    const send = await loadWorker();
+    await settle();
+    const resp = await send({ kind: "revoke" });
+    await settle();
+    if (!("state" in resp)) throw new Error("expected state");
+
+    expect(resp.state.capability).not.toBe("ready");
+    expect(resp.state.capability).not.toBe("revoked");
+    expect(resp.state.capability).toBe("revocation_unconfirmed");
+    expect(storage.get(KEY_CAPABILITY)).toBe("revocation_unconfirmed");
+    expect(await revocationOutcomes()).toContain("terminal_withheld_abandoned");
+    expect(await capabilityTransitions()).not.toContain("revoked");
+  });
+
+  // B7 TIMER. The user-driven repeat Revoke is not the only route to that
+  // terminal: the boot-time pending retry reaches the identical situation (a
+  // marker whose credential material is gone) through `demoteToRevoked`, and it
+  // reached terminal `revoked` on a BOOT TICK with the abandoned flag set —
+  // capability `revoked`, degradation `credential_revoked`, no user action at
+  // all. Every terminal reached by INFERENCE withholds while a cap-evicted
+  // revocation is outstanding; only a positively-proven one does not.
+  it("B7 TIMER: the BOOT-tick orphan resolution also withholds terminal `revoked` while a revocation is abandoned", async () => {
+    storage = installChromeMock().storage;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rf = revokeFetch(genericProxy401);
+    vi.stubGlobal("fetch", rf.fetch);
+    // A durable marker whose credential is gone, over a stored `ready` that the
+    // lost capability write left behind (the F6/F7 composed teardown).
+    storage.set(KEY_CAPABILITY, "ready");
+    storage.set(KEY_REVOCATION_ABANDONED, true);
+    storage.set(KEY_REVOCATION_PENDING, {
+      requestedAt: new Date().toISOString(),
+      credentialId: CRED.credentialId,
+      marketplaceAccountId: CRED.marketplaceAccountId,
+      credentialExpiresAt: CRED.expiresAt,
+      attempts: 1,
+      serverContacted: true,
+    });
+
+    const send = await loadWorker();
+    await settle();
+
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).not.toBe("revoked");
+    expect(state.state.capability).not.toBe("ready");
+    expect(state.state.degradation).not.toBe("credential_revoked");
+    expect(state.state.capability).toBe("revocation_unconfirmed");
+    expect(storage.get(KEY_CAPABILITY)).toBe("revocation_unconfirmed");
+    expect(await capabilityTransitions()).not.toContain("revoked");
+    expect(await revocationOutcomes()).toContain("terminal_withheld_abandoned");
+  });
+
+  // B8. The expiry terminal's abandoned-withholding branch (the other half of the
+  // fix B5 pins) had NO test: deleting it and restoring the unconditional
+  // `setCapability("unknown")` left the whole suite green, on the path that
+  // decides how a possibly-live credential's state resolves. This mirrors B5 but
+  // drives the EXPIRY terminal instead of the confirmation terminal.
+  it("B8: the EXPIRY terminal also withholds while a cap-EVICTED revocation is abandoned — never `unknown`", async () => {
+    storage = installChromeMock().storage;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rf = revokeFetch(genericProxy401);
+    vi.stubGlobal("fetch", rf.fetch);
+    storage.set(KEY_CAPABILITY, "revocation_unconfirmed");
+    storage.set(KEY_REVOCATION_ABANDONED, true);
+    // The last remaining entry ages out at its authoritative expiry: its material
+    // is discarded, but that is not the authority confirming anything.
+    storage.set(KEY_REVOCATION_UNCONFIRMED, [
+      quarantineA({ credentialExpiresAt: "2020-01-01T00:00:00Z" }),
+    ]);
+
+    const send = await loadWorker();
+    await settle();
+
+    // The expired entry was discarded without ever being presented again…
+    expect(rf.revokeCalls).toEqual([]);
+    expect(quarantineRecords(storage)).toEqual([]);
+    expect(await revocationOutcomes()).toContain("quarantine_expired");
+    // …and the sweep does NOT resolve to `unknown`: the evicted revocation is
+    // still outstanding at the authority.
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).not.toBe("unknown");
+    expect(state.state.capability).not.toBe("revoked");
+    expect(state.state.capability).toBe("revocation_unconfirmed");
+    expect(state.state.revocationUnconfirmed).toBe(true);
+    expect(storage.get(KEY_CAPABILITY)).toBe("revocation_unconfirmed");
+    expect(await capabilityTransitions()).not.toContain("unknown");
+    // Observed, not silent.
+    expect(await revocationOutcomes()).toContain("terminal_withheld_abandoned");
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes("credential_revocation_terminal_withheld")),
+    ).toBe(true);
+  });
+
+  // B9. `finalizeRevocation` is the ONE terminal with POSITIVE PROOF for the
+  // credential in hand (204, or the authority's own CAPTURE_CREDENTIAL_INVALID
+  // verdict), so it KEEPS the terminal `revoked` — withholding there would deny a
+  // confirmation the authority actually gave, and would leave the capability on a
+  // pending state for a credential that is provably dead. What it must never do
+  // is make an unrelated ABANDONED revocation invisible: the popup's outstanding-
+  // revocation paragraph has to render alongside the completed kill switch.
+  it("B9: a CONFIRMED revocation stays terminal `revoked`, but an abandoned revocation stays VISIBLE alongside it", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(() => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", rf.fetch);
+    storage.set(KEY_REVOCATION_ABANDONED, true);
+
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    const resp = await send({ kind: "revoke" });
+    await settle();
+    if (!("state" in resp)) throw new Error("expected state");
+
+    expect(resp.state.capability).toBe("revoked");
+    expect(await revocationOutcomes()).toContain("confirmed");
+    // …and the abandoned revocation is NOT hidden by that completion.
+    expect(resp.state.revocationUnconfirmed).toBe(true);
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.revocationUnconfirmed).toBe(true);
+  });
+
+  // B10 (upheld). `readQuarantine` pruned malformed entries in memory and relied
+  // on the NEXT writeQuarantine to persist the drop — true only for a MIXED list
+  // (all B6 covers). When EVERY entry is malformed the pruned list was never
+  // written, so credential material sat in storage forever; and because
+  // `popupState` reads the quarantine, the drop was counted and warn-logged on
+  // EVERY getState poll — a counter measuring reads, not discards.
+  it("B10: an ALL-malformed quarantine list is persisted-pruned once, and the discard is counted once, not per read", async () => {
+    storage = installChromeMock().storage;
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const rf = revokeFetch(genericProxy401);
+    vi.stubGlobal("fetch", rf.fetch);
+    const malformed = quarantineA();
+    delete malformed.credentialId;
+    storage.set(KEY_CAPABILITY, "revocation_unconfirmed");
+    storage.set(KEY_REVOCATION_UNCONFIRMED, [malformed]);
+
+    const send = await loadWorker();
+    await settle();
+
+    // The credential material is GONE from storage — not retained forever.
+    expect(quarantineRecords(storage)).toEqual([]);
+    expect(storage.get(KEY_REVOCATION_UNCONFIRMED)).toBeUndefined();
+    expect(await revocationOutcomes()).toContain("quarantine_malformed_dropped");
+
+    // …and the counter measures DISCARDS, not reads: polling the popup three
+    // times does not re-count a discard that already happened.
+    const after = await revocationOutcomeCount("quarantine_malformed_dropped");
+    for (let i = 0; i < 3; i++) await send({ kind: "getState" });
+    expect(await revocationOutcomeCount("quarantine_malformed_dropped")).toBe(after);
+    expect(after).toBe(1);
+  });
+
+  // B11 (upheld). `handleSetEnabled` guarded only `revocation_pending`, so a
+  // `revocation_unconfirmed` capability plus a stored credential let the toggle
+  // write a plain `disabled` — masking the "could not confirm" state as an
+  // ordinary user disable and losing the visible distinctness the state exists
+  // for. Fail-closed either way, but the state must stay honest.
+  it("B11: the capture toggle never masks a `revocation_unconfirmed` capability as a plain disable", async () => {
+    storage = installChromeMock().storage;
+    const rf = revokeFetch(genericProxy401);
+    vi.stubGlobal("fetch", rf.fetch);
+    storage.set(KEY_CREDENTIAL, CRED);
+    storage.set(KEY_CAPABILITY, "revocation_unconfirmed");
+
+    const send = await loadWorker();
+    await settle();
+    const resp = await send({ kind: "setEnabled", enabled: false });
+    if (!("state" in resp)) throw new Error("expected state");
+
+    expect(resp.state.capability).toBe("revocation_unconfirmed");
+    expect(storage.get(KEY_CAPABILITY)).toBe("revocation_unconfirmed");
+    expect(storage.get(KEY_CAPABILITY)).not.toBe("disabled");
+    // …and it is still not re-enablable.
+    const back = await send({ kind: "setEnabled", enabled: true });
+    if (!("state" in back)) throw new Error("expected state");
+    expect(back.state.capability).toBe("revocation_unconfirmed");
   });
 });
 

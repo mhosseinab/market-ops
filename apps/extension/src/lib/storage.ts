@@ -201,6 +201,14 @@ export function auditNoSellerToken(snapshot: Record<string, unknown>): string[] 
       }
     }
   });
+  // The abandoned flag is a BARE BOOLEAN by design (the eviction's whole point is
+  // that the material is gone). Pin that shape here (fix cycle 3): a future
+  // change writing a RECORD there would otherwise be caught only by the coarse
+  // seller-token-key regex, which does not match `credential`.
+  const abandoned = snapshot[KEY_REVOCATION_ABANDONED];
+  if (abandoned !== undefined && typeof abandoned !== "boolean") {
+    offenders.push(`${KEY_REVOCATION_ABANDONED} (must be a bare boolean, never a record)`);
+  }
   return offenders;
 }
 

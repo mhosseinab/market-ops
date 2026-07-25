@@ -104,6 +104,13 @@ let syncGeneration = 0;
 // `local_storage_error` precisely so it is visible rather than assumed away.
 let localCaptureLock = false;
 
+// Serializes the unconfirmed-revocation quarantine's read-modify-write sequences
+// (see withQuarantineLock, below). Failures do not poison the chain: the next
+// queued mutation runs either way. Declared here, with the other module-level
+// state, because the boot-time quarantine retry reaches it before module
+// evaluation gets any further down the file.
+let quarantineWrites: Promise<unknown> = Promise.resolve();
+
 // The BOUNDED evidence token recorded when a pending revoke is quarantined by
 // its AGE bound rather than by an attempt's result: no attempt ever produced an
 // answer, so no per-attempt evidence exists to carry over. It sits alongside the
@@ -495,7 +502,12 @@ async function handleSetEnabled(enabled: boolean): Promise<ExtResponse> {
   // #149: an unconfirmed revocation is never toggled away. Capture stays off
   // until the authority confirms (or the credential expires) — the toggle can
   // neither re-enable capture nor mask the pending state as a plain disable.
-  if (cap === "revocation_pending") return { ok: true, state: await popupState() };
+  // BOTH unsettled states are guarded (fix cycle 3): `revocation_unconfirmed` is
+  // a distinct, VISIBLE terminal, and writing `disabled` over it would report an
+  // ordinary user disable for a credential that may still be live.
+  if (cap === "revocation_pending" || cap === "revocation_unconfirmed") {
+    return { ok: true, state: await popupState() };
+  }
   // Only toggle between ready/disabled when a credential exists; never promote
   // out of unknown/revoked via the toggle (Unknown never enables).
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
@@ -724,8 +736,43 @@ async function revokeLocked(): Promise<ExtResponse> {
     //                     already completed. Idempotent, not a lost revocation.
     const hadMarker = Boolean(await store.get<PendingRevocation>(KEY_REVOCATION_PENDING));
     await store.remove(KEY_REVOCATION_PENDING);
-    await setCapability("revoked");
-    incr("capability_transition", { to: "revoked" });
+    // The SAME two-part guard the three sibling fail-closed branches carry (the
+    // quarantine repeat above, failClosedDurably, demoteToRevoked). This was the
+    // one branch without it, and the one terminal that never consulted the
+    // durable abandoned flag:
+    //
+    //   (1) NEVER OVER AN ABANDONED REVOCATION. A cap-evicted entry is a
+    //       revocation the authority never confirmed and that can no longer be
+    //       pursued, so the kill switch is NOT complete whatever this branch
+    //       finds locally. Seeded with the state a swept quarantine leaves
+    //       behind, this branch used to promote straight to terminal `revoked`,
+    //       rendering a COMPLETED kill switch while the evicted credential may
+    //       still be live — and making resolveQuarantine's withholding
+    //       permanently inert (it early-returns unless the capability still
+    //       reads `revocation_unconfirmed`). The withholding is EMITTED, never
+    //       silent; the orphaned/already_cleared outcome below still records
+    //       which local situation was found.
+    //   (2) NEVER-PROMOTE, as the siblings do: `unknown`, `disabled` and
+    //       `revocation_unconfirmed` are left exactly as they are. Only a state
+    //       that was capturing (or actively revoking) may move to `revoked`.
+    //
+    // Withholding the terminal never leaves a CAPTURING state behind: the marker
+    // was just removed, so a retained `ready` would be capture back ON with no
+    // credential. The withheld state lands on `revocation_unconfirmed`, exactly
+    // as the quarantine-repeat sibling above does — more restrictive, never less.
+    const raw = await rawCapability();
+    const settling = raw === "ready" || raw === "revocation_pending";
+    if (await revocationAbandoned()) {
+      if (settling) {
+        await setCapability("revocation_unconfirmed");
+        incr("capability_transition", { to: "revocation_unconfirmed" });
+      }
+      incr("credential_revocation", { outcome: "terminal_withheld_abandoned" });
+      log("warn", "credential_revocation_terminal_withheld", { reason: "quarantine_evicted" });
+    } else if (settling) {
+      await setCapability("revoked");
+      incr("capability_transition", { to: "revoked" });
+    }
     if (hadMarker) {
       incr("credential_revocation", { outcome: "orphaned" });
       log("warn", "credential_revocation_orphaned", { hadCredential: false });
@@ -865,6 +912,18 @@ async function settlePendingRevocation(
 // PRE-revocation target after a re-pair — potentially uploading account A's
 // target on a request authenticated with account B's credential (identity
 // quarantine, §4.6).
+//
+// It does NOT consult `revocationAbandoned()`, unlike every other terminal in
+// this file, and that asymmetry is deliberate. The other terminals reach
+// `revoked` by INFERENCE — a local sweep finding nothing left, a repeat Revoke
+// finding no material — so an abandoned entry invalidates the inference. This
+// one has POSITIVE PROOF for the credential in hand (a 204, or the authority's
+// own CAPTURE_CREDENTIAL_INVALID verdict), and withholding it would deny a
+// confirmation the authority actually gave, stranding the capability on a
+// pending state for a credential that is provably dead. The abandoned
+// revocation stays VISIBLE regardless: `PopupState.revocationUnconfirmed` reads
+// the durable flag, so the outstanding-revocation paragraph renders alongside
+// the completed kill switch (pinned by a test, so this stays true).
 async function finalizeRevocation(): Promise<void> {
   await tearDownCredential();
   await setCapability("revoked");
@@ -940,9 +999,10 @@ async function quarantineUnconfirmedRevocation(
 // and the boot-time quarantine retry run independently, by design) can never
 // interleave a lost update.
 
-// Serializes quarantine read-modify-write sequences. Failures do not poison the
-// chain: the next queued mutation runs either way.
-let quarantineWrites: Promise<unknown> = Promise.resolve();
+// (The serializing lock state itself is declared with the other module-level
+// state near the top of the file: the boot-time quarantine retry now takes the
+// lock on its very first statement, so a `let` declared down here would be in
+// its temporal dead zone at that moment.)
 function withQuarantineLock<T>(fn: () => Promise<T>): Promise<T> {
   const run = quarantineWrites.then(fn, fn);
   quarantineWrites = run.then(
@@ -957,10 +1017,22 @@ function withQuarantineLock<T>(fn: () => Promise<T>): Promise<T> {
 // extension upgrade never strands (or silently drops) an outstanding revocation.
 //
 // An entry with no `credentialId` cannot be retried, resolved or removed, so it
-// is dropped — and the next writeQuarantine PERSISTS that drop. A discard of
-// credential material is never silent (fix cycle 2): it is counted and logged
-// like every other terminal in this file.
+// is dropped — and the drop is PERSISTED here, under the write lock, rather than
+// left to whatever mutation happens next (fix cycle 3). Relying on the next
+// writeQuarantine held only for a MIXED list: when EVERY entry was malformed the
+// pruned list was never written at all, so the credential material sat in
+// storage forever. A discard of credential material is never silent (fix cycle
+// 2): it is counted and logged like every other terminal in this file — once, at
+// the point of PERSISTENCE. Counting per READ made the counter measure popup
+// polls (readQuarantine is on popupState's path), not discards.
 async function readQuarantine(): Promise<UnconfirmedRevocation[]> {
+  return await withQuarantineLock(readQuarantineLocked);
+}
+
+// readQuarantineLocked is the same read for callers that ALREADY hold the write
+// lock (every mutation below is a read-modify-write). Taking the lock again from
+// there would deadlock.
+async function readQuarantineLocked(): Promise<UnconfirmedRevocation[]> {
   const raw = await store.get<UnconfirmedRevocation | UnconfirmedRevocation[]>(
     KEY_REVOCATION_UNCONFIRMED,
   );
@@ -968,6 +1040,7 @@ async function readQuarantine(): Promise<UnconfirmedRevocation[]> {
   if (!Array.isArray(raw)) return [raw];
   const usable = raw.filter((e) => Boolean(e?.credentialId));
   if (usable.length !== raw.length) {
+    await writeQuarantine(usable);
     incr("credential_revocation", { outcome: "quarantine_malformed_dropped" });
     log("warn", "credential_revocation_quarantine_malformed", {
       dropped: raw.length - usable.length,
@@ -998,7 +1071,9 @@ async function writeQuarantine(list: UnconfirmedRevocation[]): Promise<void> {
 // the list, so a teardown between the two errs toward "could not confirm".
 async function upsertQuarantine(entry: UnconfirmedRevocation): Promise<void> {
   await withQuarantineLock(async () => {
-    const list = (await readQuarantine()).filter((e) => e.credentialId !== entry.credentialId);
+    const list = (await readQuarantineLocked()).filter(
+      (e) => e.credentialId !== entry.credentialId,
+    );
     list.push(entry);
     while (list.length > MAX_QUARANTINED_REVOCATIONS) {
       const evicted = list.shift();
@@ -1025,7 +1100,7 @@ async function revocationAbandoned(): Promise<boolean> {
 // (a concurrent resolution removed it) this is a no-op — never a resurrection.
 async function updateQuarantineEntry(entry: UnconfirmedRevocation): Promise<void> {
   await withQuarantineLock(async () => {
-    const list = await readQuarantine();
+    const list = await readQuarantineLocked();
     if (!list.some((e) => e.credentialId === entry.credentialId)) return;
     await writeQuarantine(list.map((e) => (e.credentialId === entry.credentialId ? entry : e)));
   });
@@ -1035,7 +1110,7 @@ async function updateQuarantineEntry(entry: UnconfirmedRevocation): Promise<void
 // so a caller can tell whether the quarantine as a whole is now empty.
 async function removeQuarantineEntry(credentialId: string): Promise<UnconfirmedRevocation[]> {
   return await withQuarantineLock(async () => {
-    const list = (await readQuarantine()).filter((e) => e.credentialId !== credentialId);
+    const list = (await readQuarantineLocked()).filter((e) => e.credentialId !== credentialId);
     await writeQuarantine(list);
     return list;
   });
@@ -1411,6 +1486,20 @@ async function demoteToRevoked(): Promise<void> {
   ownedTargets.replaceAll([], { generation: syncGeneration, marketplaceAccountId: null });
   const raw = await rawCapability();
   if (raw !== "ready" && raw !== "revocation_pending") return;
+  // …and the same abandoned-revocation withholding its user-driven twin in
+  // revokeLocked carries. This is the TIMER-driven route to the identical
+  // situation, so a boot tick reached terminal `revoked` — the popup rendering a
+  // completed kill switch — while a cap-evicted credential may still be live at
+  // the authority. The rule across this file: every terminal reached by
+  // INFERENCE consults the flag; only finalizeRevocation, which holds positive
+  // proof for the credential in hand, does not.
+  if (await revocationAbandoned()) {
+    await setCapability("revocation_unconfirmed");
+    incr("capability_transition", { to: "revocation_unconfirmed" });
+    incr("credential_revocation", { outcome: "terminal_withheld_abandoned" });
+    log("warn", "credential_revocation_terminal_withheld", { reason: "quarantine_evicted" });
+    return;
+  }
   await setCapability("revoked");
   incr("capability_transition", { to: "revoked" });
 }

@@ -3,6 +3,7 @@ import {
   auditNoSellerToken,
   KEY_CREDENTIAL,
   KEY_QUEUE,
+  KEY_REVOCATION_ABANDONED,
   KEY_REVOCATION_UNCONFIRMED,
   MemoryStore,
   sanitizeCredential,
@@ -156,5 +157,24 @@ describe("storage audit — the unconfirmed-revocation quarantine record (#149)"
     expect(offenders.join(" ")).toContain("lastSeenUrl");
     expect(offenders.join(" ")).toContain("[1]");
     expect(offenders.join(" ")).toContain("jwt");
+  });
+
+  // Fix cycle 3 (upheld). The durable abandoned flag is a BARE BOOLEAN by
+  // design — the eviction's whole point is that the material is gone. Nothing
+  // pinned that shape, so a future change writing a record there would have been
+  // caught only by the coarse seller-token-key regex, which does not match
+  // `credential`. The audit fails closed on any non-boolean at that key.
+  it("pins the abandoned flag's SHAPE: a bare boolean passes, anything else fails closed", () => {
+    expect(auditNoSellerToken({ [KEY_REVOCATION_ABANDONED]: true })).toEqual([]);
+    expect(auditNoSellerToken({ [KEY_REVOCATION_ABANDONED]: false })).toEqual([]);
+    for (const bad of [
+      { credential: "cap-cred-hex", credentialId: "33333333-3333-3333-3333-333333333333" },
+      ["cap-cred-hex"],
+      "cap-cred-hex",
+    ]) {
+      const offenders = auditNoSellerToken({ [KEY_REVOCATION_ABANDONED]: bad });
+      expect(offenders.length).toBeGreaterThan(0);
+      expect(offenders.join(" ")).toContain(KEY_REVOCATION_ABANDONED);
+    }
   });
 });
