@@ -21,7 +21,7 @@ import (
 type WriteEnablement struct {
 	// CapabilitySupported is registry.IsSupported(connector.PriceWrite).
 	CapabilitySupported bool
-	// RegionWriteVerified is the S35 region write-verification flag. It is NEVER
+	// RegionWriteVerified is the gated region write-verification flag. It is NEVER
 	// hardcoded true here — it is read from persisted verification state.
 	RegionWriteVerified bool
 }

@@ -40,7 +40,7 @@ type ApprovalService interface {
 	// rejection) is preserved unchanged.
 	ConfirmBulkSelectionForOrg(ctx context.Context, organizationID, lineage uuid.UUID, boundVersion int32, now time.Time, actor audit.Actor) (recommendation.BulkConfirmOutcome, error)
 	// EditPriceForOrg mints a new card version with the edited price (CHAT-044,
-	// PD-3 item 2, S37), scoped to the caller's account.
+	// PD-3 item 2), scoped to the caller's account.
 	EditPriceForOrg(ctx context.Context, organizationID, cardID uuid.UUID, newPrice money.Money, now time.Time) (db.ApprovalCard, error)
 	// ListActionsForOrg returns ONE bounded, keyset-paginated page of the caller's
 	// own account's actions queue (PD-3 item 5, S37; issue #90 blocker 3). A foreign
@@ -49,7 +49,7 @@ type ApprovalService interface {
 	// the queue is never silently truncated.
 	ListActionsForOrg(ctx context.Context, organizationID, account uuid.UUID, stateFilter string, req recommendation.ActionsPageRequest) (recommendation.ActionsPage, error)
 	// GetRecommendationForOrg returns a single recommendation's full PRC-001
-	// record (PD-3 items 1/3, S37), scoped to the caller's account.
+	// record (PD-3 items 1/3), scoped to the caller's account.
 	GetRecommendationForOrg(ctx context.Context, organizationID, id uuid.UUID) (db.Recommendation, error)
 	// PreviewBulkSelectionForOrg mints a SERVER-side selection-set preview version
 	// (PD-3 item 4, S37 hard safety precondition), scoped to the caller's account.
@@ -176,6 +176,53 @@ func (s *gatewayServer) ConfirmBulkApproval(
 	return gateway.ConfirmBulkApproval200JSONResponse(result), nil
 }
 
+// EditApprovalCardPrice mints a new card version with the edited price
+// (CHAT-044, PD-3 item 2). It is L2 price.edit — Owner/Operator only; the
+// read/Draft-only machine gateway credential can never reach this route
+// (enforced by routePolicies + perm.GatewayCan, §12.3).
+func (s *gatewayServer) EditApprovalCardPrice(
+	ctx context.Context, req gateway.EditApprovalCardPriceRequestObject,
+) (gateway.EditApprovalCardPriceResponseObject, error) {
+	if s.approval == nil {
+		return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 503, Body: approvalUnavailableErr()}, nil
+	}
+	if req.Body == nil {
+		return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("request body is required")}, nil
+	}
+	newPrice, err := moneyFromGateway(req.Body.NewPrice)
+	if err != nil {
+		return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 400, Body: invalidArgErr(err.Error())}, nil
+	}
+	card, err := s.approval.EditPriceForOrg(ctx, orgFromCtx(ctx), req.Body.CardId, newPrice, time.Now().UTC())
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
+		}
+		// The edited price failed the six-stage policy re-check (issue #134): a
+		// structured 409, never a 500 — the edit is a legitimate request the policy
+		// chain declined, and no new version was minted (fail closed, §4.6).
+		//
+		// The transport keys on the SINGLE declined-edit class only. The domain
+		// (AdmitEditedPrice) resolves EVERY edited-VALUE rejection — cross-unit and
+		// zero/absent (validateEditedValue), a hard-stage blocker, or a price the
+		// account's REAL strategy/objective would not propose (issue #134) — into
+		// recommendation.ErrEditedPriceRejected. Keying on the decision class, not on
+		// shared policy sentinels, keeps a genuine STORED-config resolution fault
+		// (which can surface a raw policy sentinel from the account's OWN config once
+		// a live rechecker is wired) as a 500 — it is never misreported as a declined
+		// edit.
+		if errors.Is(err, recommendation.ErrEditedPriceRejected) {
+			return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 409, Body: approvalErr(err)}, nil
+		}
+		return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
+	}
+	view, err := toApprovalCardView(card, nil)
+	if err != nil {
+		return gateway.EditApprovalCardPricedefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
+	}
+	return gateway.EditApprovalCardPrice200JSONResponse(view), nil
+}
+
 // toApprovalCardView maps a persisted card + history onto the wire view. hasControl
 // is true ONLY in AwaitingConfirmation (a live structured control).
 func toApprovalCardView(card db.ApprovalCard, history []db.ApprovalCardState) (gateway.ApprovalCardView, error) {
@@ -291,6 +338,17 @@ func confirmActor(ctx context.Context) audit.Actor {
 		return audit.Actor{ID: p.UserID.String(), Role: string(p.Role), Surface: "screen"}
 	}
 	return audit.Actor{Surface: "screen"}
+}
+
+// actorFromPrincipal builds an AUD-001 actor from the authenticated principal
+// for a screens-originated write. Identity comes from the injected principal,
+// never from any request body (free-text containment).
+func actorFromPrincipal(ctx context.Context, surface string) audit.Actor {
+	p, ok := principalFrom(ctx)
+	if !ok {
+		return audit.Actor{Surface: surface}
+	}
+	return audit.Actor{ID: p.Email, Role: string(p.Role), Surface: surface}
 }
 
 func approvalErr(err error) gateway.ErrorEnvelope {

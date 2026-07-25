@@ -80,12 +80,12 @@ func countGuardrailAudits(t *testing.T, pool *pgxpool.Pool, account uuid.UUID) i
 	return n
 }
 
-// TestTenantScopingS37_CrossAccountGuardrailsAreNotFound proves GetGuardrails and
+// TestTenantScoping_CrossAccountGuardrailsAreNotFound proves GetGuardrails and
 // SetGuardrails reject a cross-account request with a uniform 404, and that the
 // rejected write leaves A's guardrails and audit trail untouched (the money/policy
 // cross-tenant-write hole, issue #237). Positive control: A's own operator reads and
 // writes its guardrails.
-func TestTenantScopingS37_CrossAccountGuardrailsAreNotFound(t *testing.T) {
+func TestTenantScoping_CrossAccountGuardrailsAreNotFound(t *testing.T) {
 	pool, q := newSystemPool(t)
 
 	orgA, accountA := seedOrgAndAccount(t, q, "A")
@@ -141,11 +141,11 @@ func TestTenantScopingS37_CrossAccountGuardrailsAreNotFound(t *testing.T) {
 	}
 }
 
-// TestTenantScopingS37_CrossAccountWatchlistIsNotFound proves ListWatchlist and
+// TestTenantScoping_CrossAccountWatchlistIsNotFound proves ListWatchlist and
 // AddWatchlistEntry reject a cross-account request with a uniform 404, and that the
 // rejected add inserts no entry and appends no audit row for the foreign account
 // (issue #237). Positive control: A's own operator can list its (empty) watchlist.
-func TestTenantScopingS37_CrossAccountWatchlistIsNotFound(t *testing.T) {
+func TestTenantScoping_CrossAccountWatchlistIsNotFound(t *testing.T) {
 	pool, q := newSystemPool(t)
 
 	orgA, accountA := seedOrgAndAccount(t, q, "A")
@@ -183,11 +183,11 @@ func TestTenantScopingS37_CrossAccountWatchlistIsNotFound(t *testing.T) {
 	}
 }
 
-// TestTenantScopingS37_CrossAccountMarketConflictsAreNotFound proves
+// TestTenantScoping_CrossAccountMarketConflictsAreNotFound proves
 // ListMarketConflicts rejects a cross-account request with a uniform 404 rather than
 // disclosing another tenant's Market conflict view (issue #237). Positive control:
 // A's own operator reads its own (empty) conflict list.
-func TestTenantScopingS37_CrossAccountMarketConflictsAreNotFound(t *testing.T) {
+func TestTenantScoping_CrossAccountMarketConflictsAreNotFound(t *testing.T) {
 	pool, q := newSystemPool(t)
 
 	orgA, accountA := seedOrgAndAccount(t, q, "A")

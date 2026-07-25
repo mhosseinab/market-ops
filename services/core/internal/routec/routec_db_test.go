@@ -82,7 +82,7 @@ func seedConfirmedTarget(t *testing.T, pool *pgxpool.Pool, q *db.Queries) (accou
 	return acct.ID, idID, created[0].ID, nativeVariant, nativeProduct
 }
 
-// TestReopenRetiresTargets is the S13 carry-forward: reopening a Confirmed
+// TestReopenRetiresTargets is the observation carry-forward: reopening a Confirmed
 // identity DEACTIVATES its observation target, so a reopened identity stops
 // producing executable observations. The wiring is identity.Service ->
 // TargetRetirer (EventSink) -> DeactivateObservationTargetsForIdentity.
@@ -136,7 +136,7 @@ func containsTarget(refs []routec.TargetRef, id uuid.UUID) bool {
 	return false
 }
 
-// TestRouteCAloneNeverManufacturesVerified is the S13 carry-forward-2 check:
+// TestRouteCAloneNeverManufacturesVerified is the observation carry-forward-2 check:
 // Route C has its own SLA/cadence, but repeated Route C captures must NOT
 // manufacture false corroboration. Two distinct in-window Route C sightings reach
 // Supported (history), never Verified (which requires a DIFFERENT route agreeing

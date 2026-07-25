@@ -33,7 +33,7 @@ func newIntegrationPool(t *testing.T) (*pgxpool.Pool, *db.Queries) {
 	return pool, db.New(pool)
 }
 
-// TestExtensionCaptureEndToEnd is the S30 integration test (EXT-001/002/004 +
+// TestExtensionCaptureEndToEnd is the extension-capture integration test (EXT-001/002/004 +
 // OBS-008): a paired capture credential uploads a passive capture to the real
 // core, an OFFLINE-QUEUE REPLAY (identical body) is DEDUPED so the core holds
 // exactly ONE current offer, and after revocation the next upload FAILS CLOSED

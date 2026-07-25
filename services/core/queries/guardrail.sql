@@ -1,4 +1,4 @@
--- L3 commercial guardrail persistence (PD-3 item 6, S37). One row per account;
+-- L3 commercial guardrail persistence (PD-3 item 6). One row per account;
 -- a write is an upsert (Owner-only, audited atomically by the caller in the SAME
 -- transaction — see internal/guardrail).
 

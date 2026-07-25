@@ -209,7 +209,7 @@ type Querier interface {
 	// holds even when this query — or the whole Go layer — is bypassed.
 	CreateConversation(ctx context.Context, arg CreateConversationParams) (Conversation, error)
 	CreateCostImportBatch(ctx context.Context, arg CreateCostImportBatchParams) (CostImportBatch, error)
-	// Market Product Identity queries (S11, CAT-002, §6.5 journey 4, §16).
+	// Market Product Identity queries (CAT-002, §6.5 journey 4, §16).
 	// market_product_identities is a current-state table (state transitions UPDATE in
 	// place); the append-only history is market_product_identity_decisions and the
 	// append-only event log is recommendation_invalidation_events.
@@ -302,7 +302,7 @@ type Querier interface {
 	DowngradeObservedOffersForDrift(ctx context.Context, targetID uuid.UUID) (int64, error)
 	// Stop Route C for one account. Idempotent per account.
 	EngageAccountKillSwitch(ctx context.Context, arg EngageAccountKillSwitchParams) error
-	// Route C kill-switch queries (S14, OBS-006). route_kill_switches is a
+	// Route C kill-switch queries (OBS-006). route_kill_switches is a
 	// current-state operator control table: engage = INSERT (idempotent per layer),
 	// disengage = DELETE. There is no history table here; the append-only audit of
 	// who stopped what lives in the platform audit trail (later step). Presence of a
@@ -379,7 +379,7 @@ type Querier interface {
 	// orders, ranges, or diffs a version, and never accepts a bare version — version
 	// counters are monotonic only WITHIN one lineage and are not comparable across them.
 	GetBulkActionBindingForMember(ctx context.Context, arg GetBulkActionBindingForMemberParams) (BulkActionBinding, error)
-	// Single-variant canonical Product row backing Product detail (S26, PRD §6.1).
+	// Single-variant canonical Product row backing Product detail (PRD §6.1).
 	// Same canonical projection as ListCatalogProducts, scoped to ONE variant. Both
 	// the account AND the variant id must match (cross-account fail-closed): a foreign
 	// or unknown variant returns no row (pgx.ErrNoRows -> 404), never another account's
@@ -443,7 +443,7 @@ type Querier interface {
 	// (owned by a DIFFERENT org) matches no row — identical to an unknown id — so the
 	// caller cannot use possession of an event UUID as a cross-tenant existence oracle.
 	GetEventForOrg(ctx context.Context, arg GetEventForOrgParams) (MarketEvent, error)
-	// L3 commercial guardrail persistence (PD-3 item 6, S37). One row per account;
+	// L3 commercial guardrail persistence (PD-3 item 6). One row per account;
 	// a write is an upsert (Owner-only, audited atomically by the caller in the SAME
 	// transaction — see internal/guardrail).
 	GetGuardrailSettings(ctx context.Context, marketplaceAccountID uuid.UUID) (GuardrailSetting, error)
@@ -835,7 +835,7 @@ type Querier interface {
 	// (action_executions carries no account column of its own), so a foreign card id
 	// matches no row and discloses nothing. A pure SELECT.
 	ListActionExecutionsByCardIDs(ctx context.Context, arg ListActionExecutionsByCardIDsParams) ([]ActionExecution, error)
-	// Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
+	// Route C scheduler enumeration (OBS-005/§10.2): every ACTIVE target in a
 	// cadence tier, across all accounts, in a stable order. A target deactivated by
 	// identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
 	// a reopened identity stops being fetched. Ordered by account then native id so
@@ -845,7 +845,7 @@ type Querier interface {
 	ListAnalyticsEventsByFamily(ctx context.Context, arg ListAnalyticsEventsByFamilyParams) ([]AnalyticsEvent, error)
 	// The append-only lifecycle history for a card, in occurrence order (AUD-001).
 	ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) ([]ApprovalCardState, error)
-	// Grouped multi-row actions queue for an account (PD-3 item 5, S37), newest
+	// Grouped multi-row actions queue for an account (PD-3 item 5), newest
 	// first. The authoritative projection is PD-4 rule (1) for issue #106:
 	//
 	//     current lineage heads  UNION  card versions that carry an execution
@@ -967,7 +967,7 @@ type Querier interface {
 	ListAwaitingRecommendOnlyForVariant(ctx context.Context, variantID uuid.UUID) ([]RecommendOnlyAction, error)
 	// The ranked events of a briefing, in Today order (rank asc).
 	ListBriefingEvents(ctx context.Context, briefingID uuid.UUID) ([]BriefingEvent, error)
-	// Account-scoped, cursor-paginated Products READ MODEL (S26, CAT UI / PRD §6.1).
+	// Account-scoped, cursor-paginated Products READ MODEL (CAT UI / PRD §6.1).
 	// The row SOURCE is the canonical `variants` table (JOINed to its `products`), so
 	// every synced variant appears exactly once — a Product/Owned Offer row is NEVER
 	// synthesized from an observation target (a target is a dependent projection, not
@@ -1087,7 +1087,7 @@ type Querier interface {
 	// exposed. Newest evidence first gives a stable base order.
 	ListOpenEvents(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarketEvent, error)
 	ListOrganizations(ctx context.Context) ([]Organization, error)
-	// The account's outcome windows (PD-3 item 5, S37), newest first, with the
+	// The account's outcome windows (PD-3 item 5), newest first, with the
 	// §15.3 result/confidence when the window has closed (absent otherwise — never
 	// a fabricated Not Measurable before the window actually closes). Scoped via
 	// the window's bound approval_cards row (outcome_windows carries no account
@@ -1181,7 +1181,7 @@ type Querier interface {
 	// — whichever transaction acquires the lock first fully serializes the other.
 	// Released automatically at transaction end (commit or rollback).
 	LockApprovalLineage(ctx context.Context, lineageID uuid.UUID) error
-	// EXT-007 priority watchlist (S37). Add is idempotent (ON CONFLICT DO NOTHING —
+	// EXT-007 priority watchlist. Add is idempotent (ON CONFLICT DO NOTHING —
 	// a duplicate variant returns no new row, never a second entry and never an
 	// error). The cap (MaxEntries) is enforced in Go (internal/watchlist) by counting
 	// INSIDE the insert transaction, after acquiring an account-scoped transaction
@@ -1396,7 +1396,7 @@ type Querier interface {
 	// last_verified_at stamps when it was determined. ORG-SCOPED.
 	SetConnectorCapabilityStatus(ctx context.Context, arg SetConnectorCapabilityStatusParams) (ConnectorCapability, error)
 	// Bind (or clear, with NULL) the account's AUTHORITATIVE owned DK seller identity
-	// (issue #212). Populated by account provisioning/sync (S10) from the DK seller
+	// (issue #212). Populated by account provisioning/sync from the DK seller
 	// profile; the column CHECK rejects a non-decimal value. The market-event
 	// ObservationSource excludes the account's OWN offer by comparing an observation's
 	// native_seller_id against THIS validated id — never the free-form native_account_id
@@ -1458,7 +1458,7 @@ type Querier interface {
 	// Money/currency column and no conversion path. last_seen_run_id stamps the run
 	// that observed this offer for the reconciliation drift pass.
 	UpsertOwnedOffer(ctx context.Context, arg UpsertOwnedOfferParams) (UpsertOwnedOfferRow, error)
-	// Catalog + owned-offer sync queries (S10, CAT-001, ACC-004/ACC-005).
+	// Catalog + owned-offer sync queries (CAT-001, ACC-004/ACC-005).
 	// Every canonical upsert conflicts on the stable DK native identifier so a
 	// repeated or REORDERED payload replay updates in place and never inserts a
 	// duplicate. The `(xmax = 0) AS inserted` flag distinguishes an INSERT from an

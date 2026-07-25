@@ -63,7 +63,7 @@ WHERE identity_id = $1 AND active = true;
 SELECT * FROM observation_targets WHERE id = $1;
 
 -- name: ListActiveTargetsByTier :many
--- Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
+-- Route C scheduler enumeration (OBS-005/§10.2): every ACTIVE target in a
 -- cadence tier, across all accounts, in a stable order. A target deactivated by
 -- identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
 -- a reopened identity stops being fetched. Ordered by account then native id so

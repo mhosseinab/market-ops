@@ -244,7 +244,7 @@ type ListOutcomeWindowsByAccountRow struct {
 	Confidence pgtype.Text
 }
 
-// The account's outcome windows (PD-3 item 5, S37), newest first, with the
+// The account's outcome windows (PD-3 item 5), newest first, with the
 // §15.3 result/confidence when the window has closed (absent otherwise — never
 // a fabricated Not Measurable before the window actually closes). Scoped via
 // the window's bound approval_cards row (outcome_windows carries no account

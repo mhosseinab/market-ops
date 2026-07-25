@@ -33,7 +33,7 @@ type diagnosticsQuerier interface {
 }
 
 // ReadService is the account-scoped, READ-ONLY listing/image diagnostics read
-// model (S26, LST-001). It owns NO write path: it reads captured catalog data and
+// model (LST-001). It owns NO write path: it reads captured catalog data and
 // derives pass/warn results, and there is no method that generates or publishes
 // content.
 type ReadService struct {

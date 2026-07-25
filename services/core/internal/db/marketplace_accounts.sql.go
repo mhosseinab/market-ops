@@ -160,7 +160,7 @@ type SetOwnedSellerIDParams struct {
 }
 
 // Bind (or clear, with NULL) the account's AUTHORITATIVE owned DK seller identity
-// (issue #212). Populated by account provisioning/sync (S10) from the DK seller
+// (issue #212). Populated by account provisioning/sync from the DK seller
 // profile; the column CHECK rejects a non-decimal value. The market-event
 // ObservationSource excludes the account's OWN offer by comparing an observation's
 // native_seller_id against THIS validated id — never the free-form native_account_id

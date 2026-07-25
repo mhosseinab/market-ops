@@ -76,13 +76,13 @@ type ExecutionRunners struct {
 	// producer, no recommendations). Every pass is idempotent per (event, evidence
 	// version), so the periodic re-run never double-produces.
 	RecommendationProduce RunOnceFunc
-	// ExecuteApproved is the durable execution-intent consumer (issue #92, S18):
+	// ExecuteApproved is the durable execution-intent consumer (issue #92):
 	// it drives execution/recommend-only processing for a confirmed card that was
 	// enqueued transactionally at the Approved commit. It is event-driven (one job
 	// per confirmation), NOT periodic. A nil runner fails CLOSED (the worker retries
 	// rather than silently dropping the durable intent); production always wires it.
 	ExecuteApproved ExecuteApprovedFunc
-	// MappingReopened is the durable identity-reopen consumer (issue #49, S14): it
+	// MappingReopened is the durable identity-reopen consumer (issue #49): it
 	// drives ExpireDependentForVariant (+ observation-target retirement) for a
 	// mapping reopened transactionally with its append-only event row. It is
 	// event-driven (one job per reopen), NOT periodic. A nil runner fails CLOSED (the

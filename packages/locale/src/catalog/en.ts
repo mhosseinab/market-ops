@@ -371,7 +371,7 @@ export const en: Catalog = {
   "product.diagnostics.evidence": "Evidence ref",
   "product.diagnostics.viewAll": "View diagnostics →",
 
-  // Diagnostics screen (S26, LST-001, read-only). Every result NAMES its entity +
+  // Diagnostics screen (LST-001, read-only). Every result NAMES its entity +
   // field + rule; nothing here generates, changes, or publishes a listing.
   "diagnostics.readOnlyNote":
     "Read-only. Diagnostics report on your listing — they never change or publish it.",

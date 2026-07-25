@@ -1,6 +1,6 @@
 // Package perm is the single, declarative permission matrix for the platform
 // (ACC-002, PRD §2.2 roles, §8.3 administration levels). It is deliberately
-// dependency-free domain data: chat (S20) and the screens API both resolve
+// dependency-free domain data: chat and the screens API both resolve
 // authorization through the SAME exported Matrix and the SAME Can decision, so
 // there is exactly one source of truth for "who may do what" and one shared
 // test suite proves it for both surfaces.

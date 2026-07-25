@@ -81,7 +81,7 @@ type Service struct {
 }
 
 // NewService builds a Service. A nil sink uses NoopSink; the durable event row
-// is written regardless, so a subscriber wired later (S17) loses nothing.
+// is written regardless, so a subscriber wired later loses nothing.
 //
 // The durable reopen dispatcher is optional here (wired via SetReopenDispatcher once
 // the River client exists). When wired (production), a reopen enqueues its durable

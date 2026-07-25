@@ -40,7 +40,7 @@ func NewDKClient(baseURL string, httpClient *http.Client) (*DKClient, error) {
 	}
 	// Route every DK Seller (Route A) call through the trace-propagating
 	// transport (issue #152). Instrument is idempotent and wraps a caller-supplied
-	// client's transport in place, so a recording/snapshot client (S35) still
+	// client's transport in place, so a recording/snapshot client still
 	// injects W3C trace context and no outbound DK call can omit it. It only adds
 	// trace/baggage headers — the DK bearer credential set by the request editor
 	// is untouched.

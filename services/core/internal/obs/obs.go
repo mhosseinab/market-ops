@@ -4,7 +4,7 @@
 // unset no exporter, transport, or global provider is installed, so an outage or
 // misconfiguration of the collector/sidecar can never break the service.
 //
-// This is the S3 collection seam, completed in S33: the tracer AND meter global
+// This is the collection seam: the tracer AND meter global
 // providers are installed here (behind OTEL_ENABLED), plus the W3C trace-context
 // propagator, so the S18 execution telemetry and S19 analytics/cost metric seams
 // actually export and an inbound web → gateway trace continues into core spans.

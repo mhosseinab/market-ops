@@ -120,7 +120,7 @@ func Handler(cfg Config) http.Handler {
 	}
 
 	capRoute("GET", "/open-api/v1/products/seller", CapCatalogRead, func() any { return pagedEnvelope() })
-	// /variants serves the paginated catalog fixture when configured (S10),
+	// /variants serves the paginated catalog fixture when configured,
 	// otherwise the empty-page probe response for owned_offer_read.
 	mux.HandleFunc("GET /open-api/v1/variants", func(w http.ResponseWriter, r *http.Request) {
 		if cfg.serveVariants(w, r) {
@@ -175,7 +175,7 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 func tokenEnvelope(access, refresh string) map[string]any {
-	// Date is emitted RFC3339; DK's exact expiry format is validation-gated (S35).
+	// Date is emitted RFC3339; DK's exact expiry format is validation-gated.
 	return map[string]any{
 		"status": "ok",
 		"data": map[string]any{

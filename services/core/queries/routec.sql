@@ -1,4 +1,4 @@
--- Route C kill-switch queries (S14, OBS-006). route_kill_switches is a
+-- Route C kill-switch queries (OBS-006). route_kill_switches is a
 -- current-state operator control table: engage = INSERT (idempotent per layer),
 -- disengage = DELETE. There is no history table here; the append-only audit of
 -- who stopped what lives in the platform audit trail (later step). Presence of a

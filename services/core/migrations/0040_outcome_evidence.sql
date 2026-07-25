@@ -2,7 +2,7 @@
 -- +goose StatementBegin
 -- Authoritative post-action outcome evidence for the OUT-001 / §15.3 window close
 -- (issue #107). This is the resolved objective signal the verified outcome-metric
--- pipeline (S35, dark until the region money-verification probes pass) writes for a
+-- pipeline (dark until the region money-verification probes pass) writes for a
 -- reconciled action's measured window. The outcome closer READS it to classify a
 -- window as Positive/Negative/Neutral/Inconclusive/NotMeasurable — it never
 -- fabricates a directional result from quarantined observation prices.

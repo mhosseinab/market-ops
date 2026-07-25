@@ -70,7 +70,7 @@ func TestGuardrailGetUnconfiguredIsNotFound(t *testing.T) {
 	}
 }
 
-// TestGuardrailSetAppendsAuditAtomically is the S37 hard requirement: a
+// TestGuardrailSetAppendsAuditAtomically is the hard requirement: a
 // guardrail write NEVER commits without its append-only AUD-001 audit record,
 // in the SAME transaction.
 func TestGuardrailSetAppendsAuditAtomically(t *testing.T) {

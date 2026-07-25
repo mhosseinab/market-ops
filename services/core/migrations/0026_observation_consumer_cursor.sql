@@ -32,7 +32,7 @@
 
 -- +goose StatementBegin
 -- Authoritative owned DK seller identity (decimal Seller.ID string), populated by
--- account provisioning/sync (S10). NULL until bound; decimal when present. The
+-- account provisioning/sync. NULL until bound; decimal when present. The
 -- CHECK rejects a malformed (non-decimal) value at the write boundary so a bad
 -- identity can never silently reach the owned-offer exclusion.
 ALTER TABLE marketplace_accounts
