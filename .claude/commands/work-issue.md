@@ -228,14 +228,25 @@ restarts, and crashes.
     run goose up/down/up green this way. DB-backed tests SKIP silently
     without `DATABASE_URL` — always run the `env -u DATABASE_URL` control
     to prove your passing DB tests actually hit Postgres rather than skipped.
-  — `task contracts:drift`, and therefore `task ci:local`, is GENUINELY red
-    on clean `origin/main`: `gen:python`'s post-generation `ruff` is
-    unpinned while `openapi-python-client` is pinned, so
-    `gen/python/README.md` reflows every run. Reproduce it on a clean
-    detached worktree once, then treat it as non-attributable — unless your
-    diff touches `contracts/` or `gen/`, in which case it is yours.
+  — `task contracts:drift` / `task ci:local` are NOT reliably red. An
+    unpinned `ruff` in `gen:python` (against a pinned
+    `openapi-python-client`) can reflow `gen/python/README.md`, but this
+    does NOT always fire: #115 ran `task ci:local` to exit 0 with
+    `contracts:drift` clean. RUN IT. If it is red for you, say so with the
+    diff it produced; if your change touches `contracts/` or `gen/`, it is
+    yours regardless.
   Report each of these with its real exit code and reason; never claim a
   gate green that you did not run to completion.
+• "KNOWN-RED" IS A CLAIM, NOT A FACT — verify before repeating it. This run
+  produced a documented false baseline: reviewers across several issues
+  independently recorded `go:lint` + `contracts:drift` as pre-existing
+  environmental failures and deferred them to CI. Both were wrong — the
+  lint failure was the PATH shadowing above, and once the correct binary
+  ran it exposed 3 REAL lint regressions on a branch whose `main` was
+  clean. Reproduction by multiple independent reviewers did not make it
+  true; it only spread it, because each was reproducing the same broken
+  invocation. Never inherit a red-gate claim from a packet, a sibling PR
+  body, or another conductor's report without running the gate yourself.
 • MUTATION PROBES GO IN A THROWAWAY WORKTREE — `git worktree add --detach`,
   never the branch worktree. Two agents sharing one worktree have been
   observed mutating each other's files mid-review (a probe reverted a
