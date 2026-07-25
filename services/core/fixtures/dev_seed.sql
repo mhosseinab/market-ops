@@ -336,7 +336,17 @@ VALUES ('00000000-0000-0000-0000-000000000201',
         '00000000-0000-0000-0000-0000000000b1',
         '00000000-0000-0000-0000-0000000000d1',
         'competitor_price', 'critical', 'open', 'journey-fixture-event-a',
-        true, 8900000, 'IRR', 0,
+        -- EXPOSURE IS UNKNOWN (EVT-005, PRD §9.1). Exposure is a MONEY input to
+        -- the EVT-004 ranking, so seeding an amount here would assert a value the
+        -- event engine produced. It could not have: the observation-sourced
+        -- competitor-price path always builds the transition with UnknownExposure
+        -- (internal/event/obssource.go), and the ONLY production path that mints a
+        -- known exposure is the contribution-floor detector's computed margin
+        -- shortfall (internal/event/detectors.go). An honest Unknown beats an
+        -- invented number — and Rank() never coerces Unknown into a numeric 0, so
+        -- A still outranks B on confidence × urgency within the unknown band.
+        -- internal/devseed guards this.
+        false, NULL, '', 0,
         9000, 8500,
         '00000000-0000-0000-0000-0000000000e1', 'verified', 'journey-fixture/observation/a',
         '{"before": {"text": "15,000,000", "value": "15000000", "unit": "IRR"}, "after": {"text": "14,350,000", "value": "14350000", "unit": "IRR"}}'::jsonb,

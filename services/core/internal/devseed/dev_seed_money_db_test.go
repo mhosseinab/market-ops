@@ -28,6 +28,11 @@ const devFixtureAccountID = "00000000-0000-0000-0000-000000000003"
 // issue #84 exists to close.
 const seededRecommendationCount = 2
 
+// seededMarketEventCount is the number of market events the fixture is expected
+// to seed for that account (variant A actionable, variant B blocked). It keeps
+// the exposure guard below NON-VACUOUS in the same way.
+const seededMarketEventCount = 2
+
 // newFixturePool opens a pool in SIMPLE protocol mode. The fixture is a
 // multi-statement SQL file, which the default extended protocol refuses to
 // execute in one round trip.
@@ -326,6 +331,7 @@ func TestDevSeedPriceMovesSatisfyThePolicyMovementCap(t *testing.T) {
 			len(recs), devFixtureAccountID, seededRecommendationCount)
 	}
 	cardPrices := loadSeededCardPrices(t, pool)
+	assertNoGuardrailRow(t, pool)
 
 	var eng margin.Engine
 	for _, rec := range recs {
@@ -457,6 +463,102 @@ SELECT variant_id::text, state, missing_components, stale_components
 	if seen == 0 {
 		t.Fatalf("fixture seeded no margin_readiness rows for account %s; "+
 			"this test would pass vacuously", devFixtureAccountID)
+	}
+}
+
+// TestDevSeedMarketEventExposuresAreEngineProducible is the regression guard for
+// the seeded EVENT exposure (PRD §7.4 EVT-004/EVT-005, §9.1 money correctness,
+// §4.6 never-cut). market_events.exposure_* is a MONEY input to the Today
+// ranking (exposure × confidence × urgency), so a seeded exposure is an
+// assertion about a value the event engine would have produced — exactly the
+// standard the contribution and price-move guards above already apply.
+//
+// Why "no known exposure" is the right assertion for THIS fixture, rather than a
+// recomputation: in production there is exactly ONE code path that mints a known
+// exposure — the contribution-floor detector, from a computed margin shortfall
+// (internal/event/detectors.go, the sole non-test KnownExposure call site). Every
+// observation-sourced competitor-price event is built with UnknownExposure
+// (internal/event/obssource.go), and the fixture seeds no contribution_floor
+// event. A seeded `exposure_known = true` on any of these rows would therefore
+// depict a state the engine never emits, backed by a number with no derivation
+// behind it — and EVT-005 is explicit that a missing impact context must stay
+// Unknown rather than become a fabricated amount.
+//
+// If a future fixture legitimately seeds a contribution_floor event, this guard
+// must be extended to RECOMPUTE its shortfall (floor − contribution) from the
+// seeded rows, not relaxed.
+func TestDevSeedMarketEventExposuresAreEngineProducible(t *testing.T) {
+	pool := newFixturePool(t)
+	applyFixture(t, pool)
+
+	const q = `
+SELECT id::text, event_type, exposure_known, exposure_mantissa, exposure_currency, exposure_exponent
+  FROM market_events
+ WHERE marketplace_account_id = $1
+ ORDER BY id`
+	rows, err := pool.Query(context.Background(), q, devFixtureAccountID)
+	if err != nil {
+		t.Fatalf("query market_events: %v", err)
+	}
+	defer rows.Close()
+
+	seen := 0
+	for rows.Next() {
+		var (
+			id, eventType string
+			known         bool
+			mantissa      *int64
+			currency      *string
+			exponent      *int16
+		)
+		if err := rows.Scan(&id, &eventType, &known, &mantissa, &currency, &exponent); err != nil {
+			t.Fatalf("scan market_event: %v", err)
+		}
+		seen++
+		if !known {
+			continue
+		}
+		// Report the seeded amount so the failure names the fabricated value.
+		amount := "<null mantissa>"
+		if mantissa != nil && currency != nil && exponent != nil {
+			amount = mustMoney(t, *mantissa, *currency, int8(*exponent)).String()
+		}
+		t.Errorf("event %s (%s): the fixture seeds a KNOWN exposure of %s, but the only "+
+			"production path that mints a known exposure is the contribution-floor "+
+			"detector's computed shortfall; an observation-sourced %s event is always "+
+			"built with UnknownExposure (EVT-005). This exposure has no derivation and "+
+			"feeds the EVT-004 ranking as money.", id, eventType, amount, eventType)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate market_events: %v", err)
+	}
+	if seen != seededMarketEventCount {
+		t.Fatalf("fixture seeded %d market events for account %s, want %d "+
+			"(a vacuous pass would otherwise hide the exposure assertion above)",
+			seen, devFixtureAccountID, seededMarketEventCount)
+	}
+}
+
+// assertNoGuardrailRow pins the assumption the movement-cap replay rests on: the
+// fixture seeds NO guardrail_settings row for the account, so policy.NewConfig
+// with a nil MovementCap/Cooldown IS the configuration in force (§9.3 defaults).
+// Without this assertion a future fixture could seed a TIGHTER cap (PRC-004
+// allows only tightening) while the replay kept validating against 500 bp —
+// silently ceasing to catch an over-cap move, a false negative on the exact
+// invariant the replay exists to guard.
+func assertNoGuardrailRow(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	var n int
+	const q = `SELECT count(*) FROM guardrail_settings WHERE marketplace_account_id = $1`
+	if err := pool.QueryRow(context.Background(), q, devFixtureAccountID).Scan(&n); err != nil {
+		t.Fatalf("query guardrail_settings: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("fixture seeds %d guardrail_settings row(s) for account %s; the replay "+
+			"below assumes NONE (so the §9.3 default 500 bp movement cap applies). "+
+			"A seeded guardrail may only TIGHTEN the cap (PRC-004), so this replay would "+
+			"validate against a cap that is no longer in force. Load the seeded cap and "+
+			"cooldown into policy.ConfigParams instead of relaxing this check.", n, devFixtureAccountID)
 	}
 }
 
