@@ -1,0 +1,173 @@
+package httpapi
+
+import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/mhosseinab/market-ops/services/core/internal/audit"
+	"github.com/mhosseinab/market-ops/services/core/internal/db"
+	"github.com/mhosseinab/market-ops/services/core/internal/guardrail"
+	"github.com/mhosseinab/market-ops/services/core/internal/observation"
+	"github.com/mhosseinab/market-ops/services/core/internal/watchlist"
+)
+
+// fakeGuardrail is a GuardrailService stub for transport tests (issue #237: the
+// gateway depends only on the org-scoped methods).
+type fakeGuardrail struct {
+	view guardrail.ConfigView
+	err  error
+}
+
+func (f *fakeGuardrail) GetForOrg(context.Context, uuid.UUID, uuid.UUID) (guardrail.ConfigView, error) {
+	return f.view, f.err
+}
+func (f *fakeGuardrail) SetForOrg(context.Context, uuid.UUID, uuid.UUID, audit.Actor, guardrail.Settings, int64) (guardrail.ConfigView, error) {
+	return f.view, f.err
+}
+
+// fakeWatchlist is a WatchlistService stub for transport tests (issue #237:
+// org-scoped methods only).
+type fakeWatchlist struct {
+	entries []db.WatchlistEntry
+	entry   db.WatchlistEntry
+	err     error
+}
+
+func (f *fakeWatchlist) ListForOrg(context.Context, uuid.UUID, uuid.UUID) ([]db.WatchlistEntry, error) {
+	return f.entries, f.err
+}
+func (f *fakeWatchlist) AddForOrg(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, audit.Actor) (db.WatchlistEntry, error) {
+	return f.entry, f.err
+}
+
+// TestS37HandlersMapForeignAccountToUniform404 is the issue #237 transport-level
+// proof (no database): when the org-scoping service reports the caller's org does
+// not own the requested account (ErrAccountNotFound), every S37 handler — the two
+// guardrail money/policy routes, both watchlist routes, and the market-conflict read
+// — returns a uniform 404, never a 500 and never a 200 disclosure. It complements the
+// DB-backed cross-tenant proof (tenant_scoping_s37_db_test.go) by pinning the
+// handler's error-to-status mapping deterministically. An authenticated Owner is used
+// (perm passes) so the 404 is the ownership guard's, not an auth rejection.
+func TestS37HandlersMapForeignAccountToUniform404(t *testing.T) {
+	acct := uuid.New().String()
+	body := `{"marketplaceAccountId":"` + acct + `","settings":{"contributionFloor":{"mantissa":"100","currency":"USD","exponent":-2},"movementCapBasisPoints":500,"cooldownSeconds":3600,"strategy":"match","strategyEnabled":true}}`
+	addBody := `{"marketplaceAccountId":"` + acct + `","variantId":"` + uuid.New().String() + `"}`
+
+	cases := []struct {
+		name    string
+		method  string
+		path    string
+		reqBody string
+		opt     Option
+	}{
+		{"GetGuardrails", http.MethodGet, "/guardrails?marketplaceAccountId=" + acct, "", WithGuardrail(&fakeGuardrail{err: guardrail.ErrAccountNotFound})},
+		{"SetGuardrails", http.MethodPost, "/guardrails", body, WithGuardrail(&fakeGuardrail{err: guardrail.ErrAccountNotFound})},
+		{"ListWatchlist", http.MethodGet, "/watchlist?marketplaceAccountId=" + acct, "", WithWatchlist(&fakeWatchlist{err: watchlist.ErrAccountNotFound})},
+		{"AddWatchlistEntry", http.MethodPost, "/watchlist", addBody, WithWatchlist(&fakeWatchlist{err: watchlist.ErrAccountNotFound})},
+		{"ListMarketConflicts", http.MethodGet, "/market/conflicts?marketplaceAccountId=" + acct, "", WithObservation(&fakeObservation{conflictErr: observation.ErrAccountNotFound})},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv, tok := systemOwnerServerForOrg(t, uuid.New(), c.opt)
+			var rec *httptest.ResponseRecorder
+			if c.method == http.MethodGet {
+				rec = getJSON(t, srv, tok, c.path, nil)
+			} else {
+				rec = postJSON(t, srv, tok, c.path, c.reqBody)
+			}
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("%s %s with a foreign account = %d, want 404 (uniform not-found, no existence oracle); body=%s", c.method, c.path, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestMachinePrincipalCannotWriteGuardrailsEditPriceOrBulkMint is the S37
+// end-to-end (transport-level) twin of
+// perm.TestGatewayCannotWriteGuardrailsEditPriceOrBulkMint: the read/Draft-only
+// LLM machine credential, presented as a Bearer token against the SCREENS
+// routes (not the dedicated /chat/cards/* Draft routes), must be REFUSED on
+// guardrail write, edit-price, and bulk-preview/mint — never a 200, never a
+// silent partial success. The selection-set version is always server-minted;
+// there is nothing here for the machine plane to reach even if it tried.
+func TestMachinePrincipalCannotWriteGuardrailsEditPriceOrBulkMint(t *testing.T) {
+	fa := newFakeAuth()
+	srv := NewServer(":0", BuildInfo{}, testLogger(),
+		WithAuth(fa), WithCookieSecure(false), WithGatewayToken(testGatewayToken),
+		WithGuardrail(&fakeGuardrail{}), WithApproval(&fakeApproval{}))
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+	}{
+		{
+			"guardrail write", http.MethodPost, "/guardrails",
+			`{"marketplaceAccountId":"` + uuid.New().String() + `","settings":{"contributionFloor":{"mantissa":"100","currency":"USD","exponent":-2},"movementCapBasisPoints":500,"cooldownSeconds":3600,"strategy":"match","strategyEnabled":true}}`,
+		},
+		{
+			"edit-price", http.MethodPost, "/approvals/card/edit-price",
+			`{"cardId":"` + uuid.New().String() + `","newPrice":{"mantissa":"100","currency":"USD","exponent":-2}}`,
+		},
+		{
+			"bulk-preview/mint", http.MethodPost, "/selection-sets/preview",
+			`{"marketplaceAccountId":"` + uuid.New().String() + `","name":"n","members":[{"variantId":"` + uuid.New().String() + `","recommendationId":"` + uuid.New().String() + `"}]}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(c.method, c.path, strings.NewReader(c.body))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", "Bearer "+testGatewayToken)
+			srv.Handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("%s %s with the machine bearer token = %d, want 403 Forbidden (body=%s)",
+					c.method, c.path, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestMachinePrincipalCannotReadRoutesWithoutADeclaringTypedTool pins the
+// corrected §12.3 never-cut envelope after issue #26: the machine credential's
+// authority must NOT exceed the typed tool registry manifest. The consolidated
+// S37 reads /recommendations/detail (read.recommendation_detail), /guardrails
+// (read.guardrails), and /watchlist (read.watchlist) are gated on L1 read
+// actions that NO typed model-visible tool declares (the registry's read tools
+// map onto exactly connector.inspect, read.connection_status, read.cost_readiness
+// and read.current_strategy — services/llm/.../registry.py). Previously the
+// machine grant set was computed from EVERY L1 Matrix action, so these routes
+// were reachable by the machine token even though no reviewed LLM tool declared
+// the capability — the exact over-grant issue #26 identifies. They must now be
+// DENIED (403) at the wire for the machine principal, while remaining L1 reads
+// for human sessions. Restoring a machine read of any such route requires adding
+// a typed read tool that declares its perm_action AND regenerating
+// contracts/llm_gateway_envelope.json (the cross-language drift test enforces
+// exact equality).
+func TestMachinePrincipalCannotReadRoutesWithoutADeclaringTypedTool(t *testing.T) {
+	fa := newFakeAuth()
+	srv := NewServer(":0", BuildInfo{}, testLogger(),
+		WithAuth(fa), WithCookieSecure(false), WithGatewayToken(testGatewayToken),
+		WithGuardrail(&fakeGuardrail{}), WithWatchlist(&fakeWatchlist{}), WithApproval(&fakeApproval{}))
+
+	for _, path := range []string{
+		"/recommendations/detail?recommendationId=" + uuid.New().String(),
+		"/guardrails?marketplaceAccountId=" + uuid.New().String(),
+		"/watchlist?marketplaceAccountId=" + uuid.New().String(),
+	} {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		req.Header.Set("Authorization", "Bearer "+testGatewayToken)
+		srv.Handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("GET %s with the machine bearer token = %d, want 403 (no typed tool declares this read action — issue #26)", path, rec.Code)
+		}
+	}
+}
