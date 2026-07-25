@@ -26,9 +26,16 @@ ARG TARGETARCH
 ARG TARGETOS
 
 # Static build: the runtime stage is distroless with no libc. goose's postgres
-# driver is pure Go (pgx), so CGO is not needed. GOBIN is set explicitly because
-# a cross-compiling `go install` otherwise lands the binary in
-# $GOPATH/bin/$GOOS_$GOARCH/ and the COPY below would miss it.
+# driver is pure Go (pgx), so CGO is not needed.
+#
+# GOBIN is deliberately NOT set. `go install` refuses outright — "cannot install
+# cross-compiled binaries when GOBIN is set" — and this stage always
+# cross-compiles for at least one of the two published platforms, since it runs
+# on $BUILDPLATFORM and targets both linux/amd64 and linux/arm64. Without GOBIN,
+# a cross build lands in $GOPATH/bin/$GOOS_$GOARCH/ and a native one directly in
+# $GOPATH/bin/, so the copy below resolves whichever applies rather than
+# assuming. Do not "tidy" this into a fixed path with GOBIN: it builds on amd64
+# and fails only the arm64 job.
 #
 # The no_* build tags are LOAD-BEARING, not tidiness. The goose CLI links every
 # database driver it supports — ClickHouse, MySQL, MSSQL, SQLite, Vertica,
@@ -43,9 +50,14 @@ ARG TARGETOS
 # project never touches.
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" GOBIN=/out \
+    set -eu; \
+    CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" \
     go install -tags='no_clickhouse no_libsql no_mssql no_mysql no_sqlite3 no_vertica no_ydb' \
-      github.com/pressly/goose/v3/cmd/goose@v3.27.2
+      github.com/pressly/goose/v3/cmd/goose@v3.27.2; \
+    mkdir -p /out; \
+    cross="$(go env GOPATH)/bin/${TARGETOS}_${TARGETARCH}/goose"; \
+    native="$(go env GOPATH)/bin/goose"; \
+    if [ -x "$cross" ]; then cp "$cross" /out/goose; else cp "$native" /out/goose; fi
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:aef9602f8710ec12bde19d593fed1f76c708531bb7aba205110f1029786ead7b
 
