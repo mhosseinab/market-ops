@@ -19,7 +19,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
 )
 
-// This file automates the PRD §16 edge-case table rows S32 named as
+// This file automates the PRD §16 edge-case table rows named as
 // offline-testable, at the SYSTEM boundary: real Postgres, real service
 // packages, and — where the row is about what a caller SEES — the real
 // mounted HTTP gateway, not just the owning package's own unit-level proof

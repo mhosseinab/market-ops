@@ -1,4 +1,4 @@
--- Catalog + owned-offer sync queries (S10, CAT-001, ACC-004/ACC-005).
+-- Catalog + owned-offer sync queries (CAT-001, ACC-004/ACC-005).
 -- Every canonical upsert conflicts on the stable DK native identifier so a
 -- repeated or REORDERED payload replay updates in place and never inserts a
 -- duplicate. The `(xmax = 0) AS inserted` flag distinguishes an INSERT from an
@@ -186,7 +186,7 @@ SELECT count(*) FROM owned_offers WHERE marketplace_account_id = $1;
 SELECT count(*) FROM catalog_payload_snapshots WHERE marketplace_account_id = $1;
 
 -- name: ListCatalogProducts :many
--- Account-scoped, cursor-paginated Products READ MODEL (S26, CAT UI / PRD §6.1).
+-- Account-scoped, cursor-paginated Products READ MODEL (CAT UI / PRD §6.1).
 -- The row SOURCE is the canonical `variants` table (JOINed to its `products`), so
 -- every synced variant appears exactly once — a Product/Owned Offer row is NEVER
 -- synthesized from an observation target (a target is a dependent projection, not
@@ -245,7 +245,7 @@ ORDER BY v.native_variant_id
 LIMIT $3;
 
 -- name: GetCatalogProductForVariant :one
--- Single-variant canonical Product row backing Product detail (S26, PRD §6.1).
+-- Single-variant canonical Product row backing Product detail (PRD §6.1).
 -- Same canonical projection as ListCatalogProducts, scoped to ONE variant. Both
 -- the account AND the variant id must match (cross-account fail-closed): a foreign
 -- or unknown variant returns no row (pgx.ErrNoRows -> 404), never another account's

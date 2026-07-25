@@ -284,12 +284,12 @@ func run() error {
 		// ingestion and the observed-offer/evidence reads are served. Ingestion is
 		// server-authoritative: the extension can never self-certify quality/route.
 		serverOpts = append(serverOpts, httpapi.WithObservation(observation.NewService(pool)))
-		// Wire the canonical Products read model (S26, PRD §6.1): account-scoped,
+		// Wire the canonical Products read model (PRD §6.1): account-scoped,
 		// paginated rows from Product/Variant/Owned Offer entities joined with identity
 		// mapping state and observation evidence. Owned-offer data is gated on the
 		// owned_offer_read capability (§15.2); prices stay raw evidence (money quarantine).
 		serverOpts = append(serverOpts, httpapi.WithCatalog(catalog.NewReadService(pool)))
-		// Wire the READ-ONLY listing/image diagnostics read model (S26, LST-001):
+		// Wire the READ-ONLY listing/image diagnostics read model (LST-001):
 		// org-scoped, fail-closed derivation of pass/warn results from already-captured
 		// canonical catalog data. It NAMES the observed field + rule and never
 		// generates or publishes content — there is no write path on this seam.
@@ -354,7 +354,7 @@ func run() error {
 					// COST (issue #130). RecordCost(CostBriefing, itemCount) here both
 					// mis-scaled the money/minor-unit counter with an item COUNT and risked
 					// double-counting the real briefing spend whose single authoritative
-					// source is the S23 CHAT-010 briefing-GENERATION path. The legitimate
+					// source is the CHAT-010 briefing-GENERATION path. The legitimate
 					// digest analytics EVENT above (with item_count) stays.
 				})
 			// Attach the structured logger so a per-account digest-delivery failure is
@@ -417,7 +417,7 @@ func run() error {
 		// (outcome.NewDBSource): it reads authoritative post-action evidence
 		// (action_executions / outcome_evidence / market_events) bound to the
 		// action/account/measured window and classifies §15.3. Until the verified
-		// outcome-metric pipeline lands (S35, gated on the region money-verification
+		// outcome-metric pipeline lands (gated on the region money-verification
 		// probes) no outcome_evidence rows exist, so due windows resolve Incomplete
 		// and stay OPEN — the honest fail-closed behaviour. Issue #107 replaced the
 		// prior nil source, which fabricated NotMeasurable for every window regardless

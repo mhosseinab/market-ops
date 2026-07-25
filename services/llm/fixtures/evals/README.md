@@ -67,12 +67,12 @@ Regenerate with:
 ```
 uv run python services/llm/fixtures/evals/authoring.py             # intents + context
 uv run python services/llm/fixtures/evals/adversarial/authoring.py # approval containment
-uv run python services/llm/fixtures/evals/s24_authoring.py         # pricing/data-quality/
+uv run python services/llm/fixtures/evals/grounding_authoring.py         # pricing/data-quality/
                                                                    # boundary/listing/
                                                                    # currency/injection
 ```
 Each authoring script is the single source for the JSONL it emits; edit the
-script, not the JSONL, then regenerate. The `s24_authoring.py` factual sets carry
+script, not the JSONL, then regenerate. The `grounding_authoring.py` factual sets carry
 compact typed shapes that `llm.evals.scenario` rebuilds into the real contract
 types before composing — see that module for the shape → envelope mapping.
 

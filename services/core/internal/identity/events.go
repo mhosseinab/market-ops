@@ -35,7 +35,7 @@ func (r ReopenReason) Valid() bool {
 }
 
 // MappingReopenedEvent is the domain event emitted when a Confirmed Market
-// Product Identity is reopened. Downstream packages (S17) subscribe to it to
+// Product Identity is reopened. Downstream packages subscribe to it to
 // EXPIRE dependent recommendations (§16 "Reopen mapping; expire dependent
 // recommendation"). Fields are JSON-safe business data only (plan §4.8): no
 // framework or DB types leak across this seam.
@@ -65,7 +65,7 @@ type EventSink interface {
 
 // NoopSink is the default sink used when no subscriber is wired. It fails
 // closed-safe: the durable event row is still written, so a later-wired
-// subscriber (S17) loses nothing.
+// subscriber loses nothing.
 type NoopSink struct{}
 
 // MappingReopened does nothing and never errors.

@@ -1,4 +1,4 @@
-// Command section16gate is the S32 integration gate for the PRD §16 edge-case
+// Command section16gate is the integration gate for the PRD §16 edge-case
 // contract (issue #164). It reads tools/integration/section16_manifest.json,
 // cross-checks it against the canonical §16 table in docs/PRD.md, and — for
 // every offline-testable row — executes the mapped Go tests explicitly, failing

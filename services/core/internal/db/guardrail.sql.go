@@ -16,7 +16,7 @@ const getGuardrailSettings = `-- name: GetGuardrailSettings :one
 SELECT marketplace_account_id, contribution_floor_mantissa, contribution_floor_currency, contribution_floor_exponent, movement_cap_basis_points, cooldown_seconds, strategy, strategy_enabled, updated_by, updated_at, version FROM guardrail_settings WHERE marketplace_account_id = $1
 `
 
-// L3 commercial guardrail persistence (PD-3 item 6, S37). One row per account;
+// L3 commercial guardrail persistence (PD-3 item 6). One row per account;
 // a write is an upsert (Owner-only, audited atomically by the caller in the SAME
 // transaction — see internal/guardrail).
 func (q *Queries) GetGuardrailSettings(ctx context.Context, marketplaceAccountID uuid.UUID) (GuardrailSetting, error) {

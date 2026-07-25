@@ -146,13 +146,13 @@ var routePolicies = []routePolicy{
 	{http.MethodPost, "/identity/confirm", kindProtected, perm.ActionResolveIdentity},
 	{http.MethodPost, "/identity/reject", kindProtected, perm.ActionResolveIdentity},
 	{http.MethodPost, "/identity/defer", kindProtected, perm.ActionResolveIdentity},
-	// Canonical Products read model (S26, PRD §6.1) — L1 read of owned catalog +
+	// Canonical Products read model (PRD §6.1) — L1 read of owned catalog +
 	// observation evidence, every authenticated role (same posture as the other
 	// observation reads). Owned-offer data inside a row is separately gated on the
 	// owned_offer_read capability by the read service (§15.2).
 	{http.MethodGet, "/catalog/products", kindProtected, perm.ActionReadObservations},
 	{http.MethodGet, "/catalog/product", kindProtected, perm.ActionReadObservations},
-	// READ-ONLY listing/image diagnostics (S26, LST-001) — an L1 read of derived
+	// READ-ONLY listing/image diagnostics (LST-001) — an L1 read of derived
 	// catalog quality; same read posture as the other catalog/observation reads. It
 	// exposes no write/generate/publish action, so it maps to a read action.
 	{http.MethodGet, "/catalog/product-diagnostics", kindProtected, perm.ActionReadObservations},

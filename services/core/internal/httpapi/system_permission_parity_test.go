@@ -18,7 +18,7 @@ import (
 // called directly, which internal/perm/perm_test.go already proves at the
 // function level) and asserts the wire-level status code agrees with the
 // matrix decision for every role × route and for the machine principal on
-// every route, closing the gap between "the matrix agrees" (S8) and "the
+// every route, closing the gap between "the matrix agrees" and "the
 // endpoints agree" (S32/CHAT-064).
 //
 // A denial is any 401/403; an allow is anything else (some allowed routes

@@ -1,4 +1,4 @@
-// This file holds S32 cross-plane SYSTEM tests: they drive the REAL mounted
+// This file holds cross-plane SYSTEM tests: they drive the REAL mounted
 // HTTP gateway (NewServer, the same constructor production wires), a REAL
 // Postgres-backed service layer, and a REAL mockdk HTTP server — never a
 // direct in-process call into a single package's exported function bypassing

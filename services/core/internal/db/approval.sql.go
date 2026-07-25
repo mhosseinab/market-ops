@@ -374,7 +374,7 @@ type ListApprovalCardsByAccountParams struct {
 	Limit                int32
 }
 
-// Grouped multi-row actions queue for an account (PD-3 item 5, S37), newest
+// Grouped multi-row actions queue for an account (PD-3 item 5), newest
 // first. The authoritative projection is PD-4 rule (1) for issue #106:
 //
 //	current lineage heads  UNION  card versions that carry an execution

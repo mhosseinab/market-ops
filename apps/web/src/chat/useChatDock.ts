@@ -292,11 +292,25 @@ export function useChatDock(
                       version: event.localeVersion ?? localePlan.next.version,
                     }
                   : localePlan.next;
+              // Commit the binding BEFORE the activation barrier, exactly as the
+              // context axis above does (issue #415). The gateway has already
+              // PERSISTED this locale at this version by the time the frame
+              // arrives; whether the client can then prepare its catalog is a
+              // RENDERING concern on a separate axis and must never decide what
+              // version the next turn claims. Committing after the await would
+              // leave a failed activation holding a conversation id with no bound
+              // version, so the next turn declares an unversioned continuation —
+              // which the core rejects as stale (409). A 409 carries no stream and
+              // therefore no `conversation` frame, so the binding could never be
+              // repaired: a transient rendering failure would wedge the
+              // conversation for the rest of the session.
+              boundLocaleRef.current = committedLocale;
               // Catalog activation is an awaited stream barrier. A token or
               // terminal frame cannot become renderable until the chat-scoped
               // catalog for the authoritative locale is prepared and committed.
+              // Moving the synchronous commit above does not weaken it: the await
+              // still gates every later frame in this loop.
               await activateConversationLocale(committedLocale.locale);
-              boundLocaleRef.current = committedLocale;
               break;
             }
             case "token":

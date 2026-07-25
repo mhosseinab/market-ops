@@ -14,7 +14,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 )
 
-// Issue #70 (S15, evidence-quality never-cut §4.6): an event's quality and confidence
+// Issue #70 (evidence-quality never-cut §4.6): an event's quality and confidence
 // must be DERIVED from a current, account-bound observation and copied AS-IS — never
 // self-certified by an untrusted caller. These tests drive the service write boundary
 // (RecordFor) with candidates that assert a corroborated quality they have not earned
