@@ -773,7 +773,6 @@ export const en: Catalog = {
   "bulk.status.blocked": "Blocked",
   "bulk.col.include": "Include",
   "bulk.col.include.aria.offer": "Include offer {offer} for SKU {sku}",
-  "bulk.col.include.aria.sku": "Include SKU {sku}",
   "bulk.col.product": "Product",
   "bulk.col.sku": "SKU",
   "bulk.col.offer": "Offer",
@@ -796,6 +795,8 @@ export const en: Catalog = {
   "bulk.reason.partial": "Partial cost; analysis only",
   "bulk.reason.jitRefresh": "Needs JIT refresh",
   "bulk.reason.ready": "Ready to execute",
+  "bulk.reason.targetOfferEvidenceUnusable":
+    "Another offer on this item has no usable observation evidence",
   "bulk.pagination.label": "Bulk pagination",
   "bulk.pagination.prev": "Previous",
   "bulk.pagination.next": "Next",

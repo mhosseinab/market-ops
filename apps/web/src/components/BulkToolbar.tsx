@@ -37,6 +37,7 @@ export function BulkToolbar({
   previewValid,
   stale,
   counts,
+  eligibleCount,
   aggregateImpact,
   maxMovement,
   exclusions,
@@ -49,7 +50,17 @@ export function BulkToolbar({
   version: number | null;
   previewValid: boolean;
   stale: boolean;
+  /** ADVISORY per-OFFER-ROW counts for the stat cards. Rows are not members. */
   counts: BulkCounts;
+  /**
+   * What this control may HONESTLY claim it will authorize (issue #87). Sibling
+   * offers on one target share ONE recommendation and therefore one selection
+   * member, so a label built from the executable ROW count promised more than was
+   * ever POSTed — a false statement of consent scope on the approval control itself
+   * (APR-001). The owning screen supplies the requested membership before a preview
+   * and the SERVER-SEALED executable member count after one.
+   */
+  eligibleCount: number;
   aggregateImpact: ReactNode;
   maxMovement: ReactNode;
   exclusions: ReactNode;
@@ -61,7 +72,7 @@ export function BulkToolbar({
   const t = useT();
   const { locale } = useLocale();
 
-  const canApprove = previewValid && counts.executable > 0 && !confirmPending && !previewPending;
+  const canApprove = previewValid && eligibleCount > 0 && !confirmPending && !previewPending;
 
   return (
     <section
@@ -141,7 +152,7 @@ export function BulkToolbar({
           disabled={!canApprove}
           onClick={onApprove}
         >
-          {t("bulk.action.approve", { count: formatCount(counts.executable, locale) })}
+          {t("bulk.action.approve", { count: formatCount(eligibleCount, locale) })}
         </button>
       </div>
 

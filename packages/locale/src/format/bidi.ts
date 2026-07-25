@@ -18,10 +18,14 @@
 // the reader's language (PRD §11 — locale is data, and no direction branch lives in
 // application code).
 
+// The SINGLE source for the Unicode isolate controls in this package: the
+// pseudo-locale generator wraps its messages with the same pair, and two private
+// copies of the same invisible characters are exactly the kind of duplication that
+// drifts silently (DRY).
 /** U+2066 LEFT-TO-RIGHT ISOLATE. */
-const LRI = "⁦";
+export const LRI = "⁦";
 /** U+2069 POP DIRECTIONAL ISOLATE. */
-const PDI = "⁩";
+export const PDI = "⁩";
 
 /**
  * Wrap a technical identifier in a Unicode LTR isolate so it survives interpolation

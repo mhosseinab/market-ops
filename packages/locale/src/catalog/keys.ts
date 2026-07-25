@@ -821,13 +821,14 @@ export const MESSAGE_KEYS = [
   "bulk.status.warning",
   "bulk.status.blocked",
   "bulk.col.include",
-  // Per-ROW accessible names for the include control (issue #87, prior finding 9).
+  // The per-ROW accessible name for the include control (issue #87, prior finding 9).
   // Sibling offers on one target previously shared the bare column header as their
   // accessible name, so an assistive-technology user could not tell which offer they
   // were excluding. Named slots only; the technical identifiers are LTR-isolated by
-  // the caller (LOC-005).
+  // the caller (LOC-005). Only offer-bearing rows can carry an include control — a
+  // target with no observed offer classifies BLOCKED and renders none — so there is
+  // no SKU-only variant of this name.
   "bulk.col.include.aria.offer",
-  "bulk.col.include.aria.sku",
   "bulk.col.product",
   "bulk.col.sku",
   "bulk.col.offer",
@@ -849,6 +850,10 @@ export const MESSAGE_KEYS = [
   "bulk.reason.partial",
   "bulk.reason.jitRefresh",
   "bulk.reason.ready",
+  // The SERVER's own conservative downgrade reason (issue #87 criterion C). The
+  // wire value is a stable, non-localized ASCII KEY carrying no authority; this is
+  // the localized text the edge maps it onto (LOC-001).
+  "bulk.reason.targetOfferEvidenceUnusable",
   "bulk.pagination.label",
   "bulk.pagination.prev",
   "bulk.pagination.next",
