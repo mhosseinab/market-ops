@@ -82,6 +82,11 @@
       "family": "domain",
       "source": "internal/execution/reconciliation_backlog.go"
     },
+    "execution.action_overlay_action_id_mismatch": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/httpapi/telemetry.go"
+    },
     "analytics.events": {
       "type": "counter",
       "family": "analytics",

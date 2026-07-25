@@ -91,6 +91,12 @@ export const en: Catalog = {
   "state.expired": "Expired",
   "state.simulation": "Simulation",
 
+  // EXE-005 recommend-only states (issue #106). Never a marketplace-write term:
+  // a lapse is a closed observation window, not an expiry and not a failure.
+  "state.awaitingExternalExecution": "Awaiting external execution",
+  "state.externallyExecuted": "Externally executed",
+  "state.lapsed": "No match observed",
+
   "readiness.complete": "Complete",
   "readiness.partial": "Partial",
   "readiness.stale": "Stale",
@@ -600,6 +606,7 @@ export const en: Catalog = {
   "state.readyForReview": "Ready for review",
   "state.revalidating": "Revalidating",
   "state.invalidated": "Invalidated",
+  "state.approved": "Approved for execution",
   "sm.title": "Approval lifecycle",
   "sm.gates.title": "Revalidation gates",
   "sm.gate.identity": "Confirmed identity",
@@ -669,6 +676,38 @@ export const en: Catalog = {
   "actions.col.surface": "Actor · Surface",
   "actions.col.state": "State",
   "actions.col.time": "Time",
+  "actions.col.mode": "Execution mode",
+  "actions.col.select": "Select",
+  "actions.mode.write": "Marketplace write",
+  "actions.mode.recommendOnly": "Recommend-only",
+  "actions.group.proposed": "Proposed (not executed yet)",
+  "actions.group.awaiting": "Awaiting result",
+  "actions.group.succeeded": "Applied",
+  "actions.group.rejected": "Rejected",
+  "actions.group.failed": "Failed",
+  "actions.group.lapsed": "No match observed",
+  "actions.group.unknown": "Unknown state",
+  "actions.list.emptyFiltered": "No actions match this filter; change the filter.",
+  "actions.detail.selectPrompt": "Select an action to see its details.",
+  "actions.detail.error": "Could not load this action's details. Try again.",
+  "actions.detail.resolving": "Finding the linked action\u2026",
+  "actions.notInPage.title": "Not in the current page",
+  "actions.notInPage.body":
+    "This action is selected but is not in the current page of the queue, so its execution state is not shown here.",
+  "actions.recommendOnly.title": "Awaiting external execution",
+  "actions.recommendOnly.body":
+    "Tracked recommend-only; a matching price change is observed within 24 hours.",
+  "actions.recommendOnly.noWriteNote": "No write was made to DK.",
+  "actions.externallyExecuted.title": "Externally executed",
+  "actions.externallyExecuted.body":
+    "A matching price change was observed within the window; it was executed outside this system.",
+  "actions.lapsed.title": "No match observed",
+  "actions.lapsed.body": "The 24-hour observation window closed with no matching price change.",
+  "actions.lapsed.noClaimNote":
+    "This is neither an execution nor a write failure; no write was made to DK.",
+  "actions.proposed.title": "Proposed",
+  "actions.proposed.body":
+    "This card has not been executed; its approval-lifecycle state is tracked above.",
   "actions.pending.title": "Pending reconciliation",
   "actions.pending.body":
     "The result is unknown until the current DK state is read; it is never shown as success or failure.",
@@ -691,6 +730,11 @@ export const en: Catalog = {
   "actions.outcome.confidence": "Confidence",
   "actions.outcome.error": "Could not load the outcome window. Try again.",
   "actions.outcome.pending": "Loading the outcome window…",
+  "actions.outcome.none": "No outcome window was opened for this action.",
+  "actions.outcome.noneForCard":
+    "This card version has not been executed, so no outcome window was opened for it.",
+  "actions.outcome.unknownOutOfPage":
+    "This card version is not in the current page of the queue, so its outcome window is not shown here.",
   "actions.outcome.attributionNote": "Concurrent changes lower attribution confidence.",
   "actions.audit.title": "Audit trail",
   "actions.audit.card": "Approval-card snapshot",

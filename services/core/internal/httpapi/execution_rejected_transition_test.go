@@ -33,7 +33,7 @@ func (f *fakeExecution) GetUnifiedActionForOrg(context.Context, uuid.UUID, uuid.
 	return execution.UnifiedAction{}, nil
 }
 
-func (f *fakeExecution) ListUnifiedByAccountForOrg(context.Context, uuid.UUID, uuid.UUID, int32) ([]execution.UnifiedAction, error) {
+func (f *fakeExecution) ListUnifiedByCardIDsForOrg(context.Context, uuid.UUID, uuid.UUID, []uuid.UUID) ([]execution.UnifiedAction, error) {
 	return nil, nil
 }
 

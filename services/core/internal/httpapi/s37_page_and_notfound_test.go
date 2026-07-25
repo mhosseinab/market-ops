@@ -105,9 +105,16 @@ func TestListActions_PageCompletenessTravelsOnTheWire(t *testing.T) {
 }
 
 // listActionsBody drives GET /actions against fake and decodes the ActionList body.
+//
+// The execution plane is wired with a stub because GET /actions FAILS CLOSED with
+// 503 when it is absent (issue #106): under the PD-4 rule (1) projection a row's
+// mode and canonical state come entirely from the execution overlay, so an unwired
+// overlay would render a terminal executed action as a pre-execution card. The stub
+// returns no overlay rows, which is exactly the pre-execution case these
+// completeness assertions need.
 func listActionsBody(t *testing.T, fake *fakeApproval, account uuid.UUID) gateway.ActionList {
 	t.Helper()
-	srv := NewServer(":0", BuildInfo{}, testLogger(), WithApproval(fake))
+	srv := NewServer(":0", BuildInfo{}, testLogger(), WithApproval(fake), WithExecution(&fakeExecution{}))
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/actions?marketplaceAccountId="+account.String(), nil)
 	srv.Handler.ServeHTTP(rec, req)
@@ -141,7 +148,10 @@ func TestListActions_FailClosedTransportMappings(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			srv := NewServer(":0", BuildInfo{}, testLogger(), WithApproval(&fakeApproval{err: c.err}))
+			// The execution plane is wired (issue #106 fails GET /actions closed with 503
+			// without it) so each arm exercises the APPROVAL-read error mapping it pins,
+			// not the unwired-plane guard.
+			srv := NewServer(":0", BuildInfo{}, testLogger(), WithApproval(&fakeApproval{err: c.err}), WithExecution(&fakeExecution{}))
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodGet, "/actions?marketplaceAccountId="+uuid.New().String(), nil)
 			srv.Handler.ServeHTTP(rec, req)

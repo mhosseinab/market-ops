@@ -101,6 +101,19 @@ export const MESSAGE_KEYS = [
   "state.expired",
   "state.simulation",
 
+  // EXE-005 recommend-only lifecycle states (issue #106). A recommend-only
+  // action is NEVER a marketplace write, so it never borrows a write term:
+  // `state.accepted` ("تاییدشده توسط دیجی‌کالا") must never label one, and
+  // `state.lapsed` must never read as `state.expired` (an expired approval card
+  // is a different thing). The awaiting term is the SAME string the existing
+  // recommend-only surfaces use ("در انتظار اجرای خارجی") — one term, not a
+  // synonym. `state.lapsed` also never borrows تطبیق, which the glossary binds
+  // to Pending Reconciliation (a write whose result is unknown); it reuses the
+  // observation-window wording already in the body copy ("تغییر متناظر").
+  "state.awaitingExternalExecution",
+  "state.externallyExecuted",
+  "state.lapsed",
+
   // Margin readiness (distinct axis)
   "readiness.complete",
   "readiness.partial",
@@ -626,6 +639,12 @@ export const MESSAGE_KEYS = [
   "state.readyForReview",
   "state.revalidating",
   "state.invalidated",
+  // The operator-side §8.4 Approved state. It is qualified ("تاییدشده برای اجرا")
+  // precisely BECAUSE the bare glossary term "تاییدشده" is Verified (an
+  // observation-quality term) and "تاییدشده توسط دیجی‌کالا" is Accepted (the
+  // marketplace's answer to a write): the qualifier is what keeps the three
+  // apart. An approved card has been authorized for execution and nothing more.
+  "state.approved",
   "sm.title",
   "sm.gates.title",
   "sm.gate.identity",
@@ -698,6 +717,52 @@ export const MESSAGE_KEYS = [
   "actions.col.surface",
   "actions.col.state",
   "actions.col.time",
+  // Multi-mode grouped queue (issue #106): mode column, canonical-state group
+  // headings, accessible row selection, and the states a query can be in that
+  // must never collapse into one another (STATE_MATRIX).
+  "actions.col.mode",
+  "actions.col.select",
+  "actions.mode.write",
+  "actions.mode.recommendOnly",
+  "actions.group.proposed",
+  "actions.group.awaiting",
+  "actions.group.succeeded",
+  "actions.group.rejected",
+  "actions.group.failed",
+  "actions.group.lapsed",
+  "actions.group.unknown",
+  "actions.list.emptyFiltered",
+  "actions.detail.selectPrompt",
+  "actions.detail.error",
+  // The queue is page-bounded, so a deep-linked action can be absent from the
+  // returned page. That is its OWN state: never "nothing is selected" (which
+  // would be untrue) and never a fabricated execution detail.
+  "actions.detail.resolving",
+  "actions.notInPage.title",
+  "actions.notInPage.body",
+  // EXE-005 detail panels. Each states plainly what did and did NOT happen: an
+  // awaiting/lapsed recommend-only action made no marketplace write, and a
+  // lapse is a closed observation window, never a failed or executed write.
+  "actions.recommendOnly.title",
+  "actions.recommendOnly.body",
+  "actions.recommendOnly.noWriteNote",
+  "actions.externallyExecuted.title",
+  "actions.externallyExecuted.body",
+  "actions.lapsed.title",
+  "actions.lapsed.body",
+  "actions.lapsed.noClaimNote",
+  "actions.proposed.title",
+  "actions.proposed.body",
+  // OUT-001 absence, scoped to what the reading surface can actually establish.
+  // `none` is ACTION-scoped and may only be stated from the action-scoped read's
+  // ErrNoWindow answer; `noneForCard` is CARD-VERSION-scoped, for a card version
+  // that carries no execution overlay (its action may still own a window for the
+  // executed sibling version, so the action-scoped claim would be untrue); and
+  // `unknownOutOfPage` claims nothing at all for a card version the queue page
+  // does not carry.
+  "actions.outcome.none",
+  "actions.outcome.noneForCard",
+  "actions.outcome.unknownOutOfPage",
   "actions.pending.title",
   "actions.pending.body",
   "actions.pending.retryNote",

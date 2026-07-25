@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -186,6 +187,16 @@ func (s *gatewayServer) ListActions(
 	if s.approval == nil {
 		return gateway.ListActionsdefaultJSONResponse{StatusCode: 503, Body: approvalUnavailableErr()}, nil
 	}
+	// FAIL CLOSED on an unwired execution plane (§4.6: no silent fallback). Since
+	// the projection includes execution-bearing card versions (PD-4 rule 1), a row's
+	// mode and canonical state come ENTIRELY from the execution overlay — without it
+	// a TERMINAL executed action would render exactly like a pre-execution card, i.e.
+	// a queue that silently claims nothing has been executed. A half-truthful queue
+	// is worse than none, so this returns the SAME structured 503 every other
+	// execution-dependent route returns rather than degrading in place.
+	if s.execution == nil {
+		return gateway.ListActionsdefaultJSONResponse{StatusCode: 503, Body: executionUnavailableErr()}, nil
+	}
 	var stateFilter string
 	if req.Params.State != nil {
 		stateFilter = string(*req.Params.State)
@@ -216,42 +227,69 @@ func (s *gatewayServer) ListActions(
 	rows := page.Items
 	// Overlay the execution mode + canonical state per action (issue #106) so the
 	// list groups write AND recommend-only modes by canonical state without deep-
-	// link-only discovery. The overlay is best-effort context: when execution is
-	// unconfigured the list still returns the approval cards (fail open on the read
-	// enrichment, never on the authoritative card state).
-	overlay := map[uuid.UUID]execution.UnifiedAction{}
-	if s.execution != nil {
-		// Scope the overlay to the caller's own account (issue #102): the account id
-		// was already validated by ListActionsForOrg above, so a foreign id can only
-		// surface here as ErrAccountNotFound — mapped to the same uniform not-found,
-		// never another tenant's projection or a 500.
-		//
-		// It is keyed on THIS PAGE's action ids (issue #90 blocker 3), not an
-		// account-wide newest-N read: on a cursor page deeper than N the account-wide
-		// read would return no overlay row for an already-executed action, and the
-		// contract reads absent overlay fields as "still pre-execution" — a fabricated
-		// state. Page-scoped keying makes the overlay complete for the page it
-		// describes.
-		actionIDs := make([]uuid.UUID, 0, len(rows))
-		for _, r := range rows {
-			actionIDs = append(actionIDs, r.ActionID)
+	// link-only discovery.
+	//
+	// The overlay is keyed by the EXACT (actionId, cardId) pair, never by action id
+	// alone. An action lineage may hold SEVERAL card versions — the domain mints a
+	// newer Draft on the same action id after an execution (PD-4 rule 1), and the
+	// projection returns the executed version AND that newer head. Keying by action
+	// id alone would stamp the executed version's terminal overlay onto the fresh
+	// pre-execution Draft: a false "already executed" claim on a card that has
+	// written nothing. A pre-execution card version therefore carries NO overlay
+	// fields at all.
+	//
+	// Coverage is STRUCTURAL, not coincidental (finding F1; the same page-scoping
+	// property issue #90 blocker 3 requires of a CURSOR-PAGINATED read): the overlay
+	// is fetched for the EXACT card ids of the page just returned, so a page deeper
+	// than any account-wide newest-N is covered by construction. A separately-limited
+	// by-account overlay reads a DIFFERENT table with a DIFFERENT sort key (execution
+	// created_at / recommend-only approved_at vs the page's card created_at), so an
+	// execution-bearing card version could land inside the page yet outside the
+	// overlay's own top-N and be emitted with NO overlay fields — which the queue
+	// renders as a pre-execution card, i.e. the same false "nothing has been executed"
+	// claim the fail-closed 503 above exists to prevent, reached through a different
+	// door. Asking by returned ids makes a miss impossible at any limit or page depth.
+	//
+	// Scope the overlay to the caller's own account (issue #102): the account id was
+	// already validated by ListActionsForOrg above, so a foreign id can only surface
+	// here as ErrAccountNotFound — mapped to the same uniform not-found, never
+	// another tenant's projection or a 500. The card id set is caller-derived but
+	// never an unscoped read: both overlay queries stay predicated on the account.
+	cardIDs := make([]uuid.UUID, 0, len(rows))
+	for _, r := range rows {
+		cardIDs = append(cardIDs, r.ID)
+	}
+	unified, err := s.execution.ListUnifiedByCardIDsForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, cardIDs)
+	if err != nil {
+		if errors.Is(err, execution.ErrAccountNotFound) {
+			return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
 		}
-		unified, err := s.execution.ListUnifiedByActionsForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, actionIDs)
-		if err != nil {
-			if errors.Is(err, execution.ErrAccountNotFound) {
-				return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: executionErr(err)}, nil
-			}
-			return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
-		}
-		for _, u := range unified {
-			overlay[u.ActionID] = u
-		}
+		return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: executionErr(err)}, nil
+	}
+	overlay := make(map[uuid.UUID]execution.UnifiedAction, len(unified))
+	for _, u := range unified {
+		overlay[u.CardID] = u
 	}
 	items := make([]gateway.ActionSummary, 0, len(rows))
 	for _, r := range rows {
 		summary := toActionSummary(r)
-		if u, ok := overlay[r.ActionID]; ok {
-			applyExecutionOverlay(&summary, u)
+		// Both keys must match: the card id addresses the exact version, and the
+		// action id confirms the execution belongs to this card's action.
+		//
+		// A mismatch is a DATA-INTEGRITY anomaly, not a routine case: nothing in the
+		// schema ties action_executions.action_id / recommend_only_actions.action_id
+		// to approval_cards(id = card_id).action_id, so the binding is code-enforced
+		// only. Dropping the untrustworthy overlay is the right display choice, but
+		// the dropped row then renders as a PRE-EXECUTION card — the same false "not
+		// executed yet" claim the fail-closed 503 above exists to prevent, reached
+		// through a data-integrity door. So the drop is reported (counter + structured
+		// log) rather than swallowed: quarantine over silence (§4.6, EXE-005).
+		if u, ok := overlay[r.ID]; ok {
+			if u.ActionID == r.ActionID {
+				applyExecutionOverlay(&summary, u)
+			} else {
+				s.reportOverlayActionMismatch(ctx, req.Params.MarketplaceAccountId, r, u)
+			}
 		}
 		items = append(items, summary)
 	}
@@ -264,6 +302,33 @@ func (s *gatewayServer) ListActions(
 		HasMore:    &hasMore,
 		NextCursor: page.NextCursor,
 	}), nil
+}
+
+// reportOverlayActionMismatch emits the observable signal for an execution overlay
+// dropped because its action id disagreed with the action id of the card version it
+// was fetched for (issue #106). It changes NOTHING about the response — the row is
+// still rendered without execution fields — it only makes the drop visible.
+//
+// The metric carries no labels; the diagnosing identifiers are stable-key structured
+// log fields (technical UUIDs only — no marketplace free text, no locale copy, no
+// approval-control material), so the anomaly is reproducible from telemetry without
+// giving the counter unbounded cardinality.
+func (s *gatewayServer) reportOverlayActionMismatch(
+	ctx context.Context, account uuid.UUID, card db.ListApprovalCardsPageRow, u execution.UnifiedAction,
+) {
+	recordActionOverlayMismatch(ctx)
+	logger := s.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.WarnContext(ctx, "action overlay dropped: overlay action id does not match the card version's action id",
+		slog.String("event", "action_overlay_action_id_mismatch"),
+		slog.String("marketplace_account_id", account.String()),
+		slog.String("card_id", card.ID.String()),
+		slog.String("card_action_id", card.ActionID.String()),
+		slog.String("overlay_action_id", u.ActionID.String()),
+		slog.String("overlay_mode", string(u.Mode)),
+	)
 }
 
 // applyExecutionOverlay enriches an action summary with its execution overlay

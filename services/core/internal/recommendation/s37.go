@@ -146,9 +146,14 @@ func resolveActionsLimit(requested *int32) (int32, error) {
 }
 
 // ListActionsPage returns ONE bounded, keyset-paginated page of the account's
-// actions queue: the current (greatest) version per lineage, newest first,
-// optionally narrowed to a single §8.4 state (the predicate is applied to the
-// current lineage head in SQL, BEFORE the page bound — issue #142).
+// actions queue, newest first, optionally narrowed to a single §8.4 state (the
+// predicate is applied in SQL, BEFORE the page bound — issue #142).
+//
+// The projection is PD-4 rule (1) for issue #106: current lineage heads UNION card
+// versions that carry an execution. A page therefore may hold SEVERAL versions of
+// one action lineage (an executed version and the newer Draft that superseded it),
+// which is why the execution overlay above this read is keyed by CARD id, never by
+// action id.
 //
 // Completeness is EXPLICIT: it fetches limit+1 rows, uses the extra row as the
 // hasMore signal, trims it, and mints the continuation cursor from the last
@@ -212,21 +217,34 @@ const (
 	seamBulkConfirm     = "confirm_bulk_selection"
 )
 
-// ListActions returns the account's actions queue: the current (greatest)
-// version per lineage, newest first, bounded by limit (PD-3 item 5). A
-// non-empty stateFilter narrows to that exact §8.4 state; empty returns every
-// state.
+// ListActions returns the account's actions queue, newest first, bounded by
+// limit (PD-3 item 5). A non-empty stateFilter narrows to that exact §8.4 state;
+// empty returns every state.
+//
+// The projection is PD-4 rule (1) for issue #106: current lineage heads UNION
+// card versions that carry an execution (write action_executions OR EXE-005
+// recommend_only_actions), deduplicated by card id. A terminal executed card
+// version therefore stays visible through the common action API even after the
+// domain mints a newer Draft on the same action lineage — preserving EXE-005 /
+// OUT-001 / AUD-001 visibility for the DEFAULT (recommend-only) execution mode.
 //
 // It FAILS CLOSED on an over-maximum limit exactly as ListActionsPage does (issue
 // #90 fix cycle 1, F9): leaving a silently-clamping read beside a fail-closed one
 // invites the clamp defect straight back. A non-positive limit still means "apply
 // the conservative default" — that is an absent request, not an out-of-contract one.
 //
-// The state predicate is AUTHORITATIVE and applied in SQL, on the current
-// lineage head, BEFORE LIMIT (issue #142) — a page bounds MATCHING rows, never
-// an unfiltered newest-N prefix, so an older matching head is never hidden
-// behind newer non-matching ones. Tenant scoping stays account-scoped exactly
-// as before; the account arg is resolved upstream.
+// The state predicate is AUTHORITATIVE and applied in SQL, over the UNIONED set,
+// BEFORE LIMIT (issue #142) — a page bounds MATCHING rows, never an unfiltered
+// newest-N prefix, so an older matching row is never hidden behind newer
+// non-matching ones. Tenant scoping stays account-scoped on BOTH branches; the
+// account arg is resolved upstream.
+//
+// It is NOT the request path (issue #90 blocker 3): GET /actions reads
+// ListActionsPage, which projects the SAME PD-4 set with an explicit completeness
+// signal. This bounded read is retained for internal fixed-bound callers.
+//
+// It is a pure read over append-only history: no card version is rewritten,
+// collapsed, or re-stamped (approval versioning is never-cut, §4.6).
 func (s *Service) ListActions(ctx context.Context, account uuid.UUID, stateFilter string, limit int32) ([]db.ApprovalCard, error) {
 	resolved, err := resolveActionsLimit(&limit)
 	if err != nil {

@@ -696,7 +696,35 @@ type Querier interface {
 	// overlay on exactly the page's action ids makes it complete for that page by
 	// construction. The account predicate remains the authorization; the id list only
 	// narrows within it. A pure SELECT.
+	//
+	// The actions-list request path uses the CARD-keyed pair above instead (issue #106):
+	// under the PD-4 rule (1) projection an action id no longer identifies exactly one
+	// returned row. This by-action read stays available for callers that hold action ids
+	// and no card ids, and carries the same account predicate.
 	ListActionExecutionsByAccountAndActions(ctx context.Context, arg ListActionExecutionsByAccountAndActionsParams) ([]ActionExecution, error)
+	// The write-mode action_executions rows bound to an EXPLICIT set of approval card
+	// versions (issue #106 finding F1). The actions list overlays execution state onto
+	// the cards it actually returned, so the overlay must be fetched for the EXACT ids
+	// of that page: a separately-limited "newest N" overlay reads a DIFFERENT sort key
+	// (ae.created_at) than the page (ac.created_at) and therefore does NOT cover it —
+	// an execution-bearing card inside the page but outside the overlay's own top-N
+	// would render as a pre-execution card, a false "not executed" claim (EXE-005,
+	// §4.6 no silent fallback). Keying on the returned ids makes coverage structural.
+	//
+	// It keys on CARD id, not action id (the by-action pair below): the PD-4 rule (1)
+	// projection can return SEVERAL versions of one action lineage (an executed version
+	// and a newer pre-execution Draft), and only the card id addresses the exact version
+	// an execution was bound to. An action-keyed overlay would stamp the executed
+	// version's terminal state onto the fresh Draft — a false "already executed" claim.
+	//
+	// No LIMIT: the result is bounded by the caller-supplied id set, which is itself
+	// the already-bounded page (at most one execution row per card version).
+	//
+	// Tenant scoping (issue #102) is NOT delegated to the id set: the caller-supplied
+	// ids are still predicated on the account through the bound approval_cards row
+	// (action_executions carries no account column of its own), so a foreign card id
+	// matches no row and discloses nothing. A pure SELECT.
+	ListActionExecutionsByCardIDs(ctx context.Context, arg ListActionExecutionsByCardIDsParams) ([]ActionExecution, error)
 	// Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
 	// cadence tier, across all accounts, in a stable order. A target deactivated by
 	// identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
@@ -707,21 +735,59 @@ type Querier interface {
 	ListAnalyticsEventsByFamily(ctx context.Context, arg ListAnalyticsEventsByFamilyParams) ([]AnalyticsEvent, error)
 	// The append-only lifecycle history for a card, in occurrence order (AUD-001).
 	ListApprovalCardStates(ctx context.Context, cardID uuid.UUID) ([]ApprovalCardState, error)
-	// Grouped multi-row actions queue for an account (PD-3 item 5, S37), current
-	// (greatest) version per lineage, newest first. The unfiltered read: every
-	// current lineage head for the account. A deterministic id tie-break keeps
-	// ordering stable across rows sharing a created_at (stable keyset paging).
+	// Grouped multi-row actions queue for an account (PD-3 item 5, S37), newest
+	// first. The authoritative projection is PD-4 rule (1) for issue #106:
 	//
-	// NOT a request path: superseded by ListApprovalCardsPage for every caller-facing
-	// read (its bare LIMIT carries no completeness signal). Retained for internal
-	// fixed-bound reads only.
+	//     current lineage heads  UNION  card versions that carry an execution
+	//
+	// The second branch is what keeps EXE-005 / OUT-001 / AUD-001 visibility intact.
+	// The domain may legitimately mint a NEWER Draft on the SAME action lineage after
+	// an action was executed (recommendation.EditPrice preserves action_id), so a
+	// greatest-version-only read silently dropped the older TERMINAL card version —
+	// and with it the common action API visibility, audit selection, and outcome
+	// discovery for the DEFAULT (recommend-only, writes dark) execution mode. An
+	// execution-bearing card version stays addressable forever.
+	//
+	// "Carries an execution" spans BOTH modes: a write action_executions row or an
+	// EXE-005 recommend_only_actions row, matched on the EXACT card version each was
+	// bound to (never on the lineage), so a newer version never inherits an older
+	// version's execution.
+	//
+	// The union is expressed as a disjunctive predicate over a single scan of
+	// approval_cards, which deduplicates by construction: a lineage whose current
+	// head is ITSELF execution-bearing satisfies both branches and still yields
+	// exactly ONE row (its primary key appears once).
+	//
+	// This is a pure READ over append-only history: it never rewrites, collapses,
+	// merges, or re-stamps a past card version — each projected version keeps its
+	// own version and its own parameter/context versions (approval versioning is
+	// never-cut, §4.6).
+	//
+	// Tenant scoping (marketplace_account_id, issue #102) applies to BOTH branches:
+	// a foreign account's executed card is never projected here. A deterministic id
+	// tie-break keeps ordering stable across rows sharing a created_at (stable
+	// keyset paging).
+	//
+	// NOT a request path (issue #90 blocker 3): superseded by ListApprovalCardsPage
+	// for every caller-facing read (its bare LIMIT carries no completeness signal).
+	// Retained for internal fixed-bound reads only; it projects the SAME PD-4 rule (1)
+	// set as ListApprovalCardsPage, so the two reads can never disagree about what an
+	// action queue contains.
 	ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error)
-	// Actions queue narrowed to a single §8.4 state (issue #142). The state
-	// predicate is AUTHORITATIVE and runs on the current (greatest-version) lineage
-	// head BEFORE ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered
-	// newest-N prefix, so an older matching head is never hidden behind newer
-	// non-matching ones. Tenant scoping (marketplace_account_id) is unchanged and
-	// the id tie-break keeps paging stable across equal created_at.
+	// Actions queue narrowed to a single §8.4 state (issue #142), over the SAME
+	// PD-4 rule (1) projection as the unfiltered read (issue #106): current lineage
+	// heads UNION execution-bearing card versions.
+	//
+	// The state predicate is AUTHORITATIVE and runs on the UNIONED set BEFORE
+	// ORDER BY/LIMIT — a page bounds MATCHING rows, never an unfiltered newest-N
+	// prefix, so an older matching row (head or executed version) is never hidden
+	// behind newer non-matching ones. A recommend-only executed card version stays
+	// Approved by design (execution.Service.recordRecommendOnly), so it remains
+	// reachable under state=approved even once its lineage head has moved on to a
+	// newer Draft.
+	//
+	// Tenant scoping (marketplace_account_id) is unchanged on both branches and the
+	// id tie-break keeps paging stable across equal created_at.
 	ListApprovalCardsByAccountAndState(ctx context.Context, arg ListApprovalCardsByAccountAndStateParams) ([]ApprovalCard, error)
 	// The BOUNDED, keyset-paginated actions queue (issue #90 blocker 3, §17 bounded
 	// reads). It supersedes the two unpaginated reads below as the ONLY request-path
@@ -729,26 +795,49 @@ type Querier interface {
 	// completeness signal, so a caller with more than 500 current lineage heads
 	// received a truncated queue it could not distinguish from a complete one.
 	//
+	// The PROJECTION is PD-4 rule (1) for issue #106 — the same union the two reads
+	// below use, carried onto the request path so pagination does not silently narrow
+	// it back to lineage heads:
+	//
+	//     current lineage heads  UNION  card versions that carry an execution
+	//
+	// The second branch is what keeps EXE-005 / OUT-001 / AUD-001 visibility intact.
+	// The domain may legitimately mint a NEWER Draft on the SAME action lineage after
+	// an action was executed (recommendation.EditPrice preserves action_id), so a
+	// greatest-version-only read silently drops the older TERMINAL card version — and
+	// with it the common action API visibility, audit selection, and outcome discovery
+	// for the DEFAULT (recommend-only, writes dark) execution mode. "Carries an
+	// execution" spans BOTH modes (write action_executions OR EXE-005
+	// recommend_only_actions), matched on the EXACT card version each was bound to,
+	// never on the lineage, so a newer version never inherits an older version's
+	// execution. The disjunction deduplicates by construction: a head that is ITSELF
+	// execution-bearing satisfies both branches and still yields exactly ONE row.
+	//
 	// Shape (identical to the notification feed's keyset idiom — one pagination
 	// convention in this repo, issue #128):
-	//   * current (greatest) version per lineage via DISTINCT ON, so the queue is one
-	//     row per action;
-	//   * the OPTIONAL §8.4 state predicate is AUTHORITATIVE and applied to the current
-	//     lineage HEAD before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING rows,
-	//     never an unfiltered newest-N prefix;
+	//   * the OPTIONAL §8.4 state predicate is AUTHORITATIVE and applied to the
+	//     PROJECTED set before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING
+	//     rows, never an unfiltered newest-N prefix;
 	//   * deterministic (created_at DESC, id DESC) ordering with the row-value cursor
-	//     comparison, so ties on created_at break by id and no row is returned TWICE
-	//     across pages. The key is the CURRENT version's created_at/id, which is
-	//     MUTABLE (a new card version replaces the head with a newer key): a lineage
-	//     that mints a version mid-paging sorts NEWER than the cursor and is therefore
-	//     observed on a refreshed FIRST page, not on a later one. Stability over a
-	//     mutable head would need a different key (e.g. the lineage's first version)
-	//     and is a deliberate non-goal here — the queue is read newest-first and
-	//     refreshed, not scrolled as a snapshot;
+	//     comparison over the card PRIMARY KEY, so ties on created_at break by id and
+	//     no row is returned TWICE across pages. Execution-bearing versions are
+	//     immutable history and page stably; a lineage that mints a NEW head mid-paging
+	//     sorts NEWER than the cursor and is therefore observed on a refreshed FIRST
+	//     page, not on a later one. Stability over a mutable head would need a
+	//     different key (e.g. the lineage's first version) and is a deliberate non-goal
+	//     here — the queue is read newest-first and refreshed, not scrolled as a
+	//     snapshot;
 	//   * a NULL cursor is the first (newest) page; the caller passes
 	//     page_limit = requested_limit + 1 and treats the extra row as the hasMore
 	//     signal (then trims it).
-	// The account predicate is the authorization; the cursor is only a position.
+	// The account predicate is the authorization on BOTH branches (issue #102) — a
+	// foreign account's executed card is never projected here; the cursor is only a
+	// position.
+	//
+	// This is a pure READ over append-only history: it never rewrites, collapses,
+	// merges, or re-stamps a past card version — each projected version keeps its own
+	// version and its own parameter/context versions (approval versioning is
+	// never-cut, §4.6).
 	//
 	// variant_id is joined from the recommendation (a card and its recommendation are
 	// account-bound by migration 0025's composite FK, so the join cannot widen the
@@ -929,6 +1018,14 @@ type Querier interface {
 	// The recommend-only actions for an EXPLICIT set of action ids under one account
 	// (issue #90 blocker 3) — the recommend-only half of the page-scoped overlay above.
 	ListRecommendOnlyActionsByAccountAndActions(ctx context.Context, arg ListRecommendOnlyActionsByAccountAndActionsParams) ([]RecommendOnlyAction, error)
+	// The recommend-only actions bound to an EXPLICIT set of approval card versions
+	// (issue #106 finding F1) — the recommend-only half of the same page-exact overlay
+	// as ListActionExecutionsByCardIDs, with the same reasoning and the same bound (at
+	// most one recommend-only action per card version).
+	//
+	// recommend_only_actions carries its own account column, so the account predicate
+	// applies directly: a foreign card id matches no row (issue #102). A pure SELECT.
+	ListRecommendOnlyActionsByCardIDs(ctx context.Context, arg ListRecommendOnlyActionsByCardIDsParams) ([]RecommendOnlyAction, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)

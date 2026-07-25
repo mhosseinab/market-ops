@@ -33,17 +33,22 @@ type ExecutionService interface {
 	// (404) through the common action read — while a foreign-account action stays a
 	// uniform not-found (pgx.ErrNoRows), never disclosed.
 	GetUnifiedActionForOrg(ctx context.Context, organizationID, actionID uuid.UUID) (execution.UnifiedAction, error)
-	// ListUnifiedByAccountForOrg projects both modes for the caller's OWN account so
-	// the actions list can overlay mode + canonical state (issue #106); a foreign
-	// account id is rejected with ErrAccountNotFound (issue #102), never another
-	// tenant's projection.
-	ListUnifiedByAccountForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]execution.UnifiedAction, error)
-	// ListUnifiedByActionsForOrg projects both modes for an EXPLICIT set of action
-	// ids under the caller's own account (issue #90 blocker 3). It is what the
-	// CURSOR-PAGINATED actions list overlays: an account-wide newest-N projection
-	// cannot cover a deeper page, and a missing overlay row is read by the contract
-	// as "still pre-execution" — a fabricated state, not a neutral omission.
-	ListUnifiedByActionsForOrg(ctx context.Context, organizationID, account uuid.UUID, actionIDs []uuid.UUID) ([]execution.UnifiedAction, error)
+	// ListUnifiedByCardIDsForOrg projects both modes for an EXPLICIT set of card
+	// versions so the actions list can overlay mode + canonical state onto the page
+	// it actually returned (issue #106 finding F1). The consumer asks by RETURNED
+	// CARD IDS, never by a separately-limited newest-N page: a by-account overlay
+	// orders by its own sort key and can miss a row the page contains, which would
+	// render a tracked action as "not executed" (EXE-005, §4.6 no silent fallback).
+	// A foreign account id is rejected with ErrAccountNotFound (issue #102), and
+	// the id set stays account-predicated — never another tenant's projection.
+	//
+	// This is the ONE overlay read the transport consumes, so it is the only one this
+	// consumer-specific interface declares. execution.Service also exposes
+	// ListUnifiedByAccountForOrg and the by-action ListUnifiedByActionsForOrg
+	// (issue #90 blocker 3); neither can serve this seam, because under the PD-4
+	// rule (1) projection a page may carry SEVERAL card versions of one action and
+	// only the card id addresses the exact version an execution was bound to.
+	ListUnifiedByCardIDsForOrg(ctx context.Context, organizationID, account uuid.UUID, cardIDs []uuid.UUID) ([]execution.UnifiedAction, error)
 	// ListPendingReconciliationForOrg backs GET /ops/queues (PD-3 item 8, S37),
 	// scoped to the caller's account.
 	ListPendingReconciliationForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]db.ActionExecution, error)

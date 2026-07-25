@@ -133,6 +133,23 @@ func (s *Service) ListUnifiedByAccountForOrg(ctx context.Context, organizationID
 	return s.ListUnifiedByAccount(ctx, account, limit)
 }
 
+// ListUnifiedByCardIDsForOrg projects both execution modes for an EXPLICIT set of
+// approval card versions belonging to the caller's OWN account (issue #106 finding
+// F1) scoped to the caller (issue #102). The requested account MUST equal the
+// caller's resolved account; a foreign account id yields ErrAccountNotFound, and
+// the underlying queries stay account-predicated so a foreign card id in the set
+// matches no row — the id set is never an unscoped read.
+func (s *Service) ListUnifiedByCardIDsForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID, cardIDs []uuid.UUID) ([]UnifiedAction, error) {
+	account, err := s.accountForOrg(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	if requestedAccount != account {
+		return nil, ErrAccountNotFound
+	}
+	return s.ListUnifiedByCardIDs(ctx, account, cardIDs)
+}
+
 // ListUnifiedByActionsForOrg projects both execution modes for an EXPLICIT set of
 // action ids, scoped to the caller's OWN account (issue #102 posture, issue #90
 // blocker 3). The requested account MUST equal the caller's resolved account; a

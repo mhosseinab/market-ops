@@ -1,8 +1,9 @@
 import { HttpResponse, http } from "msw";
 import type { ChatStreamEvent } from "../../chat/types";
+import type { OutcomeView } from "../../data/types";
 import {
-  approvalCardAwaiting,
-  awaitingActions,
+  actionList,
+  approvalCardFor,
   bulkValid,
   catalogProductPage,
   catalogProductRow,
@@ -13,7 +14,7 @@ import {
   marketEvent,
   needsReviewQueue,
   offer,
-  outcomeClosed,
+  outcomeList,
   previewWithDuplicate,
   productDiagnostics,
   readinessMissing,
@@ -107,7 +108,12 @@ export const handlers = [
   ),
 
   http.get(`${B}/recommendations/detail`, () => HttpResponse.json(recommendationDetail)),
-  http.get(`${B}/approvals/card`, () => HttpResponse.json(approvalCardAwaiting)),
+  // Echoes the REQUESTED card id (and its own bound action id), like the real
+  // server: a handler that always answered with one fixed card would let a screen
+  // render one action's binding under another and still pass.
+  http.get(`${B}/approvals/card`, ({ request }) =>
+    HttpResponse.json(approvalCardFor(new URL(request.url).searchParams.get("cardId"))),
+  ),
   http.post(`${B}/approvals/confirm`, () => HttpResponse.json(confirmApproved)),
 
   // ── S28 defaults ──────────────────────────────────────────────────────────
@@ -117,15 +123,48 @@ export const handlers = [
   // these to exercise invalid credentials, expiry, and logout transitions.
   http.post(`${B}/auth/login`, () => HttpResponse.json(sessionOwner)),
   http.post(`${B}/auth/logout`, () => new HttpResponse(null, { status: 204 })),
+  // The grouped multi-mode actions queue + the account's outcome windows (issue
+  // #106): the Actions screen's PRIMARY discovery path, no deep link required.
+  http.get(`${B}/actions`, () => HttpResponse.json(actionList)),
+  http.get(`${B}/outcomes/list`, () => HttpResponse.json(outcomeList)),
   http.get(`${B}/actions/execution`, () => HttpResponse.json(execAccepted)),
-  http.get(`${B}/outcomes`, () => HttpResponse.json(outcomeClosed)),
+  // GET /outcomes is the AUTHORITY for one action's OUT-001 window: it answers for
+  // the requested action and 404s (ErrNoWindow) when none was opened. The default
+  // handler must be action-scoped for that reason — a handler that returns the
+  // same window for every actionId would let a screen appear to bind correctly
+  // while it does not, and would make "no window" untestable.
+  http.get(`${B}/outcomes`, ({ request }) => {
+    const actionId = new URL(request.url).searchParams.get("actionId");
+    const found = outcomeList.items.find((o) => o.actionId === actionId);
+    if (!found) {
+      return HttpResponse.json({ code: "EXECUTION_ERROR", message: "no_window" }, { status: 404 });
+    }
+    const view: OutcomeView = {
+      actionId: found.actionId,
+      openedAt: found.openedAt,
+      closesAt: found.closesAt,
+      ...(found.result && found.confidence
+        ? {
+            result: {
+              result: found.result,
+              confidence: found.confidence,
+              computedAt: found.closesAt,
+            },
+          }
+        : {}),
+    };
+    return HttpResponse.json(view);
+  }),
   http.post(`${B}/actions/retry`, () =>
     HttpResponse.json({ actionId: execAccepted.actionId, eligible: true, state: "failed" }),
   ),
   http.post(`${B}/approvals/bulk/confirm`, () => HttpResponse.json(bulkValid)),
-  // The bulk candidate source and the SERVER-minted selection set (issue #90): the
-  // browser never mints a selection-set lineage or version.
-  http.get(`${B}/actions`, () => HttpResponse.json(awaitingActions)),
+  // The SERVER-minted selection set (issue #90): the browser never mints a
+  // selection-set lineage or version. The bulk CANDIDATE source is GET /actions,
+  // whose default handler above serves the issue #106 multi-mode queue; the
+  // BulkApproval suite installs its own `awaitingActions` handler, because MSW
+  // resolves the FIRST matching handler and a screen-specific queue must not be a
+  // silent global default for every other screen.
   http.post(`${B}/selection-sets/preview`, () => HttpResponse.json(selectionPreview)),
 
   // ── S29: chat dock ──────────────────────────────────────────────────────────

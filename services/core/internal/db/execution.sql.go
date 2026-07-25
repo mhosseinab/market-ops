@@ -563,8 +563,83 @@ type ListActionExecutionsByAccountAndActionsParams struct {
 // overlay on exactly the page's action ids makes it complete for that page by
 // construction. The account predicate remains the authorization; the id list only
 // narrows within it. A pure SELECT.
+//
+// The actions-list request path uses the CARD-keyed pair above instead (issue #106):
+// under the PD-4 rule (1) projection an action id no longer identifies exactly one
+// returned row. This by-action read stays available for callers that hold action ids
+// and no card ids, and carries the same account predicate.
 func (q *Queries) ListActionExecutionsByAccountAndActions(ctx context.Context, arg ListActionExecutionsByAccountAndActionsParams) ([]ActionExecution, error) {
 	rows, err := q.db.Query(ctx, listActionExecutionsByAccountAndActions, arg.MarketplaceAccountID, arg.ActionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActionExecution{}
+	for rows.Next() {
+		var i ActionExecution
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.ActionID,
+			&i.IdempotencyKey,
+			&i.Mode,
+			&i.ExternalState,
+			&i.ExternalRef,
+			&i.RequestPayload,
+			&i.ResponsePayload,
+			&i.ReconciledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GateBlocked,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActionExecutionsByCardIDs = `-- name: ListActionExecutionsByCardIDs :many
+SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at, ae.gate_blocked
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ac.marketplace_account_id = $1
+  AND ae.card_id = ANY($2::uuid[])
+ORDER BY ae.created_at DESC
+`
+
+type ListActionExecutionsByCardIDsParams struct {
+	MarketplaceAccountID uuid.UUID
+	CardIds              []uuid.UUID
+}
+
+// The write-mode action_executions rows bound to an EXPLICIT set of approval card
+// versions (issue #106 finding F1). The actions list overlays execution state onto
+// the cards it actually returned, so the overlay must be fetched for the EXACT ids
+// of that page: a separately-limited "newest N" overlay reads a DIFFERENT sort key
+// (ae.created_at) than the page (ac.created_at) and therefore does NOT cover it —
+// an execution-bearing card inside the page but outside the overlay's own top-N
+// would render as a pre-execution card, a false "not executed" claim (EXE-005,
+// §4.6 no silent fallback). Keying on the returned ids makes coverage structural.
+//
+// It keys on CARD id, not action id (the by-action pair below): the PD-4 rule (1)
+// projection can return SEVERAL versions of one action lineage (an executed version
+// and a newer pre-execution Draft), and only the card id addresses the exact version
+// an execution was bound to. An action-keyed overlay would stamp the executed
+// version's terminal state onto the fresh Draft — a false "already executed" claim.
+//
+// No LIMIT: the result is bounded by the caller-supplied id set, which is itself
+// the already-bounded page (at most one execution row per card version).
+//
+// Tenant scoping (issue #102) is NOT delegated to the id set: the caller-supplied
+// ids are still predicated on the account through the bound approval_cards row
+// (action_executions carries no account column of its own), so a foreign card id
+// matches no row and discloses nothing. A pure SELECT.
+func (q *Queries) ListActionExecutionsByCardIDs(ctx context.Context, arg ListActionExecutionsByCardIDsParams) ([]ActionExecution, error) {
+	rows, err := q.db.Query(ctx, listActionExecutionsByCardIDs, arg.MarketplaceAccountID, arg.CardIds)
 	if err != nil {
 		return nil, err
 	}
@@ -803,6 +878,60 @@ type ListRecommendOnlyActionsByAccountAndActionsParams struct {
 // (issue #90 blocker 3) — the recommend-only half of the page-scoped overlay above.
 func (q *Queries) ListRecommendOnlyActionsByAccountAndActions(ctx context.Context, arg ListRecommendOnlyActionsByAccountAndActionsParams) ([]RecommendOnlyAction, error) {
 	rows, err := q.db.Query(ctx, listRecommendOnlyActionsByAccountAndActions, arg.MarketplaceAccountID, arg.ActionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecommendOnlyAction{}
+	for rows.Next() {
+		var i RecommendOnlyAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.ActionID,
+			&i.MarketplaceAccountID,
+			&i.VariantID,
+			&i.ApprovedPriceMantissa,
+			&i.ApprovedPriceCurrency,
+			&i.ApprovedPriceExponent,
+			&i.ApprovedAt,
+			&i.WindowExpiresAt,
+			&i.State,
+			&i.MatchedObservationAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecommendOnlyActionsByCardIDs = `-- name: ListRecommendOnlyActionsByCardIDs :many
+SELECT id, card_id, action_id, marketplace_account_id, variant_id, approved_price_mantissa, approved_price_currency, approved_price_exponent, approved_at, window_expires_at, state, matched_observation_at, created_at, updated_at FROM recommend_only_actions
+WHERE marketplace_account_id = $1
+  AND card_id = ANY($2::uuid[])
+ORDER BY approved_at DESC
+`
+
+type ListRecommendOnlyActionsByCardIDsParams struct {
+	MarketplaceAccountID uuid.UUID
+	CardIds              []uuid.UUID
+}
+
+// The recommend-only actions bound to an EXPLICIT set of approval card versions
+// (issue #106 finding F1) — the recommend-only half of the same page-exact overlay
+// as ListActionExecutionsByCardIDs, with the same reasoning and the same bound (at
+// most one recommend-only action per card version).
+//
+// recommend_only_actions carries its own account column, so the account predicate
+// applies directly: a foreign card id matches no row (issue #102). A pure SELECT.
+func (q *Queries) ListRecommendOnlyActionsByCardIDs(ctx context.Context, arg ListRecommendOnlyActionsByCardIDsParams) ([]RecommendOnlyAction, error) {
+	rows, err := q.db.Query(ctx, listRecommendOnlyActionsByCardIDs, arg.MarketplaceAccountID, arg.CardIds)
 	if err != nil {
 		return nil, err
 	}

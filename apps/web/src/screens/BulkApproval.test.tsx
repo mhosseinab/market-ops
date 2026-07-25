@@ -1,7 +1,7 @@
 import { faIR } from "@market-ops/locale";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { formatCount } from "../data/format";
 import type { ObservationTarget, ObservedOffer } from "../data/types";
 import {
@@ -44,6 +44,17 @@ function offersFor(targets: ObservationTarget[]): ObservedOffer[] {
 afterEach(() => {
   document.documentElement.removeAttribute("dir");
   document.documentElement.removeAttribute("lang");
+});
+
+// The bulk CANDIDATE source. GET /actions is shared with the Actions screen, whose
+// default handler serves the issue #106 multi-mode queue; this suite needs the
+// control-bearing (AwaitingConfirmation) queue that carries the (variantId,
+// recommendationId) pairs a selection member is built from, so it installs its own
+// handler rather than making a screen-specific queue the global default. A per-test
+// `server.use` still overrides this one (MSW resolves the most recently added
+// matching handler first).
+beforeEach(() => {
+  server.use(http.get(`${BASE}/actions`, () => HttpResponse.json(awaitingActions)));
 });
 
 function withExecutableCandidate() {
