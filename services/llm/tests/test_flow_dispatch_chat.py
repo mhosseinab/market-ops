@@ -398,6 +398,39 @@ def test_a_model_authored_foreign_entity_never_pivots_the_subject() -> None:
     assert gateway.hits == []
 
 
+@pytest.mark.parametrize("tool", ["read_margin", "read_policy"])
+def test_an_unresolved_subject_never_enables_an_entity_scoped_read(tool: str) -> None:
+    """UNKNOWN never enables: a turn with no resolved subject reads no entity.
+
+    The resolver settles the turn's single subject (§8.1); when it settled NONE,
+    the subject is UNKNOWN. An entity-scoped read must fail closed rather than
+    fall back to the model-authored ``entity_id`` — that fallback would let the
+    model both choose the subject and hide that it had, which is the "Unknown
+    enables dependent logic" failure mode (§4.6, always a bug).
+    """
+    from llm.flows.gateway_read import GatewayReadPort
+    from llm.orchestrator.scope import TurnScope, turn_scope
+    from llm.tools.runners import build_production_read_runners
+
+    gateway = FakeGateway(DEFAULT_ROUTES)
+    port = GatewayReadPort(
+        BASE_URL,
+        OUTBOUND_TOKEN,
+        httpx.Client(transport=gateway.transport()),
+        timeout_seconds=5.0,
+    )
+    runners = build_production_read_runners(port, business_day="2026-07-25")
+    unresolved = TurnScope(
+        organization_id=ORG_ID, marketplace_account_id=ACCOUNT_ID, entity_id=None
+    )
+    with turn_scope(unresolved):
+        refused = runners[tool](
+            marketplace_account_id=ACCOUNT_ID, entity_id="var-model-chose-this"
+        )
+    assert refused["status"] == "unavailable"
+    assert gateway.hits == [], f"an unresolved subject reached the gateway: {gateway.hits}"
+
+
 def test_a_read_response_describing_another_account_fails_closed() -> None:
     """A payload whose own tenant echo is foreign is refused, never relayed."""
     from llm.flows.gateway_read import GatewayReadPort
