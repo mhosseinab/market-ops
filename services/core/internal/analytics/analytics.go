@@ -152,19 +152,31 @@ var ErrInvalidCostKind = errors.New("analytics: invalid cost kind")
 // only for rows written before the key existed (migration 0045).
 var ErrMissingDedupKey = errors.New("analytics: event has no deduplication key")
 
-// ErrMalformedDedupKey is returned when a deduplication key is non-empty but has an
-// EMPTY ':'-separated segment (issue #111 review finding G1). It is the sibling
-// failure of ErrMissingDedupKey and the same never-cut invariant (§4.6): a key such
-// as "briefing:daily_digest_sent:" — what DedupKey returns when its required part is
-// the ZERO VALUE of a nullable/optional source column — is non-empty, so it survives
-// both the ErrMissingDedupKey check and the storage-level length(dedup_key) > 0 CHECK,
-// yet it is a CONSTANT per (account, family, name). The first event to use it would
-// win the account's slot and every later, genuinely different, business fact would be
-// suppressed forever while the call site looked perfectly keyed. That is strictly
-// worse than no key at all: an unkeyed event deduplicates nothing, a constant key
-// deduplicates everything. A producer whose identifying part can be empty must fail
-// LOUDLY here, never mute its own family silently.
-var ErrMalformedDedupKey = errors.New("analytics: deduplication key has an empty segment")
+// ErrMalformedDedupKey is returned when a deduplication key is non-empty overall but
+// has a ':'-separated segment that carries no identifying information (issue #111
+// review finding G1, widened by cycle-2 finding H2). It is the sibling failure of
+// ErrMissingDedupKey and the same never-cut invariant (§4.6).
+//
+// EXACTLY WHAT IS REJECTED, and nothing more: a segment that is EMPTY, a segment that
+// is BLANK AFTER strings.TrimSpace (space, tab, newline), and a segment equal to the
+// ZERO UUID "00000000-0000-0000-0000-000000000000". These are the shapes a producer
+// actually reaches when its identifying value is absent — "" from a string field, the
+// zero value of a uuid.UUID (the dominant identifier type in this core), whitespace
+// from a trimmed-but-not-checked input. Every one of them is a non-empty Go string, so
+// every one survives BOTH the ErrMissingDedupKey check AND the storage-level
+// length(dedup_key) > 0 CHECK, and every one is a CONSTANT per (account, family,
+// name). The first event to use it would win the account's slot and every later,
+// genuinely different, business fact would be suppressed forever while the call site
+// looked perfectly keyed. That is strictly worse than no key at all: an unkeyed event
+// deduplicates nothing, a constant key deduplicates everything.
+//
+// WHAT IS NOT REJECTED (stated so this doc cannot overclaim): any OTHER
+// non-identifying constant a producer might pass — a literal "unknown", a fixed
+// sentinel id, a hardcoded string — is indistinguishable from a legitimate identifier
+// at this boundary and passes. This guard closes the ZERO-VALUE class, not the general
+// "is this value actually identifying?" question. A producer whose identifying part
+// can be absent must not emit at all.
+var ErrMalformedDedupKey = errors.New("analytics: deduplication key has a segment that is empty, blank, or the zero UUID")
 
 // ErrCrossTenant is returned when an event envelope pairs an organization with a
 // marketplace account that organization does NOT own (issue #125, §18 envelope +
@@ -248,12 +260,14 @@ type Event struct {
 // image of the per-call-UUID hazard: one deduplicates nothing, the other deduplicates
 // everything. The identifying part must come from the committed business row.
 //
-// PARTS MUST ALSO BE NON-EMPTY. Requiring one part in the signature does not stop a
-// caller passing the ZERO VALUE of a nullable/optional column, which yields
-// "family:name:" — non-empty, so it survives both Emit's ErrMissingDedupKey check and
-// the storage-level non-empty CHECK, while still being the account-wide constant
-// described above. Emit therefore rejects any key with an empty ':'-separated segment
-// (ErrMalformedDedupKey); a producer whose identifier can be absent must not emit.
+// PARTS MUST ALSO CARRY AN IDENTIFIER. Requiring one part in the signature does not
+// stop a caller passing that part's ZERO VALUE, which yields the account-wide constant
+// described above while still being non-empty — so it survives both Emit's
+// ErrMissingDedupKey check and the storage-level non-empty CHECK. Emit therefore
+// rejects a key whose ':'-separated segment is empty, blank after trimming, or the
+// zero UUID "00000000-0000-0000-0000-000000000000" (ErrMalformedDedupKey). Those are
+// the zero-value shapes, not a general "is this identifying?" test: a producer whose
+// identifier can be absent must not emit at all.
 //
 // PARTS MUST NOT CONTAIN ':' — it is the unescaped delimiter, so ["a:b"] and
 // ["a","b"] produce the SAME key and would silently suppress each other. Committed
@@ -266,6 +280,25 @@ func DedupKey(family Family, name string, part string, more ...string) string {
 		key += ":" + p
 	}
 	return key
+}
+
+// isNonIdentifyingSegment reports whether one ':'-separated deduplication-key segment
+// carries NO identifying information, and is therefore a per-(account, family, name)
+// CONSTANT rather than a key (see ErrMalformedDedupKey). Exactly three shapes qualify,
+// all of them reachable from an ABSENT source value:
+//
+//   - empty ("" — a zero-value string field),
+//   - blank after trimming (" ", "\t", "\n" — an untrimmed input),
+//   - the zero UUID, padding ignored (uuid.UUID's zero value, which stringifies to
+//     all-zeroes rather than "": the operationally likely case, since uuid.UUID is the
+//     dominant identifier type in this core).
+//
+// It deliberately does NOT try to answer the general question "is this value actually
+// identifying?" — an arbitrary sentinel such as "unknown" is indistinguishable from a
+// real identifier here and passes. This closes the zero-value class only.
+func isNonIdentifyingSegment(segment string) bool {
+	trimmed := strings.TrimSpace(segment)
+	return trimmed == "" || trimmed == uuid.Nil.String()
 }
 
 // store is the narrow persistence seam the emitter needs (ISP): resolve an
@@ -372,18 +405,24 @@ func (em *Emitter) Emit(ctx context.Context, ev Event) error {
 	if ev.DedupKey == "" {
 		return fmt.Errorf("%w: %s/%s", ErrMissingDedupKey, ev.Family, ev.Name)
 	}
-	// A non-empty key with an EMPTY segment is a per-(account, family, name) CONSTANT
-	// and would suppress every later event of that family forever (ErrMalformedDedupKey,
-	// issue #111 G1). It is the zero-value path into the hazard the required builder part
-	// closed at the signature: an identifying part sourced from a nullable/optional column
-	// yields "family:name:" — non-empty, so neither the check above nor the storage-level
-	// length(dedup_key) > 0 CHECK catches it. Fail closed HERE, at the one boundary every
+	// A key whose identifying segment carries no information is a per-(account,
+	// family, name) CONSTANT and would suppress every later event of that family
+	// forever (ErrMalformedDedupKey, issue #111 G1 + cycle-2 H2). It is the
+	// zero-value path into the hazard the required builder part closed at the
+	// signature, and the hazard is the CLASS, not the literal empty string: an
+	// identifying part read from an absent source yields "" ("family:name:"), or
+	// whitespace, or — for uuid.UUID, the dominant identifier type here — the zero
+	// UUID "00000000-0000-0000-0000-000000000000". All of them are non-empty Go
+	// strings, so neither the ErrMissingDedupKey check above nor the storage-level
+	// length(dedup_key) > 0 CHECK catches any of them, yet all of them are identical
+	// for every distinct business fact. Fail closed HERE, at the one boundary every
 	// producer crosses, rather than trusting ~10 upcoming call sites to be careful.
-	if strings.Contains(ev.DedupKey, ":") {
-		for _, segment := range strings.Split(ev.DedupKey, ":") {
-			if segment == "" {
-				return fmt.Errorf("%w: %s/%s: %q", ErrMalformedDedupKey, ev.Family, ev.Name, ev.DedupKey)
-			}
+	//
+	// The check runs on EVERY key, delimited or not: a single-segment key can be
+	// blank or a zero UUID just as easily as a delimited one.
+	for _, segment := range strings.Split(ev.DedupKey, ":") {
+		if isNonIdentifyingSegment(segment) {
+			return fmt.Errorf("%w: %s/%s: %q", ErrMalformedDedupKey, ev.Family, ev.Name, ev.DedupKey)
 		}
 	}
 	attrs, err := marshalAttributes(ev.Attributes)

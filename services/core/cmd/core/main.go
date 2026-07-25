@@ -104,6 +104,75 @@ func digestSentEvent(sent notify.DigestSent, org uuid.UUID, data analytics.Envel
 // digestSourceSurface is the bounded §18 source-surface label for the digest producer.
 const digestSourceSurface = "email_digest"
 
+// accountOrganizations resolves a marketplace account to its row, from which the
+// AUTHORITATIVE owning organization is read. Consumer-defined and narrow (ISP):
+// *db.Queries satisfies it in production and a test injects a double, which is what
+// makes the production observer below independently testable.
+type accountOrganizations interface {
+	GetMarketplaceAccount(ctx context.Context, id uuid.UUID) (db.MarketplaceAccount, error)
+}
+
+// eventEmitter is the narrow §18 emit seam this producer needs (ISP + dependency
+// inversion): *analytics.Emitter satisfies it in production, a recording double in
+// tests. It exists so the wiring can be asserted BEHAVIOURALLY — a test invokes the
+// observer and inspects the event that actually reached the emitter — instead of by
+// grepping main.go, which no comment, string literal or dead branch can defeat.
+type eventEmitter interface {
+	Emit(ctx context.Context, ev analytics.Event) error
+}
+
+// newDigestAnalyticsObserver builds the §18 analytics observer that run() attaches to
+// the daily-digest service: the ONE §18 family produced in production today. It fires
+// only AFTER the digest transaction commits and the mail is sent, so it is strictly
+// advisory — it never rolls back delivery state.
+//
+// It resolves the AUTHORITATIVE owning organization from the account row server-side
+// (never a caller-supplied org) and, if that lookup fails, emits NOTHING: an
+// unresolvable tenant has no coherent §18 envelope, and a fabricated one is worse than
+// a missing event. An emit failure is logged here and metered by the emitter on
+// analytics.emit_failures (so a sink outage is distinguishable from an idle pipe);
+// the send stands. The loss is bounded and observable.
+//
+// It records NO §17.3 briefing cost: a daily digest LINKS an already-generated
+// briefing and shares its event ids (§6.8), so it is not a billable generation
+// (issue #130). Briefing spend has exactly one authoritative source, the S23 CHAT-010
+// generation path. No cost value is ever fabricated here.
+//
+// DEDUPLICATION (issue #111, §4.6 never-cut): the event is keyed off the COMMITTED
+// notification_digests row (sent.DigestID), which is unique per (account, business
+// day) by the digest's own idempotency constraint. The key is therefore STABLE — a
+// River retry, a redelivered job, or any future re-observation of the same digest
+// reproduces it byte-for-byte and the account-scoped partial unique index suppresses
+// the second write structurally. A wall-clock or per-call value here would deduplicate
+// nothing while looking keyed.
+//
+// Envelope locale/region/currency-contract fields are DATA from config and are never
+// branched on (LOC-001).
+func newDigestAnalyticsObserver(
+	accounts accountOrganizations,
+	emitter eventEmitter,
+	cfg *config.Config,
+	logger *slog.Logger,
+) notify.SentObserver {
+	return func(ctx context.Context, sent notify.DigestSent) {
+		account := sent.Account
+		acct, err := accounts.GetMarketplaceAccount(ctx, account)
+		if err != nil {
+			logger.WarnContext(ctx, "digest analytics: account lookup failed", "account", account.String(), "error", err.Error())
+			return
+		}
+		ev := digestSentEvent(sent, acct.OrganizationID, analytics.Envelope{
+			Locale:                  cfg.NotifyLocale,
+			Region:                  cfg.NotifyRegion,
+			CurrencyContractVersion: cfg.CurrencyContractVersion,
+			Timestamp:               time.Now().UTC(),
+		})
+		if err := emitter.Emit(ctx, ev); err != nil {
+			logger.WarnContext(ctx, "digest analytics: emit failed", "account", account.String(), "error", err.Error())
+		}
+	}
+}
+
 func main() {
 	if err := run(); err != nil {
 		// Logger may not exist yet on early failure; use the default.
@@ -366,54 +435,15 @@ func run() error {
 			resolver := notify.NewDBTargetResolver(pool, cfg.NotifyLocale, func(uuid.UUID) string {
 				return notify.BriefingLinkURL(base)
 			})
-			// The digest emits a §18 briefing-family event on the analytics pipe after
-			// each send (the digest reuses/LINKS the daily briefing, §6.8). It records
-			// NO §17.3 briefing cost: a link is not a billable generation, so briefing
-			// spend is owned solely by the S23 CHAT-010 generation path (issue #130).
-			// Envelope fields are DATA from config; a lookup/emit hiccup is logged,
-			// never fatal (advisory pipe).
-			//
-			// DEDUPLICATION (issue #111, §4.6 never-cut): the event is keyed off the
-			// COMMITTED notification_digests row (sent.DigestID), which is unique per
-			// (account, business day) by the digest's own idempotency constraint. So the
-			// key is STABLE — a River retry, a redelivered job, or any future
-			// re-observation of the same digest reproduces it byte-for-byte and the
-			// account-scoped partial unique index suppresses the second write
-			// structurally. A wall-clock or per-call value here would deduplicate
-			// nothing.
-			emitter := analyticsEmitter
-			digestSvc = notify.NewDigestService(pool, mailer, resolver).WithObserver(
-				func(ctx context.Context, sent notify.DigestSent) {
-					account := sent.Account
-					acct, err := queries.GetMarketplaceAccount(ctx, account)
-					if err != nil {
-						logger.WarnContext(ctx, "digest analytics: account lookup failed", "account", account.String(), "error", err.Error())
-						return
-					}
-					ev := digestSentEvent(sent, acct.OrganizationID, analytics.Envelope{
-						Locale:                  cfg.NotifyLocale,
-						Region:                  cfg.NotifyRegion,
-						CurrencyContractVersion: cfg.CurrencyContractVersion,
-						Timestamp:               time.Now().UTC(),
-					})
-					if err := emitter.Emit(ctx, ev); err != nil {
-						// The digest already COMMITTED and the mail already went out. An
-						// analytics failure is logged here and metered by the emitter on
-						// analytics.emit_failures (so a sink outage is not just a flat
-						// zero on every analytics series), and the send stands: the
-						// advisory pipe never rolls back delivery state. The loss is
-						// bounded and observable; the dedup key makes a future retrying
-						// producer safe to add without double-counting.
-						logger.WarnContext(ctx, "digest analytics: emit failed", "account", account.String(), "error", err.Error())
-					}
-					// A daily digest LINKS an already-generated briefing (shares briefing
-					// event IDs); it does NOT generate one, so it emits NO §17.3 briefing
-					// COST (issue #130). RecordCost(CostBriefing, itemCount) here both
-					// mis-scaled the money/minor-unit counter with an item COUNT and risked
-					// double-counting the real briefing spend whose single authoritative
-					// source is the S23 CHAT-010 briefing-GENERATION path. The legitimate
-					// digest analytics EVENT above (with item_count) stays.
-				})
+			// The §18 briefing-family producer: the digest emits one analytics event
+			// per successful send. The observer body lives in
+			// newDigestAnalyticsObserver (above) so it is a NAMED, independently
+			// INVOCABLE function — a test runs it with a store/emitter double and
+			// asserts the event that actually reaches the emitter, which is what makes
+			// issue #111 acceptance criterion 6 a behavioural guarantee rather than a
+			// grep over this file.
+			digestSvc = notify.NewDigestService(pool, mailer, resolver).
+				WithObserver(newDigestAnalyticsObserver(queries, analyticsEmitter, cfg, logger))
 			// Attach the structured logger so a per-account digest-delivery failure is
 			// logged as it is isolated out of the fan-out (issue #124): one account's
 			// failure is contained (other accounts still deliver) and OBSERVED (metric +

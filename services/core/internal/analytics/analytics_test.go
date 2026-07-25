@@ -105,6 +105,23 @@ func TestEmit_RejectsDedupKeyWithEmptySegment(t *testing.T) {
 		"hand-built interior":  "briefing::digest-1",
 		"only the delimiters":  ":::",
 		"single delimiter key": ":",
+		// A segment that is BLANK AFTER TRIMMING, or the ZERO UUID, is the same
+		// account-wide constant wearing a disguise (issue #111 cycle-2 review H2):
+		// each of these is non-empty as a Go string, passes the DB's
+		// length(dedup_key) > 0 CHECK, and is nevertheless identical for every
+		// business fact of that (account, family, name). The zero UUID is the
+		// operationally likely one: uuid.UUID is the dominant identifier type here
+		// and its zero value stringifies to all-zeroes rather than "".
+		"space part":            DedupKey(FamilyBriefing, "daily_digest_sent", " "),
+		"tab part":              DedupKey(FamilyBriefing, "daily_digest_sent", "\t"),
+		"zero uuid part":        DedupKey(FamilyBriefing, "daily_digest_sent", uuid.Nil.String()),
+		"zero uuid trailing":    DedupKey(FamilyExecution, "execution_attempted", "action-1", uuid.Nil.String()),
+		"blank single segment":  "   ",
+		"newline part":          DedupKey(FamilyBriefing, "daily_digest_sent", "\n"),
+		"zero uuid single part": uuid.Nil.String(),
+		// The zero UUID is rejected as a VALUE, not as an exact spelling: a segment
+		// carrying stray padding around it is the same account-wide constant.
+		"zero uuid padded": DedupKey(FamilyBriefing, "daily_digest_sent", " "+uuid.Nil.String()+" "),
 	}
 	em := NewEmitter(nil)
 	for name, key := range cases {
