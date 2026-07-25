@@ -578,14 +578,22 @@ async function failClosedDurably(): Promise<string> {
   try {
     const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
     if (cred) {
-      await store.set(KEY_REVOCATION_PENDING, {
-        requestedAt: new Date().toISOString(),
-        credentialId: cred.credentialId,
-        marketplaceAccountId: cred.marketplaceAccountId,
-        credentialExpiresAt: cred.expiresAt,
-        attempts: 0,
-        serverContacted: false,
-      } satisfies PendingRevocation);
+      // An EXISTING marker is left exactly as it is. Rewriting it would reset
+      // `requestedAt`, and the marker's AGE bound is what stops a marker (which
+      // BLOCKS re-pairing) from outliving a device that never reaches the
+      // authority — a repeatedly-failing storage write must not be able to
+      // extend it indefinitely.
+      const existing = await store.get<PendingRevocation>(KEY_REVOCATION_PENDING);
+      if (!existing) {
+        await store.set(KEY_REVOCATION_PENDING, {
+          requestedAt: new Date().toISOString(),
+          credentialId: cred.credentialId,
+          marketplaceAccountId: cred.marketplaceAccountId,
+          credentialExpiresAt: cred.expiresAt,
+          attempts: 0,
+          serverContacted: false,
+        } satisfies PendingRevocation);
+      }
       await setCapability("revocation_pending");
       incr("capability_transition", { to: "revocation_pending" });
       return "local_storage_error_recovered";
