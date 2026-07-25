@@ -598,7 +598,18 @@ async function retryPendingRevocation(opts: { force?: boolean } = {}): Promise<v
     // to revoke, the popup says "awaiting confirmation", and yet nothing would
     // ever retry — the server credential would stay live until its own expiry.
     // Rebuild the marker from the credential rather than early-returning.
-    if ((await rawCapability()) !== "revocation_pending" || !cred) return;
+    if ((await rawCapability()) !== "revocation_pending") return;
+    if (!cred) {
+      // Neither a marker nor credential material survives, so nothing can ever
+      // be retried and nothing can ever clear this state on its own — the popup
+      // would report "awaiting confirmation" forever. Resolve fail-closed, with
+      // the same DISTINCT outcome as the orphan branch below: this is a local
+      // resolution, never a server confirmation.
+      await setCapability("revoked");
+      incr("credential_revocation", { outcome: "orphaned" });
+      log("warn", "credential_revocation_orphaned", { hadCredential: false });
+      return;
+    }
     pending = {
       requestedAt: new Date().toISOString(),
       credentialId: cred.credentialId,

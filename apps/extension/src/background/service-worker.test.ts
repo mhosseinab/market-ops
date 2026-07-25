@@ -1111,6 +1111,33 @@ describe("service worker — #149 pending revocation never leaks a live credenti
     expect(state.state.capability).toBe("revoked");
   });
 
+  // F7 (the stranded-UI case). A capability of `revocation_pending` with NEITHER
+  // a marker NOR credential material can never be retried and can never clear on
+  // its own, so the popup would report "awaiting confirmation" forever. Resolve
+  // it fail-closed and OBSERVABLY, exactly like the orphan branch.
+  it("F7: a revocation_pending capability with no marker AND no credential resolves instead of stranding the popup", async () => {
+    const rf = recordingFetch({ revoke: () => new Response(null, { status: 204 }) });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    storage.set(KEY_CAPABILITY, "revocation_pending");
+
+    const send = await loadWorker();
+    await settle();
+    // Imported AFTER loadWorker: it resets the module registry, so this must
+    // resolve to the SAME observability instance the worker just used.
+    const { snapshotMetrics } = await import("../lib/observability");
+
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("revoked");
+    expect(state.state.capability).not.toBe("revocation_pending");
+    const outcomes = snapshotMetrics()
+      .filter((s) => s.name === "credential_revocation")
+      .map((s) => s.labels.outcome);
+    expect(outcomes).toContain("orphaned");
+    expect(outcomes).not.toContain("confirmed");
+  });
+
   // F7 (the mirror window). With the marker written FIRST, a teardown between
   // the two writes leaves a durable marker while the stored capability is still
   // `ready`. The durable marker must be AUTHORITATIVE — capture stays off.
