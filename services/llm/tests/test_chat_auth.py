@@ -169,6 +169,52 @@ def test_production_transport_without_token_fails_closed_at_startup() -> None:
         create_app(settings)
 
 
+def test_production_transport_without_outbound_gateway_fails_closed_at_startup() -> None:
+    """An unwired production plane never starts (issue #108, 108c).
+
+    The INBOUND credential alone is not enough: without the OUTBOUND gateway
+    endpoint and its read/Draft-only credential every chat flow would silently
+    degrade to the fail-closed stubs while the process looked healthy. Both
+    halves are required, and neither is defaulted to the other.
+    """
+    inbound_only = Settings(
+        provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+        gateway_token=SecretStr(TOKEN),
+        provider_api_key=SecretStr("unused-endpoint-key"),
+    )
+    with pytest.raises(ValueError):
+        create_app(inbound_only)
+
+    # A base URL without the outbound credential is still half a configuration.
+    no_outbound_token = Settings(
+        provider_kind=ProviderKind.OPENAI_COMPATIBLE,
+        gateway_token=SecretStr(TOKEN),
+        provider_api_key=SecretStr("unused-endpoint-key"),
+        gateway_base_url="http://core.internal",
+    )
+    with pytest.raises(ValueError):
+        create_app(no_outbound_token)
+
+
+def test_inbound_token_is_never_reused_as_the_outbound_credential() -> None:
+    """The two credentials are distinct fields and neither defaults to the other.
+
+    They authenticate opposite directions: ``gateway_token`` is what callers must
+    present TO this plane; ``gateway_outbound_token`` is the read/Draft-only
+    machine credential this plane presents to the Go core. Silently reusing one
+    as the other would hand this plane's read/Draft authority to anyone who
+    learned the inbound token, and would make them rotatable only together.
+    """
+    settings = Settings(
+        provider_kind=ProviderKind.MOCK,
+        gateway_token=SecretStr(TOKEN),
+        gateway_base_url="http://core.internal",
+    )
+    assert settings.expected_gateway_token() == TOKEN
+    assert settings.outbound_gateway_token() is None
+    assert not settings.outbound_gateway_configured()
+
+
 def test_production_transport_with_token_starts() -> None:
     settings = Settings(
         provider_kind=ProviderKind.OPENAI_COMPATIBLE,
@@ -176,6 +222,11 @@ def test_production_transport_with_token_starts() -> None:
         # A provider credential so the OpenAI-compatible model constructs offline;
         # no call is made (registry/manifest needs no model).
         provider_api_key=SecretStr("unused-endpoint-key"),
+        # The OUTBOUND gateway wiring the production transport now requires
+        # (issue #108, 108c). A distinct credential from the inbound one; no
+        # network call is made here.
+        gateway_base_url="http://core.internal",
+        gateway_outbound_token=SecretStr("outbound-read-draft-token"),
     )
     app = create_app(settings)
     # Configured token is enforced even on the production transport.

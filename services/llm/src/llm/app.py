@@ -21,10 +21,11 @@ from __future__ import annotations
 
 import hmac
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,15 +33,22 @@ from pydantic import BaseModel, ConfigDict, Field
 from llm.config import ProviderKind, Settings, load_settings
 from llm.contextres.ports import CandidatePort, NoCandidatePort
 from llm.envelope.models import ChatStreamEvent, StreamEventKind
+from llm.flows.gateway_draft import GatewayDraftPort
+from llm.flows.gateway_read import GatewayReadPort
+from llm.flows.ports import DraftPort
+from llm.flows.read_ports import NoReadPort, ReadPort
 from llm.intents.classifier import IntentClassifier
 from llm.intents.keyword_mock import default_keyword_intent
+from llm.intents.models import IntentClass
 from llm.metrics import ContainmentMetrics, ContextResolutionMetrics
 from llm.observability import configure_observability
-from llm.orchestrator.agent import build_agent
+from llm.orchestrator.agent import AgentHandle, build_agent
 from llm.orchestrator.graph import TurnGraph, TurnState, build_turn_graph
 from llm.providers.base import build_chat_model
 from llm.providers.mock import MockScript
+from llm.tools.binding import bind_tools_for_intent
 from llm.tools.registry import ToolRegistry, build_registry
+from llm.tools.runners import build_production_read_runners
 
 
 class ChatRequest(BaseModel):
@@ -114,17 +122,71 @@ class ChatRequest(BaseModel):
 class AppState:
     """Process-wide singletons wired once at startup."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        http_client: httpx.Client | None = None,
+        mock_intent_classifier: Callable[[str], str] | None = None,
+    ) -> None:
         self.settings = settings
         self.observability = configure_observability(settings)
-        self.registry: ToolRegistry = build_registry()
         self.metrics = ContainmentMetrics()
         self.resolution_metrics = ContextResolutionMetrics()
-        # Candidate supply for explicit entity references. The production default
-        # is the fail-closed stub: it supplies NOTHING, so an explicit reference
-        # resolves to a structured picker or NOT_FOUND — never a guessed subject.
-        # The gateway-backed read implementation is sub-scope 108c of issue #108.
+        # Candidate supply for explicit entity references. STILL the fail-closed
+        # stub: it supplies NOTHING, so an explicit reference resolves to a
+        # structured picker or NOT_FOUND — never a guessed subject.
+        #
+        # Sub-scope 108c wired the authoritative READ and Draft transports below,
+        # but NOT this one: an entity-candidate lookup needs a bounded
+        # entity-search read that ``contracts/gateway.openapi.yaml`` does not
+        # expose, and the contract is held by another lane — so the alternative to
+        # keeping this stub would be inventing an endpoint. It stays an
+        # explicitly-planned fail-closed stub with its own negative test; the
+        # downstream completer is the reviewed contract addition of that read.
         self.candidate_port: CandidatePort = NoCandidatePort()
+
+        # --- authoritative outbound transports (issue #108, 108c) -------------
+        # Constructed ONCE here and injected. Under the mock provider (all tests,
+        # local dev) the outbound configuration is normally absent, so both ports
+        # stay at their fail-closed stubs and NOTHING reaches the network — a
+        # test can never make a live or paid call by accident. The production
+        # (openai_compatible) transport refuses to start unconfigured.
+        self.http_client: httpx.Client | None = None
+        self.read_port: ReadPort = NoReadPort()
+        self.draft_port: DraftPort | None = None
+        base_url = settings.outbound_gateway_base_url()
+        token = settings.outbound_gateway_token()
+        if base_url is not None and token is not None:
+            self.http_client = http_client if http_client is not None else httpx.Client()
+            self.read_port = GatewayReadPort(
+                base_url,
+                token,
+                self.http_client,
+                timeout_seconds=settings.read_timeout_seconds,
+            )
+            self.draft_port = GatewayDraftPort(
+                base_url,
+                token,
+                self.http_client,
+                timeout_seconds=settings.draft_timeout_seconds,
+            )
+
+        # The registry's PRODUCTION runner seam: the model-visible READ tools get
+        # the real transport; the three ``draft_*`` tools keep their fail-closed
+        # stub, because the seam structurally refuses a DRAFT tool. Draft
+        # origination therefore has exactly ONE path — the deterministic
+        # Prepare-Action flow (§8.2, issue #108 hazard H2).
+        self.business_day = _utc_business_day()
+        production_runners = (
+            build_production_read_runners(self.read_port, business_day=self.business_day)
+            if not isinstance(self.read_port, NoReadPort)
+            else None
+        )
+        self.registry: ToolRegistry = build_registry(
+            production_read_runners=production_runners
+        )
+
         # The agent model (answers) and the classifier model are separate roles.
         # In production both resolve to the SAME configured OpenAI-compatible
         # endpoint; with the mock they carry different deterministic scripts so a
@@ -132,8 +194,25 @@ class AppState:
         # (keyword stand-in) so the LIVE turn routes by the message text, not a
         # fixed label — the real endpoint classifies for real (§12.5).
         agent_model = build_chat_model(settings)
+        # One agent PER INTENT, each bound to exactly that intent's capability set
+        # (issue #31). Binding is the structural guarantee behind "only Prepare
+        # Action originates a Draft": for every other intent the Draft tools are
+        # not on the model's tool list at all, so there is nothing to call. The
+        # default agent (full registry) remains for callers that build a
+        # single-agent graph directly.
         self.agent = build_agent(agent_model, self.registry, settings)
-        classifier_model = build_chat_model(settings, mock_script=_classifier_mock_script(settings))
+        self.agents_by_intent: dict[str, AgentHandle] = {
+            intent.value: build_agent(
+                agent_model,
+                self.registry,
+                settings,
+                bind=bind_tools_for_intent(intent, self.registry),
+            )
+            for intent in IntentClass
+        }
+        classifier_model = build_chat_model(
+            settings, mock_script=_classifier_mock_script(settings, mock_intent_classifier)
+        )
         self.classifier = IntentClassifier(classifier_model)
         self.turn_graph: TurnGraph = build_turn_graph(
             self.agent,
@@ -142,22 +221,37 @@ class AppState:
             self.metrics,
             candidate_port=self.candidate_port,
             resolution_metrics=self.resolution_metrics,
+            read_port=self.read_port,
+            draft_port=self.draft_port,
+            business_day=self.business_day,
+            agents_by_intent=self.agents_by_intent,
         )
 
 
-def _classifier_mock_script(settings: Settings) -> MockScript | None:
+def _classifier_mock_script(
+    settings: Settings, intent_classifier: Callable[[str], str] | None = None
+) -> MockScript | None:
     """The classifier's mock script (mock provider only; ignored otherwise).
 
     Content-sensitive intent classification via the deterministic keyword
     stand-in, so a live mock turn routes by the actual message text. The real
     OpenAI-compatible endpoint ignores this and classifies with the model.
+
+    ``intent_classifier`` is a TEST-ONLY stand-in lexicon. It is consulted only
+    under the deterministic mock provider — the guard below returns before it is
+    read on the production transport — so it can never influence a real turn. It
+    exists because the default keyword lexicon only distinguishes
+    Question/ApproveAction/ConfirmResult, while the cross-boundary suite must
+    drive all EIGHT classes through the real ``POST /chat`` transport. Only the
+    classification changes; containment, resolution, dispatch, capability binding
+    and the envelope all run for real.
     """
     if settings.provider_kind is not ProviderKind.MOCK:
         return None
     return MockScript(
         mode="answer",
         response_tool_name="IntentClassification",
-        intent_classifier=default_keyword_intent,
+        intent_classifier=intent_classifier or default_keyword_intent,
     )
 
 
@@ -197,13 +291,29 @@ def _enforce_gateway_auth(settings: Settings, authorization: str | None) -> None
         raise HTTPException(status_code=401, detail="invalid gateway credential")
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    """Build the FastAPI app. Tests pass explicit settings (mock provider)."""
+def create_app(
+    settings: Settings | None = None,
+    *,
+    http_client: httpx.Client | None = None,
+    mock_intent_classifier: Callable[[str], str] | None = None,
+) -> FastAPI:
+    """Build the FastAPI app. Tests pass explicit settings (mock provider).
+
+    ``http_client`` is the injection seam for the outbound gateway transport: the
+    cross-boundary tests supply an ``httpx.MockTransport`` client so the adapter,
+    the ports, the dispatch node and the envelope all run for real with no
+    network. Production passes nothing and the app builds its own client.
+    """
     resolved = settings or load_settings()
     # Fail closed at startup: the production transport must carry an inbound
-    # gateway credential (issue #167). Raises before any singletons are wired.
+    # gateway credential (issue #167) AND the outbound gateway endpoint +
+    # read/Draft-only credential (issue #108, 108c). Both raise before any
+    # singleton is wired — an unwired production plane never starts.
     resolved.validate_auth_config()
-    state = AppState(resolved)
+    resolved.validate_gateway_read_config()
+    state = AppState(
+        resolved, http_client=http_client, mock_intent_classifier=mock_intent_classifier
+    )
     app = FastAPI(title="DK Marketplace Intelligence — LLM plane", version="0.0.0")
     app.state.app_state = state
 
@@ -275,6 +385,18 @@ def _turn_context_state(context: dict[str, Any] | None) -> dict[str, Any] | None
 def _utc_now() -> str:
     """The turn's as-of instant (RFC 3339 UTC), read once at the boundary."""
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _utc_business_day() -> str:
+    """The as-of business day (UTC calendar date) authoritative reads are keyed by.
+
+    Stamped from the SERVER clock, exactly like the turn's as-of instant: a
+    caller may not assert which day a briefing is "today", and the model may not
+    choose one either — a back-dated day would let a historical briefing read as
+    the current one (§12.3). Jalali stays a display calendar over UTC storage
+    (localization boundary): no locale or calendar branch appears here.
+    """
+    return datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 async def _stream_turn(state: AppState, req: ChatRequest) -> AsyncIterator[str]:

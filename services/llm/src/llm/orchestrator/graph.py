@@ -27,7 +27,7 @@ terminal write is at most a Draft.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
@@ -41,11 +41,15 @@ from llm.contextres.ports import CandidatePort, NoCandidatePort
 from llm.envelope.models import TurnFailure, screens_failure
 from llm.flows.deep_links import SCREENS_FALLBACK
 from llm.flows.dispatch import contain
+from llm.flows.flow_dispatch import apply_flow_facts, dispatch_flow
+from llm.flows.ports import DraftPort
+from llm.flows.read_ports import NoReadPort, ReadPort
 from llm.intents.classifier import IntentClassifier
 from llm.intents.models import IntentClass
 from llm.metrics import ContainmentMetrics, ContextResolutionMetrics
 from llm.orchestrator.agent import AgentHandle, TokenCeilingError, ToolTimeoutError
 from llm.orchestrator.context_node import resolve_turn_context
+from llm.orchestrator.scope import TurnScope, turn_scope
 from llm.providers.transient import NonRetryableProviderError, TransientTurnError
 
 # Re-exported: the transport-failure taxonomy is defined at the owned provider
@@ -95,6 +99,11 @@ class TurnState(TypedDict, total=False):
     intent: str | None
     context_resolution: dict[str, Any] | None
     active_context: dict[str, Any] | None
+    # The AUTHORITATIVE facts the deterministic S23 flow produced for this turn
+    # (:class:`llm.flows.flow_dispatch.FlowFacts` in dict form), or ``None`` when
+    # no flow dispatched. The model never writes this key; the merge writes it
+    # OVER the model's answer, which is what makes the byte-match structural.
+    flow_result: dict[str, Any] | None
     # Outputs (exactly one of answer / failure is set when the turn ends).
     answer: dict[str, Any] | None
     failure: dict[str, Any] | None
@@ -309,6 +318,102 @@ def _resolution_stage(
     )
 
 
+def _authoritative_scope(state: TurnState) -> TurnScope | None:
+    """Build the turn's AUTHORITATIVE scope, or ``None`` when it is not established.
+
+    The tenant halves come from the request's own identity fields — the
+    gateway-asserted organization and the account the gateway resolved from the
+    persisted conversation row (108b) — and NEVER from the untrusted
+    ``turn_context`` payload. The subject comes from the DETERMINISTIC resolver's
+    ``active_context`` chip, so an unresolved subject stays ``None`` rather than
+    being guessed. A turn with no tenant has NO scope at all: the read runners and
+    the flow dispatcher both fail closed on that rather than falling back to a
+    model-supplied identifier (issue #108 hazard H1; #412/#419).
+    """
+    organization_id = state.get("organization_id")
+    account_id = state.get("marketplace_account_id")
+    if not organization_id or not account_id:
+        return None
+    chip = state.get("active_context") or {}
+    entity_id = chip.get("entity_id")
+    return TurnScope(
+        organization_id=organization_id,
+        marketplace_account_id=account_id,
+        entity_id=entity_id if isinstance(entity_id, str) and entity_id else None,
+    )
+
+
+def _subject_kind(state: TurnState) -> str | None:
+    """The resolved chip's domain context type, or ``None`` for an account turn."""
+    chip = state.get("active_context") or {}
+    kind = chip.get("context_type")
+    return kind if isinstance(kind, str) else None
+
+
+def _dispatch_stage(
+    state: TurnState,
+    read_port: ReadPort,
+    draft_port: DraftPort | None,
+    business_day: str,
+) -> _PreAgent:
+    """Stage 3: run the deterministic S23 flow for this turn (issue #108, 108c).
+
+    Reached ONLY by a turn that was contained (stage 1) and whose subject was
+    settled (stage 2) — the ordering the invariants require is the graph's own
+    topology, not a convention. The flow's authoritative facts are written to
+    ``flow_result`` and the turn PROCEEDS to the agent, which composes free text
+    around them; a read that cannot be served fails the turn closed here, before
+    any model call, so there is no fabricated answer and no Draft.
+
+    When no outbound transport is configured (:class:`NoReadPort`, the
+    deterministic mock/dev default) the stage is a NO-OP that proceeds with no
+    facts — the explicitly-planned fail-closed stub. The production
+    (``openai_compatible``) transport refuses to start in that state
+    (``Settings.validate_gateway_read_config``), so it can never be the live
+    behaviour.
+    """
+    if isinstance(read_port, NoReadPort):
+        return _PreAgent(updates={"flow_result": None}, proceed=True)
+    raw_intent = state.get("intent")
+    scope = _authoritative_scope(state)
+    if raw_intent is None or scope is None:
+        # Containment always stamps the intent, and a turn without an
+        # authoritative tenant must never reach an authoritative read.
+        return _PreAgent(updates={"flow_result": None}, failure=_read_unavailable())
+    outcome = dispatch_flow(
+        IntentClass(raw_intent),
+        scope=scope,
+        subject_kind=_subject_kind(state),
+        business_day=business_day,
+        read_port=read_port,
+        draft_port=draft_port,
+    )
+    if outcome.failed:
+        return _PreAgent(updates={"flow_result": None}, failure=_read_unavailable())
+    facts = outcome.facts.model_dump(mode="json") if outcome.facts is not None else None
+    return _PreAgent(updates={"flow_result": facts}, proceed=True)
+
+
+def _read_unavailable() -> TurnFailure:
+    """The §12.4 fail-closed state for an authoritative read that cannot be served.
+
+    It deliberately REUSES the existing ``CONTEXT_UNAVAILABLE`` code rather than
+    minting a new one. The user-facing meaning is identical to the code's existing
+    use in the context node — "the authoritative lookup this turn needs could not
+    be completed; use the structured screen" — and the code already has closed-map
+    copy at the web edge, so no fail-closed path renders the generic unsupported
+    string or trips the ``chat_failure_code`` drift alarm. The seam that failed and
+    WHY stays fully distinguishable in telemetry through the dispatcher's own
+    ``llm_flow_dispatch_total`` reason token and the read port's
+    ``llm_gateway_read_total`` outcome, which is where that distinction belongs.
+    """
+    return _turn_failure(
+        "CONTEXT_UNAVAILABLE",
+        "the assistant could not read the authoritative data for this request; "
+        "use the structured screen",
+    )
+
+
 def _stage_state(stage: _PreAgent) -> TurnState:
     """Project a stage decision onto the partial graph-state update it writes."""
     out = cast("TurnState", dict(stage.updates))
@@ -363,6 +468,10 @@ class TurnGraph:
         classifier: IntentClassifier,
         candidate_port: CandidatePort,
         resolution_metrics: ContextResolutionMetrics,
+        read_port: ReadPort,
+        draft_port: DraftPort | None,
+        business_day: str,
+        agents_by_intent: Mapping[str, AgentHandle],
     ) -> None:
         self._compiled = compiled
         self._settings = settings
@@ -371,6 +480,24 @@ class TurnGraph:
         self._classifier = classifier
         self._candidate_port = candidate_port
         self.resolution_metrics = resolution_metrics
+        self._read_port = read_port
+        self._draft_port = draft_port
+        self._business_day = business_day
+        self._agents_by_intent = agents_by_intent
+
+    def agent_for(self, state: TurnState) -> AgentHandle:
+        """The leaf agent bound to THIS turn's intent (issue #31 capabilities).
+
+        Each intent gets an agent bound to exactly
+        :func:`~llm.tools.binding.bind_tools_for_intent`, so a non-PrepareAction
+        turn structurally cannot reach a Draft tool — the tool is not on the
+        model's tool list at all. An intent with no per-intent agent falls back to
+        the default agent, which callers that build a single-agent graph supply.
+        """
+        raw_intent = state.get("intent")
+        if raw_intent is None:
+            return self._agent
+        return self._agents_by_intent.get(raw_intent, self._agent)
 
     def run_state(self, state: TurnState) -> TurnState:
         """Run the buffered turn and return the FULL resolved graph state.
@@ -394,10 +521,14 @@ class TurnGraph:
         turn yields a structured ``failure``. Deterministic context resolution runs
         SECOND — still before any token: an ambiguous turn yields the structured
         picker as its single ``final`` chunk (CHAT-007) and an unresolvable one
-        yields a structured ``failure``. Only a turn with a settled subject reaches
-        the agent, whose free-text content is forwarded as ``token`` chunks and
-        whose validated envelope is the terminal ``final`` chunk. A mapped §12.4
-        failure discovered mid-stream still surfaces as a structured ``failure``.
+        yields a structured ``failure``. The deterministic S23 flow dispatcher runs
+        THIRD — still before any token — so an authoritative read that cannot be
+        served fails the turn closed with no fabricated answer and no Draft. Only
+        then does the agent run, bound to THIS intent's capability set, with its
+        free-text content forwarded as ``token`` chunks and the validated envelope
+        (the deterministic facts written OVER it) as the terminal ``final`` chunk.
+        A mapped §12.4 failure discovered mid-stream still surfaces as a structured
+        ``failure``.
         """
         working = cast("TurnState", dict(state))
 
@@ -415,8 +546,27 @@ class TurnGraph:
             yield _terminal_chunk(resolution)
             return
 
-        async for chunk in _astream_agent(self._agent, self._settings, state["message"]):
-            yield chunk
+        dispatch = _dispatch_stage(
+            working, self._read_port, self._draft_port, self._business_day
+        )
+        working.update(_stage_state(dispatch))
+        if not dispatch.proceed:
+            yield _terminal_chunk(dispatch)
+            return
+
+        # Publish the turn's AUTHORITATIVE scope for the duration of the agent
+        # step, so a production read runner scopes every outbound call by it and
+        # can never be steered by a model-authored identifier (hazard H1). The
+        # binding is per-asyncio-Task, so concurrent SSE turns stay isolated, and
+        # it is always restored — including on client disconnect.
+        with turn_scope(_authoritative_scope(working)):
+            async for chunk in _astream_agent(
+                self.agent_for(working),
+                self._settings,
+                state["message"],
+                working.get("flow_result"),
+            ):
+                yield chunk
 
 
 def _as_failure(raw: dict[str, Any] | None) -> TurnFailure | None:
@@ -449,32 +599,47 @@ def build_turn_graph(
     *,
     candidate_port: CandidatePort | None = None,
     resolution_metrics: ContextResolutionMetrics | None = None,
+    read_port: ReadPort | None = None,
+    draft_port: DraftPort | None = None,
+    business_day: str = "",
+    agents_by_intent: Mapping[str, AgentHandle] | None = None,
 ) -> TurnGraph:
-    """Build the P0 turn graph: CONTAIN → RESOLVE CONTEXT → (answer | agent).
+    """Build the P0 turn graph: CONTAIN → RESOLVE CONTEXT → DISPATCH → agent.
 
-    Three deterministic stages, wired as three nodes so the topology mirrors the
+    Four deterministic stages, wired as four nodes so the topology mirrors the
     ordering the invariants require:
 
     1. ``contain`` — every turn passes through :func:`llm.flows.dispatch.contain`
-       BEFORE any context, tool or agent work. ApproveAction/ConfirmResult are
-       answered with guidance to the external structured control and a
+       BEFORE any context, flow, tool or agent work. ApproveAction/ConfirmResult
+       are answered with guidance to the external structured control and a
        free-text-containment metric — never a transition (§12.3, CHAT-041).
     2. ``resolve_context`` — the deterministic context resolver (§8.1, CHAT-007)
        settles the turn's single subject: RESOLVED puts the chip on state, PICKER
        terminates the turn in the canonical structured picker, NOT_FOUND fails
        closed. A subject is never guessed.
-    3. ``agent`` — only a turn with a settled subject reaches the leaf agent,
-       whose terminal write is at most a Draft.
+    3. ``dispatch_flow`` — the deterministic eight-class dispatcher (issue #108,
+       108c) runs the matching S23 flow over AUTHORITATIVE reads and writes its
+       facts to ``flow_result``. Prepare Action is the only branch that may
+       originate a Draft, and it does so at most once. A read that cannot be
+       served fails the turn closed HERE, before any model call.
+    4. ``agent`` — the leaf agent bound to THIS intent's capability set
+       (:func:`~llm.tools.binding.bind_tools_for_intent`, issue #31) composes free
+       text; the deterministic facts are then written OVER its answer.
 
     ``candidate_port`` defaults to the fail-closed
-    :class:`~llm.contextres.ports.NoCandidatePort`; the gateway-backed
-    implementation is sub-scope 108c of issue #108.
+    :class:`~llm.contextres.ports.NoCandidatePort` and ``read_port`` to the
+    fail-closed :class:`~llm.flows.read_ports.NoReadPort`; ``draft_port``
+    defaults to ``None`` (no Draft transport ⇒ Prepare Action fails closed rather
+    than fabricating a Draft). With the default read port the dispatch stage is a
+    documented no-op, which the production transport refuses to start in.
     """
     containment_metrics = metrics if metrics is not None else ContainmentMetrics()
     context_metrics = (
         resolution_metrics if resolution_metrics is not None else ContextResolutionMetrics()
     )
     port = candidate_port if candidate_port is not None else NoCandidatePort()
+    reads = read_port if read_port is not None else NoReadPort()
+    per_intent = agents_by_intent if agents_by_intent is not None else {}
 
     def contain_node(state: TurnState) -> TurnState:
         return _stage_state(_containment_stage(state, classifier, containment_metrics))
@@ -482,8 +647,13 @@ def build_turn_graph(
     def resolve_context_node(state: TurnState) -> TurnState:
         return _stage_state(_resolution_stage(state, port, context_metrics))
 
+    def dispatch_flow_node(state: TurnState) -> TurnState:
+        return _stage_state(_dispatch_stage(state, reads, draft_port, business_day))
+
     def agent_node(state: TurnState) -> TurnState:
-        return _run_agent(agent, settings, state)
+        selected = per_intent.get(state.get("intent") or "", agent)
+        with turn_scope(_authoritative_scope(state)):
+            return _run_agent(selected, settings, state)
 
     def _next(after: str) -> Callable[[TurnState], str]:
         def route(state: TurnState) -> str:
@@ -494,19 +664,33 @@ def build_turn_graph(
     builder = StateGraph(TurnState)
     builder.add_node("contain", contain_node)
     builder.add_node("resolve_context", resolve_context_node)
+    builder.add_node("dispatch_flow", dispatch_flow_node)
     builder.add_node("agent", agent_node)
     builder.add_edge(START, "contain")
     builder.add_conditional_edges(
         "contain", _next("resolve_context"), {END: END, "resolve_context": "resolve_context"}
     )
     builder.add_conditional_edges(
-        "resolve_context", _next("agent"), {END: END, "agent": "agent"}
+        "resolve_context", _next("dispatch_flow"), {END: END, "dispatch_flow": "dispatch_flow"}
+    )
+    builder.add_conditional_edges(
+        "dispatch_flow", _next("agent"), {END: END, "agent": "agent"}
     )
     builder.add_edge("agent", END)
     # No checkpointer: per-request, in-process state (§19.3).
     compiled = builder.compile()
     return TurnGraph(
-        compiled, settings, containment_metrics, agent, classifier, port, context_metrics
+        compiled,
+        settings,
+        containment_metrics,
+        agent,
+        classifier,
+        port,
+        context_metrics,
+        reads,
+        draft_port,
+        business_day,
+        per_intent,
     )
 
 
@@ -514,6 +698,7 @@ def _run_agent(agent: AgentHandle, settings: Settings, state: TurnState) -> Turn
     """Run the leaf agent with the §12.4 hard bounds and single transient retry."""
     attempts = settings.node_transient_retries + 1  # one retry ⇒ two attempts
     last_transient: TransientTurnError | None = None
+    flow_result = state.get("flow_result")
     for _ in range(attempts):
         try:
             inner = agent.graph.invoke(
@@ -531,7 +716,10 @@ def _run_agent(agent: AgentHandle, settings: Settings, state: TurnState) -> Turn
 
         structured = inner.get("structured_response")
         answer = envelope_from_structured(structured) if structured is not None else None
-        return {"answer": answer, "failure": None}
+        # The deterministic facts are written OVER the model's answer, from the
+        # ONE merge both paths share, so the model can never author, re-derive,
+        # round or re-order an authoritative value (issue #108 hazard H3).
+        return {"answer": apply_flow_facts(answer, flow_result), "failure": None}
 
     # Both attempts hit a transient failure (§12.4: concise message + deep link).
     return {"answer": None, "failure": _transient_failure(last_transient).model_dump()}
@@ -555,7 +743,10 @@ def _token_text(message: Any) -> str | None:
 
 
 async def _astream_agent(
-    agent: AgentHandle, settings: Settings, message: str
+    agent: AgentHandle,
+    settings: Settings,
+    message: str,
+    flow_result: dict[str, Any] | None = None,
 ) -> AsyncIterator[TurnStreamChunk]:
     """Stream the leaf agent: forward tokens, then the validated envelope (#23).
 
@@ -620,7 +811,9 @@ async def _astream_agent(
             await stream.aclose()
 
         answer = envelope_from_structured(structured) if structured is not None else {}
-        yield TurnStreamChunk(kind="final", answer=answer)
+        # Same single merge as the buffered path: the deterministic facts are
+        # authoritative and the model's numeric slots are discarded (hazard H3).
+        yield TurnStreamChunk(kind="final", answer=apply_flow_facts(answer, flow_result))
         return
 
     # Retries exhausted (transient before any token, twice): fail closed (§12.4).

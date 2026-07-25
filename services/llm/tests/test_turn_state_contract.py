@@ -29,6 +29,10 @@ EXPECTED_KEYS = {
     "intent",
     "context_resolution",
     "active_context",
+    # The deterministic S23 flow's authoritative facts (issue #108, 108c). Added
+    # deliberately: the dispatcher writes it and the envelope merge reads it, so
+    # it is part of the graph's cross-node contract.
+    "flow_result",
     "answer",
     "failure",
 }

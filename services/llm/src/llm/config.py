@@ -39,6 +39,12 @@ class ProviderKind(StrEnum):
 # ticket) BEFORE the per-tool middleware fires — enforced by ``Settings`` (#25).
 DEFAULT_DRAFT_TIMEOUT_SECONDS = 10.0
 
+# Default per-request deadline for an authoritative gateway READ (seconds). Like
+# the Draft deadline it MUST stay strictly below ``per_tool_timeout_seconds`` so
+# the transport aborts a hung GET at its own deadline BEFORE the per-tool
+# middleware fires and abandons it on a worker thread (issue #25, #108/108c).
+DEFAULT_READ_TIMEOUT_SECONDS = 8.0
+
 
 class Settings(BaseSettings):
     """Resolved, validated LLM-plane configuration.
@@ -86,6 +92,9 @@ class Settings(BaseSettings):
     # hung POST at its own deadline — failing closed to no ticket — before the
     # per-tool middleware fires and abandons the write on a worker thread (#25).
     draft_timeout_seconds: float = DEFAULT_DRAFT_TIMEOUT_SECONDS
+    # Authoritative-read transport per-request deadline (seconds). Same ordering
+    # invariant as the Draft deadline, validated below (#25, #108/108c).
+    read_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS
     # Bounded cleanup grace after a per-tool timeout: the window the middleware
     # waits for a cancelled tool's worker to unwind before reporting it as an
     # uncancelled-worker incident (issue #25). Cooperative tools exit well within
@@ -107,6 +116,26 @@ class Settings(BaseSettings):
     # accept unauthenticated inbound requests. Never valid on the production
     # (openai_compatible) transport. Off by default — fail closed.
     gateway_auth_local_bypass: bool = False
+
+    # --- OUTBOUND gateway access (issue #108, sub-scope 108c) ----------------
+    # A DIFFERENT credential and a DIFFERENT direction from ``gateway_token``
+    # above. ``gateway_token`` is INBOUND: what callers must present TO this
+    # plane. The two fields below are OUTBOUND: where this plane calls the Go
+    # core, and the read/Draft-only machine credential it presents THERE
+    # (``perm.GatewayCan`` — reads plus ``draft.*``, never approve/execute/
+    # confirm/guardrail-write/permission).
+    #
+    # They are deliberately NOT conflated and NOT defaulted to each other. The
+    # inbound token authenticates arbitrary internal callers to this process; the
+    # outbound token authorizes THIS process against the core. Reusing one as the
+    # other would mean a caller who learned the inbound token would hold the
+    # plane's read/Draft authority, and would make the two rotatable only
+    # together. Empty ⇒ no outbound transport is configured: the read/Draft ports
+    # degrade to their fail-closed stubs, which the production
+    # (``openai_compatible``) transport refuses to start with (see
+    # ``validate_gateway_read_config``).
+    gateway_base_url: str = ""
+    gateway_outbound_token: SecretStr = SecretStr("")
 
     # --- kill switch (CHAT-009) ----------------------------------------------
     # The authoritative kill switch is the gateway's; the LLM plane also honors a
@@ -141,6 +170,14 @@ class Settings(BaseSettings):
                 f"per_tool_timeout_seconds ({self.per_tool_timeout_seconds}): the "
                 "Draft transport must abort a hung POST at its own deadline before "
                 "the per-tool middleware fires (issue #25)."
+            )
+        if self.read_timeout_seconds >= self.per_tool_timeout_seconds:
+            raise ValueError(
+                "read_timeout_seconds "
+                f"({self.read_timeout_seconds}) must be strictly less than "
+                f"per_tool_timeout_seconds ({self.per_tool_timeout_seconds}): the "
+                "authoritative-read transport must abort a hung GET at its own "
+                "deadline before the per-tool middleware fires (issue #25)."
             )
         return self
 
@@ -198,6 +235,56 @@ class Settings(BaseSettings):
                     "gateway_auth_local_bypass is a local-test-only escape hatch "
                     "and must not be set on the openai_compatible transport (#167)."
                 )
+
+    def outbound_gateway_token(self) -> str | None:
+        """The read/Draft-only bearer this plane presents to the Go core, or None."""
+        token = self.gateway_outbound_token.get_secret_value().strip()
+        return token or None
+
+    def outbound_gateway_base_url(self) -> str | None:
+        """The internal gateway base URL this plane calls, or None when unset."""
+        base_url = self.gateway_base_url.strip()
+        return base_url or None
+
+    def outbound_gateway_configured(self) -> bool:
+        """True only when BOTH the outbound base URL and credential are present.
+
+        Half a configuration is not a configuration: a base URL without a
+        credential would issue unauthenticated reads and a credential without a
+        base URL has nowhere to go. Either alone leaves the ports at their
+        fail-closed stubs (fail closed, never partially wired).
+        """
+        return (
+            self.outbound_gateway_base_url() is not None
+            and self.outbound_gateway_token() is not None
+        )
+
+    def validate_gateway_read_config(self) -> None:
+        """Fail closed at startup on an unwired production plane (#108, 108c).
+
+        Mirrors :meth:`validate_auth_config`: the production transport
+        (``openai_compatible``) MUST carry the OUTBOUND gateway base URL and the
+        read/Draft-only credential, because without them every chat flow would
+        silently degrade to the fail-closed stubs and the plane would answer
+        nothing while looking healthy. Only the deterministic mock/dev transport —
+        where there is no gateway to read — may run without them.
+        """
+        if self.provider_kind is not ProviderKind.OPENAI_COMPATIBLE:
+            return
+        if self.outbound_gateway_base_url() is None:
+            raise ValueError(
+                "LLM_GATEWAY_BASE_URL is required when provider_kind is "
+                "openai_compatible: the production LLM plane refuses to start "
+                "without an outbound gateway endpoint (issue #108, 108c)."
+            )
+        if self.outbound_gateway_token() is None:
+            raise ValueError(
+                "LLM_GATEWAY_OUTBOUND_TOKEN is required when provider_kind is "
+                "openai_compatible: the production LLM plane refuses to start "
+                "without its read/Draft-only outbound credential. It is a "
+                "DIFFERENT credential from the inbound LLM_GATEWAY_TOKEN and is "
+                "never defaulted to it (issue #108, 108c)."
+            )
 
     def chat_disabled_for(self, marketplace_account_id: str | None) -> bool:
         """Local kill-switch view (CHAT-009). Chat only; screens unaffected."""

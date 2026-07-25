@@ -253,21 +253,88 @@ class ToolRegistry:
         specs: tuple[ToolSpec, ...],
         *,
         read_runner_overrides: dict[str, Callable[..., dict[str, Any]]] | None = None,
+        production_read_runners: dict[str, Callable[..., dict[str, Any]]] | None = None,
     ) -> None:
         self._assert_contained(specs)
         self._specs = specs
         self._by_name = {s.name: s for s in specs}
         overrides = read_runner_overrides or {}
+        production = production_read_runners or {}
         self._assert_overrides_are_reads(overrides, self._by_name)
+        self._assert_production_runners_are_reads(production, self._by_name)
+        self._assert_seams_are_disjoint(overrides, production)
+        runners = {**production, **overrides}
         self._tools: dict[str, BaseTool] = {
             s.name: StructuredTool.from_function(
-                func=overrides.get(s.name, _stub_runner(s, wired_in="S21/S23")),
+                func=runners.get(s.name, _stub_runner(s, wired_in="S21/S23")),
                 name=s.name,
                 description=s.description,
                 args_schema=s.args_schema,
             )
             for s in specs
         }
+
+    @staticmethod
+    def _assert_production_runners_are_reads(
+        production: dict[str, Callable[..., dict[str, Any]]],
+        by_name: dict[str, ToolSpec],
+    ) -> None:
+        """Fail closed: the PRODUCTION runner seam may only wire a READ tool.
+
+        This is the separate, production-only counterpart of the eval-only
+        ``read_runner_overrides`` seam (issue #112), added by issue #108 sub-scope
+        108c so a real read tool can reach the authoritative gateway. Its guard is
+        deliberately at least as strong as the eval seam's, and it is the SECOND
+        of the three structural reasons a Draft can be originated exactly once per
+        turn (§8.2, hazard H2):
+
+        * a runner may only be supplied for a tool that ALREADY EXISTS in the
+          registry — the seam can never ADD a tool, so it can never introduce an
+          approve/execute/confirm/guardrail-write/permission tool, and the
+          ``FORBIDDEN_NAME_TOKENS`` / ``_assert_contained`` guards still run on
+          every spec regardless;
+        * a runner may only be supplied for a READ tool — the three ``draft_*``
+          tools keep their fail-closed stub in production, so the model-visible
+          Draft tools cannot originate a write at all. Draft origination belongs
+          exclusively to the deterministic Prepare-Action flow through
+          :class:`~llm.flows.ports.DraftPort`;
+        * only the tool's BEHAVIOUR is substituted. The spec — name, kind, args
+          schema, perm_action, description — is untouched, because the runner map
+          is consulted only when building the ``StructuredTool`` body.
+        """
+        for name in production:
+            spec = by_name.get(name)
+            if spec is None:
+                raise ValueError(
+                    f"production_read_runners names unknown tool {name!r}; the "
+                    "production seam may only wire an existing READ tool and can "
+                    "never add one (§12.3, CHAT-003)"
+                )
+            if spec.kind is not ToolKind.READ:
+                raise ValueError(
+                    f"production_read_runners may only wire READ tools; {name!r} is "
+                    f"{spec.kind.value!r}. Draft origination is the deterministic "
+                    "Prepare-Action flow's alone (§8.2, §12.3)"
+                )
+
+    @staticmethod
+    def _assert_seams_are_disjoint(
+        overrides: dict[str, Callable[..., dict[str, Any]]],
+        production: dict[str, Callable[..., dict[str, Any]]],
+    ) -> None:
+        """Fail closed when the eval and production seams name the SAME tool.
+
+        Silently letting one win would make which transport a tool actually used
+        depend on an implicit precedence rule — a hostile eval fixture could then
+        shadow (or be shadowed by) the live gateway runner without anyone
+        noticing. A collision is a wiring bug, so it is rejected outright.
+        """
+        collisions = sorted(set(overrides) & set(production))
+        if collisions:
+            raise ValueError(
+                "a tool may be wired by exactly one runner seam; "
+                f"eval read_runner_overrides and production_read_runners both name {collisions}"
+            )
 
     @staticmethod
     def _assert_overrides_are_reads(
@@ -380,7 +447,9 @@ def gateway_envelope_manifest() -> dict[str, Any]:
 
 
 def build_registry(
-    *, read_runner_overrides: dict[str, Callable[..., dict[str, Any]]] | None = None
+    *,
+    read_runner_overrides: dict[str, Callable[..., dict[str, Any]]] | None = None,
+    production_read_runners: dict[str, Callable[..., dict[str, Any]]] | None = None,
 ) -> ToolRegistry:
     """Build the canonical P0 registry (read tools + Draft-only tools).
 
@@ -389,7 +458,15 @@ def build_registry(
     the §12.5 data-channel injection suite can drive hostile evidence through the
     real read-tool/provider/agent boundary. It changes only the returned payload;
     every structural guard (kind check, forbidden-name guard) still applies.
+
+    ``production_read_runners`` is the SEPARATE PRODUCTION seam (issue #108, 108c):
+    it wires a READ tool to the real authoritative gateway transport at startup.
+    Both seams are read-only, neither can add a tool or change a spec, and they
+    must be disjoint. The three ``draft_*`` tools are reachable by NEITHER — the
+    only Draft origination path is the deterministic Prepare-Action flow.
     """
     return ToolRegistry(
-        _READ_TOOLS + _DRAFT_TOOLS, read_runner_overrides=read_runner_overrides
+        _READ_TOOLS + _DRAFT_TOOLS,
+        read_runner_overrides=read_runner_overrides,
+        production_read_runners=production_read_runners,
     )
