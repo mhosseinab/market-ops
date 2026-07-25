@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -12,6 +13,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/cost"
 	"github.com/mhosseinab/market-ops/services/core/internal/margin"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
+	"github.com/mhosseinab/market-ops/services/core/internal/policy"
 )
 
 // devFixtureAccountID is the deterministic dev/journey account seeded by
@@ -74,6 +76,13 @@ type seededRecommendation struct {
 	currentContribution   money.Money
 	proposedContribOK     bool
 	proposedContribution  money.Money
+	// boundaryOK/boundaryMin/boundaryMax mirror allowed_range_*, which
+	// recommendation.Assemble populates from the marketplace price boundary
+	// (internal/recommendation/recommendation.go:160). They are stage-1 input to
+	// the policy replay below.
+	boundaryOK  bool
+	boundaryMin money.Money
+	boundaryMax money.Money
 }
 
 func loadSeededRecommendations(t *testing.T, pool *pgxpool.Pool) []seededRecommendation {
@@ -83,7 +92,8 @@ SELECT id::text, variant_id::text,
        current_price_mantissa, current_price_currency, current_price_exponent,
        proposed_price_available, proposed_price_mantissa, proposed_price_currency, proposed_price_exponent,
        current_contribution_available, current_contribution_mantissa, current_contribution_currency, current_contribution_exponent,
-       proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent
+       proposed_contribution_available, proposed_contribution_mantissa, proposed_contribution_currency, proposed_contribution_exponent,
+       allowed_range_available, allowed_range_min_mantissa, allowed_range_max_mantissa, allowed_range_currency, allowed_range_exponent
   FROM recommendations
  WHERE marketplace_account_id = $1
  ORDER BY id`
@@ -104,12 +114,17 @@ SELECT id::text, variant_id::text,
 			ccCur, pcCur               *string
 			ccExp, pcExp               *int16
 			propAvail, ccAvail, pcAvai bool
+			arAvail                    bool
+			arMin, arMax               *int64
+			arCur                      *string
+			arExp                      *int16
 		)
 		if err := rows.Scan(&r.id, &r.variantID,
 			&curMant, &curCur, &curExp,
 			&propAvail, &propMant, &propCur, &propExp,
 			&ccAvail, &ccMant, &ccCur, &ccExp,
 			&pcAvai, &pcMant, &pcCur, &pcExp,
+			&arAvail, &arMin, &arMax, &arCur, &arExp,
 		); err != nil {
 			t.Fatalf("scan recommendation: %v", err)
 		}
@@ -125,6 +140,13 @@ SELECT id::text, variant_id::text,
 		r.proposedContribOK = pcAvai
 		if pcAvai {
 			r.proposedContribution = mustMoney(t, deref(t, pcMant), derefStr(t, pcCur), int8(deref16(t, pcExp)))
+		}
+		r.boundaryOK = arAvail
+		if arAvail {
+			cur := derefStr(t, arCur)
+			exp := int8(deref16(t, arExp))
+			r.boundaryMin = mustMoney(t, deref(t, arMin), cur, exp)
+			r.boundaryMax = mustMoney(t, deref(t, arMax), cur, exp)
 		}
 		out = append(out, r)
 	}
@@ -225,7 +247,7 @@ func TestDevSeedContributionsMatchMarginEngine(t *testing.T) {
 			t.Fatalf("rec %s: current contribution is marked unavailable; "+
 				"the fixture claims a complete, approvable card", rec.id)
 		}
-		assertSameMoney(t, rec.id+" current contribution",
+		assertSameMoney(t, rec.id+" current contribution (margin engine)",
 			contributionAt(rec.currentPrice), rec.currentContribution)
 
 		if !rec.proposedPriceOK {
@@ -234,8 +256,158 @@ func TestDevSeedContributionsMatchMarginEngine(t *testing.T) {
 		if !rec.proposedContribOK {
 			t.Fatalf("rec %s: proposed contribution is marked unavailable", rec.id)
 		}
-		assertSameMoney(t, rec.id+" proposed contribution",
+		assertSameMoney(t, rec.id+" proposed contribution (margin engine)",
 			contributionAt(rec.proposedPrice), rec.proposedContribution)
+	}
+}
+
+// loadSeededCardPrices returns the approval_cards price per recommendation id.
+// The proposed price is seeded in TWO places (recommendations.proposed_price_*
+// and approval_cards.price_*); the card price is the value bound into the
+// APR-001 structured control, so a drift between them would let the journey gate
+// confirm a price the recommendation never proposed.
+func loadSeededCardPrices(t *testing.T, pool *pgxpool.Pool) map[string]money.Money {
+	t.Helper()
+	const q = `
+SELECT recommendation_id::text, price_mantissa, price_currency, price_exponent
+  FROM approval_cards
+ WHERE marketplace_account_id = $1`
+	rows, err := pool.Query(context.Background(), q, devFixtureAccountID)
+	if err != nil {
+		t.Fatalf("query approval_cards: %v", err)
+	}
+	defer rows.Close()
+
+	out := map[string]money.Money{}
+	for rows.Next() {
+		var (
+			recID, currency string
+			mantissa        int64
+			exponent        int16
+		)
+		if err := rows.Scan(&recID, &mantissa, &currency, &exponent); err != nil {
+			t.Fatalf("scan approval_card: %v", err)
+		}
+		out[recID] = mustMoney(t, mantissa, currency, int8(exponent))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate approval_cards: %v", err)
+	}
+	return out
+}
+
+// TestDevSeedPriceMovesSatisfyThePolicyMovementCap is the regression guard for
+// issue #84 finding F3 (PRD §9.3 / PRC-003, PRC-004, §4.6 policy order). It is
+// the price-side twin of TestDevSeedContributionsMatchMarginEngine: the seeded
+// contributions are checked against the real margin engine, and the seeded price
+// MOVES are checked against the real six-stage policy engine.
+//
+// Why the DEFAULT cap is the right yardstick: the fixture seeds NO guardrail row
+// for the account, so policy.NewConfig takes the §9.3 default movement cap of
+// 500 bp (policy.DefaultMovementCap), and PRC-004 lets an account only TIGHTEN
+// it. A seeded proposed price further from the current price than 500 bp is
+// therefore a price the movement-cap stage would clamp away — on a card the
+// journey gate confirms to `approved`.
+//
+// The replay pins the seeded proposal as the strategy target (match + track) so
+// the engine's answer is exactly "is this seeded move one you would put
+// forward?". If the move exceeds the cap, stage 3 clamps the target to the
+// window edge and the assertion fails with both prices shown. It also re-derives
+// the proposed CONTRIBUTION through the policy engine's own oracle, so the
+// two seams cannot drift apart.
+func TestDevSeedPriceMovesSatisfyThePolicyMovementCap(t *testing.T) {
+	pool := newFixturePool(t)
+	applyFixture(t, pool)
+
+	recs := loadSeededRecommendations(t, pool)
+	if len(recs) != seededRecommendationCount {
+		t.Fatalf("fixture seeded %d recommendations for account %s, want %d "+
+			"(a vacuous pass would otherwise hide the policy assertions below)",
+			len(recs), devFixtureAccountID, seededRecommendationCount)
+	}
+	cardPrices := loadSeededCardPrices(t, pool)
+
+	var eng margin.Engine
+	for _, rec := range recs {
+		if !rec.proposedPriceOK {
+			t.Fatalf("rec %s: proposed price is marked unavailable", rec.id)
+		}
+		if !rec.boundaryOK {
+			t.Fatalf("rec %s: allowed range is marked unavailable; the fixture claims "+
+				"an approvable card, which requires a known price boundary (stage 1)", rec.id)
+		}
+
+		comps := loadInForceComponents(t, pool, rec.variantID)
+		oracle := func(price money.Money) (money.Money, error) {
+			c, err := eng.Contribution(margin.ContributionInput{
+				NetProceeds: price,
+				RateBase:    price,
+				Components:  comps,
+				Readiness:   cost.StateComplete,
+			})
+			if err != nil {
+				return money.Money{}, err
+			}
+			return c.Amount, nil
+		}
+
+		// Zero contribution floor in the seeded money unit: the §9.3 zero-cross
+		// guard still applies, so this asserts the seeded move stays strictly
+		// contribution-positive without inventing an account floor.
+		floor := mustMoney(t, 0, rec.currentPrice.Currency(), rec.currentPrice.Exponent())
+
+		// MovementCap/Cooldown are nil == the §9.3 defaults, which is exactly the
+		// configuration the fixture implies by seeding no guardrail row.
+		cfg, err := policy.NewConfig(policy.ConfigParams{
+			Boundary:          policy.Boundary{Known: true, Min: rec.boundaryMin, Max: rec.boundaryMax},
+			ContributionFloor: floor,
+			Strategy:          policy.StrategyMatch,
+			StrategyEnabled:   true,
+			Reference:         rec.proposedPrice,
+			Objective:         policy.ObjectiveTrackStrategy,
+		})
+		if err != nil {
+			t.Fatalf("rec %s: policy.NewConfig rejected the seeded inputs: %v", rec.id, err)
+		}
+
+		res, err := policy.Evaluate(policy.EvaluateInput{
+			Config:       cfg,
+			CurrentPrice: rec.currentPrice,
+			Contribution: oracle,
+			Now:          time.Now(),
+			Readiness:    cost.StateComplete,
+		})
+		if err != nil {
+			t.Fatalf("rec %s: policy.Evaluate rejected the seeded inputs: %v", rec.id, err)
+		}
+		for _, b := range res.Blockers {
+			t.Errorf("rec %s: the policy engine blocks the seeded proposal at stage %s (%s): %s",
+				rec.id, b.Stage, b.Code, b.Message)
+		}
+		if res.Proposed == nil {
+			t.Errorf("rec %s: the policy engine produces NO proposal for the seeded "+
+				"current price %s; the fixture nonetheless seeds proposed price %s",
+				rec.id, rec.currentPrice.String(), rec.proposedPrice.String())
+			continue
+		}
+		if !res.Approvable() {
+			t.Errorf("rec %s: the fixture seeds approvable=true but the policy result is not approvable", rec.id)
+		}
+
+		assertSameMoney(t, rec.id+" proposed price (policy movement cap, PRC-004)",
+			res.Proposed.Price, rec.proposedPrice)
+		if rec.proposedContribOK {
+			assertSameMoney(t, rec.id+" proposed contribution (policy oracle)",
+				res.Proposed.Contribution, rec.proposedContribution)
+		}
+
+		cardPrice, ok := cardPrices[rec.id]
+		if !ok {
+			t.Errorf("rec %s: no approval_cards row; the fixture claims a live control", rec.id)
+			continue
+		}
+		assertSameMoney(t, rec.id+" approval_cards price vs recommendation proposed price",
+			rec.proposedPrice, cardPrice)
 	}
 }
 
@@ -299,7 +471,7 @@ func assertSameMoney(t *testing.T, label string, want, got money.Money) {
 			label, want.String(), got.String(), err)
 	}
 	if cmp != 0 {
-		t.Errorf("%s: seeded value is not what the margin engine derives:\n"+
+		t.Errorf("%s: seeded value is not what the engine derives:\n"+
 			"  engine-derived: %s\n  seeded:         %s",
 			label, want.String(), got.String())
 	}

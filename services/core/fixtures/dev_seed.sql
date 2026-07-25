@@ -55,6 +55,14 @@ ON CONFLICT (id) DO NOTHING;
 -- price ALWAYS yields a lower proposed contribution. The numbers below are the
 -- margin engine's own output, and internal/devseed recomputes them from these
 -- very rows on every DB test run (issue #84 / PRD §4.6 money correctness).
+--
+-- POLICY (PRD §9.3, PRC-003/PRC-004): representation and derivation are still
+-- not enough — a seeded PRICE MOVE must also be one the six-stage engine would
+-- put forward. No guardrail row is seeded for this account, so the DEFAULT 5%
+-- (500 bp) movement cap applies and an account may only tighten it. Every
+-- proposed price below therefore sits inside [current − 500 bp, current + 500 bp]
+-- ∩ the seeded allowed_range boundary, and internal/devseed replays the real
+-- policy engine over these rows to prove it.
 -- ===========================================================================
 
 -- One product carrying both journey variants.
@@ -372,15 +380,21 @@ VALUES ('00000000-0000-0000-0000-000000000301',
         '00000000-0000-0000-0000-0000000000b1',
         '00000000-0000-0000-0000-000000000311', 1,
         '00000000-0000-0000-0000-000000000201', 'maximize_contribution',
+        -- The proposed price is bounded by the §9.3 movement cap (stage 3): this
+        -- account seeds NO guardrail row, so policy.NewConfig takes the DEFAULT
+        -- 5% == 500 bp cap, which PRC-004 lets an account only tighten. From
+        -- 15,000,000 the cap admits [14,250,000, 15,750,000]; 14,250,000 is the
+        -- lowest price the policy engine would put forward, and the earlier
+        -- 14,200,000 (533 bp) was a move stage 3 would have clamped away.
         -- Contributions are DERIVED from the rows above, never authored:
         -- deductions = cogs 9,800,000 + commission 1,300,000 = 11,100,000.
         --   current  = 15,000,000 − 11,100,000 = 3,900,000
-        --   proposed = 14,200,000 − 11,100,000 = 3,100,000
+        --   proposed = 14,250,000 − 11,100,000 = 3,150,000
         -- Both stay strictly above zero (no zero crossing, §9.3).
         15000000, 'IRR', 0,
-        true, 14200000, 'IRR', 0,
+        true, 14250000, 'IRR', 0,
         true, 3900000, 'IRR', 0,
-        true, 3100000, 'IRR', 0,
+        true, 3150000, 'IRR', 0,
         true, 13000000, 16000000, 'IRR', 0,
         'complete', 'verified', '00000000-0000-0000-0000-0000000000e1',
         '["journey-fixture/observation/a"]'::jsonb, now() - interval '30 minutes',
@@ -414,6 +428,9 @@ VALUES ('00000000-0000-0000-0000-000000000302',
         '00000000-0000-0000-0000-0000000000b3',
         '00000000-0000-0000-0000-000000000312', 1,
         NULL, 'maximize_contribution',
+        -- Within the default 500 bp movement cap as above: from 22,000,000 the
+        -- cap admits [20,900,000, 23,100,000] and 21,300,000 (318 bp) sits
+        -- inside it.
         -- Derived as above: deductions = cogs 15,200,000 + commission
         -- 1,900,000 = 17,100,000.
         --   current  = 22,000,000 − 17,100,000 = 4,900,000
@@ -447,7 +464,9 @@ VALUES ('00000000-0000-0000-0000-000000000321',
         '00000000-0000-0000-0000-000000000341', 1, 1, 1, 1,
         '{"00000000-0000-0000-0000-0000000000e1": 1}'::jsonb,
         'journey-fixture-idempotency-key-a', 'awaiting_confirmation',
-        14200000, 'IRR', 0, now() + interval '30 days')
+        -- Must equal recommendations.proposed_price above: this is the price the
+        -- APR-001 structured control binds and the journey gate confirms.
+        14250000, 'IRR', 0, now() + interval '30 days')
 ON CONFLICT (id) DO NOTHING;
 
 -- Append-only §8.4 state history for that card (draft → ready_for_review →
