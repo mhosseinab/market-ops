@@ -1,78 +1,131 @@
 import { expect, test } from "@playwright/test";
+import {
+  expectNoRequiredOpFailures,
+  guardRequiredOps,
+  loginAsSeededOwner,
+  OFFER_C_IDENTITY,
+} from "./fixtures";
 
-// Journey 3 — bulk approval on screens — smoke against the REAL core (seeded via
-// `task db:reset`). It drives the never-cut bulk safety behavior end-to-end on the
-// Bulk screen:
-//   • The selection set is VERSIONED; a preview binds the structured control to an
-//     exact version (APR-001 at the set level).
-//   • ANY change to the set (a filter toggle) mints a new version and INVALIDATES
-//     the preview — the approve control disables behind a re-preview requirement.
-//   • A fresh preview re-binds; only then can the structured control confirm, and
-//     the confirm is a BUTTON bound to the version — free text never confirms.
+// Journey 3 — bulk approval on screens — a NON-VACUOUS smoke against the REAL
+// core (seeded via `task db:reset`, services/core/fixtures/dev_seed.sql). It
+// drives the never-cut bulk safety behavior end to end, and every assertion is
+// UNCONDITIONAL (issue #84 / the S32 duplicate-root expansion):
+//   • The selection set is versioned BY THE SERVER; a preview binds the
+//     structured control to an exact (lineage, version) pair — APR-001 at the
+//     set level.
+//   • ANY change to the set (a filter toggle) mints a new local revision and
+//     INVALIDATES the preview: the approve control disables behind a
+//     re-preview requirement.
+//   • A fresh preview re-binds; only then may the structured control confirm,
+//     and the per-item outcome rendered afterwards is the SERVER's.
 //
-// The P0 gateway has no server-side selection-set/preview endpoint, so the final
-// confirm may be refused for a client-synthesized lineage; the version-binding and
-// per-item MSW proofs live in BulkApproval.test. This smoke asserts the reachable
-// structured invalidation chain plus containment.
+// WHAT THIS GATE USED TO DO, AND WHY IT WAS VACUOUS: it returned SUCCESSFULLY
+// when `bulk-preview` was absent, and wrapped the entire invalidation proof in
+// `if (await chip.count())` and the confirmation in `if (await
+// approve.isEnabled())`. With no seeded candidates it took the early return on
+// the very first check, so the invalidation and confirmation branches it claims
+// to verify were never entered.
+//
+// WHY IT NOW FAILS WHEN THE BEHAVIOR IS ABSENT:
+//   • Remove the seeded observation targets/offers ⇒ ViewState renders its
+//     empty branch, `bulk-toolbar` never appears ⇒ FAIL, no early return.
+//   • Remove the seeded CARD for variant C ⇒ the actions queue yields no
+//     (variantId, recommendationId) pair, so `bulk-preview-empty` renders,
+//     `counts.executable` stays 0 and the approve control NEVER enables ⇒ FAIL.
+//   • Break invalidation (a set mutation that does not invalidate the preview)
+//     ⇒ `bulk-invalidated` never renders and approve stays enabled ⇒ FAIL.
+//   • A 401/403/500 on any required op trips the guard.
 
-const GATEWAY = process.env.VITE_GATEWAY_BASE_URL ?? "http://localhost:8080";
+const REQUIRED_OP = [
+  "/auth/login",
+  "/auth/me",
+  "/observation/targets",
+  "/observation/observed-offers",
+  "/cost/readiness",
+  "/actions",
+  "/selection-sets/preview",
+  "/approvals/bulk/confirm",
+];
 
 test.beforeEach(async ({ context }) => {
-  const email = process.env.E2E_EMAIL;
-  const password = process.env.E2E_PASSWORD;
-  if (!email || !password) return;
-  const res = await context.request.post(`${GATEWAY}/auth/login`, {
-    data: { email, password },
-  });
-  expect(res.ok(), "seeded login should succeed").toBeTruthy();
+  await loginAsSeededOwner(context);
 });
 
-test("bulk: preview → mutate set → invalidated → re-preview → structured confirm", async ({
+test("journey 3: server-minted preview → set mutation invalidates → re-preview → structured bulk confirm", async ({
   page,
 }) => {
+  const failures = guardRequiredOps(page, REQUIRED_OP);
+
   await page.goto("/bulk");
-  await expect(page.locator(".screen")).toBeVisible();
 
-  const preview = page.getByTestId("bulk-preview");
-  if (!(await preview.count())) {
-    // No candidates reachable from this surface; the structured EMPTY state
-    // renders. `.view-error` is deliberately EXCLUDED from this assertion — an
-    // error state is a real failure, not a legitimate "no candidates" outcome,
-    // and must not be able to satisfy this branch (a data-fetch regression must
-    // fail this test, not silently pass as "the empty state rendered").
-    await expect(page.locator(".view-error")).toHaveCount(0);
-    await expect(page.locator(".screen-empty, .view-loading")).toBeVisible();
-    return;
-  }
+  // A GENUINE loaded state with real candidates — never the error wrapper, and
+  // never the "no candidates" empty branch (which the old spec accepted as a
+  // pass). The toolbar renders only INSIDE ViewState's loaded children.
+  await expect(page.locator(".view-error")).toHaveCount(0);
+  await expect(page.getByTestId("bulk-toolbar")).toBeVisible();
 
-  // Containment is explicit on the surface, and the confirm is a structured button.
+  // Contract-backed candidate ROWS from /observation/targets + observed offers.
+  const rows = page.locator(".data-table__row");
+  await expect(rows.first()).toBeVisible();
+
+  // The executable candidate (variant C) is present as a real row, keyed by its
+  // per-offer include control — proof the readiness + actions seams resolved,
+  // not merely that a table drew. Assertions below are scoped to THIS row, so
+  // another candidate can never stand in for it (a whole-screen "something got
+  // authorized" assertion passes even when C is missing — that is precisely the
+  // vacuity class this issue is about).
+  const rowC = page.locator(".data-table__row", {
+    has: page.getByTestId(`bulk-include-${OFFER_C_IDENTITY}`),
+  });
+  await expect(rowC).toHaveCount(1);
+  await expect(rowC.getByTestId(`bulk-include-${OFFER_C_IDENTITY}`)).toBeChecked();
+
+  // Containment is explicit and the confirm is a structured BUTTON.
   await expect(page.getByTestId("bulk-footnote")).toBeVisible();
   const approve = page.getByTestId("bulk-approve");
   await expect(approve).toHaveJSProperty("tagName", "BUTTON");
 
-  // Preview binds the control to the current selection-set version.
+  // Before any preview there is nothing to bind to: the control is inert and the
+  // surface says so.
+  await expect(page.getByTestId("preview-required")).toBeVisible();
+  await expect(approve).toBeDisabled();
+
+  // ── Preview: the SERVER mints the selection set and its version. ───────────
+  const preview = page.getByTestId("bulk-preview");
   await preview.click();
 
-  // Mutating the set (a filter toggle) mints a new version → preview INVALIDATED.
-  const chip = page.locator(".filter-chip").nth(1);
-  if (await chip.count()) {
-    await chip.click();
-    await expect(page.getByTestId("bulk-invalidated")).toBeVisible();
-    // The approve control is disabled while the bound version is stale.
-    await expect(approve).toBeDisabled();
+  // A real server-minted version is now bound to the control.
+  const selectionSet = page.getByTestId("selection-set");
+  await expect(selectionSet).toHaveAttribute("data-version", "1");
+  await expect(page.getByTestId("bulk-toolbar")).toHaveAttribute("data-preview-valid", "true");
+  await expect(approve).toBeEnabled();
 
-    // A fresh preview clears the invalidation.
-    await preview.click();
-    await expect(page.getByTestId("bulk-invalidated")).toHaveCount(0);
-  }
+  // ── Mutate the set: a filter toggle mints a new local revision, so the
+  // previously bound server version no longer describes the selection. ───────
+  await page.locator(".filter-chip").nth(1).click();
+  await expect(page.getByTestId("bulk-invalidated")).toBeVisible();
+  await expect(page.getByTestId("bulk-toolbar")).toHaveAttribute("data-preview-valid", "false");
+  await expect(approve).toBeDisabled();
 
-  // Only if a live executable candidate is present does the control enable; a valid
-  // bulk confirmation lands recommend-only (EXE-005). Guarded — the seed may hold
-  // no executable candidate, and a synthetic lineage may be refused server-side.
-  if (await approve.isEnabled()) {
-    await approve.click();
-    const recommendOnly = page.getByTestId("bulk-recommend-only");
-    const staleResult = page.getByTestId("bulk-stale-result");
-    await expect(recommendOnly.or(staleResult)).toBeVisible();
-  }
+  // ── Re-preview: the server mints the NEXT version in the same lineage and the
+  // control re-binds. The version increments server-side — the browser never
+  // counts versions itself. ─────────────────────────────────────────────────
+  await preview.click();
+  await expect(page.getByTestId("bulk-invalidated")).toHaveCount(0);
+  await expect(selectionSet).toHaveAttribute("data-version", "2");
+  await expect(approve).toBeEnabled();
+
+  // ── Confirm through the structured control, bound to that exact version. ──
+  await approve.click();
+
+  // The aggregate recommend-only terminal (EXE-005), and — bound to the SPECIFIC
+  // seeded candidate — the SERVER's authoritative per-item outcome for variant C.
+  // Scoping to `rowC` is what makes this non-vacuous: a screen-wide
+  // "some row was authorized" check still passes when C's own card is gone,
+  // because another candidate satisfies it. Here, C's card missing ⇒ C is not a
+  // selection member ⇒ its cell renders `result-excluded` ⇒ this FAILS.
+  await expect(page.getByTestId("bulk-recommend-only")).toBeVisible();
+  await expect(rowC.getByTestId("result-authorized")).toBeVisible();
+
+  expectNoRequiredOpFailures(failures);
 });
