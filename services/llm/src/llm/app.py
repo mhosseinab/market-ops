@@ -63,15 +63,23 @@ class ChatRequest(BaseModel):
       choose it freely — not a bearer-asserted identity in the same sense as the
       organization.
 
-    KNOWN GAP (pre-existing, tracked outside this plane, #108 G3): a NEW
-    conversation may be opened naming an account owned by ANOTHER organization —
-    ``CreateConversation`` performs no org-ownership check and
-    ``migrations/0005_conversation.sql`` carries only an FK to
-    ``marketplace_accounts(id)``. On that path the turn's scope account and the
-    context payload's account provenance trace to the same unvalidated row, so
-    the resolver's scope check ALONE is not sufficient tenant authorization for
-    an authoritative read. A consumer of ``active_context`` (108c) must not treat
-    it as such.
+    GAP CLOSED (issue #412, was #108 G3): a NEW conversation could previously be
+    opened naming an account owned by ANOTHER organization —
+    ``CreateConversation`` performed no org-ownership check and
+    ``migrations/0005_conversation.sql`` carried only an FK to
+    ``marketplace_accounts(id)`` (existence, not ownership). The gateway now
+    scopes the insert by the caller's organization AND enforces ownership in the
+    database (``migrations/0048_conversation_account_ownership.sql``: a composite
+    ``(marketplace_account_id, organization_id)`` foreign key plus an
+    ownership-pair immutability trigger), so a conversation cannot reference a
+    foreign account even if application code is bypassed. A conversation's stored
+    account is therefore owned by its organization, and the pairing this plane
+    receives is a coherent tenant aggregate.
+
+    That does NOT make this plane's checks optional: the scope is still validated
+    against the untrusted ``context`` payload here, and an authoritative read in
+    108c is still authorized on the gateway side — never on the strength of a
+    field this plane received.
 
     ``extra="ignore"`` is retained DELIBERATELY at this level: the gateway is a
     co-evolving producer that already sends top-level keys this plane does not

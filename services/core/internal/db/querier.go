@@ -190,6 +190,23 @@ type Querier interface {
 	// pinned, created_at, updated_at, and retention_expires_at (now() + 90 days) take
 	// their schema defaults, so 90-day retention (CHAT-008) is set at creation without
 	// the caller computing a date.
+	//
+	// ACCOUNT OWNERSHIP (issue #412, §4.6 tenant integrity): the insert is SCOPED by
+	// the caller's organization. A supplied marketplace_account_id is written only
+	// when that account BELONGS to the caller's organization; otherwise the SELECT
+	// yields no row, the INSERT writes nothing, and the caller sees pgx.ErrNoRows,
+	// which the store maps to ErrAccountDenied. A NULL account (no account context was
+	// resolved yet, migration 0005) short-circuits the check and stays legal.
+	//
+	// NO EXISTENCE ORACLE: a FOREIGN account and an UNKNOWN account take the IDENTICAL
+	// branch here — EXISTS is false either way — so the two are indistinguishable by
+	// result, error, or shape. Possession of a UUID never reveals whether it names a
+	// real account in another tenant.
+	//
+	// This predicate is DEFENSE IN DEPTH, not the invariant. The authoritative guard is
+	// the composite (marketplace_account_id, organization_id) foreign key added by
+	// migration 0048, which PostgreSQL evaluates atomically at insert time and which
+	// holds even when this query — or the whole Go layer — is bypassed.
 	CreateConversation(ctx context.Context, arg CreateConversationParams) (Conversation, error)
 	CreateCostImportBatch(ctx context.Context, arg CreateCostImportBatchParams) (CostImportBatch, error)
 	// Market Product Identity queries (S11, CAT-002, §6.5 journey 4, §16).

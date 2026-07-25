@@ -374,6 +374,16 @@ func (s *gatewayServer) Chat(
 			s.logChatPersist(ctx, "begin-turn-denied", uuid.Nil, err)
 			return chatConversationDenied(), nil
 		}
+		// A NEW conversation naming a marketplace account the caller's organization
+		// does not own is denied HERE, before the turn is proxied (issue #412, §4.6
+		// tenant integrity): no conversation row, no user turn, no stream, and
+		// therefore no Draft or approval card scoped to a foreign tenant. The store
+		// gives the same denial for a FOREIGN and an UNKNOWN account, so this response
+		// is no existence oracle either.
+		if errors.Is(err, conversation.ErrAccountDenied) {
+			s.logChatPersist(ctx, "begin-turn-account-denied", uuid.Nil, err)
+			return chatAccountDenied(), nil
+		}
 		// A stale or silently-relabeling context binding is rejected here, BEFORE the
 		// turn is proxied (CHAT-007): no stream opens, so no Draft or approval card
 		// can be produced. The conversation's deterministic single context holds.
@@ -695,6 +705,38 @@ func chatConversationDenied() gateway.ChatdefaultJSONResponse {
 		Body: gateway.ErrorEnvelope{
 			Code:    "CONVERSATION_NOT_FOUND",
 			Message: "conversation not found for this organization",
+		},
+	}
+}
+
+// chatAccountDenied builds the 404 for a NEW conversation whose supplied
+// marketplace account is not owned by the caller's organization (issue #412, §4.6
+// tenant integrity). It reuses the generic ErrorEnvelope shape already documented
+// for this operation — no contract change — with its own machine-readable code, so
+// the client can distinguish "your account context is not usable here" from "that
+// conversation is not yours" (CONVERSATION_NOT_FOUND) and from "your account
+// contradicts the stored one" (CONVERSATION_ACCOUNT_MISMATCH).
+//
+// NO EXISTENCE ORACLE — SCOPED TO THIS RESPONSE. A FOREIGN account and an UNKNOWN
+// account produce this IDENTICAL response — same status, same code, same message —
+// because the store already collapses them into one error, and this function never
+// re-expands that one error into two shapes. 404 (not 403) keeps the response from
+// confirming that the account id names anything at all.
+//
+// This is NOT a claim about the whole handler. On a NEW conversation the ACCOUNT
+// KILL SWITCH is evaluated earlier (against the request account, before BeginTurn
+// validates ownership), so a foreign account that is kill-switched returns
+// 503 KILL_SWITCH_ACCOUNT rather than reaching here — which does distinguish it
+// from a nonexistent id. That ordering is PRE-EXISTING and deliberate: moving the
+// kill-switch check after BeginTurn would persist a user turn for a kill-switched
+// OWN-org account, regressing CHAT-009 (issue #27). Tracked as a follow-up; do not
+// "fix" it by reordering.
+func chatAccountDenied() gateway.ChatdefaultJSONResponse {
+	return gateway.ChatdefaultJSONResponse{
+		StatusCode: 404,
+		Body: gateway.ErrorEnvelope{
+			Code:    "CONVERSATION_ACCOUNT_DENIED",
+			Message: "marketplace account not found for this organization",
 		},
 	}
 }
