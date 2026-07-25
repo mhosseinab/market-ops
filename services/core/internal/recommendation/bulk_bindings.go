@@ -129,7 +129,12 @@ const (
 // divergent row unconstructable at the database. It is kept because a guard that only
 // holds "because another layer holds" is a guard that silently disappears the day that
 // layer is relaxed.
-func matchBulkBinding(ctx context.Context, q *db.Queries, p bulkProvenance) bulkBindingMatch {
+//
+// FIX-CYCLE-1 FINDING F2: the comparison also covers the CARD and the APR-001 ACTION
+// the row claims to have authorized. Those are the two fields naming what actually
+// happened, and omitting them meant a matching-looking row could attribute this
+// member's authorization to a different card/action than the one being reported.
+func matchBulkBinding(ctx context.Context, q *db.Queries, p bulkProvenance, card db.ApprovalCard) bulkBindingMatch {
 	row, err := q.GetBulkActionBindingForMember(ctx, db.GetBulkActionBindingForMemberParams{
 		SelectionSetID:       p.SetID,
 		SelectionSetMemberID: p.MemberID,
@@ -145,7 +150,9 @@ func matchBulkBinding(ctx context.Context, q *db.Queries, p bulkProvenance) bulk
 		row.MarketplaceAccountID != p.Account ||
 		row.VariantID != p.VariantID ||
 		row.RecommendationID != p.RecommendationID ||
-		row.OfferIdentity != p.OfferIdentity {
+		row.OfferIdentity != p.OfferIdentity ||
+		row.CardID != card.ID ||
+		row.ActionID != card.ActionID {
 		// Unreachable while the DB constraints stand. Treated as ABSENT rather than as
 		// a match: a provenance row that does not describe this member is not evidence
 		// that this selection authorized it.

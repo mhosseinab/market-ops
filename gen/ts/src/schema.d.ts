@@ -2767,6 +2767,12 @@ export interface components {
              *     An empty string is EXPLICIT ABSENCE — a recommendation that is not observation-driven, or a selection-set version sealed before #87 — never a stand-in for some other offer. ADDITIVE and OPTIONAL: it is not in `required`, so a client generated before #87 is unaffected.
              */
             offerIdentity?: string;
+            /**
+             * @description A stable, NON-LOCALIZED ASCII diagnostic key naming why the SERVER downgraded this member's disposition; absent/empty when the server did not downgrade it (issue #87 criterion C).
+             *     The only value emitted today is `target_offer_evidence_unusable`: the member's target carries a LIVE APPLICABLE observed offer whose evidence quality is outside the usable set (verified/supported, §10.3), so the target may not be MORE eligible than its worst applicable offer. The disposition itself is already conservative — this key only EXPLAINS it and carries no authority (§8).
+             *     It is a KEY, never operator-facing copy: the edge maps it onto localized text (LOC-001 — this plane is locale-neutral). ADDITIVE and OPTIONAL: it is not in `required`, and the SelectionSetDisposition enum is UNCHANGED, so a strict client generated before this is unaffected.
+             */
+            reason?: string;
         };
         /** @description The server-minted selection-set preview (PD-3 item 4). `version` is assigned ENTIRELY server-side (append-only "next version per lineage"); a subsequent bulk confirmation (POST /approvals/bulk/confirm) binds to EXACTLY this lineage + version. */
         SelectionSetPreviewResult: {

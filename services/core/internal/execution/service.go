@@ -389,7 +389,14 @@ func (s *Service) executeWrite(ctx context.Context, card db.ApprovalCard, rc Rev
 					ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
 					Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
 					CardSnapshot: cardSnapshot(card), Detail: recoveryDetail(map[string]any{"gate": gate.Failed, "reason": gate.Reason}, recovered, entryState),
-				}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil {
+				}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed),
+				// FIX-CYCLE-1 FINDING F3 (design record (a)): this branch is TERMINAL and
+				// provably wrote NOTHING — the block happens before claimAndWrite is even
+				// reached. Releasing the (account, variant) reservation here, on the SAME
+				// transaction as the Invalidated advance and its audit, is what stops an
+				// action that never wrote from stranding its variant for the full
+				// reservation.Window while every later approval on it fails closed.
+				s.releaseVariantReservationHook(card, reservation.ReasonGateBlocked)); err != nil {
 				return ExecuteResult{}, err
 			}
 			return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeWrite, Blocked: true, FailedGate: gate.Failed}, nil
@@ -677,7 +684,11 @@ func (s *Service) recordRecommendOnly(ctx context.Context, card db.ApprovalCard,
 				ActionID: card.ActionID, CardID: card.ID, AccountID: rc.AccountID,
 				Type: audit.EventRevalidationBlocked, Actor: actor, Binding: binding,
 				CardSnapshot: cardSnapshot(card), Detail: map[string]any{"gate": gate.Failed, "reason": gate.Reason, "mode": ModeRecommendOnly},
-			}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed)); err != nil {
+			}, s.safetyFailureHook(rc.AccountID, card.ActionID, card.ID, gate.Failed),
+			// FINDING F3, same seam on the recommend-only arm: this branch is terminal
+			// and, in recommend-only mode, NO external write exists at all — so holding
+			// the variant afterwards strands it for exactly the same reason.
+			s.releaseVariantReservationHook(card, reservation.ReasonGateBlocked)); err != nil {
 			return ExecuteResult{}, err
 		}
 		return ExecuteResult{ActionID: card.ActionID, CardID: card.ID, Mode: ModeRecommendOnly, Blocked: true, FailedGate: gate.Failed}, nil

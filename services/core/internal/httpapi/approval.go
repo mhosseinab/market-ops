@@ -14,7 +14,15 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
+	"github.com/mhosseinab/market-ops/services/core/internal/reservation"
 )
+
+// variantReservationHeldReason is the stable, NON-LOCALIZED reason key for
+// reservation.ErrVariantReserved on the INDIVIDUAL confirm surface. It is the exact
+// string the bulk surface already reports for this condition
+// (recommendation.authorizeBulkMember), so both surfaces are diagnosable from one
+// operator runbook and neither leaks err.Error() text onto the wire.
+const variantReservationHeldReason = "variant_reservation_held"
 
 // ApprovalService is the recommendation/approval orchestration the gateway
 // depends on (PRD §7.5 APR-001, §8.4). *recommendation.Service satisfies it. It
@@ -105,6 +113,20 @@ func (s *gatewayServer) ConfirmApproval(
 			// The card is not control-bearing (not AwaitingConfirmation / a
 			// simulation): free text / a stale surface cannot approve (PRC-002, §8).
 			return gateway.ConfirmApprovaldefaultJSONResponse{StatusCode: 409, Body: approvalErr(err)}, nil
+		case errors.Is(err, reservation.ErrVariantReserved):
+			// FIX-CYCLE-1 FINDING F6 / BULK-PROTOCOL DESIGN RECORD (a): a DIFFERENT card
+			// already holds an in-flight write on this owned variant. The confirmation
+			// rolled back entirely — nothing was authorized, nothing dispatched, and this
+			// card is still a live control — so it is a CONFLICT the operator can act on
+			// and retry once the holder reaches a definite external result, not the
+			// opaque 500 the `default:` arm produced. The reason key is the SAME stable,
+			// non-localized identifier the bulk surface reports for this exact condition,
+			// so one runbook covers both surfaces (§4.6: errors are actionable and name
+			// the failing seam; LOC-001: never localized copy as a diagnostic id).
+			return gateway.ConfirmApprovaldefaultJSONResponse{
+				StatusCode: 409,
+				Body:       gateway.ErrorEnvelope{Code: "APPROVAL_ERROR", Message: variantReservationHeldReason},
+			}, nil
 		default:
 			return gateway.ConfirmApprovaldefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 		}

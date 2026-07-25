@@ -159,3 +159,95 @@ func TestExecute_RecommendOnlyReleasesTheVariant(t *testing.T) {
 		t.Fatalf("release reason %q; want %q", reason, reservation.ReasonRecommendOnly)
 	}
 }
+
+// TestExecute_GateBlockedCardDoesNotStrandItsVariant is FIX-CYCLE-1 FINDING F3
+// (BULK-PROTOCOL DESIGN RECORD (a): the release seam was incomplete).
+//
+// A gate block at Revalidating drives the card to the TERMINAL Invalidated state and
+// the code's own comment records that NO WRITE OCCURRED. Nothing was ever in flight, so
+// there is nothing for the reservation to protect — yet the only release call sites were
+// commitWriteResult and recordRecommendOnly, so this path held the (account, variant)
+// for the full 30-minute reservation.Window and every subsequent approval on that
+// variant failed for half an hour. That is precisely the harm this branch cites when it
+// justifies the recommend-only release, applied inconsistently, and it degrades the
+// highest-priority path in the load-shedding order (approval > audit > reconciliation).
+func TestExecute_GateBlockedCardDoesNotStrandItsVariant(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	card, native := seedApprovedCard(t, pool, q)
+	account, variant := holdReservation(t, pool, card)
+
+	rc := enabledContext(card, native)
+	// A revoked permission fails the §8.4 revalidation gate BEFORE any write.
+	rc.Inputs.PermissionGranted = false
+
+	srv, writes := countingMockDK(t)
+	svc := NewService(pool, recommendation.NewService(pool),
+		NewHTTPWriter(srv.URL, "tok", srv.Client()), fakeResolver{ctx: rc})
+
+	res, err := svc.Execute(ctx, card.ID, audit.Actor{ID: "owner-1", Role: "owner", Surface: "screen"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !res.Blocked {
+		t.Fatalf("execute result: %+v; want a gate-blocked result", res)
+	}
+	if got := atomic.LoadInt32(writes); got != 0 {
+		t.Fatalf("a gate-blocked execution performed %d external writes; want 0 (this is the whole premise of the release)", got)
+	}
+
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT state FROM approval_cards WHERE id = $1`, card.ID).Scan(&state); err != nil {
+		t.Fatalf("read card state: %v", err)
+	}
+	if state != "invalidated" {
+		t.Fatalf("card state = %q; want invalidated (the legal §8.4 Revalidating → Invalidated edge)", state)
+	}
+
+	released, reason := reservationState(t, pool, account, variant)
+	if !released {
+		t.Fatal("a TERMINALLY Invalidated card that provably never wrote STRANDED its variant for the full " +
+			"reservation window; every later approval on that variant fails until it lapses")
+	}
+	if reason != reservation.ReasonGateBlocked {
+		t.Fatalf("release reason %q; want %q (a stable, non-localized key naming the failing seam)", reason, reservation.ReasonGateBlocked)
+	}
+}
+
+// TestExecute_GateBlockedRecommendOnlyCardDoesNotStrandItsVariant is FINDING F3 on the
+// sibling branch. In recommend-only mode (the P0 dark default) no external write exists
+// at all, so a gate block there strands the variant for exactly the same reason and with
+// no possible justification.
+func TestExecute_GateBlockedRecommendOnlyCardDoesNotStrandItsVariant(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	card, native := seedApprovedCard(t, pool, q)
+	account, variant := holdReservation(t, pool, card)
+
+	rc := enabledContext(card, native)
+	rc.Enablement = WriteEnablement{} // writes OFF ⇒ recommend-only.
+	rc.VariantID = variant
+	rc.Inputs.PermissionGranted = false
+
+	srv, writes := countingMockDK(t)
+	svc := NewService(pool, recommendation.NewService(pool),
+		NewHTTPWriter(srv.URL, "tok", srv.Client()), fakeResolver{ctx: rc})
+
+	res, err := svc.Execute(ctx, card.ID, audit.Actor{ID: "owner-1", Role: "owner", Surface: "screen"})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !res.Blocked || res.Mode != ModeRecommendOnly {
+		t.Fatalf("execute result: %+v; want a gate-blocked recommend-only result", res)
+	}
+	if got := atomic.LoadInt32(writes); got != 0 {
+		t.Fatalf("recommend-only gate block performed %d external writes; want 0", got)
+	}
+	released, reason := reservationState(t, pool, account, variant)
+	if !released {
+		t.Fatal("a gate-blocked recommend-only card STRANDED its variant; no external write exists to protect")
+	}
+	if reason != reservation.ReasonGateBlocked {
+		t.Fatalf("release reason %q; want %q", reason, reservation.ReasonGateBlocked)
+	}
+}

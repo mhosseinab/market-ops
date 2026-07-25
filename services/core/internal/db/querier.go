@@ -531,6 +531,18 @@ type Querier interface {
 	// recommendation id's evidence_observation_id is immutable and this resolution is a
 	// PURE FUNCTION of the recommendation id. Re-running it for a historical member
 	// reproduces exactly the identity that was sealed.
+	// FIX-CYCLE-1 FINDING F9 — TENANT QUARANTINE, DEFENCE IN DEPTH (§4.6 identity
+	// quarantine; the same posture as ListUnconsumedObservationsByTarget's issue-#131
+	// account predicate). The join is ALSO predicated on the observation belonging to the
+	// SAME marketplace account as the recommendation that cites it.
+	// recommendations.evidence_observation_id carries NO foreign key — none is
+	// constructable to a partitioned table — so nothing at the database otherwise binds a
+	// cited observation to the recommendation's account. Without the predicate, a
+	// recommendation citing a foreign-account observation would seal ANOTHER TENANT'S offer
+	// identity onto this tenant's member row. With it, such a citation resolves to '' —
+	// EXPLICIT ABSENCE / quarantine — which is the correct answer: this account has no offer
+	// identity for it. No reachable exploit exists today (the caller-ownership check runs
+	// first and evidence_observation_id is server-written), and it costs nothing at runtime.
 	GetRecommendationSealedOfferIdentity(ctx context.Context, id uuid.UUID) (string, error)
 	GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error)
 	// The authoritative owner of a selection-set lineage. Exactly one row per lineage
@@ -1032,6 +1044,33 @@ type Querier interface {
 	// identity-reopen consumer to expire dependent recommendations (§16): a reopened
 	// mapping invalidates any card whose control could still authorize a write.
 	ListLiveCardsForVariant(ctx context.Context, variantID uuid.UUID) ([]ApprovalCard, error)
+	// FIX-CYCLE-1 FINDING F1 (issue #87 criterion C, §4.6 evidence-quality states).
+	//
+	// The evidence QUALITIES of every LIVE APPLICABLE Observed Offer on the target(s) of a
+	// recommendation's variant. It is the input to the server-side conservative gate: a
+	// target is never MORE eligible than its worst applicable offer, so a member whose
+	// target carries an offer outside the usable set cannot be executable — even when the
+	// client submits nothing at all about that offer.
+	//
+	// SCOPE, precisely:
+	//   * the member's OWN offer is included. The gate asks about the TARGET, and the
+	//     current-state projection's quality may have been demoted by the expiry sweep
+	//     after the recommendation was assembled.
+	//   * `ended_at IS NULL` — a CLOSED (disappeared, §16) offer is no longer applicable.
+	//     Gating on a long-gone listing would be over-tightening, not conservatism.
+	//   * account-predicated on BOTH the target and the offer, so one tenant's market can
+	//     never gate (or fail to gate) another's.
+	//
+	// IT RETURNS QUALITIES, NOT A VERDICT. The usable set is domain knowledge and lives in
+	// exactly one place — recommendation.EvidenceUsable (§10.3) — so this query cannot
+	// drift away from the taxonomy the rest of the plane enforces.
+	//
+	// THIS IS NOT AN IDENTITY LOOKUP. Resolving a member's SEALED offer identity by target
+	// is the #87 defect itself (a target legitimately carries MANY identities); that
+	// resolution stays anchored to the recommendation's own evidence in
+	// GetRecommendationSealedOfferIdentity. This query reads only qualities and never
+	// selects an identity.
+	ListLiveOfferQualitiesForRecommendationTarget(ctx context.Context, id uuid.UUID) ([]string, error)
 	ListMarginReadinessByAccount(ctx context.Context, marketplaceAccountID uuid.UUID) ([]MarginReadiness, error)
 	// Every marketplace account id, in a stable order — the per-account fan-out for
 	// platform passes (e.g. the daily briefing job, CHAT-010).

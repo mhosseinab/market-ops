@@ -381,7 +381,7 @@ func (s *Service) authorizeBulkMember(ctx context.Context, account uuid.UUID, pr
 				// claim about this selection, so it requires this selection's own
 				// durable provenance to match EXACTLY — set, member, lineage, version,
 				// variant, recommendation, and sealed offer identity.
-				switch matchBulkBinding(ctx, db.New(s.pool), prov) {
+				switch matchBulkBinding(ctx, db.New(s.pool), prov, card) {
 				case bindingAbsent:
 					// The card WAS authorized, but not by this selection: an individual
 					// §8.4 confirmation, or a different selection set. Reporting

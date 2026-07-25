@@ -242,7 +242,7 @@ func TestRelease_OnlyOnADefiniteExternalResult(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	if err := reservation.Release(ctx, db.New(tx), reservation.ReleaseRequest{
-		Account: f.account, Variant: f.variant, CardID: f.cardA,
+		Account: f.account, Variant: f.variant, CardID: f.cardA, ActionID: f.actionA,
 		Reason: reservation.ReasonPendingReconciliation, Now: now,
 	}); !errors.Is(err, reservation.ErrNotReleasable) {
 		t.Fatalf("release on pending_reconciliation: err=%v; want ErrNotReleasable (unknown is never inferred as settled)", err)
@@ -267,7 +267,7 @@ func TestRelease_OnlyOnADefiniteExternalResult(t *testing.T) {
 		t.Fatalf("begin: %v", err)
 	}
 	if err := reservation.Release(ctx, db.New(tx3), reservation.ReleaseRequest{
-		Account: f.account, Variant: f.variant, CardID: f.cardA,
+		Account: f.account, Variant: f.variant, CardID: f.cardA, ActionID: f.actionA,
 		Reason: reservation.ReasonAccepted, Now: now,
 	}); err != nil {
 		t.Fatalf("release on a definite result: %v", err)
@@ -318,7 +318,7 @@ func TestRelease_ByANonHolderIsRefused(t *testing.T) {
 	}
 	defer func() { _ = tx2.Rollback(ctx) }()
 	if err := reservation.Release(ctx, db.New(tx2), reservation.ReleaseRequest{
-		Account: f.account, Variant: f.variant, CardID: f.cardB,
+		Account: f.account, Variant: f.variant, CardID: f.cardB, ActionID: f.actionB,
 		Reason: reservation.ReasonAccepted, Now: now,
 	}); !errors.Is(err, reservation.ErrNotReleasable) {
 		t.Fatalf("release by a NON-holder: err=%v; want ErrNotReleasable", err)
@@ -416,4 +416,175 @@ func TestReservationEvents_AppendOnly(t *testing.T) {
 		t.Fatal("DELETE on execution_reservation_events was ACCEPTED; reservation provenance is append-only (§4.6)")
 	}
 	_ = q
+}
+
+// TestVariantReservation_LiveHolderCannotBeDisplacedByRawSQL is FIX-CYCLE-1 FINDING F4
+// (durable enforcement; BULK-PROTOCOL DESIGN RECORD (b) holds this branch to #90's
+// standard: enforcement in PostgreSQL, not merely in Go).
+//
+// The hole: execution_variant_reservations carried NO trigger, so the whole
+// one-executable-per-variant guard lived in the SQL TEXT of TakeOverVariantReservation
+// — an application-layer predicate. This exact raw-SQL upsert displaced a LIVE holder,
+// cleared released_at, and left NO execution_reservation_events row behind: a silent
+// recovery with no audited event, which §4.6 classifies as always a bug.
+func TestVariantReservation_LiveHolderCannotBeDisplacedByRawSQL(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	f := seedFixture(t, pool, q)
+	now := time.Now().UTC()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := reservation.Acquire(ctx, db.New(tx), reservation.Request{
+		Account: f.account, Variant: f.variant, CardID: f.cardA, ActionID: f.actionA, Now: now,
+	}); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// Safety's forge R4, verbatim in shape: an ON CONFLICT DO UPDATE that re-points the
+	// live holder's card and un-releases the row.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO execution_variant_reservations
+			(marketplace_account_id, variant_id, card_id, action_id, acquired_at, expires_at)
+		VALUES ($1,$2,$3,$4,$5,$6)
+		ON CONFLICT (marketplace_account_id, variant_id)
+		DO UPDATE SET card_id = EXCLUDED.card_id, action_id = EXCLUDED.action_id,
+		              released_at = NULL, release_reason = ''`,
+		f.account, f.variant, f.cardB, f.actionB, now, now.Add(reservation.Window),
+	); err == nil {
+		t.Fatal("PostgreSQL ACCEPTED a raw-SQL displacement of a LIVE reservation holder; " +
+			"one-executable-per-variant must be enforced by the database, not only by the SQL text of one query")
+	}
+
+	// The live holder is untouched — the rejection changed nothing.
+	held, err := q.GetVariantReservation(ctx, db.GetVariantReservationParams{
+		MarketplaceAccountID: f.account, VariantID: f.variant,
+	})
+	if err != nil {
+		t.Fatalf("reload reservation: %v", err)
+	}
+	if held.CardID != f.cardA || held.ReleasedAt.Valid {
+		t.Fatalf("live holder after the rejected forge: card=%s released=%v; want %s / not released",
+			held.CardID, held.ReleasedAt.Valid, f.cardA)
+	}
+}
+
+// TestVariantReservation_ReleasedCardCannotReHoldItsOwnVariant is FIX-CYCLE-1 FINDING
+// F4 / safety N4. TakeOverVariantReservation's same-card arm resets released_at = NULL,
+// so a card that ALREADY released its variant on a terminal external result could
+// re-hold it. It is unreachable through today's callers (release only happens on a
+// terminal state), which is precisely why it needs a durable pin: the guard must not
+// depend on every future caller being careful.
+//
+// A DIFFERENT card taking over a RELEASED reservation stays legal — that is the normal
+// hand-off, asserted below so this pin cannot be passing by blocking everything.
+func TestVariantReservation_ReleasedCardCannotReHoldItsOwnVariant(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	f := seedFixture(t, pool, q)
+	now := time.Now().UTC()
+
+	acquire := func(card, action uuid.UUID, at time.Time) error {
+		tx, err := pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if err := reservation.Acquire(ctx, db.New(tx), reservation.Request{
+			Account: f.account, Variant: f.variant, CardID: card, ActionID: action, Now: at,
+		}); err != nil {
+			return err
+		}
+		return tx.Commit(ctx)
+	}
+
+	if err := acquire(f.cardA, f.actionA, now); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := reservation.Release(ctx, db.New(tx), reservation.ReleaseRequest{
+		Account: f.account, Variant: f.variant, CardID: f.cardA, ActionID: f.actionA,
+		Reason: reservation.ReasonAccepted, Now: now,
+	}); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	// The SAME card re-acquiring the variant it already released must fail closed.
+	if err := acquire(f.cardA, f.actionA, now); err == nil {
+		t.Fatal("a card RE-HELD the variant it had already released; a terminal result is final (§4.6 idempotency)")
+	}
+
+	// Over-tightening guard: a DIFFERENT card may still take over a released variant.
+	if err := acquire(f.cardB, f.actionB, now); err != nil {
+		t.Fatalf("a different card could not take over a RELEASED reservation: %v (over-tightened)", err)
+	}
+}
+
+// TestRelease_AppendsAnActionAttributableEvent is FIX-CYCLE-1 FINDING F5 (AUD-001 /
+// observability). Release hard-coded ActionID: uuid.Nil onto the append-only
+// execution_reservation_events row, so on a live database `acquired` and
+// `expired_takeover` were action-attributable and `released` — the transition that
+// CLOSES the in-flight window — was not. Migration 0049 declares action_id as
+// reservation provenance, so the ledger contradicted itself, and CLAUDE.md requires the
+// action id to propagate so an approval control can be reconstructed from telemetry
+// alone.
+func TestRelease_AppendsAnActionAttributableEvent(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	f := seedFixture(t, pool, q)
+	now := time.Now().UTC()
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := reservation.Acquire(ctx, db.New(tx), reservation.Request{
+		Account: f.account, Variant: f.variant, CardID: f.cardA, ActionID: f.actionA, Now: now,
+	}); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if err := reservation.Release(ctx, db.New(tx), reservation.ReleaseRequest{
+		Account: f.account, Variant: f.variant, CardID: f.cardA, ActionID: f.actionA,
+		Reason: reservation.ReasonAccepted, Now: now,
+	}); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	events, err := q.ListReservationEventsForVariant(ctx, db.ListReservationEventsForVariantParams{
+		MarketplaceAccountID: f.account, VariantID: f.variant,
+	})
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	for _, e := range events {
+		if e.ActionID == uuid.Nil {
+			t.Fatalf("%s event carries a ZEROED action id; every lifecycle transition must be action-attributable (AUD-001)", e.EventType)
+		}
+	}
+	released := 0
+	for _, e := range events {
+		if e.EventType == "released" {
+			released++
+			if e.ActionID != f.actionA {
+				t.Fatalf("released event action id %s; want the releasing card's %s", e.ActionID, f.actionA)
+			}
+		}
+	}
+	if released != 1 {
+		t.Fatalf("released events = %d; want exactly 1", released)
+	}
 }

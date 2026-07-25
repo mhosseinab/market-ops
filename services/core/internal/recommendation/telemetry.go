@@ -30,6 +30,7 @@ type selectionTelemetry struct {
 	pageLimitRejection metric.Int64Counter
 	sealedAuthResume   metric.Int64Counter
 	provenanceMismatch metric.Int64Counter
+	targetQualityGate  metric.Int64Counter
 }
 
 const selectionInstrumentation = "github.com/mhosseinab/market-ops/services/core/internal/recommendation"
@@ -42,6 +43,7 @@ const (
 	metricPageLimitRejected        = "recommendation.actions_page_limit_rejected"
 	metricSealedAuthResume         = "recommendation.bulk_member_sealed_authorization"
 	metricBulkProvenanceMismatch   = "recommendation.bulk_binding_provenance_mismatch"
+	metricBulkTargetQualityGate    = "recommendation.bulk_member_gated_on_target_offer_quality"
 
 	logKeySeam            = "seam"
 	logKeyLineageID       = "lineage_id"
@@ -49,6 +51,8 @@ const (
 	logKeyOwnerAccountID  = "owner_account_id"
 	logKeySelectionSetID  = "selection_set_id"
 	logKeyMemberID        = "selection_set_member_id"
+	logKeyRecommendation  = "recommendation_id"
+	logKeyOfferQuality    = "offer_quality"
 )
 
 // Seam names for the bounded-read and sealed-authorization telemetry above. They
@@ -57,6 +61,9 @@ const (
 	seamListActionsPage = "list_actions_page"
 	seamListActions     = "list_actions"
 	seamBulkConfirm     = "confirm_bulk_selection"
+	// seamPreviewBulkSelection names the seam that seals a bulk preview's dispositions
+	// — where the FINDING F1 conservative gate runs.
+	seamPreviewBulkSelection = "preview_bulk_selection"
 )
 
 // tel returns this Service's selection telemetry: the injected one when a test wired
@@ -105,6 +112,8 @@ func newSelectionTelemetry(mp metric.MeterProvider, logger *slog.Logger) *select
 			"bulk members reported already_authorized on a resume (sealed authorization, §4.6 idempotency)"),
 		provenanceMismatch: counter(metricBulkProvenanceMismatch,
 			"authorized members refused an already_authorized report because THIS selection has no matching durable provenance (issue #87, §4.6 idempotency/audit)"),
+		targetQualityGate: counter(metricBulkTargetQualityGate,
+			"bulk members downgraded from executable because their TARGET carries a live applicable observed offer outside the usable evidence-quality set (issue #87 criterion C, §4.6 evidence quality)"),
 	}
 }
 
@@ -151,5 +160,29 @@ func (t *selectionTelemetry) bulkProvenanceMismatch(ctx context.Context, seam st
 		logKeySeam, seam,
 		logKeySelectionSetID, set.String(),
 		logKeyMemberID, member.String(),
+	)
+}
+
+// bulkMemberGatedOnTargetQuality records a member the FINDING F1 conservative gate
+// downgraded from executable because its TARGET carries a live applicable observed offer
+// outside the usable evidence-quality set (§10.3).
+//
+// It is deliberately its own instrument rather than a reuse of the blocker counters: a
+// GATED member and a NORMALLY-BLOCKED one are different facts about the market, and
+// §4.6 requires telemetry to distinguish them — "if telemetry cannot distinguish these
+// from correct behavior, the observability seam is incomplete".
+//
+// Ids and a bounded taxonomy value only: no PII, no raw marketplace text, no
+// approval-control secrets, and no localized copy as a diagnostic identifier (LOC-001).
+// `quality` is one of the six canonical evidence-quality states, never free text.
+func (t *selectionTelemetry) bulkMemberGatedOnTargetQuality(ctx context.Context, seam string, recommendationID uuid.UUID, quality string) {
+	t.targetQualityGate.Add(ctx, 1, metric.WithAttributes(
+		attribute.String(logKeySeam, seam),
+		attribute.String(logKeyOfferQuality, quality),
+	))
+	t.logger.WarnContext(ctx, "bulk member downgraded: its target carries an offer whose evidence quality is not usable (conservative gate, issue #87 criterion C)",
+		logKeySeam, seam,
+		logKeyRecommendation, recommendationID.String(),
+		logKeyOfferQuality, quality,
 	)
 }

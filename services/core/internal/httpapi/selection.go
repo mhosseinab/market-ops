@@ -92,6 +92,15 @@ func toSelectionSetPreviewResult(r recommendation.PreviewResult) gateway.Selecti
 			offer := m.OfferIdentity
 			view.OfferIdentity = &offer
 		}
+		// The stable, NON-LOCALIZED ASCII key naming a SERVER-imposed downgrade of this
+		// member's disposition (issue #87 criterion C). Emitted only when the server
+		// actually downgraded the member; an absent field means "not downgraded", never
+		// an empty stand-in. It explains the conservative disposition and carries no
+		// authority of its own — the DISPOSITION is the authoritative, sealed fact.
+		if m.Reason != "" {
+			reason := m.Reason
+			view.Reason = &reason
+		}
 		members = append(members, view)
 	}
 	out := gateway.SelectionSetPreviewResult{

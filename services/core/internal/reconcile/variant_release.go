@@ -35,8 +35,11 @@ func releaseVariantReservation(ctx context.Context, q *db.Queries, card db.Appro
 		Account: row.MarketplaceAccountID,
 		Variant: row.VariantID,
 		CardID:  card.ID,
-		Reason:  reservation.ReasonReconciled,
-		Now:     now,
+		// FINDING F5: the releasing card's APR-001 action id, so the append-only
+		// `released` event is action-attributable exactly like `acquired`.
+		ActionID: card.ActionID,
+		Reason:   reservation.ReasonReconciled,
+		Now:      now,
 	})
 	if errors.Is(err, reservation.ErrNotReleasable) {
 		return nil

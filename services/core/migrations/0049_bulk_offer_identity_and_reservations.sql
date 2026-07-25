@@ -128,6 +128,10 @@ CREATE TABLE bulk_action_bindings (
     offer_identity           text        NOT NULL,
 
     -- The §8.4 approval card this call authorized, and its APR-001 action identity.
+    -- FINDING F2: the bare REFERENCES below is NOT sufficient — it is satisfied by any
+    -- existing card of ANY account, and action_id has no referential target at all
+    -- (approval_cards.action_id is not unique). Both are verified against the card's
+    -- OWN row by enforce_bulk_action_binding_provenance().
     card_id                  uuid        NOT NULL REFERENCES approval_cards (id) ON DELETE CASCADE,
     action_id                uuid        NOT NULL,
 
@@ -171,10 +175,22 @@ CREATE INDEX idx_bulk_action_bindings_lineage
 -- A member with a NULL recommendation_id is NOT bindable at all: it names no
 -- recommendation, so there is no card to authorize and no honest provenance to
 -- record. It fails closed here rather than binding to an arbitrary recommendation.
+--
+-- FIX-CYCLE-1 FINDING F2 (AUD-001, §4.6 audit + identity quarantine). The trigger
+-- ALSO re-reads the referenced APPROVAL CARD. card_id and action_id are the two
+-- columns that name WHAT WAS ACTUALLY AUTHORIZED, and neither was verified: card_id
+-- carried only a bare REFERENCES approval_cards (id) — satisfied by ANY existing card
+-- of ANY account — and action_id carried no constraint at all. Raw SQL therefore
+-- accepted a ledger row attributing this member's authorization to another account's
+-- card, and a row naming an arbitrary action id that is not the card's. Both make the
+-- ledger describe an authorization that never happened, which is exactly the state
+-- AUD-001 ("reproducible from its own durable evidence") forbids. The card's own
+-- recommendation, account, and APR-001 action id are now the authority.
 CREATE FUNCTION enforce_bulk_action_binding_provenance() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
     m RECORD;
+    c RECORD;
 BEGIN
     SELECT variant_id, recommendation_id, offer_identity, marketplace_account_id
       INTO m
@@ -209,6 +225,33 @@ BEGIN
     IF NEW.marketplace_account_id IS DISTINCT FROM m.marketplace_account_id THEN
         RAISE EXCEPTION 'bulk_action_bindings: marketplace_account_id % does not match member %(%)',
             NEW.marketplace_account_id, NEW.selection_set_member_id, m.marketplace_account_id;
+    END IF;
+
+    -- FINDING F2: the AUTHORIZED CARD itself. The card must be the member's OWN card
+    -- (same recommendation), belong to the SAME account, and the ledger's action_id
+    -- must be that card's OWN APR-001 action id — never an arbitrary uuid.
+    SELECT recommendation_id, marketplace_account_id, action_id
+      INTO c
+      FROM approval_cards
+     WHERE id = NEW.card_id;
+
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'bulk_action_bindings: card % does not exist', NEW.card_id;
+    END IF;
+
+    IF c.recommendation_id IS DISTINCT FROM NEW.recommendation_id THEN
+        RAISE EXCEPTION 'bulk_action_bindings: card % authorizes recommendation %, not the member''s %',
+            NEW.card_id, c.recommendation_id, NEW.recommendation_id;
+    END IF;
+
+    IF c.marketplace_account_id IS DISTINCT FROM NEW.marketplace_account_id THEN
+        RAISE EXCEPTION 'bulk_action_bindings: card % belongs to account %, not %',
+            NEW.card_id, c.marketplace_account_id, NEW.marketplace_account_id;
+    END IF;
+
+    IF c.action_id IS DISTINCT FROM NEW.action_id THEN
+        RAISE EXCEPTION 'bulk_action_bindings: action_id % is not card %''s action id (%)',
+            NEW.action_id, NEW.card_id, c.action_id;
     END IF;
 
     RETURN NEW;
@@ -308,13 +351,77 @@ CREATE INDEX idx_execution_variant_reservations_card
 -- +goose StatementEnd
 
 -- +goose StatementBegin
+-- FIX-CYCLE-1 FINDING F4 (durable enforcement; BULK-PROTOCOL DESIGN RECORD (b) holds
+-- this branch to #90's standard: enforcement in PostgreSQL, not merely in Go).
+--
+-- The hole this closes: the whole one-executable-per-variant guard lived in the SQL
+-- TEXT of TakeOverVariantReservation — an application-layer predicate. A raw
+-- `INSERT ... ON CONFLICT DO UPDATE SET card_id = EXCLUDED.card_id, released_at = NULL`
+-- displaced a LIVE holder and left NO execution_reservation_events row: a silent
+-- recovery with no audited event, which §4.6 classifies as always a bug.
+--
+-- The rule has exactly two clauses, both stated as REJECTIONS of a transition:
+--
+--   1. A LIVE holder (released_at IS NULL AND expires_at > now()) may never be
+--      RE-POINTED at a different card. Liveness is judged by the DATABASE clock, not
+--      by a caller-supplied instant, so a forger cannot claim expiry by writing a
+--      future acquired_at. This leaves every legitimate path intact: releasing (same
+--      card), the AUDITED expired takeover (expires_at has genuinely lapsed), taking
+--      over an already-released row, and a same-card idempotent re-acquire.
+--
+--   2. (safety N4) A card may not RE-HOLD a variant it already RELEASED — a terminal
+--      external result is final. TakeOverVariantReservation's same-card arm resets
+--      released_at = NULL, which is unreachable through today's callers and is pinned
+--      here precisely so it cannot become reachable. A DIFFERENT card taking over a
+--      released row is the normal hand-off and stays legal.
+--
+-- This table is a mutable LEASE projection with a genuine lifecycle; its HISTORY is
+-- the append-only execution_reservation_events. The trigger constrains the lifecycle,
+-- it does not make the table append-only.
+CREATE FUNCTION enforce_execution_variant_reservation_lifecycle() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF OLD.released_at IS NULL
+       AND OLD.expires_at > now()
+       AND NEW.card_id IS DISTINCT FROM OLD.card_id THEN
+        RAISE EXCEPTION 'execution_variant_reservations: card % holds a LIVE reservation on (%, %) until %; it cannot be displaced by %',
+            OLD.card_id, OLD.marketplace_account_id, OLD.variant_id, OLD.expires_at, NEW.card_id;
+    END IF;
+
+    IF OLD.released_at IS NOT NULL
+       AND NEW.released_at IS NULL
+       AND NEW.card_id IS NOT DISTINCT FROM OLD.card_id THEN
+        RAISE EXCEPTION 'execution_variant_reservations: card % already RELEASED (%, %) with reason %; a terminal result is final and cannot be re-held',
+            OLD.card_id, OLD.marketplace_account_id, OLD.variant_id, OLD.release_reason;
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+CREATE TRIGGER execution_variant_reservations_lifecycle
+    BEFORE UPDATE ON execution_variant_reservations
+    FOR EACH ROW EXECUTE FUNCTION enforce_execution_variant_reservation_lifecycle();
+-- +goose StatementEnd
+
+-- +goose StatementBegin
 -- APPEND-ONLY provenance of every reservation lifecycle transition (§4.6).
 CREATE TABLE execution_reservation_events (
     id                     uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
     marketplace_account_id uuid        NOT NULL REFERENCES marketplace_accounts (id) ON DELETE CASCADE,
     variant_id             uuid        NOT NULL REFERENCES variants (id) ON DELETE CASCADE,
     card_id                uuid        NOT NULL REFERENCES approval_cards (id) ON DELETE CASCADE,
-    action_id              uuid        NOT NULL,
+    -- The APR-001 action this transition belongs to. FIX-CYCLE-1 FINDING F5: `NOT NULL`
+    -- alone did not make the column provenance — Release hard-coded the zero uuid, so
+    -- every `released` row (the transition that CLOSES the in-flight window) was
+    -- unattributable while `acquired` and `expired_takeover` were not. The CHECK makes
+    -- a zeroed action id fail closed and LOUD at the database rather than producing a
+    -- self-inconsistent ledger (CLAUDE.md: the action id must propagate so an approval
+    -- control can be reconstructed from telemetry alone).
+    action_id              uuid        NOT NULL
+                                       CHECK (action_id <> '00000000-0000-0000-0000-000000000000'::uuid),
     -- acquired          — the card took the variant's reservation.
     -- released          — a terminal external result released it.
     -- expired_takeover  — a lapsed holder was taken over by a new acquirer. This row
@@ -366,6 +473,14 @@ DROP FUNCTION IF EXISTS enforce_execution_reservation_events_append_only();
 
 -- +goose StatementBegin
 DROP TABLE execution_reservation_events;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP TRIGGER IF EXISTS execution_variant_reservations_lifecycle ON execution_variant_reservations;
+-- +goose StatementEnd
+
+-- +goose StatementBegin
+DROP FUNCTION IF EXISTS enforce_execution_variant_reservation_lifecycle();
 -- +goose StatementEnd
 
 -- +goose StatementBegin

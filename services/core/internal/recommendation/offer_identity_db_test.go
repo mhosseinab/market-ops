@@ -239,8 +239,20 @@ func TestPreviewBulkSelection_SealsOfferIdentityFromRecommendationEvidence(t *te
 	svc := recommendation.NewService(pool)
 	account, variant := seedVariant(t, q)
 
+	// FIX-CYCLE-1 FINDING F8 (test discrimination). This fixture seeds TWO SIBLING
+	// offers on ONE target — the #87 shape — and asserts each member seals its OWN
+	// identity. With a single offer per target, a faithful re-introduction of the defect
+	// (sealed identity resolved by lookup-by-target,
+	// `ORDER BY captured_at DESC LIMIT 1`) returns the SAME string and this test stays
+	// green: it could not tell the fix from the defect. Only siblings discriminate.
+	//
+	// The two members are previewed in SEPARATE selection sets on purpose: migration
+	// 0012 carries UNIQUE (selection_set_id, variant_id), and sibling offers on one
+	// target share one variant, so they cannot be two members of one set.
 	obs := seedEvidenceOffer(t, pool, q, account, variant, "sealed-offer-evidence")
+	sibling := seedEvidenceOffer(t, pool, q, account, variant, "sealed-offer-sibling")
 	card := awaitingCardWithEvidence(t, svc, account, variant, obs)
+	siblingCard := awaitingCardWithEvidence(t, svc, account, variant, sibling)
 
 	res, err := svc.PreviewBulkSelection(ctx, account, uuid.Nil, "sealed", nil,
 		[]recommendation.PreviewMemberInput{{
@@ -254,6 +266,25 @@ func TestPreviewBulkSelection_SealsOfferIdentityFromRecommendationEvidence(t *te
 	}
 	if got := res.Members[0].OfferIdentity; got != "sealed-offer-evidence" {
 		t.Fatalf("preview member offer identity %q; want %q", got, "sealed-offer-evidence")
+	}
+
+	// The SIBLING, on the SAME target, seals its OWN identity — not the other one and
+	// not "whichever offer the target happens to surface first".
+	resSibling, err := svc.PreviewBulkSelection(ctx, account, uuid.Nil, "sealed-sibling", nil,
+		[]recommendation.PreviewMemberInput{{
+			VariantID:        variant,
+			RecommendationID: siblingCard.RecommendationID,
+			OfferIdentity:    "sealed-offer-sibling",
+		}})
+	if err != nil {
+		t.Fatalf("preview the sibling offer's member: %v", err)
+	}
+	if got := resSibling.Members[0].OfferIdentity; got != "sealed-offer-sibling" {
+		t.Fatalf("sibling member sealed %q; want its OWN %q — a target carries MANY offer "+
+			"identities and picking one BY TARGET is the #87 defect itself", got, "sealed-offer-sibling")
+	}
+	if res.Members[0].OfferIdentity == resSibling.Members[0].OfferIdentity {
+		t.Fatal("two SIBLING offers on one target sealed the SAME identity; each offer must stay individually attributable (OBS-004)")
 	}
 
 	// The identity is DURABLE on the sealed member row, so the authorization can be
@@ -314,5 +345,53 @@ func TestConfirmBulkSelection_ItemCarriesTheSealedOfferIdentity(t *testing.T) {
 	}
 	if got := out.Items[0].OfferIdentity; got != "sealed-offer-confirm" {
 		t.Fatalf("confirm item offer identity %q; want the SAME sealed %q (criterion D)", got, "sealed-offer-confirm")
+	}
+}
+
+// TestSealedOfferIdentity_ForeignAccountObservationResolvesToAbsence is FIX-CYCLE-1
+// FINDING F9 (identity quarantine, defence in depth — §4.6).
+//
+// GetRecommendationSealedOfferIdentity joined observations with NO account predicate,
+// departing from this repo's own precedent (ListUnconsumedObservationsByTarget carries
+// an explicit issue-#131 tenant predicate). recommendations.evidence_observation_id
+// carries no foreign key — none is constructable to a partitioned table — so NOTHING at
+// the database bound a cited observation to the recommendation's account. No reachable
+// exploit was constructed (the caller-ownership check runs before the lookup and
+// evidence_observation_id is server-written), but a citation that crosses tenants must
+// resolve to ” — EXPLICIT ABSENCE / quarantine — and never seal another tenant's offer
+// identity onto this tenant's member row.
+func TestSealedOfferIdentity_ForeignAccountObservationResolvesToAbsence(t *testing.T) {
+	pool, q := newPool(t)
+	ctx := context.Background()
+	svc := recommendation.NewService(pool)
+
+	victimAccount, victimVariant := seedVariant(t, q)
+	foreignAccount, foreignVariant := seedVariant(t, q)
+
+	// The FOREIGN tenant's observation, carrying a real offer identity.
+	foreignObs := seedEvidenceOffer(t, pool, q, foreignAccount, foreignVariant, "foreign-tenant-offer")
+
+	// A recommendation of the VICTIM's account that cites it. Written with raw SQL:
+	// no application path constructs this, which is exactly why the resolution must not
+	// depend on an application path being careful.
+	var recID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO recommendations (
+			marketplace_account_id, variant_id, lineage_id, version, objective,
+			current_price_mantissa, current_price_currency, current_price_exponent,
+			readiness, evidence_quality, evidence_observation_id)
+		VALUES ($1,$2,$3,1,'maximize_contribution',1000,'IRR',0,'complete','verified',$4)
+		RETURNING id`, victimAccount, victimVariant, uuid.New(), foreignObs).Scan(&recID); err != nil {
+		t.Fatalf("insert cross-tenant citation: %v", err)
+	}
+
+	res, err := svc.PreviewBulkSelection(ctx, victimAccount, uuid.Nil, "cross-tenant-citation", nil,
+		[]recommendation.PreviewMemberInput{{VariantID: victimVariant, RecommendationID: recID}})
+	if err != nil {
+		t.Fatalf("preview: %v", err)
+	}
+	if got := res.Members[0].OfferIdentity; got != "" {
+		t.Fatalf("a recommendation citing ANOTHER TENANT'S observation sealed %q; want '' "+
+			"(explicit absence / quarantine, never another tenant's offer identity)", got)
 	}
 }

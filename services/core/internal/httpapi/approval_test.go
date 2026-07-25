@@ -18,6 +18,7 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
+	"github.com/mhosseinab/market-ops/services/core/internal/reservation"
 )
 
 // fakeApproval is an ApprovalService stub for transport tests.
@@ -220,6 +221,37 @@ func TestConfirmApproval_NoControlIsRejected(t *testing.T) {
 
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("no-control confirm: status = %d, want 409, body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestConfirmApproval_VariantReservationHeldIsAConflict is FIX-CYCLE-1 FINDING F6
+// (§4.6: errors are actionable and name the failing seam).
+//
+// ConfirmIndividualForOrg gained a NEW failure mode with the durable (account, variant)
+// execution reservation — reservation.ErrVariantReserved, raised when a DIFFERENT card
+// already holds an in-flight write on the same owned variant. The handler had no case
+// for it, so it fell through to `default:` and a 500. The bulk surface reports the same
+// condition precisely and resume-safely (`failed` / `variant_reservation_held`); the
+// individual surface returned an opaque server error, which fails closed but burns
+// error budget as an incident and tells the operator nothing they can act on. It is a
+// CONFLICT: the request is well-formed and the caller may retry once the holder reaches
+// a definite external result.
+func TestConfirmApproval_VariantReservationHeldIsAConflict(t *testing.T) {
+	fake := &fakeApproval{confirmErr: reservation.ErrVariantReserved}
+	srv := NewServer(":0", BuildInfo{}, testLogger(), WithApproval(fake))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/approvals/confirm", strings.NewReader(confirmBody(t, uuid.New(), uuid.New(), 1)))
+	req.Header.Set("Content-Type", "application/json")
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("variant-reservation-held confirm: status = %d, want 409, body=%s", rec.Code, rec.Body.String())
+	}
+	// The SAME stable, non-localized reason key the bulk surface uses, so one operator
+	// runbook covers both surfaces (LOC-001: this plane is locale-neutral).
+	if !strings.Contains(rec.Body.String(), "variant_reservation_held") {
+		t.Fatalf("409 body %s does not carry the stable reason key variant_reservation_held", rec.Body.String())
 	}
 }
 

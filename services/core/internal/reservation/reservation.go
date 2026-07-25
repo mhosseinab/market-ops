@@ -90,6 +90,14 @@ const (
 	// definite one. This is the only path by which a pending_reconciliation write ever
 	// releases its variant.
 	ReasonReconciled = "reconciled"
+	// ReasonGateBlocked — the §8.4 revalidation gate blocked the action at
+	// Revalidating and drove the card to the TERMINAL Invalidated state (FIX-CYCLE-1
+	// FINDING F3). It is definite in the strongest possible sense: the block happens
+	// BEFORE the write is attempted, so no external write exists and nothing can be in
+	// flight. It is NOT an inference about an unknown outcome — the outcome is
+	// "no attempt was made", which is why it may release where
+	// ReasonPendingReconciliation may not.
+	ReasonGateBlocked = "gate_blocked_no_write"
 	// ReasonPendingReconciliation is DELIBERATELY NOT RELEASABLE. It exists as a named
 	// constant so a caller that tries to release on an UNKNOWN outcome is refused
 	// explicitly (ErrNotReleasable) rather than silently succeeding — the failure mode
@@ -101,7 +109,7 @@ const (
 // outcome never releases (quarantine over inference, §4.6).
 func releasable(reason string) bool {
 	switch reason {
-	case ReasonAccepted, ReasonRejected, ReasonFailed, ReasonRecommendOnly, ReasonReconciled:
+	case ReasonAccepted, ReasonRejected, ReasonFailed, ReasonRecommendOnly, ReasonReconciled, ReasonGateBlocked:
 		return true
 	default:
 		return false
@@ -123,8 +131,18 @@ type ReleaseRequest struct {
 	Account uuid.UUID
 	Variant uuid.UUID
 	CardID  uuid.UUID
-	Reason  string
-	Now     time.Time
+	// ActionID is the releasing card's APR-001 action id (FIX-CYCLE-1 FINDING F5).
+	// Release used to hard-code uuid.Nil onto the append-only
+	// execution_reservation_events row, so exactly the transition that CLOSES the
+	// in-flight window was the one transition not attributable to an action — while
+	// `acquired` and `expired_takeover` both carried it. CLAUDE.md requires the action
+	// id to propagate so an approval control can be reconstructed from telemetry
+	// alone, and migration 0049 declares action_id as reservation provenance. A Nil
+	// value is rejected by the events table's CHECK, so the omission fails closed and
+	// loud instead of silently writing a zeroed ledger row.
+	ActionID uuid.UUID
+	Reason   string
+	Now      time.Time
 }
 
 // Acquire takes the (account, variant) execution reservation for a card, on the
@@ -241,7 +259,7 @@ func Release(ctx context.Context, q *db.Queries, r ReleaseRequest) error {
 		MarketplaceAccountID: r.Account,
 		VariantID:            r.Variant,
 		CardID:               r.CardID,
-		ActionID:             uuid.Nil,
+		ActionID:             r.ActionID,
 		EventType:            "released",
 		Reason:               r.Reason,
 		OccurredAt:           r.Now,

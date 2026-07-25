@@ -120,6 +120,21 @@ func TestBulkActionBindings_ForgedRowRejectedByPostgres(t *testing.T) {
 		{"an account the member does not belong to", func(r *db.BulkActionBinding) { r.MarketplaceAccountID = other.account }},
 		{"a member of a DIFFERENT selection set", func(r *db.BulkActionBinding) { r.SelectionSetMemberID = other.member.ID }},
 		{"a selection set the member is not in", func(r *db.BulkActionBinding) { r.SelectionSetID = other.set.ID }},
+		// FIX-CYCLE-1 FINDING F2 (HIGH — AUD-001 + identity quarantine). card_id and
+		// action_id are the two columns naming WHAT WAS ACTUALLY AUTHORIZED, and the
+		// provenance trigger verified NEITHER: card_id carried only a bare
+		// REFERENCES approval_cards (id), which ANY existing card of ANY account
+		// satisfies, and action_id carried no constraint at all. A ledger row could
+		// therefore attribute this member's authorization to another account's card,
+		// or name an action id that is not that card's — an audit trail describing an
+		// authorization that never happened, which AUD-001 forbids outright.
+		{"a card belonging to a DIFFERENT member and account", func(r *db.BulkActionBinding) {
+			r.CardID = other.card.ID
+			r.ActionID = other.card.ActionID
+		}},
+		{"an ARBITRARY action id that is not the card's", func(r *db.BulkActionBinding) {
+			r.ActionID = uuid.New()
+		}},
 	}
 	for _, fg := range forgeries {
 		t.Run(fg.name, func(t *testing.T) {

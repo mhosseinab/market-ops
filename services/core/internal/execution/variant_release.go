@@ -9,6 +9,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/reservation"
 )
@@ -57,13 +59,33 @@ func (s *Service) releaseVariantReservation(ctx context.Context, q *db.Queries, 
 		Account: row.MarketplaceAccountID,
 		Variant: row.VariantID,
 		CardID:  card.ID,
-		Reason:  reason,
-		Now:     s.nowOrWall(),
+		// FINDING F5: the releasing card's APR-001 action id, so the append-only
+		// `released` event is action-attributable exactly like `acquired`.
+		ActionID: card.ActionID,
+		Reason:   reason,
+		Now:      s.nowOrWall(),
 	})
 	if errors.Is(err, reservation.ErrNotReleasable) {
 		return nil
 	}
 	return err
+}
+
+// releaseVariantReservationHook builds the in-transaction release closure for a state
+// transition that ends an action WITHOUT any external write (FIX-CYCLE-1 FINDING F3).
+// Passed to advanceWithAudit, it commits ATOMICALLY with the terminal state change and
+// its audit: a card can never reach a no-write terminal state while still holding its
+// variant, and a rollback of the transition rolls the release back with it.
+//
+// It is deliberately NOT used on the Executing → PendingReconciliation resume branch:
+// there a write may have LANDED at the marketplace, the outcome is UNKNOWN, and
+// releasing would infer "nothing is in flight" from "we do not know whether the write
+// landed" (EXE-003, §4.6 quarantine over inference). Only reconciliation releases that
+// one.
+func (s *Service) releaseVariantReservationHook(card db.ApprovalCard, reason string) func(context.Context, pgx.Tx) error {
+	return func(ctx context.Context, tx pgx.Tx) error {
+		return s.releaseVariantReservation(ctx, db.New(tx), card, reason)
+	}
 }
 
 // nowOrWall is the service clock, falling back to wall time when none is injected.

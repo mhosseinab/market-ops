@@ -108,11 +108,63 @@ SELECT count(*) FROM selection_set_members WHERE selection_set_id = $1;
 -- recommendation id's evidence_observation_id is immutable and this resolution is a
 -- PURE FUNCTION of the recommendation id. Re-running it for a historical member
 -- reproduces exactly the identity that was sealed.
+-- FIX-CYCLE-1 FINDING F9 — TENANT QUARANTINE, DEFENCE IN DEPTH (§4.6 identity
+-- quarantine; the same posture as ListUnconsumedObservationsByTarget's issue-#131
+-- account predicate). The join is ALSO predicated on the observation belonging to the
+-- SAME marketplace account as the recommendation that cites it.
+-- recommendations.evidence_observation_id carries NO foreign key — none is
+-- constructable to a partitioned table — so nothing at the database otherwise binds a
+-- cited observation to the recommendation's account. Without the predicate, a
+-- recommendation citing a foreign-account observation would seal ANOTHER TENANT'S offer
+-- identity onto this tenant's member row. With it, such a citation resolves to '' —
+-- EXPLICIT ABSENCE / quarantine — which is the correct answer: this account has no offer
+-- identity for it. No reachable exploit exists today (the caller-ownership check runs
+-- first and evidence_observation_id is server-written), and it costs nothing at runtime.
 SELECT COALESCE(o.offer_identity, '')::text AS offer_identity
 FROM recommendations r
-LEFT JOIN observations o ON o.id = r.evidence_observation_id
+LEFT JOIN observations o
+       ON o.id = r.evidence_observation_id
+      AND o.marketplace_account_id = r.marketplace_account_id
 WHERE r.id = $1
 LIMIT 1;
+
+-- name: ListLiveOfferQualitiesForRecommendationTarget :many
+-- FIX-CYCLE-1 FINDING F1 (issue #87 criterion C, §4.6 evidence-quality states).
+--
+-- The evidence QUALITIES of every LIVE APPLICABLE Observed Offer on the target(s) of a
+-- recommendation's variant. It is the input to the server-side conservative gate: a
+-- target is never MORE eligible than its worst applicable offer, so a member whose
+-- target carries an offer outside the usable set cannot be executable — even when the
+-- client submits nothing at all about that offer.
+--
+-- SCOPE, precisely:
+--   * the member's OWN offer is included. The gate asks about the TARGET, and the
+--     current-state projection's quality may have been demoted by the expiry sweep
+--     after the recommendation was assembled.
+--   * `ended_at IS NULL` — a CLOSED (disappeared, §16) offer is no longer applicable.
+--     Gating on a long-gone listing would be over-tightening, not conservatism.
+--   * account-predicated on BOTH the target and the offer, so one tenant's market can
+--     never gate (or fail to gate) another's.
+--
+-- IT RETURNS QUALITIES, NOT A VERDICT. The usable set is domain knowledge and lives in
+-- exactly one place — recommendation.EvidenceUsable (§10.3) — so this query cannot
+-- drift away from the taxonomy the rest of the plane enforces.
+--
+-- THIS IS NOT AN IDENTITY LOOKUP. Resolving a member's SEALED offer identity by target
+-- is the #87 defect itself (a target legitimately carries MANY identities); that
+-- resolution stays anchored to the recommendation's own evidence in
+-- GetRecommendationSealedOfferIdentity. This query reads only qualities and never
+-- selects an identity.
+SELECT DISTINCT oo.quality
+FROM recommendations r
+JOIN observation_targets t
+  ON t.variant_id = r.variant_id
+ AND t.marketplace_account_id = r.marketplace_account_id
+JOIN observed_offers oo
+  ON oo.target_id = t.id
+ AND oo.marketplace_account_id = r.marketplace_account_id
+WHERE r.id = $1
+  AND oo.ended_at IS NULL;
 
 -- name: InsertBulkActionBinding :one
 -- The APPEND-ONLY bulk provenance ledger row (issue #87, prior findings 1 and 3).
