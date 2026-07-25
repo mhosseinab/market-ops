@@ -359,6 +359,56 @@ def test_card_leading_intent_on_account_level_context_never_guesses_a_target() -
     assert agent_impl.invoked == 0
 
 
+def test_contained_entity_less_card_context_is_distinguishable_in_telemetry() -> None:
+    """The empty-picker fail-closed path carries WHY the turn was ambiguous (#108 H1).
+
+    ``NoCandidatePort`` is what production runs, so this branch is the ONLY way an
+    active-chip CHAT-007 ambiguity is contained today. If every containment reported
+    one flat node-level token, §12.5's "100% containment on ambiguous cases" would
+    not be measurable and an entity-less card chip would look exactly like an
+    account-level one. The resolver's own token must therefore reach state+metrics.
+    """
+    bulk_metrics = ContextResolutionMetrics()
+    bulk_agent = _RecordingAgent()
+    bulk = _graph(
+        bulk_agent,
+        classifier=_fixed_classifier("PrepareAction"),
+        resolution_metrics=bulk_metrics,
+    )
+    # A card-CAPABLE chip that names no entity (the dock's /bulk turn).
+    out = bulk.run_state(
+        _state(_chip_context(kind=ContextKind.BULK.value, entity_id=None), PREPARE_MESSAGE)
+    )
+
+    assert out["failure"]["code"] == "CONTEXT_PICKER_UNAVAILABLE"
+    assert bulk_agent.invoked == 0
+    assert out["active_context"] is None
+    bulk_reason = out["context_resolution"]["reason"]
+    assert "card_context_without_entity" in bulk_reason
+    assert bulk_metrics.by_reason.get(bulk_reason) == 1
+
+    account_metrics = ContextResolutionMetrics()
+    account = _graph(
+        _RecordingAgent(),
+        classifier=_fixed_classifier("PrepareAction"),
+        resolution_metrics=account_metrics,
+    )
+    account_out = account.run_state(
+        _state(
+            _chip_context(kind=ContextKind.GLOBAL.value, entity_id=None, version=None),
+            PREPARE_MESSAGE,
+        )
+    )
+    account_reason = account_out["context_resolution"]["reason"]
+
+    # Separable: the two contained ambiguities never collapse to one token.
+    assert "account_level_context_needs_target" in account_reason
+    assert account_reason != bulk_reason
+    assert bulk_reason not in account_metrics.by_reason
+    # Locale-neutral machine tokens only — no tenant id, entity id or copy.
+    assert ORG not in bulk_reason and ACCOUNT not in bulk_reason
+
+
 def test_card_leading_intent_without_a_bindable_version_fails_closed() -> None:
     """A card-leading chip missing the version a card binds never resolves (§8.1)."""
     agent_impl = _RecordingAgent()

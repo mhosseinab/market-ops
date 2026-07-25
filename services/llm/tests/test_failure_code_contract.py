@@ -72,6 +72,9 @@ def _failure_code_key_map() -> set[str]:
 
 def test_every_emitted_failure_code_literal_is_declared() -> None:
     """The declared set IS the set the code emits — not a copy that can drift."""
+    # Non-empty guard (mirrors the TS side's ``declared.length > 0``): emptying the
+    # declaration AND the emitters together must not satisfy the equality vacuously.
+    assert EMITTABLE_FAILURE_CODES
     assert _emitted_code_literals() == set(EMITTABLE_FAILURE_CODES)
 
 

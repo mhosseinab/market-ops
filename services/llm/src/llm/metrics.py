@@ -71,7 +71,12 @@ class ContextResolutionMetrics:
     ``by_outcome`` counts the resolution kinds; ``by_reason`` counts the
     resolver's OWN stable reason tokens (``organization_scope_mismatch``,
     ``ambiguous_reference_card``, ``missing_context_version``, …) — the existing
-    machine vocabulary, never an invented synonym. Both are locale-neutral
+    machine vocabulary, never an invented synonym. Where the node adds its own
+    outcome on top of a resolver outcome, the token is the COMPOUND
+    ``"<node token>:<resolver token>"`` (today only
+    ``picker_without_options:<why the turn was ambiguous>``), so the resolver's
+    reason is never dropped and the contained-ambiguity paths stay separable from
+    each other and from a real not-found. Both counters are locale-neutral
     machine tokens. No message text, no tenant identifier, no entity id and no
     Persian copy is ever recorded here (CLAUDE.md observability).
     """

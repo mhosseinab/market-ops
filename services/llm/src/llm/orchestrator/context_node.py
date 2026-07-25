@@ -30,6 +30,16 @@ conversation can name an account owned by another organization, in which case
 scope and payload provenance trace to the SAME unvalidated row. Passing this
 scope check is therefore necessary but NOT sufficient tenant authorization for an
 authoritative read — 108c's consumers must not treat it as such.
+
+More precisely: on today's gateway path the payload's ``organization_id`` and the
+turn's scope organization COINCIDE BY CONSTRUCTION (``BeginTurn`` creates the
+conversation under the principal's org or loads it via the org-filtered
+``GetConversationForOrg`` — recorded on ``ContextOrganizationID`` in
+``services/core/internal/httpapi/chat.go``), so the ORGANIZATION half of the check
+is defence-in-depth against a future non-org-filtered read, not an independent
+discriminator; the ACCOUNT half is the load-bearing one. Both halves stay — the
+comparison is what keeps a producer that filled provenance from the request
+detectable — but neither may be read as tenant authorization.
 """
 
 from __future__ import annotations
@@ -210,12 +220,21 @@ def resolve_turn_context(
             # An option-less picker would be a dead end inviting a guess. The
             # authoritative candidate supply that would populate it is the 108c
             # gateway read seam (issue #108); until then this fails closed.
+            #
+            # The emitted reason is COMPOUND — the node-level token, then the
+            # resolver's OWN token for WHY the turn was ambiguous. Production runs
+            # ``NoCandidatePort``, so this branch is the only way an active-chip
+            # CHAT-007 ambiguity is contained today; a flat node-level token would
+            # collapse every containment into one bucket and make §12.5's
+            # "100% containment on ambiguous cases" unmeasurable, and an entity-less
+            # card chip indistinguishable from an account-level one. The failure
+            # CODE already says "no options", so the reason field carries the why.
             return _fail(
                 metrics,
                 code="CONTEXT_PICKER_UNAVAILABLE",
                 message="the assistant needs a specific item to continue; "
                 "choose one on the structured screen",
-                reason=REASON_EMPTY_PICKER,
+                reason=f"{REASON_EMPTY_PICKER}:{resolution.reason}",
                 resolution=resolution,
             )
         metrics.record_resolution(resolution.kind.value, resolution.reason)
