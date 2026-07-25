@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -15,6 +16,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 )
 
@@ -169,15 +171,205 @@ func TestSelfRevokeIsIdempotent(t *testing.T) {
 // TestSelfRevokeUnavailablePairingPlaneFailsClosed: with no pairing service the
 // credential cannot be authenticated at all, so the route is refused — it never
 // reports a revocation that did not happen.
+//
+// It answers 503 (the status the contract advertises for an unconfigured
+// pairing plane), NOT 401. The contract binds 401 to "the credential is not
+// valid at the authority", which a client treats as a CONFIRMED revocation;
+// answering 401 because this instance has no pairing plane would tell the
+// extension a still-live credential was killed (issue #149's exact impact).
 func TestSelfRevokeUnavailablePairingPlaneFailsClosed(t *testing.T) {
 	srv := NewServer(":0", BuildInfo{}, testLogger(), WithAuth(newFakeAuth()), WithCookieSecure(false))
 	req := selfRevokeReq("")
 	req.Header.Set("Authorization", "Bearer anything")
 	rec := httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("self-revoke with no pairing plane = %d, want 401 (fail closed)", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("self-revoke with no pairing plane = %d, want 503 (fail closed, NOT a confirmed revocation)", rec.Code)
 	}
+}
+
+// selfRevokeOutcomes collects the kill-switch counter's datapoints keyed by
+// their `outcome` label, so a test can assert the boundary's telemetry rather
+// than merely its status code.
+func selfRevokeOutcomes(t *testing.T, reader *sdkmetric.ManualReader) map[string]int64 {
+	t.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("collect metrics: %v", err)
+	}
+	out := map[string]int64{}
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name != pairingSelfRevokeMetric {
+				continue
+			}
+			sum, ok := m.Data.(metricdata.Sum[int64])
+			if !ok {
+				t.Fatalf("%s is %T, want an int64 counter", m.Name, m.Data)
+			}
+			for _, dp := range sum.DataPoints {
+				v, ok := dp.Attributes.Value("outcome")
+				if !ok {
+					t.Fatalf("%s datapoint has no outcome label", m.Name)
+				}
+				out[v.AsString()] += dp.Value
+			}
+		}
+	}
+	return out
+}
+
+// withManualMeter installs a manual-reader MeterProvider for the duration of a
+// test and returns the reader.
+func withManualMeter(t *testing.T) *sdkmetric.ManualReader {
+	t.Helper()
+	reader := sdkmetric.NewManualReader()
+	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(provider)
+	t.Cleanup(func() { otel.SetMeterProvider(prev) })
+	return reader
+}
+
+// TestTransientCredentialResolveFailureIsNeverAConfirmedRevocation is the F1
+// regression for issue #149. The contract states a client MUST treat 401 on the
+// self-revoke route as CONFIRMED revocation, and the extension implements
+// exactly that. So 401 may ONLY be returned when the credential is genuinely
+// not valid at the authority.
+//
+// Before the fix the middleware collapsed EVERY ResolveCredential error to 401:
+// pairing.ResolveCredential returns ErrInvalidCredential only for pgx.ErrNoRows
+// and wraps every other failure (DB outage, pool exhaustion, statement timeout).
+// A transient store failure therefore answered 401 with the credential row still
+// LIVE — the extension discarded its credential, cleared the pending marker and
+// reported the kill switch complete, while a copied credential kept uploading
+// for the remaining 30-day TTL. That is the #149 impact statement verbatim.
+//
+// A transient failure is NOT an authoritative statement about the credential, so
+// it must render as 5xx (which the extension maps to `pending` and retries).
+func TestTransientCredentialResolveFailureIsNeverAConfirmedRevocation(t *testing.T) {
+	transient := errors.New("pairing: resolve credential: conn busy: another query is in progress")
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"self-revoke (a false 401 here is a false CONFIRMED revocation)", http.MethodPost, selfRevokePath},
+		{"owned-targets (the same credential-scoped resolve seam)", http.MethodGet, "/ext/owned-targets"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fp := &fakePairing{
+				account:      uuid.New(),
+				credential:   "live-capture-credential",
+				credentialID: uuid.New(),
+				resolveErr:   transient,
+			}
+			srv := NewServer(":0", BuildInfo{}, testLogger(),
+				WithAuth(newFakeAuth()), WithCookieSecure(false), WithPairing(fp))
+
+			req := httptest.NewRequest(tc.method, tc.path, nil)
+			req.Header.Set("Authorization", "Bearer live-capture-credential")
+			rec := httptest.NewRecorder()
+			srv.Handler.ServeHTTP(rec, req)
+
+			if fp.resolveCalls == 0 {
+				t.Fatal("the middleware never reached the pairing plane — the probe proves nothing")
+			}
+			if rec.Code == http.StatusUnauthorized {
+				t.Fatalf("a TRANSIENT store failure answered 401; a client reads that as CONFIRMED revocation while the credential row is still live (issue #149)")
+			}
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("transient resolve failure = %d, want 500", rec.Code)
+			}
+			if fp.revokedCredentials != nil {
+				t.Fatalf("nothing was revoked, yet credentials were mutated: %v", fp.revokedCredentials)
+			}
+		})
+	}
+}
+
+// TestSelfRevokeNeverReportsSuccessOnAFailedRevocation is the F2 regression: the
+// handler's "NEVER report success on a failed revocation" branch. A store
+// failure inside RevokeCredentialByID must render as a NON-2xx (so the extension
+// keeps capture disabled, retains the credential and retries) and must be
+// OBSERVABLE as outcome="error" — never silently absorbed into a 204.
+func TestSelfRevokeNeverReportsSuccessOnAFailedRevocation(t *testing.T) {
+	reader := withManualMeter(t)
+	fp := &fakePairing{
+		account:       uuid.New(),
+		credential:    "live-capture-credential",
+		credentialID:  uuid.New(),
+		revokeByIDErr: errors.New("pairing: revoke credential: write failed"),
+	}
+	srv := NewServer(":0", BuildInfo{}, testLogger(),
+		WithAuth(newFakeAuth()), WithCookieSecure(false), WithPairing(fp))
+
+	req := selfRevokeReq("")
+	req.Header.Set("Authorization", "Bearer live-capture-credential")
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+
+	if rec.Code/100 == 2 {
+		t.Fatalf("a FAILED revocation answered %d — the extension would treat it as confirmed and discard a live credential", rec.Code)
+	}
+	if rec.Code == http.StatusUnauthorized {
+		t.Fatalf("a failed revocation answered 401, which the contract defines as CONFIRMED revocation")
+	}
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed revocation = %d, want 500", rec.Code)
+	}
+	if got := selfRevokeOutcomes(t, reader)["error"]; got != 1 {
+		t.Fatalf(`%s{outcome="error"} = %d, want 1 — a failed kill switch must be observable`, pairingSelfRevokeMetric, got)
+	}
+}
+
+// TestSelfRevokeUnavailableAndNoIdentityOutcomesAreObservable exercises the
+// handler's two remaining fail-closed branches directly. The middleware now
+// refuses an unconfigured pairing plane with 503 before the handler runs, so the
+// handler's own nil-pairing guard is defence in depth — it still must never
+// report a revocation that did not happen, and both refusals must be visible in
+// telemetry (CLAUDE.md: a fallback engaging without an emitted event is a bug).
+func TestSelfRevokeUnavailableAndNoIdentityOutcomesAreObservable(t *testing.T) {
+	t.Run("no pairing plane emits outcome=unavailable and 503", func(t *testing.T) {
+		reader := withManualMeter(t)
+		gs := &gatewayServer{logger: testLogger(), pairingTelemetry: newPairingTelemetry()}
+		resp, err := gs.SelfRevokeCapturePairing(context.Background(), gateway.SelfRevokeCapturePairingRequestObject{})
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+		if _, ok := resp.(gateway.SelfRevokeCapturePairing503JSONResponse); !ok {
+			t.Fatalf("no-pairing-plane response = %T, want 503", resp)
+		}
+		if got := selfRevokeOutcomes(t, reader)["unavailable"]; got != 1 {
+			t.Fatalf(`%s{outcome="unavailable"} = %d, want 1`, pairingSelfRevokeMetric, got)
+		}
+	})
+
+	t.Run("no credential identity emits outcome=no_credential_identity and 401", func(t *testing.T) {
+		reader := withManualMeter(t)
+		fp := &fakePairing{account: uuid.New(), credential: "live-capture-credential", credentialID: uuid.New()}
+		gs := &gatewayServer{logger: testLogger(), pairing: fp, pairingTelemetry: newPairingTelemetry()}
+		// No middleware ran, so the context carries NO credential identity. The
+		// handler must refuse rather than invent one or fall back to the
+		// account-wide kill switch (identity quarantine, §4.6).
+		resp, err := gs.SelfRevokeCapturePairing(context.Background(), gateway.SelfRevokeCapturePairingRequestObject{})
+		if err != nil {
+			t.Fatalf("handler error: %v", err)
+		}
+		if _, ok := resp.(gateway.SelfRevokeCapturePairing401JSONResponse); !ok {
+			t.Fatalf("no-identity response = %T, want 401", resp)
+		}
+		if fp.revokedCredentials != nil {
+			t.Fatalf("a request with no credential identity revoked %v", fp.revokedCredentials)
+		}
+		if fp.revokeCalls != 0 {
+			t.Fatal("a request with no credential identity fell back to the account-wide kill switch")
+		}
+		if got := selfRevokeOutcomes(t, reader)["no_credential_identity"]; got != 1 {
+			t.Fatalf(`%s{outcome="no_credential_identity"} = %d, want 1`, pairingSelfRevokeMetric, got)
+		}
+	})
 }
 
 // TestSelfRevokeEmitsObservability: a kill switch engaging without an emitted,

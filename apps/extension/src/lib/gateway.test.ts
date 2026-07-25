@@ -111,7 +111,7 @@ describe("GatewayClient.revokeCredential — server-side self-revoke (#149, EXT-
     const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
     const client = new GatewayClient("http://gw", fetcher);
 
-    expect(await client.revokeCredential("cap-cred")).toBe("confirmed");
+    expect((await client.revokeCredential("cap-cred")).outcome).toBe("confirmed");
 
     const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe("http://gw/ext/pairing/self-revoke");
@@ -127,18 +127,38 @@ describe("GatewayClient.revokeCredential — server-side self-revoke (#149, EXT-
     // Without this, a pending marker for an expired/already-revoked credential
     // could never clear and the extension would retry forever.
     const client = new GatewayClient("http://gw", async () => new Response("{}", { status: 401 }));
-    expect(await client.revokeCredential("cap-cred")).toBe("confirmed");
+    expect((await client.revokeCredential("cap-cred")).outcome).toBe("confirmed");
   });
 
   it("network error, 5xx, and 503 are NOT confirmations — they stay pending", async () => {
     for (const status of [500, 502, 503, 400, 403, 404]) {
       const client = new GatewayClient("http://gw", async () => new Response("{}", { status }));
-      expect(await client.revokeCredential("cap-cred")).toBe("pending");
+      expect((await client.revokeCredential("cap-cred")).outcome).toBe("pending");
     }
     const offline = new GatewayClient("http://gw", async () => {
       throw new Error("offline");
     });
-    expect(await offline.revokeCredential("cap-cred")).toBe("pending");
+    expect((await offline.revokeCredential("cap-cred")).outcome).toBe("pending");
+  });
+
+  // Issue #149 (F4). The caller needs to distinguish "the server answered, just
+  // not authoritatively" from "we never reached the server at all", because the
+  // pending marker's expiry shortcut is judged against the DEVICE clock. A
+  // device that has never reached the gateway has no evidence its clock is
+  // right, so it may not conclude the credential expired.
+  it("reports whether the SERVER was actually reached, separately from the outcome", async () => {
+    for (const status of [204, 401, 500, 503]) {
+      const client = new GatewayClient(
+        "http://gw",
+        // A 204 carries NO body (constructing one with a body throws).
+        async () => new Response(status === 204 ? null : "{}", { status }),
+      );
+      expect((await client.revokeCredential("cap-cred")).reachedServer).toBe(true);
+    }
+    const offline = new GatewayClient("http://gw", async () => {
+      throw new Error("offline");
+    });
+    expect((await offline.revokeCredential("cap-cred")).reachedServer).toBe(false);
   });
 });
 

@@ -17,6 +17,16 @@ export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 //               recorded and retried, and capture stays disabled meanwhile.
 export type RevocationOutcome = "confirmed" | "pending";
 
+// The result of one self-revoke attempt. `reachedServer` is deliberately
+// SEPARATE from the outcome: a 500 and a network failure are both "pending",
+// but only the former proves the gateway is reachable from this device. The
+// pending marker's expiry shortcut is judged against the DEVICE clock, so it
+// requires that proof before it may finalize (issue #149).
+export interface RevocationResult {
+  outcome: RevocationOutcome;
+  reachedServer: boolean;
+}
+
 export class GatewayClient {
   constructor(
     private baseUrl: string,
@@ -78,12 +88,17 @@ export class GatewayClient {
   //                       same end state a successful revoke produces, so it is
   //                       CONFIRMED — treating it as pending would strand a
   //                       pending marker forever on an expired credential.
+  //                       The gateway upholds the other half of this bargain:
+  //                       it answers 503/500 (never 401) for an unconfigured
+  //                       plane or a transient store failure, so a 401 always
+  //                       means the authority genuinely does not recognise the
+  //                       credential.
   //   anything else (4xx other than 401, 5xx, 503, network/transport failure)
   //                     — NOT an authoritative statement that the credential is
   //                       dead, so it stays PENDING: capture remains disabled,
   //                       the credential material is retained, and the revoke is
   //                       retried. Never a silent "assume it worked".
-  async revokeCredential(credential: string): Promise<RevocationOutcome> {
+  async revokeCredential(credential: string): Promise<RevocationResult> {
     let resp: Response;
     try {
       resp = await this.fetcher(`${this.baseUrl}/ext/pairing/self-revoke`, {
@@ -91,10 +106,12 @@ export class GatewayClient {
         headers: { authorization: `Bearer ${credential}` },
       });
     } catch {
-      return "pending"; // network/transport error — no authoritative answer
+      // Network/transport error — no authoritative answer, and no evidence the
+      // gateway is reachable from this device at all.
+      return { outcome: "pending", reachedServer: false };
     }
-    if (resp.ok || resp.status === 401) return "confirmed";
-    return "pending";
+    if (resp.ok || resp.status === 401) return { outcome: "confirmed", reachedServer: true };
+    return { outcome: "pending", reachedServer: true };
   }
 
   // fetchOwnedTargets reads the paired account's Confirmed owned observation

@@ -12,6 +12,7 @@ import (
 
 	gateway "github.com/mhosseinab/market-ops/gen/go"
 	"github.com/mhosseinab/market-ops/services/core/internal/auth"
+	"github.com/mhosseinab/market-ops/services/core/internal/pairing"
 	"github.com/mhosseinab/market-ops/services/core/internal/perm"
 )
 
@@ -102,8 +103,12 @@ const (
 	// there is NO human-session fallback and the LLM machine gateway token is NEVER
 	// accepted, so tenant authority stays strictly credential-derived (the #131
 	// systemic concern). A revoked/expired/unknown/absent credential fails closed
-	// with 401. Unlike kindCapture there is no caller-supplied account to reconcile:
-	// the handler reads ONLY the injected credential account.
+	// with 401 — but ONLY when the pairing plane says so authoritatively; an
+	// unconfigured plane is 503 and a transient store failure is 500, never 401
+	// (issue #149: 401 on these routes means "the credential is dead", and a
+	// client acts on that). Unlike kindCapture there is no caller-supplied
+	// account to reconcile: the handler reads ONLY the injected credential
+	// account.
 	kindCaptureRead
 	// kindCaptureSelfRevoke: the credential-scoped SELF-revoke WRITE (POST
 	// /ext/pairing/self-revoke, issue #149 / PD-4(B)). Its AUTHENTICATION
@@ -432,13 +437,35 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 			// identity are always derived from the credential — never caller-selected.
 			// An absent/revoked/expired/unknown credential fails closed with 401,
 			// which is also what makes a repeated self-revoke idempotent.
+			//
+			// 401 is LOAD-BEARING on these routes, not a generic refusal: the
+			// contract binds it to "this credential is not valid at the
+			// authority", and the extension therefore treats a 401 on
+			// /ext/pairing/self-revoke as a CONFIRMED revocation and discards
+			// its credential material. So 401 may be returned ONLY when the
+			// pairing plane authoritatively says the credential is invalid.
+			// A missing pairing plane or a TRANSIENT store failure (DB outage,
+			// pool exhaustion, statement timeout) says nothing about the
+			// credential — answering 401 there would tell the extension a
+			// still-live credential was killed, which is issue #149's exact
+			// impact. Those render as 503/500, which the client maps to
+			// `pending` and retries.
 			bt := bearerToken(r)
-			if bt == "" || m.pairing == nil {
+			if bt == "" {
 				writeError(w, http.StatusUnauthorized, noSessionErr())
+				return
+			}
+			if m.pairing == nil {
+				// The status both routes advertise for an unconfigured plane.
+				writeError(w, http.StatusServiceUnavailable, pairingUnavailableErr())
 				return
 			}
 			resolved, err := m.pairing.ResolveCredential(r.Context(), bt)
 			if err != nil {
+				if !errors.Is(err, pairing.ErrInvalidCredential) {
+					writeError(w, http.StatusInternalServerError, internalErr())
+					return
+				}
 				writeError(w, http.StatusUnauthorized, noSessionErr())
 				return
 			}

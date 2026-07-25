@@ -37,6 +37,15 @@ type fakePairing struct {
 	revokedCredentials []uuid.UUID
 	// revokeByIDErr, when set, makes the self-revoke fail (drives the 5xx path).
 	revokeByIDErr error
+	// resolveErr, when set, makes ResolveCredential fail with a NON-
+	// ErrInvalidCredential error — a TRANSIENT infrastructure failure (DB
+	// outage, pool exhaustion, statement timeout), not an authoritative "this
+	// credential is dead". Issue #149: collapsing it to 401 would tell the
+	// extension the revocation was CONFIRMED while the server row is still live.
+	resolveErr error
+	// resolveCalls counts ResolveCredential invocations so a test can prove the
+	// middleware really reached the pairing plane.
+	resolveCalls int
 }
 
 func (f *fakePairing) MintCode(_ context.Context, org uuid.UUID) (pairing.Code, error) {
@@ -61,6 +70,10 @@ func (f *fakePairing) Claim(_ context.Context, raw string) (pairing.Credential, 
 }
 
 func (f *fakePairing) ResolveCredential(_ context.Context, raw string) (pairing.Resolved, error) {
+	f.resolveCalls++
+	if f.resolveErr != nil {
+		return pairing.Resolved{}, f.resolveErr
+	}
 	if f.revoked || raw == "" || raw != f.credential {
 		return pairing.Resolved{}, pairing.ErrInvalidCredential
 	}

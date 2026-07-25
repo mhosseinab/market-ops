@@ -953,7 +953,11 @@ paths:
         credential is no longer valid at the authority — so a repeated revoke is
         idempotent in effect and a pending-revocation marker can always clear.
         Any other outcome (5xx, 503, transport failure) is NOT a confirmation:
-        the client keeps capture disabled and retries.
+        the client keeps capture disabled and retries. Because a client acts on
+        401 by discarding its credential, the server NEVER answers 401 for an
+        infrastructure failure: an unconfigured pairing plane is 503 and a
+        transient store failure is 500, so 401 always means the authority
+        genuinely does not recognise this credential.
       security:
         - captureAuth: []
       responses:
@@ -971,7 +975,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '503':
-          description: The pairing plane is not configured.
+          description: >-
+            The pairing plane is not configured, so this instance cannot revoke
+            anything. NOT a confirmation — the client stays pending and retries.
           content:
             application/json:
               schema:
@@ -1018,7 +1024,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorEnvelope'
         '503':
-          description: The observation plane is not configured.
+          description: >-
+            The pairing or observation plane is not configured. Distinct from
+            401 on purpose: 401 states the CREDENTIAL is invalid, while 503
+            states this instance cannot answer at all.
           content:
             application/json:
               schema:

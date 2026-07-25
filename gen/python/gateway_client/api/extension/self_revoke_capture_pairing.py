@@ -66,7 +66,10 @@ def sync_detailed(
     401 BEFORE reaching the handler. A client MUST treat 401 here as CONFIRMED revocation — the
     credential is no longer valid at the authority — so a repeated revoke is idempotent in effect and a
     pending-revocation marker can always clear. Any other outcome (5xx, 503, transport failure) is NOT a
-    confirmation: the client keeps capture disabled and retries.
+    confirmation: the client keeps capture disabled and retries. Because a client acts on 401 by
+    discarding its credential, the server NEVER answers 401 for an infrastructure failure: an
+    unconfigured pairing plane is 503 and a transient store failure is 500, so 401 always means the
+    authority genuinely does not recognise this credential.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -104,7 +107,10 @@ def sync(
     401 BEFORE reaching the handler. A client MUST treat 401 here as CONFIRMED revocation — the
     credential is no longer valid at the authority — so a repeated revoke is idempotent in effect and a
     pending-revocation marker can always clear. Any other outcome (5xx, 503, transport failure) is NOT a
-    confirmation: the client keeps capture disabled and retries.
+    confirmation: the client keeps capture disabled and retries. Because a client acts on 401 by
+    discarding its credential, the server NEVER answers 401 for an infrastructure failure: an
+    unconfigured pairing plane is 503 and a transient store failure is 500, so 401 always means the
+    authority genuinely does not recognise this credential.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -138,7 +144,10 @@ async def asyncio_detailed(
     401 BEFORE reaching the handler. A client MUST treat 401 here as CONFIRMED revocation — the
     credential is no longer valid at the authority — so a repeated revoke is idempotent in effect and a
     pending-revocation marker can always clear. Any other outcome (5xx, 503, transport failure) is NOT a
-    confirmation: the client keeps capture disabled and retries.
+    confirmation: the client keeps capture disabled and retries. Because a client acts on 401 by
+    discarding its credential, the server NEVER answers 401 for an infrastructure failure: an
+    unconfigured pairing plane is 503 and a transient store failure is 500, so 401 always means the
+    authority genuinely does not recognise this credential.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -174,7 +183,10 @@ async def asyncio(
     401 BEFORE reaching the handler. A client MUST treat 401 here as CONFIRMED revocation — the
     credential is no longer valid at the authority — so a repeated revoke is idempotent in effect and a
     pending-revocation marker can always clear. Any other outcome (5xx, 503, transport failure) is NOT a
-    confirmation: the client keeps capture disabled and retries.
+    confirmation: the client keeps capture disabled and retries. Because a client acts on 401 by
+    discarding its credential, the server NEVER answers 401 for an infrastructure failure: an
+    unconfigured pairing plane is 503 and a transient store failure is 500, so 401 always means the
+    authority genuinely does not recognise this credential.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

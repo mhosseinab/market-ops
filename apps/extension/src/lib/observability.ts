@@ -24,11 +24,29 @@ export type MetricName =
   | "dead_letter_retry"
   | "dead_letter_discard"
   | "capability_transition"
-  // The EXT-009 kill switch's SERVER-side revocation (issue #149):
-  // `credential_revocation{outcome}` records confirmed (the authority
-  // invalidated the credential), pending (no authoritative answer — retried), or
-  // expired (the credential's authoritative expiry passed). It never carries the
-  // credential secret.
+  // The EXT-009 kill switch's SERVER-side revocation (issue #149).
+  // `credential_revocation{outcome}` never carries the credential secret. The
+  // outcome vocabulary is deliberately fine-grained so telemetry can always
+  // distinguish a REAL revocation from a local resolution of one:
+  //   confirmed             — the authority invalidated the credential (204, or
+  //                           401 meaning it no longer authenticates anything);
+  //   pending               — no authoritative answer; retried under backoff;
+  //   deferred              — a retry was skipped because it is inside its
+  //                           backoff window (bounded load, not a drop);
+  //   expiry_unverified     — the credential looks expired by the DEVICE clock,
+  //                           but the gateway has never been reached from this
+  //                           device, so the expiry shortcut was REFUSED;
+  //   expired_local_clock   — expiry finalized the revoke. Named for what it
+  //                           actually is: a device-clock judgment (backed by at
+  //                           least one real gateway round-trip), never a server
+  //                           confirmation;
+  //   orphaned              — the pending marker's credential material is gone,
+  //                           so no retry can ever succeed. The ONLY path to
+  //                           `revoked` without a confirmation or an expiry
+  //                           check, hence its own outcome;
+  //   marker_reconstructed  — a `revocation_pending` capability was found with no
+  //                           durable marker and the marker was rebuilt from the
+  //                           stored credential, so the revoke is not stranded.
   | "credential_revocation"
   // The content script's capability-before-fetch gate (issue #155): a product
   // read that was refused because capture is not READY (unknown/disabled/revoked).
@@ -38,9 +56,11 @@ export type MetricName =
   | "on_demand_latency_ms"
   | "watchlist_add"
   // The credential-scoped Confirmed-owned-target sync (#145, GET
-  // /ext/owned-targets): `owned_targets_sync{outcome}` records ok vs. a
-  // fail-closed clear (unavailable), and `owned_targets_count` gauges the
-  // current projected target count.
+  // /ext/owned-targets): `owned_targets_sync{outcome}` records ok, a fail-closed
+  // clear after a failed read (unavailable), a stale completion (stale), or a
+  // sync REFUSED before any request because capture is not ready — including an
+  // unconfirmed revocation (not_ready, issue #149). `owned_targets_count` gauges
+  // the current projected target count.
   | "owned_targets_sync"
   | "owned_targets_count"
   | "schedule_cycle"

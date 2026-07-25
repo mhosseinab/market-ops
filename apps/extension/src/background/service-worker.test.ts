@@ -790,6 +790,19 @@ describe("service worker — #149 Revoke revokes the credential at the SERVER be
     expect(storage.get(KEY_REVOCATION_PENDING)).toBeDefined();
     expect(storage.get(KEY_CREDENTIAL)).toBeDefined();
     const survivingStorage = storage;
+    // Simulate the retry backoff window elapsing (issue #149 F3). The retry is
+    // now scheduled from the DURABLE attempt count, so a restart resumes the
+    // pending revoke on its schedule rather than immediately — the invariant
+    // under test ("a pending revoke survives a restart and is retried until the
+    // server confirms") is unchanged; only "immediately" was never a guarantee
+    // the kill switch needed, and an unbounded 1/min retry is the thundering
+    // herd F3 closes. Moving the persisted schedule into the past IS "time
+    // passed", because the marker is the only record of it.
+    const persisted = survivingStorage.get(KEY_REVOCATION_PENDING) as Record<string, unknown>;
+    survivingStorage.set(KEY_REVOCATION_PENDING, {
+      ...persisted,
+      nextAttemptAt: new Date(Date.now() - 1000).toISOString(),
+    });
     vi.unstubAllGlobals();
 
     // Boot 2: the SAME chrome.storage (an MV3 teardown loses only memory), the
@@ -883,5 +896,390 @@ describe("service worker — #149 Revoke revokes the credential at the SERVER be
       ok: false,
       error: "revocation_pending",
     });
+  });
+});
+
+// Issue #149, review cycle 1. Findings F3–F7: the pending-revocation state
+// machine's remaining fail-open seams. Every test here is a NEGATIVE — it
+// asserts the kill switch never reports more than it achieved and never keeps
+// using a credential the user asked to kill.
+describe("service worker — #149 pending revocation never leaks a live credential (F3–F7)", () => {
+  const KEY_REVOCATION_PENDING = "revocationPending";
+  const CRED_B = {
+    credential: "cap-cred-hex-B",
+    credentialId: "55555555-5555-5555-5555-555555555555",
+    marketplaceAccountId: "22222222-2222-2222-2222-222222222222",
+    expiresAt: "2026-08-01T00:00:00Z",
+  };
+
+  const product = parsedProduct();
+  let storage: Map<string, unknown>;
+
+  // A fetch mock that records EVERY request with its Authorization header, so a
+  // test can prove which credential (if any) a call was made with.
+  function recordingFetch(opts: {
+    revoke: () => Response | Promise<Response>;
+    claim?: () => typeof CRED | typeof CRED_B;
+    targetsFor?: (auth: string) => unknown[];
+  }) {
+    const calls: Array<{ url: string; auth: string; body?: string }> = [];
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const auth = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+      calls.push({ url, auth, body: init?.body as string | undefined });
+      if (url.includes("/ext/pairing/claim")) {
+        return new Response(JSON.stringify(opts.claim ? opts.claim() : CRED), { status: 200 });
+      }
+      if (url.includes("/ext/pairing/self-revoke")) return await opts.revoke();
+      if (url.includes("/ext/owned-targets")) {
+        const rows = opts.targetsFor ? opts.targetsFor(auth) : [ownedTargetRow(product)];
+        return new Response(JSON.stringify({ items: rows }), { status: 200 });
+      }
+      return new Response(null, { status: 202 });
+    });
+    return { fetch, calls };
+  }
+
+  function alarmHandler(): (a: { name: string }) => void {
+    const chromeMock = (
+      globalThis as unknown as {
+        chrome: { alarms: { onAlarm: { addListener: ReturnType<typeof vi.fn> } } };
+      }
+    ).chrome;
+    return chromeMock.alarms.onAlarm.addListener.mock.calls[0]?.[0] as (a: {
+      name: string;
+    }) => void;
+  }
+
+  const settle = async () => {
+    for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
+  };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // F5 (a). REGRESSION vs. origin/main: while a revoke is pending the retained
+  // credential kept syncing owned targets, because syncOwnedTargets gated on
+  // credential PRESENCE only — no capability check, no pending-revocation check.
+  // Every 15-minute alarm and every worker start re-issued GET /ext/owned-targets
+  // with the exact credential the user just asked to revoke, and repopulated the
+  // index handleRevoke had deliberately cleared.
+  it("F5(a): a PENDING revoke stops owned-target sync — the revoked-by-request credential never calls the gateway again", async () => {
+    const rf = recordingFetch({ revoke: () => new Response("{}", { status: 500 }) });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+
+    const resp = await send({ kind: "revoke" });
+    if (!("state" in resp)) throw new Error("expected state");
+    expect(resp.state.capability).toBe("revocation_pending");
+    rf.calls.length = 0;
+
+    // The periodic refresh fires while the revoke is still unconfirmed.
+    alarmHandler()({ name: "scheduled-refresh" });
+    await settle();
+
+    const targetReads = rf.calls.filter((c) => c.url.includes("/ext/owned-targets"));
+    expect(targetReads).toEqual([]);
+    // …and nothing repopulated the deliberately-cleared index.
+    expect(await send({ kind: "addToWatchlist", product })).toEqual({
+      ok: true,
+      watchlist: { ok: false, reason: "denied" },
+    });
+  });
+
+  // F5 (b). finalizeRevocation removed the credential and set `revoked` but,
+  // unlike handleRevoke, neither bumped the sync generation nor cleared the
+  // index. A repopulated PRE-revocation index therefore survived finalization
+  // and could resolve a target belonging to account A while the extension was
+  // authenticated as account B.
+  it("F5(b): finalizing a revocation tears the owned-target index down, so a re-pair mid-sync can never upload account A's target under account B's credential", async () => {
+    let claimed = CRED;
+    // Account B's owned-target read HANGS, so the re-pair's sync is still in
+    // flight when a capture arrives — the window Probe B exercises. Account B
+    // owns NOTHING, so any target that resolves in that window can only have
+    // come from account A's PRE-revocation projection.
+    let releaseBSync: () => void = () => {};
+    const bSyncBlocked = new Promise<void>((r) => {
+      releaseBSync = r;
+    });
+    const calls: Array<{ url: string; auth: string; body?: string }> = [];
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      const auth = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+      calls.push({ url, auth, body: init?.body as string | undefined });
+      if (url.includes("/ext/pairing/claim")) {
+        return new Response(JSON.stringify(claimed), { status: 200 });
+      }
+      if (url.includes("/ext/pairing/self-revoke")) return new Response(null, { status: 204 });
+      if (url.includes("/ext/owned-targets")) {
+        if (auth === `Bearer ${CRED.credential}`) {
+          return new Response(JSON.stringify({ items: [ownedTargetRow(product)] }), {
+            status: 200,
+          });
+        }
+        await bSyncBlocked; // account B's sync never completes during the window
+        return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      }
+      return new Response(null, { status: 202 });
+    });
+    vi.stubGlobal("fetch", fetch);
+    storage = installChromeMock().storage;
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" }); // index := account A's target
+
+    // A pending revoke exists while the projection is still populated in memory
+    // — the state the reconciliation path (F7) and any teardown-then-respawn
+    // sequence produce. Written directly so the settle, not handleRevoke, is
+    // what clears the index.
+    storage.set(KEY_REVOCATION_PENDING, {
+      requestedAt: new Date().toISOString(),
+      credentialId: CRED.credentialId,
+      marketplaceAccountId: CRED.marketplaceAccountId,
+      credentialExpiresAt: CRED.expiresAt,
+      attempts: 0,
+      serverContacted: true,
+    });
+    storage.set(KEY_CAPABILITY, "revocation_pending");
+
+    // The server confirms: finalizeRevocation runs with the index POPULATED.
+    alarmHandler()({ name: "queue-flush" });
+    await settle();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+
+    // The user re-pairs to a DIFFERENT marketplace account. Its owned-target
+    // sync is still in flight (deliberately blocked) when a capture arrives.
+    claimed = CRED_B;
+    const pairing = send({ kind: "pair", code: "code-123" });
+    await settle();
+    calls.length = 0;
+    await send({ kind: "capture", product });
+    await settle();
+
+    const uploads = calls.filter((c) => c.url.includes("/observation/capture"));
+    for (const upload of uploads) {
+      expect(upload.body ?? "").not.toContain(CRED.marketplaceAccountId);
+      expect(upload.body ?? "").not.toContain("target-1");
+    }
+    expect(uploads).toEqual([]);
+
+    releaseBSync();
+    await pairing;
+  });
+
+  // F7. Durability ordering: setCapability("revocation_pending") ran BEFORE the
+  // durable marker was written. An MV3 teardown between those two awaits left
+  // capability `revocation_pending` with NO marker; retryPendingRevocation then
+  // early-returned without reconciling, so the revoke was never retried and the
+  // server credential stayed live until its own 30-day expiry — while the popup
+  // showed "awaiting confirmation" forever.
+  it("F7: a capability of revocation_pending with NO durable marker is reconciled and retried, never stranded", async () => {
+    let revokeStatus = 500;
+    const rf = recordingFetch({
+      // A 204 carries NO body (constructing one with a body throws).
+      revoke: () => new Response(revokeStatus === 204 ? null : "{}", { status: revokeStatus }),
+    });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    let send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await send({ kind: "revoke" });
+
+    // Simulate the teardown-induced loss of the durable marker while the
+    // capability write survived (and, equivalently, any storage eviction).
+    storage.delete(KEY_REVOCATION_PENDING);
+    storage.set(KEY_CAPABILITY, "revocation_pending");
+    expect(storage.get(KEY_CREDENTIAL)).toBeDefined();
+
+    // Boot 2 with a healthy server: the worker must notice the inconsistency,
+    // rebuild the marker from the still-stored credential, and settle it.
+    revokeStatus = 204;
+    vi.unstubAllGlobals();
+    const rf2 = recordingFetch({ revoke: () => new Response(null, { status: 204 }) });
+    vi.stubGlobal("fetch", rf2.fetch);
+    send = await loadWorker();
+    await settle();
+
+    expect(rf2.calls.some((c) => c.url.includes("/ext/pairing/self-revoke"))).toBe(true);
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("revoked");
+  });
+
+  // F7 (the mirror window). With the marker written FIRST, a teardown between
+  // the two writes leaves a durable marker while the stored capability is still
+  // `ready`. The durable marker must be AUTHORITATIVE — capture stays off.
+  it("F7: a durable pending marker keeps capture OFF even if the stored capability still says ready", async () => {
+    const rf = recordingFetch({ revoke: () => new Response("{}", { status: 500 }) });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await send({ kind: "revoke" });
+
+    // Force the exact interleaving: marker present, capability not yet written.
+    storage.set(KEY_CAPABILITY, "ready");
+    rf.calls.length = 0;
+
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("revocation_pending");
+    await send({ kind: "capture", product });
+    await settle();
+    expect(rf.calls.filter((c) => c.url.includes("/observation/capture"))).toEqual([]);
+  });
+
+  // F4. The "authoritative expiry" shortcut compared the credential's expiry
+  // against the DEVICE clock. A clock set forward discarded the credential,
+  // cleared the marker and reported the kill switch complete, while the server
+  // row was live for the real remaining TTL and a copied credential still worked.
+  it("F4: a skewed-forward local clock alone NEVER finalizes a revocation the server never confirmed", async () => {
+    const rf = recordingFetch({
+      // The device is offline: the server is never reached, so there is no
+      // evidence whatsoever about the credential — or about the clock.
+      revoke: () => {
+        throw new Error("offline");
+      },
+    });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await send({ kind: "revoke" });
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeDefined();
+
+    // The user's clock jumps past the credential's expiry.
+    const skewed = Date.parse(CRED.expiresAt) + 24 * 60 * 60 * 1000;
+    vi.spyOn(Date, "now").mockReturnValue(skewed);
+    try {
+      alarmHandler()({ name: "queue-flush" });
+      await settle();
+      // The kill switch must NOT be reported complete: the credential material
+      // is retained (it is the only way to retry) and the marker stands.
+      expect(storage.get(KEY_CREDENTIAL)).toBeDefined();
+      expect(storage.get(KEY_REVOCATION_PENDING)).toBeDefined();
+      const state = await send({ kind: "getState" });
+      if (!("state" in state)) throw new Error("expected state");
+      expect(state.state.capability).toBe("revocation_pending");
+      expect(state.state.capability).not.toBe("revoked");
+    } finally {
+      vi.mocked(Date.now).mockRestore();
+    }
+  });
+
+  // F3. The retry ran on every 1-minute alarm tick with no backoff and no cap,
+  // and `attempts` was persisted but never read — a deliberately incomplete
+  // seam. CLAUDE.md: backpressure is the default, rate limiting sits in front of
+  // every external call.
+  it("F3: repeated alarm ticks do NOT hammer the gateway — the persisted attempt count drives a backoff", async () => {
+    const rf = recordingFetch({ revoke: () => new Response("{}", { status: 503 }) });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await send({ kind: "revoke" }); // attempt #1
+    const afterFirst = rf.calls.filter((c) => c.url.includes("self-revoke")).length;
+    expect(afterFirst).toBe(1);
+
+    // Thirty 1-minute alarm ticks in immediate succession (the alarm is the only
+    // driver, and it fires regardless of backoff).
+    for (let i = 0; i < 30; i++) {
+      alarmHandler()({ name: "queue-flush" });
+      await settle();
+    }
+    const total = rf.calls.filter((c) => c.url.includes("self-revoke")).length;
+    expect(total).toBe(afterFirst); // every tick was inside the backoff window
+
+    // The schedule is DURABLE — an MV3 teardown cannot reset it back to 1/min.
+    const pending = storage.get(KEY_REVOCATION_PENDING) as Record<string, unknown>;
+    expect(pending.attempts).toBe(1);
+    expect(typeof pending.nextAttemptAt).toBe("string");
+    expect(Date.parse(pending.nextAttemptAt as string)).toBeGreaterThan(Date.now());
+  });
+
+  it("F3: once the backoff window elapses the retry runs again and can confirm", async () => {
+    let revokeStatus = 503;
+    const rf = recordingFetch({
+      // A 204 carries NO body (constructing one with a body throws).
+      revoke: () => new Response(revokeStatus === 204 ? null : "{}", { status: revokeStatus }),
+    });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await send({ kind: "revoke" });
+
+    // Simulate the backoff window elapsing (the marker is durable bookkeeping,
+    // so moving its schedule into the past is exactly "time passed").
+    const pending = storage.get(KEY_REVOCATION_PENDING) as Record<string, unknown>;
+    storage.set(KEY_REVOCATION_PENDING, {
+      ...pending,
+      nextAttemptAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    revokeStatus = 204;
+    alarmHandler()({ name: "queue-flush" });
+    await settle();
+
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("revoked");
+  });
+
+  it("F3: a USER-initiated pair forces an immediate settle attempt rather than waiting out the backoff", async () => {
+    let revokeStatus = 503;
+    const rf = recordingFetch({
+      // A 204 carries NO body (constructing one with a body throws).
+      revoke: () => new Response(revokeStatus === 204 ? null : "{}", { status: revokeStatus }),
+    });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await send({ kind: "revoke" });
+    const before = rf.calls.filter((c) => c.url.includes("self-revoke")).length;
+
+    revokeStatus = 204;
+    const resp = await send({ kind: "pair", code: "code-123" });
+    expect(rf.calls.filter((c) => c.url.includes("self-revoke")).length).toBeGreaterThan(before);
+    // The pending revoke settled first, so the re-pair is allowed to proceed.
+    expect(resp.ok).toBe(true);
+  });
+
+  // F6. The orphan branch is the ONLY transition reaching `revoked` without a
+  // server confirmation or an expiry check, and it emitted neither a counter nor
+  // a log — telemetry could not tell it from a genuine confirmation. CLAUDE.md:
+  // a fallback engaging without an emitted, traced, audited event is a bug.
+  it("F6: an ORPHANED pending marker is resolved with a DISTINCT, observable outcome", async () => {
+    const rf = recordingFetch({ revoke: () => new Response("{}", { status: 500 }) });
+    vi.stubGlobal("fetch", rf.fetch);
+    storage = installChromeMock().storage;
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    await send({ kind: "revoke" });
+
+    // The credential material is gone (storage eviction / a partial clear), so
+    // no retry can ever succeed against this marker.
+    storage.delete(KEY_CREDENTIAL);
+
+    const { snapshotMetrics } = await import("../lib/observability");
+    alarmHandler()({ name: "queue-flush" });
+    await settle();
+
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    const revocationOutcomes = snapshotMetrics()
+      .filter((s) => s.name === "credential_revocation")
+      .map((s) => s.labels.outcome);
+    expect(revocationOutcomes).toContain("orphaned");
+    // It must NOT be recorded as a confirmed revocation — that is the whole
+    // point of the distinct outcome.
+    expect(revocationOutcomes).not.toContain("confirmed");
+    expect(revocationOutcomes).not.toContain("expired");
   });
 });

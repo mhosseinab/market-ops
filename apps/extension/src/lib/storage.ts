@@ -92,10 +92,27 @@ const SELLER_TOKEN_KEY_RE =
 // sanitizeCredential returns a credential record containing ONLY the allow-listed
 // capture-credential fields. Any extra field (e.g. an accidentally-included
 // seller token) is dropped before it can be persisted (fail closed).
+//
+// It also VALIDATES those fields (issue #149). Filtering keys alone was not
+// enough: every allow-listed field is `required` in the gateway contract, but a
+// malformed `expiresAt` used to persist happily and then yield
+// Number.isFinite(NaN) === false at the pending-revocation expiry check —
+// silently disabling the ONLY bound on a pending marker's lifetime. A credential
+// that cannot support the kill switch is not storable at all; the caller
+// surfaces this as a failed pairing rather than pairing into an unusable state.
 export function sanitizeCredential(cred: PairingCredential): PairingCredential {
   const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(cred)) {
+  for (const [k, v] of Object.entries(cred ?? {})) {
     if (ALLOWED_CREDENTIAL_KEYS.has(k)) out[k] = v;
+  }
+  for (const key of ALLOWED_CREDENTIAL_KEYS) {
+    const v = out[key];
+    if (typeof v !== "string" || v === "") {
+      throw new Error(`invalid capture credential: ${key} is missing or not a non-empty string`);
+    }
+  }
+  if (!Number.isFinite(Date.parse(out.expiresAt as string))) {
+    throw new Error("invalid capture credential: expiresAt is not a parseable instant");
   }
   return out as unknown as PairingCredential;
 }
@@ -149,6 +166,20 @@ export interface PendingRevocation {
   // resolves without a further server round-trip.
   credentialExpiresAt: string;
   attempts: number;
+  // The earliest instant the NEXT retry may run (issue #149). Derived from
+  // `attempts` by an exponential, credential-jittered, ceiling-capped backoff
+  // (see revocation-backoff.ts) and persisted so an MV3 teardown cannot reset
+  // the schedule back to one request per alarm tick. OPTIONAL: a marker written
+  // by an older build has none and is treated as due immediately — a pending
+  // revoke is never stranded because its schedule is missing.
+  nextAttemptAt?: string;
+  // Whether the SERVER has ever answered this pending revoke with a real HTTP
+  // response (issue #149). The credential's expiry can only be judged against
+  // the DEVICE clock, so a clock skewed forward would otherwise "expire" a live
+  // credential and report the kill switch complete. An extension that has never
+  // reached the gateway has no evidence its clock is right, so it may not take
+  // the expiry shortcut. OPTIONAL for the same durability reason as above.
+  serverContacted?: boolean;
 }
 
 // A queued upload item: the allow-listed capture, its stable dedup key, and the

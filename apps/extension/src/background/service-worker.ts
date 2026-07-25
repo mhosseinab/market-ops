@@ -9,6 +9,7 @@ import { createOverlayReadGateway } from "../lib/overlay-read";
 import { OwnedTargetIndex } from "../lib/owned-targets";
 import { prepareCapture } from "../lib/pipeline";
 import { UploadQueue } from "../lib/queue";
+import { nextRevocationAttemptAt, revocationRetryDue } from "../lib/revocation-backoff";
 import { pendingAllocationGateway, runScheduledCycle } from "../lib/schedule";
 import { initDevErrorReporting } from "../lib/spotlight";
 import {
@@ -183,22 +184,35 @@ async function isCurrentSync(gen: number, fp: string | null): Promise<boolean> {
 // otherwise the completion is STALE and ignored (never applied over a newer
 // projection, never used to clear a valid one). It FAILS CLOSED at every step:
 //   - no stored credential ⇒ clear the index (nothing is owned until paired);
+//   - capability is not READY (disabled, revoked, or an UNCONFIRMED revocation
+//     still pending) ⇒ clear the index and return WITHOUT touching the gateway;
 //   - a null result (401 revoked/expired, 5xx, network) ⇒ clear the index —
 //     never keep a stale/guessed set, so capture stays disabled rather than
 //     resurrecting a de-confirmed mapping;
 //   - a real result ⇒ ATOMICALLY replace the whole index (the server is the sole
 //     authority; the extension never merges partial owned sets), stamped with the
 //     owning credential-account identity + generation.
+//
+// The capability gate is load-bearing, not defensive tidiness (issue #149): the
+// credential is deliberately RETAINED while a revoke is unconfirmed, so gating
+// on credential presence alone kept issuing owned-target reads with the exact
+// credential the user had just asked to revoke — for up to its 30-day TTL — and
+// repopulated the index handleRevoke had cleared. Capture must consume nothing
+// from a credential that is on its way out.
 async function syncOwnedTargets(): Promise<void> {
   const gen = ++syncGeneration;
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
+  const capability = await getCapability();
 
-  if (!cred) {
-    // Fail closed: nothing is owned until paired. Clear only if this sync is still
-    // current — a concurrent pair may have raced a credential in during the read.
-    if (await isCurrentSync(gen, null)) {
+  if (!cred || capability !== "ready") {
+    // Fail closed: nothing is owned until paired AND ready. Clear only if this
+    // sync is still current — a concurrent pair may have raced a credential in
+    // during the read.
+    const currentFp = cred ? credentialFingerprint(cred) : null;
+    if (await isCurrentSync(gen, currentFp)) {
       ownedTargets.replaceAll([], { generation: gen, marketplaceAccountId: null });
     }
+    if (cred) incr("owned_targets_sync", { outcome: "not_ready" });
     return;
   }
 
@@ -372,7 +386,9 @@ async function handlePair(code: string): Promise<ExtResponse> {
   // confirmed — re-pairing would overwrite the ONLY material a retry can use,
   // leaving a live credential in the wild. Try once more to settle it; if it is
   // still pending, refuse (fail closed, visibly) rather than pair over it.
-  await retryPendingRevocation();
+  // `force` bypasses the retry backoff: this is a USER action, not a timer tick,
+  // so it is neither lockstep fleet load nor something to make the user wait out.
+  await retryPendingRevocation({ force: true });
   if (await store.get<PendingRevocation>(KEY_REVOCATION_PENDING)) {
     log("warn", "pair_blocked_revocation_pending");
     return { ok: false, error: "revocation_pending" };
@@ -412,7 +428,14 @@ async function handleSetEnabled(enabled: boolean): Promise<ExtResponse> {
   // out of unknown/revoked via the toggle (Unknown never enables).
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
   if (!cred) return { ok: true, state: await popupState() };
-  if (enabled && (cap === "disabled" || cap === "ready")) await setCapability("ready");
+  if (enabled && (cap === "disabled" || cap === "ready")) {
+    await setCapability("ready");
+    // syncOwnedTargets now fails closed on a non-ready capability (#149), so a
+    // worker that started while capture was disabled holds an EMPTY projection.
+    // Re-sync on the way back to ready rather than leaving capture inert until
+    // the next 15-minute alarm.
+    await syncOwnedTargets();
+  }
   if (!enabled) await setCapability("disabled");
   return { ok: true, state: await popupState() };
 }
@@ -424,8 +447,12 @@ async function handleSetEnabled(enabled: boolean): Promise<ExtResponse> {
 // Order matters and is fail-closed at every step:
 //   1. capture is disabled IMMEDIATELY (index cleared + capability off) — before
 //      any network call, and regardless of how that call goes;
-//   2. the revocation intent is persisted DURABLY before the request, so an MV3
-//      teardown mid-flight cannot lose it;
+//   2. the revocation intent is persisted DURABLY as the FIRST write — before
+//      the capability write and before the request — so an MV3 teardown at any
+//      point after the user pressed Revoke cannot lose it. The marker is also
+//      AUTHORITATIVE over the stored capability (see getCapability), so the
+//      mirror interleaving (marker written, capability write lost) still keeps
+//      capture off rather than leaving a window where it is nominally ready;
 //   3. the credential material is discarded ONLY once the server confirms (or
 //      the credential's authoritative expiry is reached) — a failed revoke keeps
 //      it, because it is the only thing a retry can be made with;
@@ -455,16 +482,22 @@ async function handleRevoke(): Promise<ExtResponse> {
     return { ok: true, state: await popupState() };
   }
 
-  // Capture is off from here on, whatever the server says.
-  await setCapability("revocation_pending");
+  // Capture is off from here on, whatever the server says. The DURABLE marker
+  // is written FIRST: a teardown after it but before the capability write still
+  // leaves an unambiguous, retryable record of the user's intent (and
+  // getCapability treats that marker as authoritative, so capture is off
+  // either way). The reverse order left a window in which the popup claimed
+  // "awaiting confirmation" with nothing durable to retry from.
   const pending: PendingRevocation = {
     requestedAt: new Date().toISOString(),
     credentialId: cred.credentialId,
     marketplaceAccountId: cred.marketplaceAccountId,
     credentialExpiresAt: cred.expiresAt,
     attempts: 0,
+    serverContacted: false,
   };
   await store.set(KEY_REVOCATION_PENDING, pending);
+  await setCapability("revocation_pending");
   await settlePendingRevocation(pending, cred);
   return { ok: true, state: await popupState() };
 }
@@ -475,33 +508,70 @@ async function settlePendingRevocation(
   pending: PendingRevocation,
   cred: PairingCredential,
 ): Promise<void> {
-  // Authoritative expiry: at/after it the credential authenticates nothing at
-  // the server, so the revocation is complete without a round-trip. This is the
-  // bound that stops a pending marker from living forever.
+  // Expiry: at/after it the credential authenticates nothing at the server, so
+  // the revocation is complete without a round-trip. This is the bound that
+  // stops a pending marker from living forever.
+  //
+  // It is judged against the DEVICE clock, which is not authoritative: a clock
+  // set forward would otherwise discard the credential, clear the marker and
+  // report the kill switch complete while the server row is live for the real
+  // remaining TTL — with a copied credential still working. So the shortcut
+  // requires that the gateway has been REACHED at least once from this device
+  // (the outcome is labelled `expired_local_clock`, never a plain `expired`, so
+  // telemetry can never mistake it for a server confirmation). Otherwise we fall
+  // through and keep retrying: the first real answer for an expired credential
+  // is a 401, which is a genuine confirmation.
   const expiresAt = Date.parse(cred.expiresAt);
-  if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
-    await finalizeRevocation("expired");
+  const locallyExpired = Number.isFinite(expiresAt) && expiresAt <= Date.now();
+  if (locallyExpired && pending.serverContacted) {
+    await finalizeRevocation("expired_local_clock");
     return;
   }
-  // Count the attempt BEFORE the request so a teardown mid-flight still records
-  // that one was made (the marker is the durable record, not the response).
-  await store.set(KEY_REVOCATION_PENDING, { ...pending, attempts: pending.attempts + 1 });
+  if (locallyExpired) {
+    incr("credential_revocation", { outcome: "expiry_unverified" });
+    log("warn", "credential_revocation_expiry_unverified", { attempts: pending.attempts });
+  }
 
-  const outcome = await gateway.revokeCredential(cred.credential);
-  if (outcome === "confirmed") {
+  // Count the attempt BEFORE the request so a teardown mid-flight still records
+  // that one was made (the marker is the durable record, not the response), and
+  // schedule the next retry from that count so the backoff is durable too.
+  const attempts = pending.attempts + 1;
+  const attempted: PendingRevocation = {
+    ...pending,
+    attempts,
+    nextAttemptAt: nextRevocationAttemptAt(attempts, pending.credentialId, Date.now()),
+  };
+  await store.set(KEY_REVOCATION_PENDING, attempted);
+
+  const result = await gateway.revokeCredential(cred.credential);
+  if (result.reachedServer && !attempted.serverContacted) {
+    attempted.serverContacted = true;
+    await store.set(KEY_REVOCATION_PENDING, attempted);
+  }
+  if (result.outcome === "confirmed") {
     await finalizeRevocation("confirmed");
     return;
   }
   // No authoritative answer: keep the credential material (needed to retry),
   // keep capture disabled, and stay VISIBLY pending. Never a silent success.
   incr("credential_revocation", { outcome: "pending" });
-  log("warn", "credential_revocation_pending", { attempts: pending.attempts + 1 });
+  log("warn", "credential_revocation_pending", { attempts, reachedServer: result.reachedServer });
 }
 
 // finalizeRevocation is the ONLY place the capture credential material is
-// discarded: the authority has confirmed the credential is dead, or its
-// authoritative expiry has passed.
-async function finalizeRevocation(outcome: "confirmed" | "expired"): Promise<void> {
+// discarded: the authority has confirmed the credential is dead, or its expiry
+// has passed with the gateway proven reachable from this device.
+//
+// It mirrors handleRevoke's projection teardown (bump the generation, clear the
+// Confirmed-owned-target index) rather than only removing the credential. A
+// pending revoke retains its credential, so an index populated BEFORE the
+// revocation could otherwise survive finalization and resolve a
+// PRE-revocation target after a re-pair — potentially uploading account A's
+// target on a request authenticated with account B's credential (identity
+// quarantine, §4.6).
+async function finalizeRevocation(outcome: "confirmed" | "expired_local_clock"): Promise<void> {
+  syncGeneration++;
+  ownedTargets.replaceAll([], { generation: syncGeneration, marketplaceAccountId: null });
   await store.remove(KEY_CREDENTIAL);
   await store.remove(KEY_REVOCATION_PENDING);
   await setCapability("revoked");
@@ -512,16 +582,54 @@ async function finalizeRevocation(outcome: "confirmed" | "expired"): Promise<voi
 
 // retryPendingRevocation resumes an unconfirmed revocation across MV3 worker
 // restarts and on the flush alarm. It is a no-op when nothing is pending.
-async function retryPendingRevocation(): Promise<void> {
-  const pending = await store.get<PendingRevocation>(KEY_REVOCATION_PENDING);
-  if (!pending) return;
+//
+// `force` bypasses the retry backoff for USER-initiated settles (re-pairing).
+// Timer-driven callers never force: the alarm ticks once a minute in every
+// installed extension at once, and an unbounded 1/min retry against a 30-day
+// credential TTL is exactly the thundering herd CLAUDE.md's backpressure and
+// rate-limiting rules forbid.
+async function retryPendingRevocation(opts: { force?: boolean } = {}): Promise<void> {
+  let pending = await store.get<PendingRevocation>(KEY_REVOCATION_PENDING);
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
+
+  if (!pending) {
+    // Reconciliation. A capability of `revocation_pending` with a stored
+    // credential but NO durable marker is an inconsistent state: the user asked
+    // to revoke, the popup says "awaiting confirmation", and yet nothing would
+    // ever retry — the server credential would stay live until its own expiry.
+    // Rebuild the marker from the credential rather than early-returning.
+    if ((await rawCapability()) !== "revocation_pending" || !cred) return;
+    pending = {
+      requestedAt: new Date().toISOString(),
+      credentialId: cred.credentialId,
+      marketplaceAccountId: cred.marketplaceAccountId,
+      credentialExpiresAt: cred.expiresAt,
+      attempts: 0,
+      serverContacted: false,
+    };
+    await store.set(KEY_REVOCATION_PENDING, pending);
+    incr("credential_revocation", { outcome: "marker_reconstructed" });
+    log("warn", "credential_revocation_marker_reconstructed");
+  }
+
   if (!cred || cred.credentialId !== pending.credentialId) {
     // The material this revoke needs is gone (or belongs to a different
     // credential), so no retry can ever succeed. Resolve to the fail-closed
-    // revoked state rather than keep a marker that can never clear.
+    // revoked state rather than keep a marker that can never clear — but record
+    // it as a DISTINCT outcome: this is the only path to `revoked` with no
+    // server confirmation and no expiry check, and a fallback that engages
+    // without an emitted event is always a bug (CLAUDE.md).
     await store.remove(KEY_REVOCATION_PENDING);
-    if ((await getCapability()) === "revocation_pending") await setCapability("revoked");
+    if ((await rawCapability()) === "revocation_pending") await setCapability("revoked");
+    incr("credential_revocation", { outcome: "orphaned" });
+    log("warn", "credential_revocation_orphaned", { hadCredential: Boolean(cred) });
+    return;
+  }
+
+  if (!opts.force && !revocationRetryDue(pending, Date.now())) {
+    // Inside the backoff window — deferred, not dropped. The marker (and its
+    // schedule) stay durable, so the next due tick retries.
+    incr("credential_revocation", { outcome: "deferred" });
     return;
   }
   await settlePendingRevocation(pending, cred);
@@ -602,8 +710,26 @@ async function pumpTelemetry(): Promise<void> {
   }
 }
 
-async function getCapability(): Promise<Capability> {
+// rawCapability is the value AS STORED, with no reconciliation. Only the
+// revocation state machine uses it — everything else must go through
+// getCapability so it observes the pending-revocation override.
+async function rawCapability(): Promise<Capability> {
   return (await store.get<Capability>(KEY_CAPABILITY)) ?? "unknown";
+}
+
+// getCapability is the single gate every capture/upload/UI path consults.
+//
+// A DURABLE pending-revocation marker OVERRIDES a stored `ready` (issue #149).
+// The two writes of a revoke cannot be atomic in chrome.storage, so an MV3
+// teardown can land between them; making the marker authoritative means capture
+// is off from the instant the intent is durable, in either interleaving. It is
+// deliberately a one-way override — it can only ever make the capability MORE
+// restrictive, never promote out of unknown/disabled/revoked.
+async function getCapability(): Promise<Capability> {
+  const stored = await rawCapability();
+  if (stored !== "ready") return stored;
+  const pending = await store.get<PendingRevocation>(KEY_REVOCATION_PENDING);
+  return pending ? "revocation_pending" : stored;
 }
 async function setCapability(c: Capability): Promise<void> {
   await store.set(KEY_CAPABILITY, c);
