@@ -670,13 +670,12 @@ export const en: Catalog = {
   "actions.group.lapsed": "No match observed",
   "actions.group.unknown": "Unknown state",
   "actions.list.emptyFiltered": "No actions match this filter; change the filter.",
-  "actions.list.error": "Could not load the action list. Try again.",
   "actions.detail.selectPrompt": "Select an action to see its details.",
   "actions.detail.error": "Could not load this action's details. Try again.",
   "actions.detail.resolving": "Finding the linked action\u2026",
   "actions.notInPage.title": "Not in the current page",
   "actions.notInPage.body":
-    "This action is selected but is not in the current page of the queue, so its execution state is not shown here. Set the filter to All or reload the list.",
+    "This action is selected but is not in the current page of the queue, so its execution state is not shown here.",
   "actions.recommendOnly.title": "Awaiting external execution",
   "actions.recommendOnly.body":
     "Tracked recommend-only; a matching price change is observed within 24 hours.",
@@ -684,7 +683,6 @@ export const en: Catalog = {
   "actions.externallyExecuted.title": "Externally executed",
   "actions.externallyExecuted.body":
     "A matching price change was observed within the window; it was executed outside this system.",
-  "actions.externallyExecuted.matchedAt": "Match observed at",
   "actions.lapsed.title": "No match observed",
   "actions.lapsed.body": "The 24-hour observation window closed with no matching price change.",
   "actions.lapsed.noClaimNote":
@@ -715,6 +713,10 @@ export const en: Catalog = {
   "actions.outcome.error": "Could not load the outcome window. Try again.",
   "actions.outcome.pending": "Loading the outcome window…",
   "actions.outcome.none": "No outcome window was opened for this action.",
+  "actions.outcome.noneForCard":
+    "This card version has not been executed, so no outcome window was opened for it.",
+  "actions.outcome.unknownOutOfPage":
+    "This card version is not in the current page of the queue, so its outcome window is not shown here.",
   "actions.outcome.attributionNote": "Concurrent changes lower attribution confidence.",
   "actions.audit.title": "Audit trail",
   "actions.audit.card": "Approval-card snapshot",

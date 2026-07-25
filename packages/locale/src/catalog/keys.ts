@@ -626,10 +626,11 @@ export const MESSAGE_KEYS = [
   "state.readyForReview",
   "state.revalidating",
   "state.invalidated",
-  // The operator-side §8.4 Approved state. Deliberately NOT "تاییدشده" (which is
-  // Verified, an observation-quality term) and NOT "تاییدشده توسط دیجی‌کالا"
-  // (Accepted — the marketplace's answer to a write). An approved card has been
-  // authorized for execution and nothing more.
+  // The operator-side §8.4 Approved state. It is qualified ("تاییدشده برای اجرا")
+  // precisely BECAUSE the bare glossary term "تاییدشده" is Verified (an
+  // observation-quality term) and "تاییدشده توسط دیجی‌کالا" is Accepted (the
+  // marketplace's answer to a write): the qualifier is what keeps the three
+  // apart. An approved card has been authorized for execution and nothing more.
   "state.approved",
   "sm.title",
   "sm.gates.title",
@@ -718,7 +719,6 @@ export const MESSAGE_KEYS = [
   "actions.group.lapsed",
   "actions.group.unknown",
   "actions.list.emptyFiltered",
-  "actions.list.error",
   "actions.detail.selectPrompt",
   "actions.detail.error",
   // The queue is page-bounded, so a deep-linked action can be absent from the
@@ -735,13 +735,21 @@ export const MESSAGE_KEYS = [
   "actions.recommendOnly.noWriteNote",
   "actions.externallyExecuted.title",
   "actions.externallyExecuted.body",
-  "actions.externallyExecuted.matchedAt",
   "actions.lapsed.title",
   "actions.lapsed.body",
   "actions.lapsed.noClaimNote",
   "actions.proposed.title",
   "actions.proposed.body",
+  // OUT-001 absence, scoped to what the reading surface can actually establish.
+  // `none` is ACTION-scoped and may only be stated from the action-scoped read's
+  // ErrNoWindow answer; `noneForCard` is CARD-VERSION-scoped, for a card version
+  // that carries no execution overlay (its action may still own a window for the
+  // executed sibling version, so the action-scoped claim would be untrue); and
+  // `unknownOutOfPage` claims nothing at all for a card version the queue page
+  // does not carry.
   "actions.outcome.none",
+  "actions.outcome.noneForCard",
+  "actions.outcome.unknownOutOfPage",
   "actions.pending.title",
   "actions.pending.body",
   "actions.pending.retryNote",

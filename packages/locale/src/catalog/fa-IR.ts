@@ -95,8 +95,8 @@ export const faIR: Catalog = {
   // to the one the existing recommend-only surfaces use (sm.recommendOnly.title,
   // bulk.result.awaitingExternal) — the same term, never a synonym. Neither of
   // the terminal terms may read as a marketplace write: "اجراشده به‌صورت خارجی"
-  // says the seller executed it outside the system, and "بدون تطبیق" says the
-  // observation window closed with no matching price change — deliberately NOT
+  // says the seller executed it outside the system, and "بدون تغییر متناظر" says
+  // the observation window closed with no matching price change — deliberately NOT
   // "منقضی‌شده" (an expired approval card) and NOT "ناموفق" (a failed write).
   "state.awaitingExternalExecution": "در انتظار اجرای خارجی",
   "state.externallyExecuted": "اجراشده به‌صورت خارجی",
@@ -670,13 +670,12 @@ export const faIR: Catalog = {
   "actions.group.lapsed": "بدون تغییر متناظر",
   "actions.group.unknown": "وضعیت ناشناخته",
   "actions.list.emptyFiltered": "با این پالایه اقدامی وجود ندارد؛ پالایه را تغییر دهید.",
-  "actions.list.error": "فهرست اقدام‌ها بارگذاری نشد. دوباره تلاش کنید.",
   "actions.detail.selectPrompt": "برای دیدن جزئیات، یک اقدام را انتخاب کنید.",
   "actions.detail.error": "جزئیات این اقدام بارگذاری نشد. دوباره تلاش کنید.",
   "actions.detail.resolving": "در حال یافتن اقدام پیوند‌شده…",
   "actions.notInPage.title": "خارج از صفحهٔ فعلی فهرست",
   "actions.notInPage.body":
-    "این اقدام انتخاب شده است اما در صفحهٔ فعلی فهرست نیست؛ وضعیت اجرای آن در این صفحه نمایش داده نمی‌شود. پالایه را روی «همه» بگذارید یا فهرست را دوباره بارگذاری کنید.",
+    "این اقدام انتخاب شده است اما در صفحهٔ فعلی فهرست نیست؛ وضعیت اجرای آن در این صفحه نمایش داده نمی‌شود.",
   "actions.recommendOnly.title": "در انتظار اجرای خارجی",
   "actions.recommendOnly.body":
     "این اقدام در حالت پیشنهادی ثبت شده است؛ تغییر قیمت متناظر ظرف ۲۴ ساعت رصد می‌شود.",
@@ -684,7 +683,6 @@ export const faIR: Catalog = {
   "actions.externallyExecuted.title": "اجراشده به‌صورت خارجی",
   "actions.externallyExecuted.body":
     "تغییر قیمت متناظر در بازهٔ رصد مشاهده شد؛ اجرا خارج از این سامانه انجام شده است.",
-  "actions.externallyExecuted.matchedAt": "زمان مشاهدهٔ تطبیق",
   "actions.lapsed.title": "بدون تغییر متناظر",
   "actions.lapsed.body": "بازهٔ رصد ۲۴ ساعته بدون مشاهدهٔ تغییر قیمت متناظر بسته شد.",
   "actions.lapsed.noClaimNote":
@@ -715,6 +713,10 @@ export const faIR: Catalog = {
   "actions.outcome.error": "بارگیری پنجرهٔ پیامد ممکن نشد. دوباره تلاش کنید.",
   "actions.outcome.pending": "در حال بارگیری پنجرهٔ پیامد…",
   "actions.outcome.none": "برای این اقدام پنجرهٔ پیامدی باز نشده است.",
+  "actions.outcome.noneForCard":
+    "این نسخهٔ کارت اجرا نشده است؛ بنابراین پنجرهٔ پیامدی برای آن باز نشده است.",
+  "actions.outcome.unknownOutOfPage":
+    "این نسخهٔ کارت در صفحهٔ فعلی فهرست نیست؛ پنجرهٔ پیامدی آن در این صفحه نمایش داده نمی‌شود.",
   "actions.outcome.attributionNote": "تغییرات هم‌زمان اطمینان انتساب را کاهش می‌دهد.",
   "actions.audit.title": "رد ممیزی",
   "actions.audit.card": "عکس‌برداری کارت تایید",
