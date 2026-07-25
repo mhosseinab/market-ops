@@ -32,6 +32,16 @@ import (
 // "not executed yet" claim the fail-closed 503 on this route exists to prevent,
 // reached through a data-integrity door. The drop must therefore be OBSERVABLE.
 
+// actionOverlayMismatchMetric is the series name this test asserts on. It is
+// spelled out here rather than shared with the production constructor on purpose:
+// the test must FAIL if the emitted name is ever renamed, and a shared identifier
+// would rename both sides at once and assert nothing. The name must also stay
+// present in deploy/obs/metrics_inventory.json — otherwise no §18 dashboard panel
+// and no §20.1 alert rule may reference it (deploy/grafana/validate_dashboards.py),
+// which is the other half of this seam and is guarded by
+// deploy/obs/inventory_drift_test.py.
+const actionOverlayMismatchMetric = "execution.action_overlay_action_id_mismatch"
+
 // anomalyMetricHarness installs an isolated ManualReader meter provider so the
 // anomaly counter emitted during one request can be read back.
 type anomalyMetricHarness struct{ reader *sdkmetric.ManualReader }
