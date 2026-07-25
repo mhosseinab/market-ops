@@ -62,6 +62,10 @@ const DEGRADATION_KEY = {
   not_paired: "ext.degradation.notPaired",
   credential_revoked: "ext.degradation.credentialRevoked",
   capture_disabled: "ext.degradation.captureDisabled",
+  // Issue #149: a revocation the server has not confirmed yet. VISIBLY distinct
+  // from credential_revoked — the popup never reports a kill switch as complete
+  // while the credential may still be live at the authority.
+  revocation_pending: "ext.degradation.revocationPending",
 } as const;
 
 // A dead-letter failure-reason token → catalog key map (issue #150). The reason

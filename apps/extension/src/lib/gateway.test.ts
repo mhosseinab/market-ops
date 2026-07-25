@@ -103,6 +103,45 @@ describe("GatewayClient.fetchOwnedTargets — credential-scoped owned-target rea
   });
 });
 
+// Issue #149 / PD-4(B): the extension's kill switch must invalidate the
+// credential at the AUTHORITY that verifies it, not merely delete the local
+// copy. This is the transport half — the status → revocation-outcome mapping.
+describe("GatewayClient.revokeCredential — server-side self-revoke (#149, EXT-009)", () => {
+  it("presents the credential as a Bearer on the credential-scoped self-revoke route, with no selector", async () => {
+    const fetcher = vi.fn(async () => new Response(null, { status: 204 }));
+    const client = new GatewayClient("http://gw", fetcher);
+
+    expect(await client.revokeCredential("cap-cred")).toBe("confirmed");
+
+    const [url, init] = fetcher.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://gw/ext/pairing/self-revoke");
+    expect(init.method).toBe("POST");
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer cap-cred");
+    // Identity quarantine: the credential to revoke is derived SERVER-side from
+    // the Bearer. The extension never sends a body/selector naming a credential
+    // or account — it cannot revoke another device's or account's pairing.
+    expect(init.body).toBeUndefined();
+  });
+
+  it("401 is a CONFIRMED revocation — the credential is already invalid at the authority", async () => {
+    // Without this, a pending marker for an expired/already-revoked credential
+    // could never clear and the extension would retry forever.
+    const client = new GatewayClient("http://gw", async () => new Response("{}", { status: 401 }));
+    expect(await client.revokeCredential("cap-cred")).toBe("confirmed");
+  });
+
+  it("network error, 5xx, and 503 are NOT confirmations — they stay pending", async () => {
+    for (const status of [500, 502, 503, 400, 403, 404]) {
+      const client = new GatewayClient("http://gw", async () => new Response("{}", { status }));
+      expect(await client.revokeCredential("cap-cred")).toBe("pending");
+    }
+    const offline = new GatewayClient("http://gw", async () => {
+      throw new Error("offline");
+    });
+    expect(await offline.revokeCredential("cap-cred")).toBe("pending");
+  });
+});
+
 describe("revoked credential ⇒ upload 401 ⇒ visible disabled state (EXT-001/EXT-009)", () => {
   it("a 401 upload flips the queue to revoked, which disables capture with a reason", async () => {
     const fetcher = vi.fn(async () => resp(401));

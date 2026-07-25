@@ -16,6 +16,8 @@ import {
   KEY_CAPABILITY,
   KEY_CREDENTIAL,
   KEY_LAST_UPLOAD,
+  KEY_REVOCATION_PENDING,
+  type PendingRevocation,
   type PopupState,
   sanitizeCredential,
 } from "../lib/storage";
@@ -74,6 +76,12 @@ void initDevErrorReporting("service-worker");
 // unavailable read leaves the index empty).
 void syncOwnedTargets();
 
+// On service-worker start, resume any revocation the server has NOT yet
+// confirmed (issue #149). A pending revoke is durable state, not an in-memory
+// intention: an MV3 teardown between "user pressed Revoke" and "the authority
+// invalidated the credential" must never silently drop the kill switch.
+void retryPendingRevocation();
+
 // On worker (re)spawn the in-memory metric registry is empty and any per-boot
 // gauge (e.g. queue_depth) has been lost. Re-derive queue depth from the
 // AUTHORITATIVE durable queue — never an accumulated counter — and flush any
@@ -96,9 +104,11 @@ chrome.runtime.onInstalled.addListener(() => {
 // re-sync so capture is not silently inert after startup.
 chrome.runtime.onStartup?.addListener(() => {
   void syncOwnedTargets();
+  // A browser restart must also resume an unconfirmed revocation (#149).
+  void retryPendingRevocation();
 });
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === FLUSH_ALARM) void flush().then(() => pumpTelemetry());
+  if (a.name === FLUSH_ALARM) void retryPendingRevocation().then(() => flush().then(pumpTelemetry));
   if (a.name === SCHEDULE_ALARM) {
     // Periodically re-sync owned targets to pick up account/identity changes
     // (a newly Confirmed variant, or a de-confirmed one that must drop out).
@@ -358,6 +368,15 @@ async function runScheduleCycleIfEnabled(): Promise<void> {
 }
 
 async function handlePair(code: string): Promise<ExtResponse> {
+  // #149: never abandon a credential whose revocation the server has not
+  // confirmed — re-pairing would overwrite the ONLY material a retry can use,
+  // leaving a live credential in the wild. Try once more to settle it; if it is
+  // still pending, refuse (fail closed, visibly) rather than pair over it.
+  await retryPendingRevocation();
+  if (await store.get<PendingRevocation>(KEY_REVOCATION_PENDING)) {
+    log("warn", "pair_blocked_revocation_pending");
+    return { ok: false, error: "revocation_pending" };
+  }
   try {
     const cred: PairingCredential = await gateway.claimPairing(code);
     // Persist ONLY the allow-listed capture-credential fields (EXT-001).
@@ -385,6 +404,10 @@ async function handlePair(code: string): Promise<ExtResponse> {
 
 async function handleSetEnabled(enabled: boolean): Promise<ExtResponse> {
   const cap = await getCapability();
+  // #149: an unconfirmed revocation is never toggled away. Capture stays off
+  // until the authority confirms (or the credential expires) — the toggle can
+  // neither re-enable capture nor mask the pending state as a plain disable.
+  if (cap === "revocation_pending") return { ok: true, state: await popupState() };
   // Only toggle between ready/disabled when a credential exists; never promote
   // out of unknown/revoked via the toggle (Unknown never enables).
   const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
@@ -394,6 +417,20 @@ async function handleSetEnabled(enabled: boolean): Promise<ExtResponse> {
   return { ok: true, state: await popupState() };
 }
 
+// EXT-009 kill switch (issue #149). Local deletion is CLEANUP, not revocation:
+// the credential must be invalidated at the authority that verifies it, or a
+// copied credential keeps uploading after the user believes access was revoked.
+//
+// Order matters and is fail-closed at every step:
+//   1. capture is disabled IMMEDIATELY (index cleared + capability off) — before
+//      any network call, and regardless of how that call goes;
+//   2. the revocation intent is persisted DURABLY before the request, so an MV3
+//      teardown mid-flight cannot lose it;
+//   3. the credential material is discarded ONLY once the server confirms (or
+//      the credential's authoritative expiry is reached) — a failed revoke keeps
+//      it, because it is the only thing a retry can be made with;
+//   4. `revocation_pending` is reported as VISIBLY DISTINCT from `revoked` — the
+//      popup never claims a kill switch that has not actually killed anything.
 async function handleRevoke(): Promise<ExtResponse> {
   // Invalidate every outstanding sync FIRST (issue #253): bump the generation and
   // clear the index synchronously, BEFORE the async storage writes below, so an
@@ -406,10 +443,88 @@ async function handleRevoke(): Promise<ExtResponse> {
   // window where a re-pair (before syncOwnedTargets re-runs) could ever
   // resolve a target from PRE-revocation state.
   ownedTargets.replaceAll([], { generation: syncGeneration, marketplaceAccountId: null });
-  await store.remove(KEY_CREDENTIAL);
-  await setCapability("revoked");
-  log("info", "credential_cleared");
+
+  const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
+  if (!cred) {
+    // No local credential material: there is nothing to present to the server
+    // and nothing to retry with. Repeating a completed revoke lands here — it is
+    // idempotent, ending in the same visible revoked state.
+    await store.remove(KEY_REVOCATION_PENDING);
+    await setCapability("revoked");
+    log("info", "credential_cleared");
+    return { ok: true, state: await popupState() };
+  }
+
+  // Capture is off from here on, whatever the server says.
+  await setCapability("revocation_pending");
+  const pending: PendingRevocation = {
+    requestedAt: new Date().toISOString(),
+    credentialId: cred.credentialId,
+    marketplaceAccountId: cred.marketplaceAccountId,
+    credentialExpiresAt: cred.expiresAt,
+    attempts: 0,
+  };
+  await store.set(KEY_REVOCATION_PENDING, pending);
+  await settlePendingRevocation(pending, cred);
   return { ok: true, state: await popupState() };
+}
+
+// settlePendingRevocation attempts ONE server revocation for a durably recorded
+// pending revoke and resolves it only on an authoritative answer.
+async function settlePendingRevocation(
+  pending: PendingRevocation,
+  cred: PairingCredential,
+): Promise<void> {
+  // Authoritative expiry: at/after it the credential authenticates nothing at
+  // the server, so the revocation is complete without a round-trip. This is the
+  // bound that stops a pending marker from living forever.
+  const expiresAt = Date.parse(cred.expiresAt);
+  if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+    await finalizeRevocation("expired");
+    return;
+  }
+  // Count the attempt BEFORE the request so a teardown mid-flight still records
+  // that one was made (the marker is the durable record, not the response).
+  await store.set(KEY_REVOCATION_PENDING, { ...pending, attempts: pending.attempts + 1 });
+
+  const outcome = await gateway.revokeCredential(cred.credential);
+  if (outcome === "confirmed") {
+    await finalizeRevocation("confirmed");
+    return;
+  }
+  // No authoritative answer: keep the credential material (needed to retry),
+  // keep capture disabled, and stay VISIBLY pending. Never a silent success.
+  incr("credential_revocation", { outcome: "pending" });
+  log("warn", "credential_revocation_pending", { attempts: pending.attempts + 1 });
+}
+
+// finalizeRevocation is the ONLY place the capture credential material is
+// discarded: the authority has confirmed the credential is dead, or its
+// authoritative expiry has passed.
+async function finalizeRevocation(outcome: "confirmed" | "expired"): Promise<void> {
+  await store.remove(KEY_CREDENTIAL);
+  await store.remove(KEY_REVOCATION_PENDING);
+  await setCapability("revoked");
+  incr("credential_revocation", { outcome });
+  incr("capability_transition", { to: "revoked" });
+  log("info", "credential_cleared", { outcome });
+}
+
+// retryPendingRevocation resumes an unconfirmed revocation across MV3 worker
+// restarts and on the flush alarm. It is a no-op when nothing is pending.
+async function retryPendingRevocation(): Promise<void> {
+  const pending = await store.get<PendingRevocation>(KEY_REVOCATION_PENDING);
+  if (!pending) return;
+  const cred = await store.get<PairingCredential>(KEY_CREDENTIAL);
+  if (!cred || cred.credentialId !== pending.credentialId) {
+    // The material this revoke needs is gone (or belongs to a different
+    // credential), so no retry can ever succeed. Resolve to the fail-closed
+    // revoked state rather than keep a marker that can never clear.
+    await store.remove(KEY_REVOCATION_PENDING);
+    if ((await getCapability()) === "revocation_pending") await setCapability("revoked");
+    return;
+  }
+  await settlePendingRevocation(pending, cred);
 }
 
 // Operator recovery for exhausted deliveries (issue #150 / EXT-009). Retry

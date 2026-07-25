@@ -19,14 +19,24 @@ import (
 
 // fakePairing is a PairingService stub for the handler + middleware tests.
 type fakePairing struct {
-	account       uuid.UUID
-	credential    string // the one credential that resolves
+	account    uuid.UUID
+	credential string // the one credential that resolves
+	// credentialID is the stable record id the one credential resolves to. It is
+	// the ONLY identity the credential-scoped self-revoke route may act on
+	// (issue #149) — assigned lazily so existing tests need not set it.
+	credentialID  uuid.UUID
 	mintErr       error
 	claimErr      error
 	revoked       bool
 	revokeCalls   int
 	lastMintOrg   uuid.UUID
 	lastRevokeOrg uuid.UUID
+	// revokedCredentials records every credential id the SELF-revoke route acted
+	// on, so a test can assert it revoked exactly the presented credential and
+	// never a caller-supplied one.
+	revokedCredentials []uuid.UUID
+	// revokeByIDErr, when set, makes the self-revoke fail (drives the 5xx path).
+	revokeByIDErr error
 }
 
 func (f *fakePairing) MintCode(_ context.Context, org uuid.UUID) (pairing.Code, error) {
@@ -54,7 +64,33 @@ func (f *fakePairing) ResolveCredential(_ context.Context, raw string) (pairing.
 	if f.revoked || raw == "" || raw != f.credential {
 		return pairing.Resolved{}, pairing.ErrInvalidCredential
 	}
-	return pairing.Resolved{CredentialID: uuid.New(), MarketplaceAccountID: f.account}, nil
+	if f.credentialID == uuid.Nil {
+		f.credentialID = uuid.New()
+	}
+	// A self-revoked credential resolves to nothing thereafter — exactly like the
+	// real query, which excludes revoked rows (fail closed, 401).
+	for _, id := range f.revokedCredentials {
+		if id == f.credentialID {
+			return pairing.Resolved{}, pairing.ErrInvalidCredential
+		}
+	}
+	return pairing.Resolved{CredentialID: f.credentialID, MarketplaceAccountID: f.account}, nil
+}
+
+// RevokeCredentialByID revokes EXACTLY one credential record (issue #149). It
+// reports whether the row transitioned, so an already-revoked credential is an
+// unambiguous no-op rather than an error.
+func (f *fakePairing) RevokeCredentialByID(_ context.Context, credentialID uuid.UUID) (bool, error) {
+	if f.revokeByIDErr != nil {
+		return false, f.revokeByIDErr
+	}
+	for _, id := range f.revokedCredentials {
+		if id == credentialID {
+			return false, nil
+		}
+	}
+	f.revokedCredentials = append(f.revokedCredentials, credentialID)
+	return true, nil
 }
 
 func (f *fakePairing) RevokeForOrganization(_ context.Context, org uuid.UUID) error {

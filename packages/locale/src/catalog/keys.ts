@@ -916,6 +916,10 @@ export const MESSAGE_KEYS = [
   "ext.degradation.notPaired",
   "ext.degradation.credentialRevoked",
   "ext.degradation.captureDisabled",
+  // Issue #149: the revocation was requested and capture is already off, but the
+  // SERVER has not confirmed the credential is dead. Deliberately distinct copy
+  // from credentialRevoked — the popup must never claim a completed kill switch.
+  "ext.degradation.revocationPending",
   "ext.onDemand.refresh",
   "ext.onDemand.refreshing",
   "ext.schedule.toggle",

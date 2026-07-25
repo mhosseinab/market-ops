@@ -1263,6 +1263,14 @@ type Querier interface {
 	// Resolve a CSV SKU token to variants within an account. Zero rows ⇒ unknown SKU;
 	// more than one ⇒ ambiguous (both are preview rejects with a stated reason).
 	ResolveVariantsBySupplierCode(ctx context.Context, arg ResolveVariantsBySupplierCodeParams) ([]ResolveVariantsBySupplierCodeRow, error)
+	// Revoke EXACTLY ONE pairing record — the credential-scoped SELF-revoke the
+	// extension calls so its kill switch invalidates authorization at the authority
+	// that verifies it (issue #149, EXT-009). The id is the record the presented
+	// capture credential resolved to; it is NEVER caller-supplied. Returns the
+	// number of rows transitioned, so revoking an already-revoked credential is an
+	// unambiguous no-op (0 rows) rather than an error — idempotent by construction.
+	// It touches no other credential, so one device's revoke never kills another's.
+	RevokeCaptureCredentialByID(ctx context.Context, id uuid.UUID) (int64, error)
 	// Revoke every active capture credential for a marketplace account (EXT-001 kill
 	// switch). Idempotent: already-revoked rows are left unchanged.
 	RevokePairingsForAccount(ctx context.Context, marketplaceAccountID uuid.UUID) error

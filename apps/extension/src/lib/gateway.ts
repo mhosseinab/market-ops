@@ -3,11 +3,19 @@ import type { UploadOutcome } from "./queue";
 import type { CaptureUpload, ObservationTargetList, PairingCredential } from "./types";
 
 // Gateway transport. The extension talks to the market-ops gateway over exactly
-// two routes: claim a pairing code for a scoped capture credential, and upload a
-// capture authenticated by that credential. The base URL is injected at build
-// time (VITE_GATEWAY_BASE_URL); its host is added to host_permissions at deploy.
+// the routes its capture credential authorizes: claim a pairing code for a
+// scoped capture credential, upload a capture, read its own owned targets, and
+// revoke ITSELF (#149). The base URL is injected at build time
+// (VITE_GATEWAY_BASE_URL); its host is added to host_permissions at deploy.
 
 export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
+
+// The outcome of a server-side self-revoke (#149, EXT-009):
+//   confirmed — the AUTHORITY says this credential no longer authorizes
+//               anything, so the local credential material may be discarded;
+//   pending   — no authoritative answer was obtained; the revocation is durably
+//               recorded and retried, and capture stays disabled meanwhile.
+export type RevocationOutcome = "confirmed" | "pending";
 
 export class GatewayClient {
   constructor(
@@ -55,6 +63,38 @@ export class GatewayClient {
     if (resp.status === 401) return "revoked";
     if (resp.status === 400 || resp.status === 403 || resp.status === 409) return "drop";
     return "retry";
+  }
+
+  // revokeCredential revokes THIS credential at the server (#149, EXT-009). It
+  // presents the capture credential as a Bearer on the credential-scoped
+  // self-revoke route and sends NO body: the credential to revoke is derived
+  // server-side from the Bearer, so the extension can never revoke another
+  // device's or account's pairing (identity quarantine).
+  //
+  // Status → outcome, and why:
+  //   204 (and any 2xx) — the authority revoked it: CONFIRMED.
+  //   401               — the credential does not authenticate AT ALL any more
+  //                       (already revoked, expired, or unknown). That is the
+  //                       same end state a successful revoke produces, so it is
+  //                       CONFIRMED — treating it as pending would strand a
+  //                       pending marker forever on an expired credential.
+  //   anything else (4xx other than 401, 5xx, 503, network/transport failure)
+  //                     — NOT an authoritative statement that the credential is
+  //                       dead, so it stays PENDING: capture remains disabled,
+  //                       the credential material is retained, and the revoke is
+  //                       retried. Never a silent "assume it worked".
+  async revokeCredential(credential: string): Promise<RevocationOutcome> {
+    let resp: Response;
+    try {
+      resp = await this.fetcher(`${this.baseUrl}/ext/pairing/self-revoke`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${credential}` },
+      });
+    } catch {
+      return "pending"; // network/transport error — no authoritative answer
+    }
+    if (resp.ok || resp.status === 401) return "confirmed";
+    return "pending";
   }
 
   // fetchOwnedTargets reads the paired account's Confirmed owned observation

@@ -24,6 +24,12 @@ export type MetricName =
   | "dead_letter_retry"
   | "dead_letter_discard"
   | "capability_transition"
+  // The EXT-009 kill switch's SERVER-side revocation (issue #149):
+  // `credential_revocation{outcome}` records confirmed (the authority
+  // invalidated the credential), pending (no authoritative answer — retried), or
+  // expired (the credential's authoritative expiry passed). It never carries the
+  // credential secret.
+  | "credential_revocation"
   // The content script's capability-before-fetch gate (issue #155): a product
   // read that was refused because capture is not READY (unknown/disabled/revoked).
   // This is the observable proof that the fail-closed gate ran BEFORE any

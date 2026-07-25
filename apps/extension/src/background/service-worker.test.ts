@@ -101,6 +101,10 @@ function gatewayFetchMock(rows: unknown[], targetsStatus = 200) {
         status: targetsStatus,
       });
     }
+    if (url.includes("/ext/pairing/self-revoke")) {
+      // #149: the server confirms the credential-scoped self-revoke.
+      return new Response(null, { status: 204 });
+    }
     if (url.includes("/watchlist")) {
       return new Response(
         JSON.stringify({
@@ -471,6 +475,10 @@ describe("service worker — #253 stale owned-target sync after revoke / re-pair
           { status: 200 },
         );
       }
+      if (url.includes("/ext/pairing/self-revoke")) {
+        // #149: the server confirms the credential-scoped self-revoke.
+        return new Response(null, { status: 204 });
+      }
       // /observation/capture
       captureTargetIds.push(JSON.parse(String(init?.body ?? "{}")).targetId);
       return new Response(null, { status: 202 });
@@ -661,5 +669,219 @@ describe("service worker — #253 stale owned-target sync after revoke / re-pair
 
     // Exactly one capture upload, and it is the B target.
     expect(captureTargetIds).toEqual(["target-b-variant"]);
+  });
+});
+
+// Issue #149 / PD-4(B): Revoke must invalidate the capture credential at the
+// SERVER before the extension reports success. Deleting only the local copy left
+// a copied credential uploading until its own server-side expiry — a kill switch
+// that had not actually killed anything.
+//
+// The invariants under test (fail closed at every step):
+//   - capture is disabled IMMEDIATELY either way;
+//   - a non-confirmation NEVER clears the local credential material (it is the
+//     only way to retry) and leaves a DURABLE, VISIBLY pending state;
+//   - a pending revoke survives an MV3 worker restart and is retried;
+//   - repeated revokes are idempotent;
+//   - the owned-target index and the upload queue stay fail-closed throughout.
+describe("service worker — #149 Revoke revokes the credential at the SERVER before clearing local state", () => {
+  const KEY_REVOCATION_PENDING = "revocationPending";
+  const KEY_QUEUE = "queue";
+
+  // A fetch mock whose SELF-REVOKE response is driven per test. Everything else
+  // (pair, owned-targets, capture) succeeds so the worker reaches a paired,
+  // capture-ready state first.
+  function revokeFetch(revokeResponder: () => Response | Promise<Response>) {
+    const revokeCalls: string[] = [];
+    const capturePosts: string[] = [];
+    const fetch = vi.fn(async (input: string, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/ext/pairing/claim")) {
+        return new Response(JSON.stringify(CRED), { status: 200 });
+      }
+      if (url.includes("/ext/pairing/self-revoke")) {
+        const auth = (init?.headers as Record<string, string> | undefined)?.authorization ?? "";
+        revokeCalls.push(auth);
+        return await revokeResponder();
+      }
+      if (url.includes("/ext/owned-targets")) {
+        return new Response(JSON.stringify({ items: [ownedTargetRow(product)] }), { status: 200 });
+      }
+      capturePosts.push(url);
+      return new Response(null, { status: 202 });
+    });
+    return { fetch, revokeCalls, capturePosts };
+  }
+
+  const product = parsedProduct();
+  let storage: Map<string, unknown>;
+
+  async function pairedWorker(revokeResponder: () => Response | Promise<Response>): Promise<{
+    send: (msg: ExtMessage) => Promise<ExtResponse>;
+    revokeCalls: string[];
+    capturePosts: string[];
+  }> {
+    const mock = installChromeMock();
+    storage = mock.storage;
+    const rf = revokeFetch(revokeResponder);
+    vi.stubGlobal("fetch", rf.fetch);
+    const send = await loadWorker();
+    await send({ kind: "pair", code: "code-123" });
+    return { send, revokeCalls: rf.revokeCalls, capturePosts: rf.capturePosts };
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a CONFIRMED server revoke clears the credential and reports the revoked kill-switch state", async () => {
+    const { send, revokeCalls } = await pairedWorker(() => new Response(null, { status: 204 }));
+
+    const resp = await send({ kind: "revoke" });
+
+    // The server was actually contacted, with the credential as a Bearer.
+    expect(revokeCalls).toEqual([`Bearer ${CRED.credential}`]);
+    if (!("state" in resp)) throw new Error("expected state");
+    expect(resp.state.capability).toBe("revoked");
+    expect(resp.state.degradation).toBe("credential_revoked");
+    // Only NOW is the local material discarded, and no marker is left behind.
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+  });
+
+  it("PD-4 negative: a server revoke FAILURE does NOT clear the local capture credential — and capture is disabled anyway", async () => {
+    const { send, revokeCalls } = await pairedWorker(() => new Response("{}", { status: 500 }));
+
+    const resp = await send({ kind: "revoke" });
+
+    expect(revokeCalls.length).toBe(1);
+    // The credential material is RETAINED — it is the only way to retry the
+    // revoke. Clearing it here is precisely the #149 bug.
+    expect(storage.get(KEY_CREDENTIAL)).toBeDefined();
+    // …but capture is disabled IMMEDIATELY, and the state is visibly PENDING —
+    // never reported as a completed revocation.
+    if (!("state" in resp)) throw new Error("expected state");
+    expect(resp.state.capability).toBe("revocation_pending");
+    expect(resp.state.degradation).toBe("revocation_pending");
+    expect(resp.state.degradation).not.toBe("credential_revoked");
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeDefined();
+  });
+
+  it("an OFFLINE revoke disables capture and stays durably, visibly pending", async () => {
+    const { send } = await pairedWorker(() => {
+      throw new Error("offline");
+    });
+
+    const resp = await send({ kind: "revoke" });
+
+    if (!("state" in resp)) throw new Error("expected state");
+    expect(resp.state.capability).toBe("revocation_pending");
+    const pending = storage.get(KEY_REVOCATION_PENDING) as Record<string, unknown>;
+    expect(pending).toBeDefined();
+    // The marker is JSON-safe bookkeeping ONLY — never the credential secret.
+    expect(pending.credentialId).toBe(CRED.credentialId);
+    expect(JSON.stringify(pending)).not.toContain(CRED.credential);
+  });
+
+  it("a pending revoke survives a WORKER RESTART and is retried until the server confirms", async () => {
+    // Boot 1: the server is down, so the revoke stays pending.
+    const first = await pairedWorker(() => new Response("{}", { status: 503 }));
+    await first.send({ kind: "revoke" });
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeDefined();
+    expect(storage.get(KEY_CREDENTIAL)).toBeDefined();
+    const survivingStorage = storage;
+    vi.unstubAllGlobals();
+
+    // Boot 2: the SAME chrome.storage (an MV3 teardown loses only memory), the
+    // server is back. The worker must pick the pending revoke up on start.
+    const rf = revokeFetch(() => new Response(null, { status: 204 }));
+    (globalThis as unknown as { chrome: { storage: unknown } }).chrome.storage = {
+      local: {
+        get: vi.fn(async (key: string | null) => {
+          if (key === null) return Object.fromEntries(survivingStorage.entries());
+          return survivingStorage.has(key) ? { [key]: survivingStorage.get(key) } : {};
+        }),
+        set: vi.fn(async (obj: Record<string, unknown>) => {
+          for (const [k, v] of Object.entries(obj)) survivingStorage.set(k, v);
+        }),
+        remove: vi.fn(async (key: string) => {
+          survivingStorage.delete(key);
+        }),
+      },
+    };
+    vi.stubGlobal("fetch", rf.fetch);
+    const send = await loadWorker();
+    for (let i = 0; i < 20 && survivingStorage.has(KEY_REVOCATION_PENDING); i++) {
+      await new Promise((r) => setTimeout(r, 0));
+    }
+
+    // The restart retried and CONFIRMED it — no pending revoke was lost.
+    expect(rf.revokeCalls).toContain(`Bearer ${CRED.credential}`);
+    expect(survivingStorage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    expect(survivingStorage.get(KEY_CREDENTIAL)).toBeUndefined();
+    const state = await send({ kind: "getState" });
+    if (!("state" in state)) throw new Error("expected state");
+    expect(state.state.capability).toBe("revoked");
+  });
+
+  it("repeated revokes are idempotent — the end state is the same and nothing is resurrected", async () => {
+    const { send } = await pairedWorker(() => new Response(null, { status: 204 }));
+
+    const first = await send({ kind: "revoke" });
+    const second = await send({ kind: "revoke" });
+    const third = await send({ kind: "revoke" });
+
+    for (const resp of [first, second, third]) {
+      if (!("state" in resp)) throw new Error("expected state");
+      expect(resp.state.capability).toBe("revoked");
+    }
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+  });
+
+  it("a 401 self-revoke is CONFIRMED — a pending marker for an already-dead credential always clears", async () => {
+    const { send } = await pairedWorker(() => new Response("{}", { status: 401 }));
+
+    const resp = await send({ kind: "revoke" });
+
+    if (!("state" in resp)) throw new Error("expected state");
+    expect(resp.state.capability).toBe("revoked");
+    expect(storage.get(KEY_REVOCATION_PENDING)).toBeUndefined();
+    expect(storage.get(KEY_CREDENTIAL)).toBeUndefined();
+  });
+
+  it("while a revoke is PENDING the owned-target index and the upload queue stay fail-closed", async () => {
+    const { send, capturePosts } = await pairedWorker(() => new Response("{}", { status: 500 }));
+    // Prove the paired worker really was capture-ready before the revoke.
+    await send({ kind: "capture", product });
+    expect(capturePosts.length).toBe(1);
+
+    await send({ kind: "revoke" });
+    capturePosts.length = 0;
+
+    // Nothing resolves through the (cleared) owned-target index…
+    expect(await send({ kind: "addToWatchlist", product })).toEqual({
+      ok: true,
+      watchlist: { ok: false, reason: "denied" },
+    });
+    expect(await send({ kind: "getOverlayView", product })).toEqual({
+      ok: true,
+      overlay: { kind: "unavailable" },
+    });
+    // …no capture is enqueued, and the queue never flushes to the server while
+    // the revocation is unconfirmed.
+    await send({ kind: "capture", product });
+    expect(capturePosts).toEqual([]);
+    expect((storage.get(KEY_QUEUE) as unknown[] | undefined) ?? []).toEqual([]);
+
+    // The kill switch cannot be toggled back on while pending, and re-pairing is
+    // refused rather than abandoning a credential that is still live server-side.
+    const enabled = await send({ kind: "setEnabled", enabled: true });
+    if (!("state" in enabled)) throw new Error("expected state");
+    expect(enabled.state.capability).toBe("revocation_pending");
+    expect(await send({ kind: "pair", code: "code-123" })).toEqual({
+      ok: false,
+      error: "revocation_pending",
+    });
   });
 });

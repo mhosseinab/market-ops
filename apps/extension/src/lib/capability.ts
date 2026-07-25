@@ -4,7 +4,13 @@
 // to REVOKED; the user disabling capture moves it to DISABLED. In every state
 // except READY, capture and upload are a NO-OP — never a silent partial action.
 
-export type Capability = "unknown" | "ready" | "revoked" | "disabled";
+// REVOCATION_PENDING (issue #149, PD-4(B)): the user asked to revoke and capture
+// is already off, but the SERVER has not yet confirmed the credential is dead.
+// It is deliberately DISTINCT from REVOKED: reporting a kill switch that has not
+// actually invalidated authorization is exactly the bug #149 closes. Like every
+// non-READY state it fails closed; unlike REVOKED it still holds the credential
+// material, because the pending revoke has to be retried with it.
+export type Capability = "unknown" | "ready" | "revoked" | "disabled" | "revocation_pending";
 
 // captureEnabled reports whether passive capture + upload may proceed. It is the
 // single gate the service worker consults before doing anything with page data.
@@ -27,5 +33,7 @@ export function degradationReason(capability: Capability): string | null {
       return "credential_revoked";
     case "disabled":
       return "capture_disabled";
+    case "revocation_pending":
+      return "revocation_pending";
   }
 }

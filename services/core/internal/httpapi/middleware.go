@@ -22,6 +22,7 @@ const (
 	principalKey ctxKey = iota
 	tokenKey
 	captureAccountKey
+	captureCredentialKey
 )
 
 // principalFrom returns the authenticated principal injected by the middleware.
@@ -59,6 +60,17 @@ func captureAccountFrom(ctx context.Context) (uuid.UUID, bool) {
 	return a, ok
 }
 
+// captureCredentialFrom returns the pairing RECORD id the presented capture
+// credential resolved to, injected by the middleware on the credential-scoped
+// routes. It is the ONLY credential identity a handler may act on (issue #149):
+// the raw credential never leaves the middleware, and no body/query/path
+// parameter can substitute for it. Absent when the request did not authenticate
+// with a capture credential — handlers that need it fail closed.
+func captureCredentialFrom(ctx context.Context) (uuid.UUID, bool) {
+	c, ok := ctx.Value(captureCredentialKey).(uuid.UUID)
+	return c, ok
+}
+
 // routeKind classifies how the middleware treats a route.
 type routeKind int
 
@@ -93,6 +105,20 @@ const (
 	// with 401. Unlike kindCapture there is no caller-supplied account to reconcile:
 	// the handler reads ONLY the injected credential account.
 	kindCaptureRead
+	// kindCaptureSelfRevoke: the credential-scoped SELF-revoke WRITE (POST
+	// /ext/pairing/self-revoke, issue #149 / PD-4(B)). Its AUTHENTICATION
+	// treatment is deliberately identical to kindCaptureRead — a valid capture
+	// credential is the only way in, there is no human-session fallback, the LLM
+	// machine gateway token is never accepted, and both the bound account and the
+	// credential RECORD id are injected — so it shares that branch rather than
+	// duplicating it. It is a DISTINCT kind because the route table must
+	// distinguish a credential-scoped READ from a credential-scoped WRITE: the
+	// contract-security test asserts each kind's advertised auth independently,
+	// and a future read-only route can never inherit write semantics (or vice
+	// versa) by reusing a kind whose name no longer describes it. The write it
+	// performs is self-limited by construction: it can only invalidate the
+	// credential that authenticated it.
+	kindCaptureSelfRevoke
 )
 
 // machinePrincipal is the identity injected for a gateway-token-authenticated
@@ -170,6 +196,11 @@ var routePolicies = []routePolicy{
 	{http.MethodPost, "/ext/pairing/code", kindProtected, perm.ActionPairExtension},
 	{http.MethodPost, "/ext/pairing/claim", kindPublic, ""},
 	{http.MethodPost, "/ext/pairing/revoke", kindProtected, perm.ActionPairExtension},
+	// Credential-scoped SELF-revoke (#149, EXT-009). REQUIRES a valid capture
+	// credential and revokes EXACTLY that credential; the identity is derived from
+	// it, never caller-supplied. No human-session fallback (the extension holds no
+	// session cookie) and never the machine gateway token.
+	{http.MethodPost, "/ext/pairing/self-revoke", kindCaptureSelfRevoke, ""},
 	// Cost import is a reversible seller-data write (CST-001) — L2 cost.import.
 	{http.MethodPost, "/cost/import/preview", kindProtected, perm.ActionImportCosts},
 	{http.MethodGet, "/cost/import", kindProtected, perm.ActionImportCosts},
@@ -392,13 +423,15 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 
-		case kindCaptureRead:
-			// Credential-scoped READ (#145). A valid capture credential is the ONLY
-			// way in: resolve the presented Bearer to its bound marketplace account
-			// and inject it. There is NO human-session fallback and the machine
-			// gateway token is never accepted, so the tenant is always derived from
-			// the credential — never caller-selected. An absent/revoked/expired/
-			// unknown credential fails closed with 401.
+		case kindCaptureRead, kindCaptureSelfRevoke:
+			// Credential-scoped READ (#145) and credential-scoped SELF-revoke WRITE
+			// (#149). A valid capture credential is the ONLY way in: resolve the
+			// presented Bearer and inject BOTH its bound marketplace account and its
+			// credential RECORD id. There is NO human-session fallback and the machine
+			// gateway token is never accepted, so the tenant AND the credential
+			// identity are always derived from the credential — never caller-selected.
+			// An absent/revoked/expired/unknown credential fails closed with 401,
+			// which is also what makes a repeated self-revoke idempotent.
 			bt := bearerToken(r)
 			if bt == "" || m.pairing == nil {
 				writeError(w, http.StatusUnauthorized, noSessionErr())
@@ -410,6 +443,7 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 				return
 			}
 			ctx := context.WithValue(r.Context(), captureAccountKey, resolved.MarketplaceAccountID)
+			ctx = context.WithValue(ctx, captureCredentialKey, resolved.CredentialID)
 			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 

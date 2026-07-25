@@ -870,6 +870,8 @@ export const en: Catalog = {
   "ext.degradation.notPaired": "Not paired — enter a pairing code.",
   "ext.degradation.credentialRevoked": "Access revoked — re-pair to resume.",
   "ext.degradation.captureDisabled": "Capture is turned off.",
+  "ext.degradation.revocationPending":
+    "Capture is off. Awaiting the server's confirmation that access was revoked.",
   "ext.onDemand.refresh": "Refresh now",
   "ext.onDemand.refreshing": "Refreshing…",
   "ext.schedule.toggle": "Scheduled refresh",

@@ -80,6 +80,10 @@ type gatewayServer struct {
 	// those routes fail closed with a structured error, and a capture credential
 	// can never authenticate (only a human session can reach capture upload).
 	pairing PairingService
+	// pairingTelemetry instruments the EXT-009 credential-revocation boundary
+	// (issue #149). Bound by NewServer against the installed MeterProvider; nil ⇒
+	// the counter is skipped (the structured log still records the boundary).
+	pairingTelemetry *pairingTelemetry
 	// gatewayToken is the read/Draft-only machine credential (LLM_GATEWAY_TOKEN).
 	// It is what the middleware matches to authorize the machine principal on the
 	// Draft-only routes and its read envelope (perm.GatewayCan). Empty ⇒ no machine

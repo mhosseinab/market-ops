@@ -60,6 +60,13 @@ export const KEY_QUEUE = "queue";
 // independently, and so a dead-letter item never re-enters an automatic flush.
 export const KEY_DEADLETTER = "deadLetter";
 export const KEY_LAST_UPLOAD = "lastUploadAt";
+// Durable pending-revocation marker (issue #149 / EXT-009). Written BEFORE the
+// server revoke is attempted and cleared only once the authority confirms (or an
+// authoritative expiry is reached), so an MV3 worker teardown mid-revoke can
+// never lose the revocation. It holds ONLY non-secret bookkeeping — the
+// credential material stays in KEY_CREDENTIAL (one store for the secret), which
+// is exactly why a failed revoke must NOT clear that key.
+export const KEY_REVOCATION_PENDING = "revocationPending";
 // Durable operational-telemetry outbox (issue #162): bounded, allow-listed metric
 // snapshots that must survive an MV3 worker restart and be exported to an
 // operational sink. Persisted here so the storage audit walks it too — a batch
@@ -125,6 +132,23 @@ function walk(value: unknown, path: string, offenders: string[]): void {
       walk(v, here, offenders);
     }
   }
+}
+
+// A revocation the user requested that the SERVER has not yet confirmed (issue
+// #149). JSON-safe so it survives an MV3 worker restart byte-identically. It
+// carries NO credential secret: only the credential's identity (for correlating
+// a retry with the still-stored credential) and its authoritative expiry, after
+// which the credential is dead at the server regardless and the material may be
+// discarded.
+export interface PendingRevocation {
+  requestedAt: string;
+  credentialId: string;
+  marketplaceAccountId: string;
+  // The credential's server-side expiry (from the pairing claim). At/after this
+  // instant the credential cannot authenticate anything, so the pending marker
+  // resolves without a further server round-trip.
+  credentialExpiresAt: string;
+  attempts: number;
 }
 
 // A queued upload item: the allow-listed capture, its stable dedup key, and the
