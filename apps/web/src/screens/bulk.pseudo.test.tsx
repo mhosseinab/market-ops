@@ -15,7 +15,7 @@ function assertPseudo(text: string) {
   expect(text).toContain(`·${PSEUDO_CLOSE}`);
 }
 
-describe("pseudo-localization for S28 components (LOC-011)", () => {
+describe("pseudo-localization for bulk-approval + cost-import screens (LOC-011)", () => {
   it("bulk toolbar, coverage bars, and queue cards resolve copy via the catalog", () => {
     const { container } = render(
       <PseudoHarness>

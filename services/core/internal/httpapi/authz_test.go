@@ -45,7 +45,7 @@ func (f *fakeWatchlist) AddForOrg(context.Context, uuid.UUID, uuid.UUID, uuid.UU
 	return f.entry, f.err
 }
 
-// TestS37HandlersMapForeignAccountToUniform404 is the issue #237 transport-level
+// TestPD3HandlersMapForeignAccountToUniform404 is the issue #237 transport-level
 // proof (no database): when the org-scoping service reports the caller's org does
 // not own the requested account (ErrAccountNotFound), every S37 handler — the two
 // guardrail money/policy routes, both watchlist routes, and the market-conflict read
@@ -53,7 +53,7 @@ func (f *fakeWatchlist) AddForOrg(context.Context, uuid.UUID, uuid.UUID, uuid.UU
 // DB-backed cross-tenant proof (tenant_scoping_s37_db_test.go) by pinning the
 // handler's error-to-status mapping deterministically. An authenticated Owner is used
 // (perm passes) so the 404 is the ownership guard's, not an auth rejection.
-func TestS37HandlersMapForeignAccountToUniform404(t *testing.T) {
+func TestPD3HandlersMapForeignAccountToUniform404(t *testing.T) {
 	acct := uuid.New().String()
 	body := `{"marketplaceAccountId":"` + acct + `","settings":{"contributionFloor":{"mantissa":"100","currency":"USD","exponent":-2},"movementCapBasisPoints":500,"cooldownSeconds":3600,"strategy":"match","strategyEnabled":true}}`
 	addBody := `{"marketplaceAccountId":"` + acct + `","variantId":"` + uuid.New().String() + `"}`

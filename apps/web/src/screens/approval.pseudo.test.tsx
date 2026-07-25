@@ -14,7 +14,7 @@ function assertPseudo(text: string) {
   expect(text).toContain(`·${PSEUDO_CLOSE}`);
 }
 
-describe("pseudo-localization for S27 components (LOC-011)", () => {
+describe("pseudo-localization for approval + recommendation screens (LOC-011)", () => {
   it("state-machine stages and evidence panels resolve via the catalog", () => {
     const { container } = render(
       <PseudoHarness>
