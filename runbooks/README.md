@@ -20,6 +20,13 @@ links, the viewer, and `deploy/grafana/validate_dashboards.py` all read.
 | [parser.md](parser.md) | Route C parser drift | `operations.queue.parserDrift` | `parser-drift` | `RouteCircuitOpen` |
 | [action-reconciliation.md](action-reconciliation.md) | Action reconciliation | `operations.queue.pendingRecon` | `reconciliation` | `ReconciliationBacklog` |
 | [llm-outage.md](llm-outage.md) | LLM / chat / briefing outage | *(no blocking queue by design)* — triage via `operations.queue.staleTargets` | — | `BriefingGenerationFailure`, `ModelSpendBudgetExhausted` |
+| [digest-delivery.md](digest-delivery.md) | Daily email digest delivery | *(no blocking queue by design)* — triage via `operations.queue.staleTargets` | — | *(no owning alert)*; `BriefingGenerationFailure` is the adjacent signal |
+
+`llm-outage.md` and `digest-delivery.md` own **no blocking queue by design** and so
+carry no registry deep link: an LLM outage cannot reduce screen capability (§17.2),
+and the daily digest is advisory UI whose items are all readable in-app under the
+same shared event id (NOT-001). Both are reached from this index and from the
+adjacent alerts, and both cite `operations.queue.staleTargets` for triage.
 
 `observation.md` is the **shared** runbook for three observation-domain queues:
 `staleTargets` (freshness), `conflicted` (Route A vs C conflict), and

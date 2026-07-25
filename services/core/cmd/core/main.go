@@ -429,6 +429,14 @@ func run() error {
 			OutcomeClose:     closer.RunOnce,
 			BriefingGenerate: briefingSvc.GenerateAll,
 			DigestGenerate:   digestRunner(digestSvc),
+			// Durable per-(account, business_day) digest consumer (issue #124). The
+			// fan-out above only records durable work rows and enqueues these; each
+			// account then delivers on its OWN job, retry budget, and bounded queue, so
+			// one tenant's unsendable recipient, unknown locale, render error, or SMTP
+			// failure can never block, delay, or abort another tenant's digest.
+			// lastAttempt (from River's attempt bookkeeping) lets the service record the
+			// OBSERVABLE dead-letter terminal state instead of retrying forever.
+			DigestAccount: digestAccountRunner(digestSvc),
 			MarketEventProduce: func(c context.Context) (int, error) {
 				// One pass performs the full EVT lifecycle: durable expiry sweep +
 				// type-aware condition-clear (issue #66) alongside production/dedup. The
@@ -550,6 +558,16 @@ func run() error {
 				notifyStore.SetUrgentEmailEnqueuer(notify.NewUrgentEmailDispatcher(jobsClient))
 				logger.Info("urgent-email enqueuer wired into notification store (transactional outbox)")
 			}
+			// Wire the per-account digest enqueuer now that the River client exists
+			// (issue #124), so the fan-out commits each account's durable delivery row
+			// together with the job that drives it, and so the owned recovery pass can
+			// re-enqueue nonterminal rows of any historical day. Without it the fan-out
+			// still records durable rows (nothing is lost) but drives nothing — fail
+			// closed, never a silent inline send.
+			if digestSvc != nil {
+				digestSvc.SetAccountEnqueuer(notify.NewDigestAccountDispatcher(jobsClient))
+				logger.Info("per-account digest enqueuer wired (durable per-account/day fan-out + owned recovery)")
+			}
 			// Wire the catalog-sync enqueuer now that the River client exists, so the
 			// onboarding "Sync catalog" control can initiate an idempotent incremental
 			// sync (issue #76, ACC-004/ACC-005). Nil-safe: without a wired connector
@@ -644,6 +662,17 @@ func digestRunner(svc *notify.DigestService) jobs.RunOnceFunc {
 	return svc.GenerateAll
 }
 
+// digestAccountRunner adapts the digest service to a jobs.DigestAccountFunc (issue
+// #124). A nil service (no configured sender) yields a nil runner, which fails CLOSED
+// in the worker — a committed delivery row parks and retries rather than being silently
+// completed, so durable digest work is never lost when no sender is wired.
+func digestAccountRunner(svc *notify.DigestService) jobs.DigestAccountFunc {
+	if svc == nil {
+		return nil
+	}
+	return svc.DeliverAccountDay
+}
+
 // urgentEmailRunner adapts the urgent-email dispatcher to a jobs.UrgentEmailFunc
 // (issue #122). A nil dispatcher (no configured sender) yields a nil runner, which
 // registers a no-op worker (fail closed) — an enqueued urgent-email intent then parks
@@ -691,7 +720,10 @@ func startJobPipeline(ctx context.Context, logger *slog.Logger, pool *pgxpool.Po
 		return nil, nil, err
 	}
 	return func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		// Wait out River's soft-stop window so a bounded in-flight attempt can drain
+		// before its context is cancelled; a shorter budget here would cut the graceful
+		// stop short and reintroduce the mid-send kill on every deploy.
+		stopCtx, cancel := context.WithTimeout(context.Background(), jobs.StopGrace)
 		defer cancel()
 		_ = client.Stop(stopCtx)
 	}, client, nil

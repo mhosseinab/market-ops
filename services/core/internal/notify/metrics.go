@@ -3,6 +3,7 @@ package notify
 import (
 	"context"
 	"sync"
+	"time"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -30,9 +31,25 @@ type notifyMetrics struct {
 	// accountFailed counts accounts whose digest delivery pass failed and was
 	// ISOLATED (issue #124): the failure is contained to that account so every OTHER
 	// account in the fan-out still delivers, and the failure is OBSERVABLE here —
-	// never silently swallowed. The account id is NOT a label (high cardinality); it
-	// travels on the warn log + typed observer instead.
+	// never silently swallowed. Labeled by the BOUNDED closed-set reason. The account
+	// id is NOT a label (high cardinality); it travels on the structured log + typed
+	// observer instead.
 	accountFailed metric.Int64Counter
+	// accountAttempt counts every per-account digest ATTEMPT (issue #124), labeled by
+	// the bounded outcome and reason. It is what makes per-account attempts and
+	// terminal failures observable: delivered / skipped / retryable_failure /
+	// dead_letter / unconfirmed / terminal_unpersisted are distinguishable series, so a
+	// tenant stuck in retry and a tenant permanently quarantined never look alike.
+	accountAttempt metric.Int64Counter
+	// accountLag records, per ATTEMPT, how far behind its own PINNED business day the
+	// attempt completed (seconds from day+24h to completion). Measured inside the
+	// attempt, so a healthy account never inherits a poison account's delay, and
+	// computed from the pinned day, so a delivery two days late reports ~48h.
+	accountLag metric.Float64Histogram
+	// recoveryReenqueued counts nonterminal (account, day) delivery rows re-enqueued by
+	// the OWNED recovery pass (issue #124 / PD-4). A persistently non-zero series is
+	// the signal that durable digest work is not reaching a terminal state.
+	recoveryReenqueued metric.Int64Counter
 	// idempotencyConflict counts deliveries that reused an (account, dedup_key) over a
 	// DIFFERENT source event or materially changed payload (NOT-001, issue #123),
 	// labeled by category. The collision fails closed with a typed conflict; this
@@ -69,6 +86,19 @@ func instruments() notifyMetrics {
 		metricsInst.accountFailed, _ = m.Int64Counter(
 			"notify.digest.account_failed",
 			metric.WithDescription("Accounts whose digest delivery failed and was isolated (contained, observed) so other accounts still deliver"),
+		)
+		metricsInst.accountAttempt, _ = m.Int64Counter(
+			"notify.digest.account_attempt",
+			metric.WithDescription("Per-account digest delivery attempts by bounded outcome and reason"),
+		)
+		metricsInst.accountLag, _ = m.Float64Histogram(
+			"notify.digest.account_lag_seconds",
+			metric.WithDescription("Seconds from an account's business-day close (day+24h) to the completion of this delivery attempt"),
+			metric.WithUnit("s"),
+		)
+		metricsInst.recoveryReenqueued, _ = m.Int64Counter(
+			"notify.digest.recovery_reenqueued",
+			metric.WithDescription("Nonterminal digest delivery rows re-enqueued by the owned recovery pass"),
 		)
 		metricsInst.idempotencyConflict, _ = m.Int64Counter(
 			"notify.delivery.idempotency_conflict",
@@ -156,13 +186,43 @@ func recordIsolation(ctx context.Context, e *MessageValidationError) {
 }
 
 // recordAccountFailure emits the per-account digest-failure counter for one account
-// isolated out of the fan-out (issue #124). The account id is intentionally NOT a
-// label (high cardinality / PII posture) — it is carried on the warn log and the
-// typed observer; this counter answers only "how many accounts failed this pass".
-func recordAccountFailure(ctx context.Context) {
+// isolated out of the fan-out (issue #124), labeled by the BOUNDED closed-set reason.
+// The account id is intentionally NOT a label (high cardinality / PII posture) — it is
+// carried on the structured log and the typed observer.
+func recordAccountFailure(ctx context.Context, reason DigestReason) {
 	inst := instruments()
 	if inst.accountFailed == nil {
 		return
 	}
-	inst.accountFailed.Add(ctx, 1)
+	inst.accountFailed.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("reason", string(reason)),
+	))
+}
+
+// recordAccountAttempt emits the per-attempt counter + lag histogram (issue #124). Both
+// labels are bounded technical tokens; the lag is the attempt's OWN lag against its
+// PINNED business day, never a batch-drain measurement and never recomputed from the
+// current midnight.
+func recordAccountAttempt(ctx context.Context, outcome string, reason DigestReason, lag time.Duration) {
+	inst := instruments()
+	attrs := metric.WithAttributes(
+		attribute.String("outcome", outcome),
+		attribute.String("reason", string(reason)),
+	)
+	if inst.accountAttempt != nil {
+		inst.accountAttempt.Add(ctx, 1, attrs)
+	}
+	if inst.accountLag != nil {
+		inst.accountLag.Record(ctx, lag.Seconds(), attrs)
+	}
+}
+
+// recordRecoveryReenqueue emits the owned-recovery counter for rows re-driven from the
+// durable delivery table (never from River state).
+func recordRecoveryReenqueue(ctx context.Context, n int) {
+	inst := instruments()
+	if inst.recoveryReenqueued == nil {
+		return
+	}
+	inst.recoveryReenqueued.Add(ctx, int64(n))
 }

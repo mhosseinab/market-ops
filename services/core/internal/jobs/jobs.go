@@ -44,10 +44,24 @@ type ExecutionRunners struct {
 	// day per account, generated from the Today ranking). A nil runner registers a
 	// no-op worker (fail closed).
 	BriefingGenerate RunOnceFunc
-	// DigestGenerate is the NOT-001 daily email-digest fan-out (once per business
-	// day per account, batching the day's non-bypass notifications). A nil runner
-	// registers a no-op worker (fail closed).
+	// DigestGenerate is the NOT-001 daily email-digest FAN-OUT (issue #124): it sends
+	// nothing itself — it records one durable (account, business_day) delivery row per
+	// account and enqueues a per-account job for it, and it re-enqueues every
+	// nonterminal row of any historical day (owned recovery). A nil runner registers a
+	// no-op worker (fail closed).
 	DigestGenerate RunOnceFunc
+	// DigestAccount is the durable per-(account, business_day) digest consumer (issue
+	// #124). It drives ONE account's digest for ONE pinned business day, with its own
+	// retry budget and dead-letter, on its own bounded queue — so one tenant's
+	// unsendable recipient, unknown locale, render error, or SMTP failure can never
+	// block, delay, or abort an independent tenant's scheduled delivery. A nil runner
+	// fails CLOSED (the worker retries rather than silently dropping a committed
+	// delivery row); production wires it whenever a mail sender is configured.
+	DigestAccount DigestAccountFunc
+	// DigestAccountTimeout bounds one per-account attempt. Zero takes the default; any
+	// value is clamped into [DigestAccountMinTimeout, DigestAccountMaxTimeout] so the
+	// advertised bounded fan-out cannot be configured away.
+	DigestAccountTimeout time.Duration
 	// MarketEventProduce is the EVT-001..005 runtime producer pass: it turns
 	// committed observation/catalog/margin transitions into detector inputs and
 	// records their candidates idempotently, so a running core actually produces
@@ -114,6 +128,9 @@ func NewWorkers(logger *slog.Logger, runners ExecutionRunners) (*river.Workers, 
 	}
 	if err := river.AddWorkerSafely(workers, NewDigestWorker(runners.DigestGenerate, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register digest worker: %w", err)
+	}
+	if err := river.AddWorkerSafely(workers, NewDigestAccountWorker(runners.DigestAccount, runners.DigestAccountTimeout, logger)); err != nil {
+		return nil, fmt.Errorf("jobs: register digest-account worker: %w", err)
 	}
 	if err := river.AddWorkerSafely(workers, NewMarketEventProduceWorker(runners.MarketEventProduce, logger)); err != nil {
 		return nil, fmt.Errorf("jobs: register market-event producer worker: %w", err)
@@ -196,16 +213,65 @@ func periodicJobs() []*river.PeriodicJob {
 	}
 }
 
+// DigestAccountMaxConcurrency bounds concurrent per-account digest deliveries. It is
+// deliberately smaller than the default queue's capacity: the digest is the lowest
+// priority in the load-shedding order, and its work is I/O-bound on an external relay.
+// Exported so a test can assert the bound is actually enforced rather than assumed.
+const DigestAccountMaxConcurrency = 3
+
+// SoftStopTimeout is how long a graceful stop lets RUNNING jobs finish before River
+// cancels their contexts and escalates to a hard stop (River v0.40 river.Config).
+//
+// Without it, cancelling the context passed to Start — which is exactly what SIGTERM
+// does on every routine deploy — is equivalent to StopAndCancel: every in-flight job
+// context is hard-cancelled immediately. For the digest that meant up to
+// DigestAccountMaxConcurrency tenants having their attempt killed mid-send on every
+// restart. Correctness no longer depends on this (durable delivery transitions run on a
+// context detached from the attempt), but a bounded drain window turns a routine deploy
+// from "several tenants retry" into "several tenants finish".
+//
+// It is deliberately SHORT — far shorter than the per-account work deadline. No
+// realistic drain window finishes an attempt blocked on a hanging relay, so the window
+// exists to let the COMMON case (a healthy relay answering in milliseconds) finish
+// cleanly, not to wait out a poison tenant. Keeping the whole stop inside the process's
+// existing shutdown budget also means it survives a container runtime's default
+// stop-grace period instead of being SIGKILLed halfway through.
+const SoftStopTimeout = 6 * time.Second
+
+// DurableStateWriteTimeout bounds each DETACHED durable state write a job performs after
+// its own context is gone (internal/notify uses it for every delivery transition). It
+// lives here, not in the consuming package, because the stop budget below is DERIVED
+// from it: a graceful stop must outlast both the drain window AND the detached write
+// that a drained attempt still owes, or the process exits while a verdict is in flight.
+// It is short — a single guarded UPDATE on an indexed key — so a dead database cannot
+// hold a worker slot past the attempt that spawned it.
+const DurableStateWriteTimeout = 5 * time.Second
+
+// StopGrace is how long a caller should wait for Stop to return. It is DERIVED, not
+// chosen: the drain window, plus the detached durable write a drained attempt still owes
+// (DurableStateWriteTimeout), plus slack for the hard-stop escalation itself. Choosing a
+// smaller number would cut the caller's wait short exactly when an attempt is recording
+// its terminal verdict, which is the one write that must not be lost.
+const StopGrace = SoftStopTimeout + DurableStateWriteTimeout + 2*time.Second
+
 // NewClient constructs the River client over a pgx pool with the default queue
 // enabled. A nil workers registry yields an insert-only client (no queues), for
 // callers that enqueue but do not process. When workers are present the periodic
 // execution-plane jobs are scheduled.
 func NewClient(pool *pgxpool.Pool, workers *river.Workers, logger *slog.Logger) (*Client, error) {
-	cfg := &river.Config{Logger: logger}
+	cfg := &river.Config{Logger: logger, SoftStopTimeout: SoftStopTimeout}
 	if workers != nil {
 		cfg.Workers = workers
 		cfg.Queues = map[string]river.QueueConfig{
 			river.QueueDefault: {MaxWorkers: 5},
+			// Per-account digest delivery runs on its OWN bounded queue (issue #124).
+			// The digest is advisory UI in the load-shedding order (approval path >
+			// audit append > reconciliation > observations > advisory UI), so it must
+			// never be able to consume capacity the approval, audit-adjacent, and
+			// urgent-email paths depend on. Isolating the queue caps the blast radius of
+			// poison accounts to these slots; each attempt additionally carries a bounded
+			// work deadline, so even more poison accounts than slots cannot hold them.
+			QueueDigestAccount: {MaxWorkers: DigestAccountMaxConcurrency},
 		}
 		cfg.PeriodicJobs = periodicJobs()
 	}

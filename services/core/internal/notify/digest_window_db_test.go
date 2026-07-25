@@ -188,9 +188,17 @@ func TestDigest_RunOnStartMidDayCannotFinalizeOpenDay(t *testing.T) {
 	}
 }
 
-// TestDigest_RetryAfterSendFailureNoDupNoLoss proves a send failure rolls the claim
-// back (no header persists) so the River retry re-covers the SAME closed window with
-// no duplicate send and no lost item.
+// TestDigest_RetryAfterSendFailureNoDupNoLoss proves the retry guarantee: after a
+// send failure the River retry re-covers the SAME closed window, sends EXACTLY ONCE,
+// loses no item, and a further retry is a no-op.
+//
+// Since issue #124 the claim is committed BEFORE the send rather than rolled back
+// after it. Rolling the claim back was itself a duplicate-delivery hazard: the relay
+// can accept a message and still leave the surrounding transaction to fail (a lost
+// acceptance response, or a commit failure after a successful send), and a rolled-back
+// claim would then license a retry that resends an email the relay already holds. The
+// durable (account, business_day) delivery row is now the idempotency authority
+// instead, so a claimed-but-unsent day is retried while an accepted one never is.
 func TestDigest_RetryAfterSendFailureNoDupNoLoss(t *testing.T) {
 	pool, q := newPool(t)
 	ctx := context.Background()
@@ -204,14 +212,20 @@ func TestDigest_RetryAfterSendFailureNoDupNoLoss(t *testing.T) {
 
 	post := dayD.Add(36 * time.Hour) // D+1 12:00
 
-	// First finalize attempt fails at send: the whole claim rolls back.
+	// First finalize attempt fails at send. The claim is already durable, and the
+	// delivery row is released back to pending because the failure was a DEFINITIVE
+	// non-acceptance — nothing was delivered, so a retry cannot duplicate anything.
 	flaky := &flakyMailer{fail: true}
 	_, err := digestFor(pool, flaky, post).GenerateForAccount(ctx, account)
 	if err == nil {
 		t.Fatal("send failure must surface an error (fail closed for River retry)")
 	}
-	if got := headerItemCount(t, q, account, dayD); got != -1 {
-		t.Fatalf("failed send must persist NO header (rolled back): item_count=%d", got)
+	if got := headerItemCount(t, q, account, dayD); got != 2 {
+		t.Fatalf("the claim is durable across a failed send: item_count=%d, want 2", got)
+	}
+	if state := deliveryState(t, pool, account, dayD); state != notify.DigestStatePending {
+		t.Fatalf("after a DEFINITIVE non-acceptance the delivery row must be released to %q for retry, got %q",
+			notify.DigestStatePending, state)
 	}
 
 	// River retries: same window, now the mailer is healthy. Sends exactly once.
@@ -235,6 +249,27 @@ func TestDigest_RetryAfterSendFailureNoDupNoLoss(t *testing.T) {
 	if sent || len(flaky.sent) != 1 {
 		t.Fatalf("finalized-day retry must be a no-op: sent=%v mails=%d", sent, len(flaky.sent))
 	}
+	if state := deliveryState(t, pool, account, dayD); state != notify.DigestStateDelivered {
+		t.Fatalf("delivery row state = %q, want %q (terminal — invisible to retry and to recovery)",
+			state, notify.DigestStateDelivered)
+	}
+}
+
+// deliveryState reads the durable per-(account, business_day) delivery state, or "" when
+// no row exists.
+func deliveryState(t *testing.T, pool *pgxpool.Pool, account uuid.UUID, day time.Time) string {
+	t.Helper()
+	var state string
+	err := pool.QueryRow(context.Background(),
+		`SELECT delivery_state FROM notification_digest_deliveries
+		 WHERE marketplace_account_id = $1 AND business_day = $2`, account, day.UTC()).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("read delivery state: %v", err)
+	}
+	return state
 }
 
 // TestDigest_CutoffBelongsToOneWindow proves the UTC business-day boundary is a
