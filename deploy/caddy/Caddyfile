@@ -1,0 +1,35 @@
+# Production TLS ingress (PRD §19.3 "Caddy ingress").
+#
+# Caddy terminates TLS and does nothing else: it reverse-proxies the whole
+# origin to the `nginx` service, which is the image the release pipeline builds
+# and Trivy-scans. That image already bakes the built SPA, serves the history
+# fallback, and proxies /api/ to core:8080 — including the CSP,
+# Permissions-Policy, Referrer-Policy, X-Content-Type-Options and
+# X-Frame-Options headers in deploy/nginx/nginx.conf. Splitting the roles this
+# way keeps ONE origin for the browser (DEPLOYMENT.md §1) while leaving the
+# published artifact untouched, so what runs in production is byte-identical to
+# what CI scanned.
+#
+# DK_DOMAIN and DK_ACME_EMAIL come from the environment; no hostname or address
+# is committed here.
+
+{
+	email {$DK_ACME_EMAIL}
+	# Caddy's own admin API is off: nothing in this deployment reconfigures
+	# Caddy at runtime, and an exposed admin endpoint is a live config-write
+	# surface we have no use for.
+	admin off
+}
+
+{$DK_DOMAIN} {
+	encode zstd gzip
+
+	# HSTS is Caddy's business, not nginx's: only the TLS terminator knows the
+	# connection was actually secure. Everything else security-header shaped is
+	# already set by deploy/nginx/nginx.conf and is passed through untouched.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+
+	reverse_proxy nginx:8080 {
+		header_up X-Forwarded-Proto {scheme}
+	}
+}
