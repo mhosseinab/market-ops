@@ -18,8 +18,34 @@
 -- pinned, created_at, updated_at, and retention_expires_at (now() + 90 days) take
 -- their schema defaults, so 90-day retention (CHAT-008) is set at creation without
 -- the caller computing a date.
+--
+-- ACCOUNT OWNERSHIP (issue #412, §4.6 tenant integrity): the insert is SCOPED by
+-- the caller's organization. A supplied marketplace_account_id is written only
+-- when that account BELONGS to the caller's organization; otherwise the SELECT
+-- yields no row, the INSERT writes nothing, and the caller sees pgx.ErrNoRows,
+-- which the store maps to ErrAccountDenied. A NULL account (no account context was
+-- resolved yet, migration 0005) short-circuits the check and stays legal.
+--
+-- NO EXISTENCE ORACLE: a FOREIGN account and an UNKNOWN account take the IDENTICAL
+-- branch here — EXISTS is false either way — so the two are indistinguishable by
+-- result, error, or shape. Possession of a UUID never reveals whether it names a
+-- real account in another tenant.
+--
+-- This predicate is DEFENSE IN DEPTH, not the invariant. The authoritative guard is
+-- the composite (marketplace_account_id, organization_id) foreign key added by
+-- migration 0048, which PostgreSQL evaluates atomically at insert time and which
+-- holds even when this query — or the whole Go layer — is bypassed.
 INSERT INTO conversations (organization_id, opened_by_user_id, marketplace_account_id)
-VALUES ($1, $2, $3)
+SELECT
+    sqlc.arg(organization_id)::uuid,
+    sqlc.arg(opened_by_user_id)::uuid,
+    sqlc.narg(marketplace_account_id)::uuid
+WHERE sqlc.narg(marketplace_account_id)::uuid IS NULL
+   OR EXISTS (
+        SELECT 1 FROM marketplace_accounts ma
+        WHERE ma.id = sqlc.narg(marketplace_account_id)::uuid
+          AND ma.organization_id = sqlc.arg(organization_id)::uuid
+   )
 RETURNING *;
 
 -- name: GetConversationForOrg :one

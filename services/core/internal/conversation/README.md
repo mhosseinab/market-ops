@@ -20,6 +20,7 @@ The `conversation` package serves as the gateway-owned durability layer for chat
 - **Audit Independence**: Conversations hold no action, approval, or execution state. If a conversation is deleted, the core audit logs for executions remain perfectly intact.
 - **Free Text carries no authority**: A stored message can never approve or execute an action.
 - **Fail-Closed Versioning**: Both `context` and `locale` enforce strict version matching. Stale views from the client (version mismatch) or missing explicit transition flags cause the request to fail closed (no DB writes occur).
+- **Account ownership is a DATABASE invariant** (issue #412, PRD §4.6 tenant integrity). A conversation may only reference a marketplace account owned by its organization. Two independent boundaries enforce it: the org-scoped `CreateConversation` predicate (`queries/conversation.sql`), and migration `0048`'s composite `(marketplace_account_id, organization_id)` foreign key plus ownership-pair immutability trigger — so a forged account id is rejected by PostgreSQL even when the Go layer is bypassed entirely. Both surface as `ErrAccountDenied`; a FOREIGN and an UNKNOWN account are deliberately indistinguishable (no existence oracle). The ownership pair is claimed once at INSERT and never re-pointed; it may only be CLEARED, by the `ON DELETE SET NULL (marketplace_account_id)` referential action when the account is deleted. Every rejection increments `conversation.account_ownership_rejections` (labelled by seam) and emits a `conversation_account_ownership_rejected` structured record.
 
 ## Data Flow Diagram
 
@@ -32,6 +33,7 @@ flowchart TD
     
     GetConv -->|Not Found| ErrDenied["ErrConversationDenied<br/>Fail Closed"]
     GetConv -->|Found| ResolveCtx
+    Create -->|"Account not owned by org<br/>(predicate or composite FK)"| ErrAcct["ErrAccountDenied<br/>Fail Closed"]
     Create --> ResolveCtx[resolveTurnContext]
     
     ResolveCtx -->|Stale/Error| ErrCtx["ErrContextVersionStale<br/>Fail Closed"]

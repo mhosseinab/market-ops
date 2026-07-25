@@ -24,12 +24,23 @@ never the scope, and a provenance-less or foreign-tenant chip fails closed.
 What the two scope fields actually guarantee differs, and the check is only as
 strong as the weaker one: ``organization_id`` is the caller's authenticated
 organization (gateway bearer, issue #167), while ``account_id`` is the account
-the GATEWAY RESOLVED for the turn from the stored conversation. A pre-existing,
-out-of-scope gap (recorded on :class:`llm.app.ChatRequest`, #108 G3) means a new
-conversation can name an account owned by another organization, in which case
-scope and payload provenance trace to the SAME unvalidated row. Passing this
-scope check is therefore necessary but NOT sufficient tenant authorization for an
-authoritative read — 108c's consumers must not treat it as such.
+the GATEWAY RESOLVED for the turn from the stored conversation. The gap that used
+to weaken that second half (#108 G3 — a new conversation could name an account
+owned by another organization, so scope and payload provenance traced to the SAME
+unvalidated row) is CLOSED at the DATABASE by issue #412: the insert is scoped by
+the caller's organization, and ``migrations/0048_conversation_account_ownership.sql``
+adds a composite ``(marketplace_account_id, organization_id)`` foreign key plus an
+ownership-pair immutability trigger, so a conversation cannot reference a foreign
+account even when application code is bypassed. A conversation's stored account is
+therefore owned by its organization (full statement of record on
+:class:`llm.app.ChatRequest`).
+
+That does NOT promote this scope check to tenant authorization. It is
+DEFENCE IN DEPTH: this plane holds a read + Draft-only credential, receives the
+scope as data, and cannot itself verify the pairing. Authorization is asserted by
+the gateway under the inbound bearer credential and enforced by the database;
+108c's consumers must keep treating an authoritative read as gated THERE, not
+here — passing this check remains necessary, never sufficient.
 
 More precisely: on today's gateway path the payload's ``organization_id`` and the
 turn's scope organization COINCIDE BY CONSTRUCTION (``BeginTurn`` creates the

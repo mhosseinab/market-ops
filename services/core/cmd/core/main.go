@@ -274,7 +274,10 @@ func run() error {
 		// the caller's organization and denies a cross-org conversation before
 		// proxying. The LLM plane never touches this store (no DB credential,
 		// §19.3); the gateway owns conversation identity.
-		serverOpts = append(serverOpts, httpapi.WithChatConversations(conversation.NewStore(pool)))
+		// The process logger is handed to the store so its tenant-integrity denials
+		// (issue #412) are emitted on the same structured stream as the rest of the
+		// gateway, alongside the conversation.account_ownership_rejections counter.
+		serverOpts = append(serverOpts, httpapi.WithChatConversations(conversation.NewStore(pool).WithLogger(logger)))
 		logger.Info("chat conversation durability store wired")
 
 		// Wire the observation store (PRD §7.3 OBS-*) so the Route B capture-upload

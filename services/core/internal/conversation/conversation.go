@@ -14,6 +14,15 @@
 //   - Authorization at the boundary. A continued turn must name a conversation
 //     that belongs to the caller's organization; a foreign/unknown id is denied
 //     (ErrConversationDenied) and NOTHING is written or appended.
+//   - Account ownership is a DATABASE invariant (issue #412, §4.6 tenant
+//     integrity). A conversation may only reference a marketplace account owned by
+//     its organization. Two boundaries enforce it — the org-scoped
+//     CreateConversation predicate, and migration 0048's composite
+//     (marketplace_account_id, organization_id) foreign key plus ownership-pair
+//     immutability trigger — so a forged account id is rejected by PostgreSQL even
+//     when this package is bypassed. Both surface as ErrAccountDenied, and a
+//     FOREIGN account is indistinguishable from an UNKNOWN one (no existence
+//     oracle).
 //   - Gateway-authoritative identity. BeginTurn resolves the conversation id
 //     (creating a new row when none is supplied) so the caller can hand that id to
 //     the LLM plane and the stream merely echoes it — no id race, no parsing the
@@ -28,10 +37,13 @@ package conversation
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -48,6 +60,18 @@ const (
 // that does not exist or belongs to another organization. Fail closed: the turn
 // is never persisted or proxied.
 var ErrConversationDenied = errors.New("conversation: not found for organization")
+
+// ErrAccountDenied is returned when a NEW conversation names a marketplace account
+// the caller's organization does not own (issue #412, PRD §4.6 tenant integrity /
+// identity quarantine). Fail closed: nothing is written and the turn is never
+// proxied.
+//
+// NO EXISTENCE ORACLE: a FOREIGN account and an UNKNOWN account are deliberately
+// indistinguishable — the org-scoped insert matches no row in either case, so both
+// take the identical branch and produce the identical error carrying only the
+// caller-supplied account id (which the caller already knows), never the owning
+// organization. This is the same posture as analytics.ErrCrossTenant (#125).
+var ErrAccountDenied = errors.New("conversation: marketplace account not available to this organization")
 
 // Conversation is a retained interaction record (CHAT-008). It carries the 90-day
 // retention expiry and the pinned flag; it holds NO action/approval/execution
@@ -110,11 +134,12 @@ type OpenParams struct {
 type Store struct {
 	pool *pgxpool.Pool
 	now  func() time.Time
+	tel  *telemetry
 }
 
 // NewStore builds a conversation store over the pool.
 func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, now: func() time.Time { return time.Now().UTC() }}
+	return &Store{pool: pool, now: func() time.Time { return time.Now().UTC() }, tel: newTelemetry(nil)}
 }
 
 // WithClock overrides the clock (tests only).
@@ -123,11 +148,20 @@ func (s *Store) WithClock(now func() time.Time) *Store {
 	return s
 }
 
+// WithLogger routes the store's structured boundary logs to logger (the process
+// logger in production, a capturing handler in tests). Metrics are unaffected.
+func (s *Store) WithLogger(logger *slog.Logger) *Store {
+	s.tel = newTelemetry(logger)
+	return s
+}
+
 // BeginTurn resolves the conversation and appends the user turn atomically, under
 // the caller's organization. When p.ConversationID is nil it opens a new
 // conversation (90-day retention set by the schema default); when it is non-nil
 // it validates the conversation belongs to p.OrganizationID, returning
-// ErrConversationDenied (and writing nothing) otherwise. On success it touches
+// ErrConversationDenied (and writing nothing) otherwise. A NEW conversation naming
+// a marketplace account p.OrganizationID does not own returns ErrAccountDenied and
+// writes nothing (issue #412). On success it touches
 // updated_at and returns the resolved conversation so the caller can hand the id
 // to the LLM plane (gateway-authoritative identity). The user turn is persisted
 // BEFORE the caller proxies to the model plane.
@@ -147,6 +181,23 @@ func (s *Store) BeginTurn(ctx context.Context, p OpenParams, userBody string) (C
 			MarketplaceAccountID: toPgUUID(p.MarketplaceAccountID),
 		})
 		if err != nil {
+			// ACCOUNT OWNERSHIP (issue #412, §4.6 tenant integrity). Two independent
+			// boundaries reject a conversation naming an account the caller's
+			// organization does not own, and BOTH surface as the same typed denial so a
+			// caller can never tell which one fired — nor whether the account exists:
+			//
+			//   - the org-scoped CreateConversation predicate matches no account and
+			//     inserts no row (pgx.ErrNoRows), and
+			//   - migration 0048's composite (marketplace_account_id, organization_id)
+			//     foreign key, which is the authoritative invariant and also covers the
+			//     race in which the account's ownership changes after the predicate ran.
+			//
+			// The deferred Rollback above means NOTHING is written: no conversation row,
+			// no context/locale binding, no user turn.
+			if seam, denied := accountOwnershipDenial(err, p.MarketplaceAccountID); denied {
+				s.tel.accountDenied(ctx, seam, p.OrganizationID, *p.MarketplaceAccountID)
+				return Conversation{}, fmt.Errorf("%w: account %s", ErrAccountDenied, *p.MarketplaceAccountID)
+			}
 			return Conversation{}, err
 		}
 	} else {
@@ -352,6 +403,45 @@ func (s *Store) Messages(ctx context.Context, conversationID uuid.UUID) ([]Messa
 		out = append(out, toMessage(r))
 	}
 	return out, nil
+}
+
+// accountOwnershipConstraint is migration 0048's composite
+// (marketplace_account_id, organization_id) foreign key — the DATABASE invariant
+// behind conversation account ownership. Only THIS constraint is a tenant denial:
+// any other foreign-key violation (organization, author) is a genuine fault and
+// must surface as one rather than be masked as a client-side tenant error.
+const accountOwnershipConstraint = "conversations_account_org_fkey"
+
+// foreignKeyViolation is the PostgreSQL SQLSTATE for a foreign-key violation.
+const foreignKeyViolation = "23503"
+
+// accountOwnershipDenial classifies a CreateConversation failure as a cross-tenant
+// account denial and names the seam that caught it (issue #412). It reports a
+// denial ONLY when the caller actually supplied an account:
+//
+//   - pgx.ErrNoRows means the org-scoped insert predicate matched no owned account
+//     — the FOREIGN and the UNKNOWN cases are the same branch, by design, so the
+//     denial is no existence oracle;
+//   - a 23503 on the composite constraint means the database invariant fired
+//     because the predicate was bypassed or raced an ownership change.
+//
+// With NO account supplied the predicate is unconditionally true, so an ErrNoRows
+// there is a genuine fault (not a tenant denial) and is deliberately NOT swallowed
+// into a client-shaped error. Every other error is passed through untouched.
+func accountOwnershipDenial(err error, requested *uuid.UUID) (accountRejectionSeam, bool) {
+	if requested == nil {
+		return "", false
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return seamOrgScopedInsert, true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) &&
+		pgErr.Code == foreignKeyViolation &&
+		pgErr.ConstraintName == accountOwnershipConstraint {
+		return seamCompositeForeignKey, true
+	}
+	return "", false
 }
 
 func toConversation(c db.Conversation) Conversation {
