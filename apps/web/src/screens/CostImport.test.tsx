@@ -474,36 +474,60 @@ describe("Cost import — preview before commit (CST-001)", () => {
   // recovery from a read failure ("choose the file again") AND, money-adjacent,
   // leaves the previous batch's confirm control live when the seller edits
   // `costs.csv` on disk and re-picks the same path believing the new content is
-  // loaded. jsdom cannot reproduce the browser's suppression (fireEvent always
-  // dispatches), so the invariant is asserted directly on the control's value.
+  // loaded.
+  //
+  // Asserting `fileInput.value === ""` would be VACUOUS: jsdom reports a file
+  // input's value as "" both before and after a change event, so that assertion
+  // passes even with the production reset deleted. The reset is therefore
+  // asserted on the value SETTER — the observable write itself — scoped to this
+  // specific control, and it must fire on EVERY pick, including one whose read
+  // fails. The spy must be installed BEFORE render: React captures the original
+  // prototype value descriptor when it attaches its input value tracker, so a
+  // spy installed after mount never observes the component's writes.
   it("clears the file control after every pick so re-choosing the same path still re-reads (#79)", async () => {
     server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
-    renderRoute("/cost");
+    const valueSetter = vi.spyOn(window.HTMLInputElement.prototype, "value", "set");
+    try {
+      renderRoute("/cost");
+      await screen.findByTestId("cost-csv");
+      const fileInput = screen.getByTestId("cost-file") as HTMLInputElement;
 
-    await screen.findByTestId("cost-csv");
-    const fileInput = screen.getByTestId("cost-file") as HTMLInputElement;
-    const file = new File([CSV], "costs.csv", { type: "text/csv" });
-    fireEvent.change(fileInput, { target: { files: [file] } });
+      // Only the writes targeting the file control — other controlled inputs on
+      // this screen also legitimately receive "".
+      const writesToFileControl = () =>
+        valueSetter.mock.contexts.flatMap((ctx, i) =>
+          ctx === fileInput ? [valueSetter.mock.calls[i]?.[0]] : [],
+        );
 
-    await waitFor(() =>
-      expect((screen.getByTestId("cost-csv") as HTMLTextAreaElement).value).toBe(CSV),
-    );
-    // Cleared → an identical re-pick is a fresh selection the browser reports.
-    expect(fileInput.value).toBe("");
+      // A pick whose read SUCCEEDS clears the control.
+      valueSetter.mockClear();
+      const file = new File([CSV], "costs.csv", { type: "text/csv" });
+      fireEvent.change(fileInput, { target: { files: [file] } });
+      expect(writesToFileControl()).toContain("");
 
-    // Blanking the native control also blanks its filename display, so the
-    // designated source must stay visible from state (LTR-isolated identifier).
-    expect(await screen.findByTestId("cost-file-current")).toHaveTextContent("costs.csv");
+      await waitFor(() =>
+        expect((screen.getByTestId("cost-csv") as HTMLTextAreaElement).value).toBe(CSV),
+      );
+      // Blanking the native control also blanks its filename display, so the
+      // designated source must stay visible from state (LTR-isolated identifier).
+      expect(await screen.findByTestId("cost-file-current")).toHaveTextContent("costs.csv");
 
-    // …and the re-pick genuinely re-enters the read path: a previewed batch is
-    // invalidated by choosing the same file again.
-    fireEvent.click(screen.getByTestId("cost-preview"));
-    const commitBtn = await screen.findByTestId("cost-commit");
-    await waitFor(() => expect(commitBtn).toBeEnabled());
-
-    const edited = new File([`${CSV}DKP-9999999,4200000\n`], "costs.csv", { type: "text/csv" });
-    fireEvent.change(fileInput, { target: { files: [edited] } });
-    await waitFor(() => expect(screen.queryByTestId("cost-commit")).toBeNull());
+      // A pick whose read FAILS clears it too — otherwise the stated recovery
+      // ("choose the file again") could not fire a `change` for the same path,
+      // and the instruction would be a dead end.
+      valueSetter.mockClear();
+      const failing = deferred<string>();
+      const unreadable = new File(["unreadable"], "costs.csv", { type: "text/csv" });
+      vi.spyOn(unreadable, "text").mockReturnValue(failing.promise);
+      fireEvent.change(fileInput, { target: { files: [unreadable] } });
+      expect(writesToFileControl()).toContain("");
+      await act(async () => {
+        failing.reject(new Error("NotReadableError"));
+      });
+      await screen.findByTestId("cost-file-error");
+    } finally {
+      valueSetter.mockRestore();
+    }
   });
 
   // Finding A2 (#79). Between the pick and the read's resolve, `csv`/`filename`
