@@ -21,6 +21,22 @@ afterEach(() => {
 
 const CSV = "SKU,COGS\nDKP-8842213,8900000\n";
 
+// Externally-controlled promise: every asynchronous-ordering assertion below
+// resolves/rejects EXPLICITLY, so the race regressions are deterministic (never
+// timing- or sleep-dependent).
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  // The rejection path is asserted after the component has attached its handler;
+  // this no-op keeps Node from flagging the shared promise as unhandled.
+  promise.catch(() => undefined);
+  return { promise, resolve, reject };
+}
+
 describe("Cost import — preview before commit (CST-001)", () => {
   it("does not commit before a preview exists; a duplicate conflict blocks commit", async () => {
     const commitSpy = vi.fn();
@@ -304,15 +320,26 @@ describe("Cost import — preview before commit (CST-001)", () => {
     const CSV_A = "SKU,COGS\nDKP-1111111,1000000\n";
     const CSV_B = "SKU,COGS\nDKP-2222222,2000000\n";
 
-    const deferred = () => {
-      let resolve!: (value: string) => void;
-      const promise = new Promise<string>((r) => {
-        resolve = r;
-      });
-      return { promise, resolve };
-    };
-    const readA = deferred();
-    const readB = deferred();
+    const previewBodies: Array<{ csv: string; filename?: string }> = [];
+    let committedBatchId: string | undefined;
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, async ({ request }) => {
+        previewBodies.push((await request.json()) as { csv: string; filename?: string });
+        return HttpResponse.json(previewClean);
+      }),
+      http.post(`${BASE}/cost/import/commit`, async ({ request }) => {
+        committedBatchId = ((await request.json()) as { batchId: string }).batchId;
+        return HttpResponse.json({
+          batchId: previewClean.batchId,
+          status: "committed",
+          committedRows: 1,
+          affectedVariantIds: [target.variantId],
+        });
+      }),
+    );
+
+    const readA = deferred<string>();
+    const readB = deferred<string>();
 
     const fileA = new File([CSV_A], "a.csv", { type: "text/csv" });
     const fileB = new File([CSV_B], "b.csv", { type: "text/csv" });
@@ -334,12 +361,444 @@ describe("Cost import — preview before commit (CST-001)", () => {
     });
     expect(csvInput.value).toBe(CSV_B);
 
+    // Preview the CURRENT source (B) so a commit control exists and is bound to
+    // B's batch. This is the half of the invariant the first regression left
+    // unproven: the rereview demands the stale read can neither replace B NOR
+    // enable a commit for A's batch.
+    fireEvent.click(screen.getByTestId("cost-preview"));
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+    expect(previewBodies.at(-1)).toMatchObject({ csv: CSV_B, filename: "b.csv" });
+
     // Resolve A LAST (the out-of-order finish the bug exploited): it is discarded
     // because its generation is stale — the source stays B, never reverts to A.
     await act(async () => {
       readA.resolve(CSV_A);
     });
     expect(csvInput.value).toBe(CSV_B);
+
+    // …and the stale read must not have disturbed the commit binding: the control
+    // is still live and still commits B's previewed batch, not anything derived
+    // from A (money-adjacent: the committed batch must be the reviewed one).
+    const stillLive = screen.getByTestId("cost-commit");
+    expect(stillLive).toBeEnabled();
+    fireEvent.click(stillLive);
+    await screen.findByText(faIR["cost.committed"].replace("{count}", "۱"));
+    expect(committedBatchId).toBe(previewClean.batchId);
+    expect(previewBodies).toHaveLength(1);
+  });
+
+  // Residual for issue #79 (in-flight selection window): the previewed batch must
+  // stop being committable the INSTANT a new file is chosen — not only once the
+  // asynchronous read resolves. Between the pick and the resolve the file control
+  // already names the new file, so leaving the old batch's confirm control live
+  // lets the seller commit an obsolete financial batch for a source they have
+  // already replaced (CST-001; §4.6 — a stale card is never left clickable).
+  it("stops the previewed batch being committable the moment a new file is picked, before its read resolves (#79)", async () => {
+    const commitSpy = vi.fn();
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)),
+      http.post(`${BASE}/cost/import/commit`, () => {
+        commitSpy();
+        return HttpResponse.json({
+          batchId: previewClean.batchId,
+          status: "committed",
+          committedRows: 1,
+          affectedVariantIds: [target.variantId],
+        });
+      }),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+
+    // Pick a new file whose read never resolves during this test.
+    const pending = deferred<string>();
+    const fileB = new File(["ignored"], "b.csv", { type: "text/csv" });
+    vi.spyOn(fileB, "text").mockReturnValue(pending.promise);
+    fireEvent.change(screen.getByTestId("cost-file"), { target: { files: [fileB] } });
+
+    // The old batch is already invalidated: no confirm control, no preview
+    // section — and nothing was committed.
+    await waitFor(() => expect(screen.queryByTestId("cost-commit")).toBeNull());
+    expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  // Residual for issue #79 (failed source read): a File.text() rejection is a
+  // SOURCE-BINDING failure — the file control names a file that was never read.
+  // It must fail closed (any previously previewed batch is invalidated, the old
+  // text is never silently re-attributed to the new file) and it must be VISIBLE
+  // (design/STATE_MATRIX.md: every screen implements its error state), not an
+  // unhandled promise rejection.
+  it("fails closed with a visible error when the chosen file cannot be read (#79)", async () => {
+    server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
+    renderRoute("/cost");
+
+    const csvInput = (await screen.findByTestId("cost-csv")) as HTMLTextAreaElement;
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+
+    const failing = deferred<string>();
+    const fileB = new File(["unreadable"], "b.csv", { type: "text/csv" });
+    vi.spyOn(fileB, "text").mockReturnValue(failing.promise);
+    fireEvent.change(screen.getByTestId("cost-file"), { target: { files: [fileB] } });
+
+    await act(async () => {
+      failing.reject(new Error("NotReadableError"));
+    });
+
+    // Visible, localized error state.
+    expect(await screen.findByTestId("cost-file-error")).toHaveTextContent(faIR["cost.file.error"]);
+    // Fail closed: the stale batch is gone and the unread file never became the source.
+    expect(screen.queryByTestId("cost-commit")).toBeNull();
+    expect(csvInput.value).toBe(CSV);
+
+    // The error clears once the seller supplies a source again.
+    fireEvent.change(csvInput, { target: { value: `${CSV}DKP-9999999,4200000\n` } });
+    await waitFor(() => expect(screen.queryByTestId("cost-file-error")).toBeNull());
+  });
+
+  // Finding A1 (#79). The file control's value must be cleared after every pick.
+  // Per the HTML Standard's file-upload picker algorithm, re-selecting the SAME
+  // path is not a selection change, so a real browser fires NO `change` event —
+  // `onFile` and its invalidation never run. That silently breaks the stated
+  // recovery from a read failure ("choose the file again") AND, money-adjacent,
+  // leaves the previous batch's confirm control live when the seller edits
+  // `costs.csv` on disk and re-picks the same path believing the new content is
+  // loaded.
+  //
+  // Asserting `fileInput.value === ""` would be VACUOUS: jsdom reports a file
+  // input's value as "" both before and after a change event, so that assertion
+  // passes even with the production reset deleted. The reset is therefore
+  // asserted on the value SETTER — the observable write itself — scoped to this
+  // specific control, and it must fire on EVERY pick, including one whose read
+  // fails. The spy must be installed BEFORE render: React captures the original
+  // prototype value descriptor when it attaches its input value tracker, so a
+  // spy installed after mount never observes the component's writes.
+  it("clears the file control after every pick so re-choosing the same path still re-reads (#79)", async () => {
+    server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
+    const valueSetter = vi.spyOn(window.HTMLInputElement.prototype, "value", "set");
+    try {
+      renderRoute("/cost");
+      await screen.findByTestId("cost-csv");
+      const fileInput = screen.getByTestId("cost-file") as HTMLInputElement;
+
+      // Only the writes targeting the file control — other controlled inputs on
+      // this screen also legitimately receive "".
+      const writesToFileControl = () =>
+        valueSetter.mock.contexts.flatMap((ctx, i) =>
+          ctx === fileInput ? [valueSetter.mock.calls[i]?.[0]] : [],
+        );
+
+      // A pick whose read SUCCEEDS clears the control.
+      valueSetter.mockClear();
+      const file = new File([CSV], "costs.csv", { type: "text/csv" });
+      fireEvent.change(fileInput, { target: { files: [file] } });
+      expect(writesToFileControl()).toContain("");
+
+      await waitFor(() =>
+        expect((screen.getByTestId("cost-csv") as HTMLTextAreaElement).value).toBe(CSV),
+      );
+      // Blanking the native control also blanks its filename display, so the
+      // designated source must stay visible from state (LTR-isolated identifier).
+      expect(await screen.findByTestId("cost-file-current")).toHaveTextContent("costs.csv");
+
+      // A pick whose read FAILS clears it too — otherwise the stated recovery
+      // ("choose the file again") could not fire a `change` for the same path,
+      // and the instruction would be a dead end.
+      valueSetter.mockClear();
+      const failing = deferred<string>();
+      const unreadable = new File(["unreadable"], "costs.csv", { type: "text/csv" });
+      vi.spyOn(unreadable, "text").mockReturnValue(failing.promise);
+      fireEvent.change(fileInput, { target: { files: [unreadable] } });
+      expect(writesToFileControl()).toContain("");
+      await act(async () => {
+        failing.reject(new Error("NotReadableError"));
+      });
+      await screen.findByTestId("cost-file-error");
+    } finally {
+      valueSetter.mockRestore();
+    }
+  });
+
+  // Finding A2 (#79). Between the pick and the read's resolve, `csv`/`filename`
+  // still hold the PREVIOUS source while the seller believes the new file is
+  // loaded. Previewing in that window would preview (and then commit) the old
+  // source under the new file's name. The read boundary therefore needs the
+  // loading state design/STATE_MATRIX.md requires, and Preview must be disabled
+  // while it is in flight.
+  it("disables Preview and shows a loading state while a chosen file is being read (#79)", async () => {
+    const previewSpy = vi.fn();
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, () => {
+        previewSpy();
+        return HttpResponse.json(previewClean);
+      }),
+    );
+    renderRoute("/cost");
+
+    // An earlier source is present, so Preview is enabled before the pick.
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    expect(screen.getByTestId("cost-preview")).toBeEnabled();
+
+    const pending = deferred<string>();
+    const fileB = new File(["ignored"], "b.csv", { type: "text/csv" });
+    vi.spyOn(fileB, "text").mockReturnValue(pending.promise);
+    fireEvent.change(screen.getByTestId("cost-file"), { target: { files: [fileB] } });
+
+    // While the read is in flight the stale source cannot be previewed…
+    await waitFor(() => expect(screen.getByTestId("cost-preview")).toBeDisabled());
+    expect(screen.getByTestId("cost-file-reading")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("cost-preview"));
+    expect(previewSpy).not.toHaveBeenCalled();
+
+    // …and the boundary clears once the read lands.
+    const CSV_B = "SKU,COGS\nDKP-2222222,2000000\n";
+    await act(async () => {
+      pending.resolve(CSV_B);
+    });
+    expect(screen.queryByTestId("cost-file-reading")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("cost-preview")).toBeEnabled());
+  });
+
+  // Finding S2 (#79). A failed read leaves its alert up; running a NEW preview
+  // must clear it, or a valid batch renders underneath a live "file could not be
+  // read" alert — contradictory state on a money-adjacent confirm surface.
+  it("clears the file-read error when a new preview runs (#79)", async () => {
+    server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+
+    const failing = deferred<string>();
+    const fileB = new File(["unreadable"], "b.csv", { type: "text/csv" });
+    vi.spyOn(fileB, "text").mockReturnValue(failing.promise);
+    fireEvent.change(screen.getByTestId("cost-file"), { target: { files: [fileB] } });
+    await act(async () => {
+      failing.reject(new Error("NotReadableError"));
+    });
+    await screen.findByTestId("cost-file-error");
+
+    // Preview the source that IS present: the batch must not appear beneath the
+    // stale read-failure alert.
+    fireEvent.click(screen.getByTestId("cost-preview"));
+    const commitBtn = await screen.findByTestId("cost-commit");
+    await waitFor(() => expect(commitBtn).toBeEnabled());
+    expect(screen.queryByTestId("cost-file-error")).toBeNull();
+  });
+
+  // Finding S1 (#79). Interleaving guard: a preview request already in flight
+  // when the source changes must never deliver its batch afterwards. Current
+  // behavior is correct because TanStack's mutation `reset()` detaches the
+  // observer, but that is an undocumented internal — a routine minor bump making
+  // `reset()` a state-only clear would silently resurrect the #79 defect. This
+  // asserts the OUTCOME (no committable batch), not the mechanism.
+  it("never delivers an in-flight preview whose source changed before it resolved (#79)", async () => {
+    const held = deferred<void>();
+    const commitSpy = vi.fn();
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, async () => {
+        await held.promise;
+        return HttpResponse.json(previewClean);
+      }),
+      http.post(`${BASE}/cost/import/commit`, () => {
+        commitSpy();
+        return HttpResponse.json({
+          batchId: previewClean.batchId,
+          status: "committed",
+          committedRows: 1,
+          affectedVariantIds: [target.variantId],
+        });
+      }),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    // Change the source while the preview request is still outstanding.
+    fireEvent.change(csvInput, { target: { value: `${CSV}DKP-9999999,4200000\n` } });
+
+    // The outstanding response now lands: it belongs to a source that is gone.
+    await act(async () => {
+      held.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId("cost-commit")).toBeNull();
+    expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  // Area follow-up 1 (#79). The in-flight-preview guard above exercises only the
+  // textarea path; picking a FILE while a preview request is outstanding is the
+  // same hazard by the other route (safe today only because both routes funnel
+  // through invalidatePreview()). Pin the combination.
+  it("never delivers an in-flight preview when a file is picked before it resolves (#79)", async () => {
+    const held = deferred<void>();
+    const commitSpy = vi.fn();
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, async () => {
+        await held.promise;
+        return HttpResponse.json(previewClean);
+      }),
+      http.post(`${BASE}/cost/import/commit`, () => {
+        commitSpy();
+        return HttpResponse.json({
+          batchId: previewClean.batchId,
+          status: "committed",
+          committedRows: 1,
+          affectedVariantIds: [target.variantId],
+        });
+      }),
+    );
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    fireEvent.change(csvInput, { target: { value: CSV } });
+    fireEvent.click(screen.getByTestId("cost-preview"));
+
+    // Pick a file while the preview request is still outstanding.
+    const CSV_B = "SKU,COGS\nDKP-2222222,2000000\n";
+    const fileB = new File([CSV_B], "b.csv", { type: "text/csv" });
+    fireEvent.change(screen.getByTestId("cost-file"), { target: { files: [fileB] } });
+
+    await act(async () => {
+      held.resolve();
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId("cost-commit")).toBeNull();
+    expect(screen.queryByText(faIR["cost.count.accept"])).toBeNull();
+    expect(commitSpy).not.toHaveBeenCalled();
+  });
+
+  // Finding F1 (#79, acceptance criterion 3 in its highest-risk shape). The other
+  // read-failure test starts from a TEXTAREA source, so `filename` is undefined
+  // and the source line never renders. Here a file A is read successfully FIRST,
+  // then file B's read fails: the audit must still name A, because A's text is
+  // what a preview would send. A refactor hoisting setFilename(file.name) above
+  // the await would mislabel a committed financial batch — and would fail here.
+  it("keeps the filename audit on the last successfully read file when a later read fails (#79)", async () => {
+    const bodies: Array<{ filename?: string }> = [];
+    server.use(
+      http.post(`${BASE}/cost/import/preview`, async ({ request }) => {
+        bodies.push((await request.json()) as { filename?: string });
+        return HttpResponse.json(previewClean);
+      }),
+    );
+    renderRoute("/cost");
+
+    await screen.findByTestId("cost-csv");
+    const fileInput = screen.getByTestId("cost-file");
+    const fileA = new File([CSV], "a.csv", { type: "text/csv" });
+    fireEvent.change(fileInput, { target: { files: [fileA] } });
+    await waitFor(() =>
+      expect((screen.getByTestId("cost-csv") as HTMLTextAreaElement).value).toBe(CSV),
+    );
+    expect(await screen.findByTestId("cost-file-current")).toHaveTextContent("a.csv");
+
+    // File B is chosen but cannot be read.
+    const failing = deferred<string>();
+    const fileB = new File(["unreadable"], "b.csv", { type: "text/csv" });
+    vi.spyOn(fileB, "text").mockReturnValue(failing.promise);
+    fireEvent.change(fileInput, { target: { files: [fileB] } });
+    await act(async () => {
+      failing.reject(new Error("NotReadableError"));
+    });
+    await screen.findByTestId("cost-file-error");
+
+    // The source line still names A — never the file that failed to load — and
+    // the preview request carries A's filename with A's text.
+    const current = screen.getByTestId("cost-file-current");
+    expect(current).toHaveTextContent("a.csv");
+    expect(current).not.toHaveTextContent("b.csv");
+
+    fireEvent.click(screen.getByTestId("cost-preview"));
+    await screen.findByTestId("cost-commit");
+    expect(bodies.at(-1)).toMatchObject({ csv: CSV, filename: "a.csv" });
+  });
+
+  // Finding F2a (#79). Anti-stranding: only the current generation's read may
+  // clear the read boundary, so a textarea edit during an in-flight read must
+  // clear it itself — otherwise the discarded read never does and Preview stays
+  // disabled forever (a denial-of-function regression).
+  it("re-enables Preview when the textarea is edited during an in-flight file read (#79)", async () => {
+    server.use(http.post(`${BASE}/cost/import/preview`, () => HttpResponse.json(previewClean)));
+    renderRoute("/cost");
+
+    const csvInput = await screen.findByTestId("cost-csv");
+    const pending = deferred<string>();
+    const fileB = new File(["ignored"], "b.csv", { type: "text/csv" });
+    vi.spyOn(fileB, "text").mockReturnValue(pending.promise);
+    fireEvent.change(screen.getByTestId("cost-file"), { target: { files: [fileB] } });
+    await waitFor(() => expect(screen.getByTestId("cost-file-reading")).toBeInTheDocument());
+
+    // The seller abandons the file and types a source instead.
+    fireEvent.change(csvInput, { target: { value: CSV } });
+
+    expect(screen.queryByTestId("cost-file-reading")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("cost-preview")).toBeEnabled());
+
+    // The abandoned read landing later changes nothing.
+    await act(async () => {
+      pending.resolve("SKU,COGS\nDKP-2222222,2000000\n");
+    });
+    expect((screen.getByTestId("cost-csv") as HTMLTextAreaElement).value).toBe(CSV);
+    expect(screen.getByTestId("cost-preview")).toBeEnabled();
+  });
+
+  // Finding F2b (#79). A SUPERSEDED read's rejection is not the seller's problem:
+  // it must raise no alert over the newer source, and it must not clear the read
+  // boundary belonging to the read that is still running.
+  it("raises no alert when a superseded file read rejects (#79)", async () => {
+    renderRoute("/cost");
+    await screen.findByTestId("cost-csv");
+    const fileInput = screen.getByTestId("cost-file");
+
+    const readA = deferred<string>();
+    const readB = deferred<string>();
+    const fileA = new File(["a"], "a.csv", { type: "text/csv" });
+    const fileB = new File(["b"], "b.csv", { type: "text/csv" });
+    vi.spyOn(fileA, "text").mockReturnValue(readA.promise);
+    vi.spyOn(fileB, "text").mockReturnValue(readB.promise);
+
+    fireEvent.change(fileInput, { target: { files: [fileA] } });
+    fireEvent.change(fileInput, { target: { files: [fileB] } });
+
+    // A is already superseded by B; A now fails.
+    await act(async () => {
+      readA.reject(new Error("NotReadableError"));
+    });
+
+    // No error is shown for the abandoned read, and B's boundary is intact.
+    expect(screen.queryByTestId("cost-file-error")).toBeNull();
+    expect(screen.getByTestId("cost-file-reading")).toBeInTheDocument();
+
+    // B then lands normally.
+    const CSV_B = "SKU,COGS\nDKP-2222222,2000000\n";
+    await act(async () => {
+      readB.resolve(CSV_B);
+    });
+    expect((screen.getByTestId("cost-csv") as HTMLTextAreaElement).value).toBe(CSV_B);
+    expect(screen.queryByTestId("cost-file-error")).toBeNull();
+    expect(screen.queryByTestId("cost-file-reading")).toBeNull();
   });
 });
 

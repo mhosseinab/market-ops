@@ -409,6 +409,10 @@ export const faIR: Catalog = {
   "cost.confirm": "تایید {count} ردیف معتبر",
   "cost.duplicateBlock": "{count} ردیف تکراری پیش از تایید باید رفع شود.",
   "cost.committed": "{count} ردیف ثبت شد.",
+  "cost.file.current": "منبع فعلی:",
+  "cost.file.reading": "در حال خواندن فایل انتخاب‌شده…",
+  "cost.file.error":
+    "خواندن فایل انتخاب‌شده ناموفق بود؛ منبع تغییر نکرد. فایل را دوباره انتخاب کنید.",
   "cost.preview.error":
     "پیش‌نمایش فایل ناموفق بود. فایل شما حفظ شده است؛ می‌توانید دوباره تلاش کنید.",
   "cost.commit.error":
