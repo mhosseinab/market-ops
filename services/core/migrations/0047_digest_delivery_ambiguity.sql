@@ -2,7 +2,7 @@
 -- Durable AMBIGUITY marker on the digest delivery-state projection (issue #124,
 -- review cycle 1).
 --
--- 0045 recorded only `delivery_state`, so every row found abandoned in `sending` was
+-- 0046 recorded only `delivery_state`, so every row found abandoned in `sending` was
 -- finalized as the terminal AMBIGUOUS state. That over-claimed: the mailer already
 -- distinguishes a DEFINITIVE non-acceptance (dial failure, pre-DATA drop, a typed
 -- 4xx/5xx, or an attempt already expired at the boundary — the relay provably holds
@@ -36,7 +36,7 @@
 -- mailer at the real post-DATA boundary. It is a BOOLEAN — no relay text, no recipient,
 -- nothing unbounded.
 --
--- DEFAULT false is safe for the existing backlog: 0045 shipped with the conservative
+-- DEFAULT false is safe for the existing backlog: 0046 shipped with the conservative
 -- whole-exchange behaviour and no row can be mid-send across a migration, so the only
 -- rows this touches are re-driven from `pending` anyway.
 
