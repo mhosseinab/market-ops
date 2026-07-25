@@ -59,13 +59,58 @@ def sync_detailed(
      Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The
     request binds the selection-set lineage and the exact version it previewed; the server rejects the
     confirmation when that version is no longer current (any set or evidence change mints a new
-    version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in
-    S18. This never approves from free text and never re-queries the set (no drift).
+    version). This never approves from free text and never re-queries the set (no drift).
+    BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the
+    transaction that holds the per-lineage lock, before any member is authorized; the lock is released
+    before the per-member authorization loop so one member's failure cannot roll back another's. A
+    refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the
+    operator authorized the bound version's exact sealed membership, and members of that version
+    continue to be authorized even if a later version narrows the set. Nothing about the members
+    themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary
+    change mints a NEW card version and is caught per-member by the individual confirm's authoritative-
+    binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven
+    membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not
+    retroactive.
+    `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member —
+    it is NOT implied by a valid confirmation, and it is false once every member's write has produced an
+    external result.
 
     Args:
         body (BulkApprovalConfirmRequest): A bulk approval confirmation bound to ONE exact
             selection-set version (CHAT-052). The server rejects it when the bound version is no
-            longer current (any set/evidence change mints a new version).
+            longer current (any set/evidence change mints a new version). Currency is evaluated ONCE,
+            at bind time, under the per-lineage lock: a refresh that commits a new version after the
+            binding decision does not retract the in-flight confirmation, and members of the bound
+            version stay authorized even if the later version drops them. Per-member safety is
+            unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card
+            version and is rejected per-member by the individual confirm's authoritative-binding gate.
+            BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful
+            ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and
+            version numbers from different lineages are NOT comparable. Never order, range, or diff
+            versions across lineages, and never accept a bare version without its lineage — the
+            binding is the PAIR.
+            BULK-PROTOCOL DESIGN RECORD (a) — RESERVATION LIFECYCLE. What #90 establishes: binding a
+            (lineage, version) pair under the per-lineage lock is the SELECTION reservation — it fixes
+            exactly which members, dispositions and aggregate the operator authorized, and it is
+            immutable for that version (#91). Each member is then authorized through its own §8.4
+            individual confirm and its own durable execution intent (unique by card id). What #90 does
+            NOT establish, and #87 must add: a durable `(account, variant)` EXECUTION reservation
+            spanning the window between authorization and terminal external result, so two different
+            selection sets (or a bulk and an individual confirmation) cannot hold concurrent in-flight
+            writes for the same variant. Until #87 lands, concurrency on one variant is bounded only
+            by the card-level FROM-guard and the card-id-unique intent — sufficient to prevent a
+            duplicate write for one card, NOT to prevent two cards on one variant. #87 owns that
+            reservation's acquire/release/expiry semantics; #90 pins only that it is keyed on
+            `(account, variant)` and must be acquired BEFORE dispatch and released on a terminal
+            external result.
+            BULK-PROTOCOL DESIGN RECORD (e) — `offerIdentity` WIRE COMPATIBILITY. #87's
+            `offerIdentity` on bulk confirm/item results is ADDITIVE and OPTIONAL: it must not enter
+            the `required` set of any existing schema, must not change `additionalProperties: false`,
+            and must never be a CLIENT ASSERTION. The server seals the disposition and the offer
+            identity from its own persisted observation/recommendation state at preview time; a
+            client-supplied `offerIdentity` is a selector to be validated against the sealed value,
+            never an input that can widen or redirect what gets authorized. A mismatch fails closed as
+            a uniform not-found, exactly like an unknown member.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -96,13 +141,58 @@ def sync(
      Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The
     request binds the selection-set lineage and the exact version it previewed; the server rejects the
     confirmation when that version is no longer current (any set or evidence change mints a new
-    version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in
-    S18. This never approves from free text and never re-queries the set (no drift).
+    version). This never approves from free text and never re-queries the set (no drift).
+    BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the
+    transaction that holds the per-lineage lock, before any member is authorized; the lock is released
+    before the per-member authorization loop so one member's failure cannot roll back another's. A
+    refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the
+    operator authorized the bound version's exact sealed membership, and members of that version
+    continue to be authorized even if a later version narrows the set. Nothing about the members
+    themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary
+    change mints a NEW card version and is caught per-member by the individual confirm's authoritative-
+    binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven
+    membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not
+    retroactive.
+    `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member —
+    it is NOT implied by a valid confirmation, and it is false once every member's write has produced an
+    external result.
 
     Args:
         body (BulkApprovalConfirmRequest): A bulk approval confirmation bound to ONE exact
             selection-set version (CHAT-052). The server rejects it when the bound version is no
-            longer current (any set/evidence change mints a new version).
+            longer current (any set/evidence change mints a new version). Currency is evaluated ONCE,
+            at bind time, under the per-lineage lock: a refresh that commits a new version after the
+            binding decision does not retract the in-flight confirmation, and members of the bound
+            version stay authorized even if the later version drops them. Per-member safety is
+            unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card
+            version and is rejected per-member by the individual confirm's authoritative-binding gate.
+            BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful
+            ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and
+            version numbers from different lineages are NOT comparable. Never order, range, or diff
+            versions across lineages, and never accept a bare version without its lineage — the
+            binding is the PAIR.
+            BULK-PROTOCOL DESIGN RECORD (a) — RESERVATION LIFECYCLE. What #90 establishes: binding a
+            (lineage, version) pair under the per-lineage lock is the SELECTION reservation — it fixes
+            exactly which members, dispositions and aggregate the operator authorized, and it is
+            immutable for that version (#91). Each member is then authorized through its own §8.4
+            individual confirm and its own durable execution intent (unique by card id). What #90 does
+            NOT establish, and #87 must add: a durable `(account, variant)` EXECUTION reservation
+            spanning the window between authorization and terminal external result, so two different
+            selection sets (or a bulk and an individual confirmation) cannot hold concurrent in-flight
+            writes for the same variant. Until #87 lands, concurrency on one variant is bounded only
+            by the card-level FROM-guard and the card-id-unique intent — sufficient to prevent a
+            duplicate write for one card, NOT to prevent two cards on one variant. #87 owns that
+            reservation's acquire/release/expiry semantics; #90 pins only that it is keyed on
+            `(account, variant)` and must be acquired BEFORE dispatch and released on a terminal
+            external result.
+            BULK-PROTOCOL DESIGN RECORD (e) — `offerIdentity` WIRE COMPATIBILITY. #87's
+            `offerIdentity` on bulk confirm/item results is ADDITIVE and OPTIONAL: it must not enter
+            the `required` set of any existing schema, must not change `additionalProperties: false`,
+            and must never be a CLIENT ASSERTION. The server seals the disposition and the offer
+            identity from its own persisted observation/recommendation state at preview time; a
+            client-supplied `offerIdentity` is a selector to be validated against the sealed value,
+            never an input that can widen or redirect what gets authorized. A mismatch fails closed as
+            a uniform not-found, exactly like an unknown member.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -128,13 +218,58 @@ async def asyncio_detailed(
      Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The
     request binds the selection-set lineage and the exact version it previewed; the server rejects the
     confirmation when that version is no longer current (any set or evidence change mints a new
-    version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in
-    S18. This never approves from free text and never re-queries the set (no drift).
+    version). This never approves from free text and never re-queries the set (no drift).
+    BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the
+    transaction that holds the per-lineage lock, before any member is authorized; the lock is released
+    before the per-member authorization loop so one member's failure cannot roll back another's. A
+    refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the
+    operator authorized the bound version's exact sealed membership, and members of that version
+    continue to be authorized even if a later version narrows the set. Nothing about the members
+    themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary
+    change mints a NEW card version and is caught per-member by the individual confirm's authoritative-
+    binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven
+    membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not
+    retroactive.
+    `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member —
+    it is NOT implied by a valid confirmation, and it is false once every member's write has produced an
+    external result.
 
     Args:
         body (BulkApprovalConfirmRequest): A bulk approval confirmation bound to ONE exact
             selection-set version (CHAT-052). The server rejects it when the bound version is no
-            longer current (any set/evidence change mints a new version).
+            longer current (any set/evidence change mints a new version). Currency is evaluated ONCE,
+            at bind time, under the per-lineage lock: a refresh that commits a new version after the
+            binding decision does not retract the in-flight confirmation, and members of the bound
+            version stay authorized even if the later version drops them. Per-member safety is
+            unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card
+            version and is rejected per-member by the individual confirm's authoritative-binding gate.
+            BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful
+            ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and
+            version numbers from different lineages are NOT comparable. Never order, range, or diff
+            versions across lineages, and never accept a bare version without its lineage — the
+            binding is the PAIR.
+            BULK-PROTOCOL DESIGN RECORD (a) — RESERVATION LIFECYCLE. What #90 establishes: binding a
+            (lineage, version) pair under the per-lineage lock is the SELECTION reservation — it fixes
+            exactly which members, dispositions and aggregate the operator authorized, and it is
+            immutable for that version (#91). Each member is then authorized through its own §8.4
+            individual confirm and its own durable execution intent (unique by card id). What #90 does
+            NOT establish, and #87 must add: a durable `(account, variant)` EXECUTION reservation
+            spanning the window between authorization and terminal external result, so two different
+            selection sets (or a bulk and an individual confirmation) cannot hold concurrent in-flight
+            writes for the same variant. Until #87 lands, concurrency on one variant is bounded only
+            by the card-level FROM-guard and the card-id-unique intent — sufficient to prevent a
+            duplicate write for one card, NOT to prevent two cards on one variant. #87 owns that
+            reservation's acquire/release/expiry semantics; #90 pins only that it is keyed on
+            `(account, variant)` and must be acquired BEFORE dispatch and released on a terminal
+            external result.
+            BULK-PROTOCOL DESIGN RECORD (e) — `offerIdentity` WIRE COMPATIBILITY. #87's
+            `offerIdentity` on bulk confirm/item results is ADDITIVE and OPTIONAL: it must not enter
+            the `required` set of any existing schema, must not change `additionalProperties: false`,
+            and must never be a CLIENT ASSERTION. The server seals the disposition and the offer
+            identity from its own persisted observation/recommendation state at preview time; a
+            client-supplied `offerIdentity` is a selector to be validated against the sealed value,
+            never an input that can widen or redirect what gets authorized. A mismatch fails closed as
+            a uniform not-found, exactly like an unknown member.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -163,13 +298,58 @@ async def asyncio(
      Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The
     request binds the selection-set lineage and the exact version it previewed; the server rejects the
     confirmation when that version is no longer current (any set or evidence change mints a new
-    version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in
-    S18. This never approves from free text and never re-queries the set (no drift).
+    version). This never approves from free text and never re-queries the set (no drift).
+    BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the
+    transaction that holds the per-lineage lock, before any member is authorized; the lock is released
+    before the per-member authorization loop so one member's failure cannot roll back another's. A
+    refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the
+    operator authorized the bound version's exact sealed membership, and members of that version
+    continue to be authorized even if a later version narrows the set. Nothing about the members
+    themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary
+    change mints a NEW card version and is caught per-member by the individual confirm's authoritative-
+    binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven
+    membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not
+    retroactive.
+    `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member —
+    it is NOT implied by a valid confirmation, and it is false once every member's write has produced an
+    external result.
 
     Args:
         body (BulkApprovalConfirmRequest): A bulk approval confirmation bound to ONE exact
             selection-set version (CHAT-052). The server rejects it when the bound version is no
-            longer current (any set/evidence change mints a new version).
+            longer current (any set/evidence change mints a new version). Currency is evaluated ONCE,
+            at bind time, under the per-lineage lock: a refresh that commits a new version after the
+            binding decision does not retract the in-flight confirmation, and members of the bound
+            version stay authorized even if the later version drops them. Per-member safety is
+            unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card
+            version and is rejected per-member by the individual confirm's authoritative-binding gate.
+            BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful
+            ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and
+            version numbers from different lineages are NOT comparable. Never order, range, or diff
+            versions across lineages, and never accept a bare version without its lineage — the
+            binding is the PAIR.
+            BULK-PROTOCOL DESIGN RECORD (a) — RESERVATION LIFECYCLE. What #90 establishes: binding a
+            (lineage, version) pair under the per-lineage lock is the SELECTION reservation — it fixes
+            exactly which members, dispositions and aggregate the operator authorized, and it is
+            immutable for that version (#91). Each member is then authorized through its own §8.4
+            individual confirm and its own durable execution intent (unique by card id). What #90 does
+            NOT establish, and #87 must add: a durable `(account, variant)` EXECUTION reservation
+            spanning the window between authorization and terminal external result, so two different
+            selection sets (or a bulk and an individual confirmation) cannot hold concurrent in-flight
+            writes for the same variant. Until #87 lands, concurrency on one variant is bounded only
+            by the card-level FROM-guard and the card-id-unique intent — sufficient to prevent a
+            duplicate write for one card, NOT to prevent two cards on one variant. #87 owns that
+            reservation's acquire/release/expiry semantics; #90 pins only that it is keyed on
+            `(account, variant)` and must be acquired BEFORE dispatch and released on a terminal
+            external result.
+            BULK-PROTOCOL DESIGN RECORD (e) — `offerIdentity` WIRE COMPATIBILITY. #87's
+            `offerIdentity` on bulk confirm/item results is ADDITIVE and OPTIONAL: it must not enter
+            the `required` set of any existing schema, must not change `additionalProperties: false`,
+            and must never be a CLIENT ASSERTION. The server seals the disposition and the offer
+            identity from its own persisted observation/recommendation state at preview time; a
+            client-supplied `offerIdentity` is a selector to be validated against the sealed value,
+            never an input that can widen or redirect what gets authorized. A mismatch fails closed as
+            a uniform not-found, exactly like an unknown member.
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.

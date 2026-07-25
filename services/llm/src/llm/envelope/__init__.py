@@ -47,6 +47,7 @@ from llm.envelope.grounding import (
     validate_grounding,
 )
 from llm.envelope.models import (
+    EMITTABLE_FAILURE_CODES,
     AssistantAnswer,
     ChatStreamEvent,
     EvidenceRef,
@@ -60,6 +61,7 @@ __all__ = [
     "CANNOT_ANSWER_REASON_KEY",
     "CANONICAL_QUALITY_KEYS",
     "CANONICAL_STATE_KEYS",
+    "EMITTABLE_FAILURE_CODES",
     "FALLBACK_DEEP_LINK",
     "MAX_INLINE_ROWS",
     "SECTION_POLICY",

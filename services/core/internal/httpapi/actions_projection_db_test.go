@@ -174,7 +174,7 @@ func actionsServer(t *testing.T, pool *pgxpool.Pool, f projectionFixture, token 
 		ExpiresAt:      time.Now().Add(time.Hour).UTC(),
 	}
 	rec := recommendation.NewService(pool)
-	// A read-only list needs no writer/resolver: ListUnifiedByAccountForOrg reads
+	// A read-only list needs no writer/resolver: ListUnifiedByCardIDsForOrg reads
 	// the pool only. Leaving them nil keeps this test incapable of any write.
 	exec := execution.NewService(pool, rec, nil, nil)
 	return NewServer(":0", BuildInfo{}, testLogger(),

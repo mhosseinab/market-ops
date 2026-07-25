@@ -541,6 +541,67 @@ func (q *Queries) ListActionExecutionsByAccount(ctx context.Context, arg ListAct
 	return items, nil
 }
 
+const listActionExecutionsByAccountAndActions = `-- name: ListActionExecutionsByAccountAndActions :many
+SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at, ae.gate_blocked
+FROM action_executions ae
+JOIN approval_cards ac ON ac.id = ae.card_id
+WHERE ac.marketplace_account_id = $1
+  AND ae.action_id = ANY($2::uuid[])
+ORDER BY ae.created_at DESC
+`
+
+type ListActionExecutionsByAccountAndActionsParams struct {
+	MarketplaceAccountID uuid.UUID
+	ActionIds            []uuid.UUID
+}
+
+// The write-mode action_executions rows for an EXPLICIT set of action ids under one
+// account (issue #90 blocker 3). The account-wide newest-N projection above cannot
+// serve a CURSOR-PAGINATED actions page: a page deeper than the newest N would find
+// no overlay row and render an already-executed action as if it were still
+// pre-execution — a fabricated state, not merely a missing enrichment. Keying the
+// overlay on exactly the page's action ids makes it complete for that page by
+// construction. The account predicate remains the authorization; the id list only
+// narrows within it. A pure SELECT.
+//
+// The actions-list request path uses the CARD-keyed pair above instead (issue #106):
+// under the PD-4 rule (1) projection an action id no longer identifies exactly one
+// returned row. This by-action read stays available for callers that hold action ids
+// and no card ids, and carries the same account predicate.
+func (q *Queries) ListActionExecutionsByAccountAndActions(ctx context.Context, arg ListActionExecutionsByAccountAndActionsParams) ([]ActionExecution, error) {
+	rows, err := q.db.Query(ctx, listActionExecutionsByAccountAndActions, arg.MarketplaceAccountID, arg.ActionIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActionExecution{}
+	for rows.Next() {
+		var i ActionExecution
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.ActionID,
+			&i.IdempotencyKey,
+			&i.Mode,
+			&i.ExternalState,
+			&i.ExternalRef,
+			&i.RequestPayload,
+			&i.ResponsePayload,
+			&i.ReconciledAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GateBlocked,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listActionExecutionsByCardIDs = `-- name: ListActionExecutionsByCardIDs :many
 SELECT ae.id, ae.card_id, ae.action_id, ae.idempotency_key, ae.mode, ae.external_state, ae.external_ref, ae.request_payload, ae.response_payload, ae.reconciled_at, ae.created_at, ae.updated_at, ae.gate_blocked
 FROM action_executions ae
@@ -563,6 +624,12 @@ type ListActionExecutionsByCardIDsParams struct {
 // an execution-bearing card inside the page but outside the overlay's own top-N
 // would render as a pre-execution card, a false "not executed" claim (EXE-005,
 // §4.6 no silent fallback). Keying on the returned ids makes coverage structural.
+//
+// It keys on CARD id, not action id (the by-action pair below): the PD-4 rule (1)
+// projection can return SEVERAL versions of one action lineage (an executed version
+// and a newer pre-execution Draft), and only the card id addresses the exact version
+// an execution was bound to. An action-keyed overlay would stamp the executed
+// version's terminal state onto the fresh Draft — a false "already executed" claim.
 //
 // No LIMIT: the result is bounded by the caller-supplied id set, which is itself
 // the already-bounded page (at most one execution row per card version).
@@ -762,6 +829,55 @@ type ListRecommendOnlyActionsByAccountParams struct {
 // column, so no join is needed. A pure SELECT.
 func (q *Queries) ListRecommendOnlyActionsByAccount(ctx context.Context, arg ListRecommendOnlyActionsByAccountParams) ([]RecommendOnlyAction, error) {
 	rows, err := q.db.Query(ctx, listRecommendOnlyActionsByAccount, arg.MarketplaceAccountID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []RecommendOnlyAction{}
+	for rows.Next() {
+		var i RecommendOnlyAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.CardID,
+			&i.ActionID,
+			&i.MarketplaceAccountID,
+			&i.VariantID,
+			&i.ApprovedPriceMantissa,
+			&i.ApprovedPriceCurrency,
+			&i.ApprovedPriceExponent,
+			&i.ApprovedAt,
+			&i.WindowExpiresAt,
+			&i.State,
+			&i.MatchedObservationAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRecommendOnlyActionsByAccountAndActions = `-- name: ListRecommendOnlyActionsByAccountAndActions :many
+SELECT id, card_id, action_id, marketplace_account_id, variant_id, approved_price_mantissa, approved_price_currency, approved_price_exponent, approved_at, window_expires_at, state, matched_observation_at, created_at, updated_at FROM recommend_only_actions
+WHERE marketplace_account_id = $1
+  AND action_id = ANY($2::uuid[])
+ORDER BY approved_at DESC
+`
+
+type ListRecommendOnlyActionsByAccountAndActionsParams struct {
+	MarketplaceAccountID uuid.UUID
+	ActionIds            []uuid.UUID
+}
+
+// The recommend-only actions for an EXPLICIT set of action ids under one account
+// (issue #90 blocker 3) — the recommend-only half of the page-scoped overlay above.
+func (q *Queries) ListRecommendOnlyActionsByAccountAndActions(ctx context.Context, arg ListRecommendOnlyActionsByAccountAndActionsParams) ([]RecommendOnlyAction, error) {
+	rows, err := q.db.Query(ctx, listRecommendOnlyActionsByAccountAndActions, arg.MarketplaceAccountID, arg.ActionIds)
 	if err != nil {
 		return nil, err
 	}

@@ -89,6 +89,22 @@ def resolve(req: ResolveRequest) -> Resolution:
             reason="account_level_context_needs_target",
         )
 
+    if card_leading and not req.active_context.entity_id:
+        # A card-CAPABLE chip that names no entity is not a settled subject: the
+        # chip says which KIND of thing leads the card, not WHICH one (the dock
+        # emits exactly this for a /bulk turn, and for a product/action route
+        # whose deep-link parameter is absent). Treated like an account-level
+        # context — pick a target, never resolve a subject-less "resolved"
+        # context a downstream card could bind (CHAT-007, §4.6 quarantine over
+        # inference). The empty string counts as absent. A DISTINCT reason token
+        # keeps this case separable from the account-level one in telemetry.
+        return Resolution(
+            kind=ResolutionKind.PICKER,
+            options=[],
+            time_range=time_range,
+            reason="card_context_without_entity",
+        )
+
     if card_leading:
         # The active chip will lead a card: it must carry the versions the card
         # binds and invalidates on (§8.1). A stale chip that dropped a required

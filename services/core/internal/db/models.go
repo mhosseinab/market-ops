@@ -478,6 +478,20 @@ type NotificationDigest struct {
 	ItemCount            int32
 }
 
+type NotificationDigestDelivery struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	BusinessDay          pgtype.Date
+	DeliveryState        string
+	Attempts             int32
+	LastReason           pgtype.Text
+	LastStatusCode       int32
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	FinalizedAt          pgtype.Timestamptz
+	Ambiguous            bool
+}
+
 type NotificationDigestItem struct {
 	ID             uuid.UUID
 	DigestID       uuid.UUID
@@ -817,6 +831,12 @@ type SelectionSet struct {
 	AggregateImpactExponent int16
 	CreatedAt               time.Time
 	MembershipFingerprint   []byte
+}
+
+type SelectionSetLineage struct {
+	LineageID            uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	CreatedAt            time.Time
 }
 
 type SelectionSetMember struct {

@@ -108,3 +108,13 @@ export type OutcomeList = components["schemas"]["OutcomeList"];
 
 export type BulkApprovalConfirmRequest = components["schemas"]["BulkApprovalConfirmRequest"];
 export type BulkApprovalConfirmResult = components["schemas"]["BulkApprovalConfirmResult"];
+export type BulkApprovalItemResult = components["schemas"]["BulkApprovalItemResult"];
+export type BulkApprovalItemState = components["schemas"]["BulkApprovalItemState"];
+
+// The SERVER-minted selection set (issue #90): the browser never mints a
+// selection-set lineage or version — it POSTs its filtered membership and binds
+// the confirmation to exactly the identity the server returns.
+export type SelectionSetPreviewResult = components["schemas"]["SelectionSetPreviewResult"];
+export type SelectionSetPreviewRequest = components["schemas"]["SelectionSetPreviewRequest"];
+export type SelectionSetMemberView = components["schemas"]["SelectionSetMemberView"];
+export type SelectionSetDisposition = components["schemas"]["SelectionSetDisposition"];

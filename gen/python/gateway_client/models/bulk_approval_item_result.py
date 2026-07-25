@@ -23,8 +23,29 @@ class BulkApprovalItemResult:
             disposition (SelectionSetDisposition): A selection-set member's bulk disposition (CHAT-050).
             state (BulkApprovalItemState): A per-member bulk-confirmation outcome (issue #90). Only `authorized` and
                 `already_authorized` mean the member carries a durable authorization + execution intent; every other state means
-                the member did NOT execute this call. `failed` is a TRANSIENT failure a resume (re-confirm) retries; the other
-                terminal states are not retried into execution.
+                the member did NOT execute this call. `failed` means this call neither authorized the member nor voided an
+                authorization: either a TRANSIENT failure (the authorization rolled back, the card is still a live control) or
+                an outcome that could not be DETERMINED (its state re-read failed). Both are resume-safe — a re-confirm retries
+                the live control and re-derives an undetermined outcome. A member that a CONCURRENT confirmation durably
+                approved is never `failed`; it is `already_authorized`. The other terminal states are not retried into
+                execution.
+                BULK-PROTOCOL DESIGN RECORD (c) — IDEMPOTENCY-KEY SCHEME. A bulk confirmation mints NO bulk-specific idempotency
+                key. Each member is authorized through the SAME §8.4 individual-confirm path, so the durable idempotency key is
+                the MEMBER CARD's own key — derived from its APR-001 binding (action id + parameter version + context version +
+                policy / cost-profile / evidence versions), unique per card, and the same key the individual confirmation and
+                the downstream execution use. The durable execution intent is unique by card id, so a replayed bulk confirmation
+                collapses to at most ONE authorization and ONE intent per member. A resume is therefore safe by construction and
+                requires no client-supplied request id: re-confirming the same (lineage, version) pair re-derives the same per-
+                member keys.
+                `already_authorized` is the SEALED authorization outcome: it is reported for a member whose control was
+                activated by ANOTHER confirmation — a prior one (a resume) or a CONCURRENT one that committed first (a double-
+                clicked confirm, or a client retry of a confirmation whose response was lost) — INCLUDING one whose card has
+                since advanced downstream (revalidating, executing, or a terminal external result — accepted, rejected,
+                pending_reconciliation, failed). The member state behind this outcome is read FRESH at report time, so a member
+                the race durably approved reports a sealed authorization with `executionPending` true, never a failure. Re-
+                attempting a member whose EXECUTION failed is the reconciliation-gated retry path's decision (an unknown result
+                must reconcile first; only a definitively reconciled failure is retry-eligible, EXE-003), never a second bulk
+                authorization.
             reason (str): A stable, non-localized diagnostic reason for the item's state.
     """
 

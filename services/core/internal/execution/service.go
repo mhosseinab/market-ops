@@ -806,6 +806,11 @@ func (s *Service) ListUnifiedByAccount(ctx context.Context, account uuid.UUID, l
 // then render as a pre-execution card, a false "not executed" claim (EXE-005,
 // §4.6 no silent fallback).
 //
+// It keys on CARD version, not action id (ListUnifiedByActions below): under the
+// PD-4 rule (1) projection one action lineage can contribute SEVERAL rows to a page
+// (an executed version plus a newer pre-execution Draft), and only the card id
+// addresses the exact version an execution was bound to.
+//
 // Both reads stay predicated on the account (issue #102): the caller-supplied id
 // set never becomes an unscoped read, so a foreign card id yields nothing.
 //
@@ -839,6 +844,50 @@ func (s *Service) ListUnifiedByCardIDs(ctx context.Context, account uuid.UUID, c
 		if _, hasWrite := written[r.CardID]; hasWrite {
 			continue
 		}
+		out = append(out, unifiedFromRecommendOnly(r))
+	}
+	return out, nil
+}
+
+// ListUnifiedByActions projects both execution modes for an EXPLICIT set of action
+// ids under one account (issue #90 blocker 3). It is a page-scoped overlay for a
+// caller that holds ACTION ids: the account-wide newest-N projection above cannot
+// cover a page deeper than N, and a missing overlay row is not neutral — the
+// contract reads absent overlay fields as "this action is still pre-execution", so a
+// page-2 executed action would be rendered as a fabricated pre-execution state.
+// Keying on exactly the page's ids makes the overlay complete for that page by
+// construction.
+//
+// The actions-list request path uses ListUnifiedByCardIDs instead (issue #106),
+// because under the PD-4 rule (1) projection an action id no longer identifies
+// exactly one returned row. Both carry the same account predicate and the same
+// page-scoped completeness property.
+//
+// An empty id set reads nothing (no query, no rows). The account predicate remains
+// the authorization; the id list only narrows within it. It is a read; it advances no
+// state.
+func (s *Service) ListUnifiedByActions(ctx context.Context, account uuid.UUID, actionIDs []uuid.UUID) ([]UnifiedAction, error) {
+	if len(actionIDs) == 0 {
+		return nil, nil
+	}
+	q := db.New(s.pool)
+	execs, err := q.ListActionExecutionsByAccountAndActions(ctx, db.ListActionExecutionsByAccountAndActionsParams{
+		MarketplaceAccountID: account, ActionIds: actionIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ros, err := q.ListRecommendOnlyActionsByAccountAndActions(ctx, db.ListRecommendOnlyActionsByAccountAndActionsParams{
+		MarketplaceAccountID: account, ActionIds: actionIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UnifiedAction, 0, len(execs)+len(ros))
+	for _, e := range execs {
+		out = append(out, unifiedFromExecution(e))
+	}
+	for _, r := range ros {
 		out = append(out, unifiedFromRecommendOnly(r))
 	}
 	return out, nil

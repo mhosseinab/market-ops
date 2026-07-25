@@ -56,6 +56,9 @@ type Querier interface {
 	// UNIQUE(window_id)).
 	AppendOutcomeResult(ctx context.Context, arg AppendOutcomeResultParams) (OutcomeResult, error)
 	// Records a TRANSIENT failed attempt while the row stays pending (attempts + bounded
+	// reason), so a retry is observable without a state transition. Guarded on 'pending'.
+	BumpDigestDeliveryAttempt(ctx context.Context, arg BumpDigestDeliveryAttemptParams) (NotificationDigestDelivery, error)
+	// Records a TRANSIENT failed attempt while the row stays pending (attempts + bounded
 	// last_error), so a retry is observable without a state transition. Guarded by
 	// delivery_state = 'pending'.
 	BumpUrgentOutboxAttempt(ctx context.Context, arg BumpUrgentOutboxAttemptParams) (NotificationUrgentOutbox, error)
@@ -90,6 +93,18 @@ type Querier interface {
 	// code is strictly single-use; a second claim matches no row. Returns the row
 	// (with credential id + expiry) only when the claim succeeds.
 	ClaimPairingCode(ctx context.Context, arg ClaimPairingCodeParams) (ExtensionPairing, error)
+	// Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
+	// within a lineage: a set change is a new version. A bulk approval binds ONE
+	// version, so any set/evidence change (a new version) invalidates it. No
+	// UPDATE/DELETE — the current set is the greatest version per lineage.
+	// BULK-PROTOCOL DESIGN RECORD (b) — lineage→account ownership claim.
+	// Claims a lineage for an account INSERT-ONCE (issue #90). ON CONFLICT DO NOTHING,
+	// never DO UPDATE: ownership is immutable, so an already-owned lineage is left
+	// exactly as it is and the caller then READS the owner (GetSelectionSetLineage) in
+	// the SAME transaction under the held per-lineage advisory lock. Claim-then-read is
+	// race-free: two accounts racing on one lineage serialize on the lock, the loser
+	// reads the winner's row and fails closed (ErrLineageNotOwned).
+	ClaimSelectionSetLineage(ctx context.Context, arg ClaimSelectionSetLineageParams) error
 	// §16 offer disappearance: close the current offer with an END TIME. The last raw
 	// price is left intact — it is NEVER converted to a zero price. Availability
 	// becomes 'disappeared' and quality 'unavailable'.
@@ -280,6 +295,20 @@ type Querier interface {
 	EngageGlobalKillSwitch(ctx context.Context, arg EngageGlobalKillSwitchParams) error
 	// Stop Route C for one target. Idempotent per target.
 	EngageTargetKillSwitch(ctx context.Context, arg EngageTargetKillSwitchParams) error
+	// --- Per-(account, business_day) digest delivery-state projection (issue #124) ------
+	//
+	// The DURABLE per-account/day work record that isolates one tenant's digest failure
+	// from every other tenant. (marketplace_account_id, business_day) is the stable
+	// idempotency key; the state machine below is the ONLY mutable surface (the digest
+	// header + items stay append-only). Every transition is GUARDED on its source state,
+	// so a duplicate/concurrent drive matches nothing and is an idempotent no-op — a
+	// retry or a recovery re-enqueue can never resend a digest.
+	// Opens the durable delivery row for (account, business_day). ON CONFLICT DO NOTHING
+	// on the idempotency key: a re-discovery inserts nothing and returns no row (the
+	// caller treats pgx.ErrNoRows as "already tracked" and reads the existing row). The
+	// caller enqueues the per-account job in the SAME transaction (transactional enqueue),
+	// so a committed work record always has a driving job and a rollback discards both.
+	EnsureDigestDelivery(ctx context.Context, arg EnsureDigestDeliveryParams) (NotificationDigestDelivery, error)
 	// Lifecycle expiry sweep (§15.1): open|updated events past their expiry deadline
 	// become 'expired'. Like resolution this frees the dedup_key. Evidence is left
 	// intact; expiry is a lifecycle transition, not a delete.
@@ -375,6 +404,9 @@ type Querier interface {
 	// never bind or probe a foreign selection set.
 	GetCurrentSelectionSetForAccount(ctx context.Context, arg GetCurrentSelectionSetForAccountParams) (SelectionSet, error)
 	GetDigestByAccountDay(ctx context.Context, arg GetDigestByAccountDayParams) (NotificationDigest, error)
+	// Reads the durable delivery row so the worker can make its idempotent decision (a
+	// terminal state → no-op, no duplicate digest).
+	GetDigestDelivery(ctx context.Context, arg GetDigestDeliveryParams) (NotificationDigestDelivery, error)
 	// The digest recipient for an account: the organization's owner user email,
 	// falling back to the earliest user when no owner role exists. Returns no row when
 	// the organization has no users (the digest is then unsendable — fail closed).
@@ -460,6 +492,10 @@ type Querier interface {
 	// from a missing one (no existence oracle) and is never disclosed.
 	GetRecommendationForAccount(ctx context.Context, arg GetRecommendationForAccountParams) (Recommendation, error)
 	GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error)
+	// The authoritative owner of a selection-set lineage. Exactly one row per lineage
+	// for its whole life (migration 0045); the composite FK on selection_sets makes any
+	// version under a different account unconstructable at the DATABASE.
+	GetSelectionSetLineage(ctx context.Context, lineageID uuid.UUID) (SelectionSetLineage, error)
 	// Resolve a live session to its principal (user + role + organization). Rows
 	// at/after expiry are excluded, so an expired cookie fails closed.
 	GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error)
@@ -613,14 +649,19 @@ type Querier interface {
 	// nothing and the service surfaces a not-found — no existence oracle, still
 	// append-only (EVT-005).
 	InsertRelevanceFeedbackForOrg(ctx context.Context, arg InsertRelevanceFeedbackForOrgParams) (EventRelevanceFeedback, error)
-	// Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
-	// within a lineage: a set change is a new version. A bulk approval binds ONE
-	// version, so any set/evidence change (a new version) invalidates it. No
-	// UPDATE/DELETE — the current set is the greatest version per lineage.
 	// membership_fingerprint is the canonical hash of the exact membership + aggregate
 	// computed by the atomic create BEFORE any write. It is set once at INSERT and never
 	// UPDATEd (selection_sets is append-only), so a version's fingerprint is immutable —
 	// binding the version at confirm transitively binds this fingerprint (issue #91).
+	//
+	// BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING.
+	// Versions are monotonic ONLY WITHIN one lineage: the next version is
+	// MAX(version)+1 over the rows of THIS lineage AND THIS account (the account
+	// predicate is defense in depth — migration 0045's composite FK already guarantees
+	// every row of a lineage shares one account). Version numbers from DIFFERENT
+	// lineages are NOT comparable and must never be ordered, ranged, or diffed against
+	// one another: "v3" is meaningful only as "(lineage L, version 3)". A bulk
+	// confirmation therefore binds the PAIR (lineage, version), never a bare version.
 	InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error)
 	// marketplace_account_id is the tenant key (issue #102): it MUST equal the owning
 	// selection_set's account and — enforced by migration 0025's composite FKs and the
@@ -647,6 +688,20 @@ type Querier interface {
 	// (action_executions carries no account column of its own). A pure SELECT — the
 	// common action API overlays these onto the account's approval cards.
 	ListActionExecutionsByAccount(ctx context.Context, arg ListActionExecutionsByAccountParams) ([]ActionExecution, error)
+	// The write-mode action_executions rows for an EXPLICIT set of action ids under one
+	// account (issue #90 blocker 3). The account-wide newest-N projection above cannot
+	// serve a CURSOR-PAGINATED actions page: a page deeper than the newest N would find
+	// no overlay row and render an already-executed action as if it were still
+	// pre-execution — a fabricated state, not merely a missing enrichment. Keying the
+	// overlay on exactly the page's action ids makes it complete for that page by
+	// construction. The account predicate remains the authorization; the id list only
+	// narrows within it. A pure SELECT.
+	//
+	// The actions-list request path uses the CARD-keyed pair above instead (issue #106):
+	// under the PD-4 rule (1) projection an action id no longer identifies exactly one
+	// returned row. This by-action read stays available for callers that hold action ids
+	// and no card ids, and carries the same account predicate.
+	ListActionExecutionsByAccountAndActions(ctx context.Context, arg ListActionExecutionsByAccountAndActionsParams) ([]ActionExecution, error)
 	// The write-mode action_executions rows bound to an EXPLICIT set of approval card
 	// versions (issue #106 finding F1). The actions list overlays execution state onto
 	// the cards it actually returned, so the overlay must be fetched for the EXACT ids
@@ -655,6 +710,12 @@ type Querier interface {
 	// an execution-bearing card inside the page but outside the overlay's own top-N
 	// would render as a pre-execution card, a false "not executed" claim (EXE-005,
 	// §4.6 no silent fallback). Keying on the returned ids makes coverage structural.
+	//
+	// It keys on CARD id, not action id (the by-action pair below): the PD-4 rule (1)
+	// projection can return SEVERAL versions of one action lineage (an executed version
+	// and a newer pre-execution Draft), and only the card id addresses the exact version
+	// an execution was bound to. An action-keyed overlay would stamp the executed
+	// version's terminal state onto the fresh Draft — a false "already executed" claim.
 	//
 	// No LIMIT: the result is bounded by the caller-supplied id set, which is itself
 	// the already-bounded page (at most one execution row per card version).
@@ -706,6 +767,12 @@ type Querier interface {
 	// a foreign account's executed card is never projected here. A deterministic id
 	// tie-break keeps ordering stable across rows sharing a created_at (stable
 	// keyset paging).
+	//
+	// NOT a request path (issue #90 blocker 3): superseded by ListApprovalCardsPage
+	// for every caller-facing read (its bare LIMIT carries no completeness signal).
+	// Retained for internal fixed-bound reads only; it projects the SAME PD-4 rule (1)
+	// set as ListApprovalCardsPage, so the two reads can never disagree about what an
+	// action queue contains.
 	ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error)
 	// Actions queue narrowed to a single §8.4 state (issue #142), over the SAME
 	// PD-4 rule (1) projection as the unfiltered read (issue #106): current lineage
@@ -722,6 +789,61 @@ type Querier interface {
 	// Tenant scoping (marketplace_account_id) is unchanged on both branches and the
 	// id tie-break keeps paging stable across equal created_at.
 	ListApprovalCardsByAccountAndState(ctx context.Context, arg ListApprovalCardsByAccountAndStateParams) ([]ApprovalCard, error)
+	// The BOUNDED, keyset-paginated actions queue (issue #90 blocker 3, §17 bounded
+	// reads). It supersedes the two unpaginated reads below as the ONLY request-path
+	// actions read: those silently CLAMPED an over-large limit to 500 and returned no
+	// completeness signal, so a caller with more than 500 current lineage heads
+	// received a truncated queue it could not distinguish from a complete one.
+	//
+	// The PROJECTION is PD-4 rule (1) for issue #106 — the same union the two reads
+	// below use, carried onto the request path so pagination does not silently narrow
+	// it back to lineage heads:
+	//
+	//     current lineage heads  UNION  card versions that carry an execution
+	//
+	// The second branch is what keeps EXE-005 / OUT-001 / AUD-001 visibility intact.
+	// The domain may legitimately mint a NEWER Draft on the SAME action lineage after
+	// an action was executed (recommendation.EditPrice preserves action_id), so a
+	// greatest-version-only read silently drops the older TERMINAL card version — and
+	// with it the common action API visibility, audit selection, and outcome discovery
+	// for the DEFAULT (recommend-only, writes dark) execution mode. "Carries an
+	// execution" spans BOTH modes (write action_executions OR EXE-005
+	// recommend_only_actions), matched on the EXACT card version each was bound to,
+	// never on the lineage, so a newer version never inherits an older version's
+	// execution. The disjunction deduplicates by construction: a head that is ITSELF
+	// execution-bearing satisfies both branches and still yields exactly ONE row.
+	//
+	// Shape (identical to the notification feed's keyset idiom — one pagination
+	// convention in this repo, issue #128):
+	//   * the OPTIONAL §8.4 state predicate is AUTHORITATIVE and applied to the
+	//     PROJECTED set before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING
+	//     rows, never an unfiltered newest-N prefix;
+	//   * deterministic (created_at DESC, id DESC) ordering with the row-value cursor
+	//     comparison over the card PRIMARY KEY, so ties on created_at break by id and
+	//     no row is returned TWICE across pages. Execution-bearing versions are
+	//     immutable history and page stably; a lineage that mints a NEW head mid-paging
+	//     sorts NEWER than the cursor and is therefore observed on a refreshed FIRST
+	//     page, not on a later one. Stability over a mutable head would need a
+	//     different key (e.g. the lineage's first version) and is a deliberate non-goal
+	//     here — the queue is read newest-first and refreshed, not scrolled as a
+	//     snapshot;
+	//   * a NULL cursor is the first (newest) page; the caller passes
+	//     page_limit = requested_limit + 1 and treats the extra row as the hasMore
+	//     signal (then trims it).
+	// The account predicate is the authorization on BOTH branches (issue #102) — a
+	// foreign account's executed card is never projected here; the cursor is only a
+	// position.
+	//
+	// This is a pure READ over append-only history: it never rewrites, collapses,
+	// merges, or re-stamps a past card version — each projected version keeps its own
+	// version and its own parameter/context versions (approval versioning is
+	// never-cut, §4.6).
+	//
+	// variant_id is joined from the recommendation (a card and its recommendation are
+	// account-bound by migration 0025's composite FK, so the join cannot widen the
+	// tenant scope). It is what lets a caller build a bulk selection member
+	// (variantId + recommendationId) from ONE bounded read instead of an N+1 fan-out.
+	ListApprovalCardsPage(ctx context.Context, arg ListApprovalCardsPageParams) ([]ListApprovalCardsPageRow, error)
 	// The complete append-only audit trail for an action, in occurrence order. This
 	// is the reproduction read (AUD-001): it joins NOTHING in the conversation tables,
 	// so deleting a conversation leaves the trail intact.
@@ -809,6 +931,20 @@ type Querier interface {
 	// variant/product so the row carries SKU (supplier_code), variant + product title,
 	// and the native-id evidence a reviewer needs to confirm/reject/defer.
 	ListNeedsReviewQueue(ctx context.Context, marketplaceAccountID uuid.UUID) ([]ListNeedsReviewQueueRow, error)
+	// The OWNED RECOVERY source (issue #124 / PD-4): every NONTERMINAL (account, day)
+	// delivery row, of ANY historical business day, rediscovered directly from this table
+	// and re-enqueued by the fan-out pass. It deliberately consults NO River state: River's
+	// completion/snooze write and the terminal projection write share the same PostgreSQL
+	// dependency, so a correlated outage can leave a job `running` at its final attempt
+	// (the rescuer then DISCARDS it) while the row is still nonterminal. Recovery anchored
+	// here survives that window, and it survives day advancement because business_day is
+	// pinned on the row rather than recomputed.
+	//
+	// A 'sending' row is only rediscovered once it is STALE (updated_at older than the
+	// cutoff), so a live in-flight attempt is never raced by a recovery re-enqueue. The
+	// LIMIT bounds the pass (§17 bounded reads / backpressure: the recovery queue never
+	// grows unbounded in one tick). Oldest work first.
+	ListNonterminalDigestDeliveries(ctx context.Context, arg ListNonterminalDigestDeliveriesParams) ([]NotificationDigestDelivery, error)
 	// The in-app notification feed for an account, newest first, BOUNDED by a keyset
 	// cursor (§17 bounded reads). Deterministic order is (created_at DESC, id DESC);
 	// the row-value comparison (created_at, id) < (cursor_created_at, cursor_id) reads
@@ -879,6 +1015,9 @@ type Querier interface {
 	// projection), newest first. recommend_only_actions carries its own account
 	// column, so no join is needed. A pure SELECT.
 	ListRecommendOnlyActionsByAccount(ctx context.Context, arg ListRecommendOnlyActionsByAccountParams) ([]RecommendOnlyAction, error)
+	// The recommend-only actions for an EXPLICIT set of action ids under one account
+	// (issue #90 blocker 3) — the recommend-only half of the page-scoped overlay above.
+	ListRecommendOnlyActionsByAccountAndActions(ctx context.Context, arg ListRecommendOnlyActionsByAccountAndActionsParams) ([]RecommendOnlyAction, error)
 	// The recommend-only actions bound to an EXPLICIT set of approval card versions
 	// (issue #106 finding F1) — the recommend-only half of the same page-exact overlay
 	// as ListActionExecutionsByCardIDs, with the same reasoning and the same bound (at
@@ -949,6 +1088,53 @@ type Querier interface {
 	// duplicate rows, matches nothing and returns no row — the service treats that as
 	// a refusal (no silent re-commit, no commit over an unresolved conflict).
 	MarkCostImportBatchCommitted(ctx context.Context, id uuid.UUID) (CostImportBatch, error)
+	// Raises the AMBIGUITY marker on an in-flight send at the moment the exchange enters
+	// its genuinely ambiguous window (the body terminator is about to be written and the
+	// relay's verdict awaited). From here acceptance cannot be disproven, so a row
+	// abandoned after this point is finalized 'unconfirmed' and never resent. Guarded on
+	// 'sending': it can only ever narrow a live claim.
+	MarkDigestDeliveryAmbiguous(ctx context.Context, arg MarkDigestDeliveryAmbiguousParams) (NotificationDigestDelivery, error)
+	// pending → dead_letter: a PERMANENT failure that definitively did NOT deliver
+	// (unsendable target, unsupported locale, render error, permanent relay rejection, or
+	// exhausted attempts before any send). An OBSERVABLE terminal state; it does NOT mark
+	// the digest delivered (no false "delivered"). Guarded on 'pending'.
+	MarkDigestDeliveryDeadLetter(ctx context.Context, arg MarkDigestDeliveryDeadLetterParams) (NotificationDigestDelivery, error)
+	// sending → delivered: the relay ACCEPTED the message and this write landed. The sole
+	// success transition; guarded on 'sending' so a re-drive after delivery matches nothing
+	// (idempotent no-op — zero resend).
+	MarkDigestDeliveryDelivered(ctx context.Context, arg MarkDigestDeliveryDeliveredParams) (NotificationDigestDelivery, error)
+	// ATTEMPT ACCOUNTING. `attempts` is incremented EXACTLY ONCE per attempt, by whichever
+	// write CONCLUDES that attempt (bump, delivered, skipped, dead_letter, unconfirmed).
+	// The mid-attempt transitions — the 'sending' claim and the release back to 'pending'
+	// after a definitive non-acceptance — deliberately do NOT increment: incrementing on
+	// both the claim and the concluding write made the column read roughly double the truth,
+	// which silently halves the apparent headroom of the bounded per-account retry budget.
+	// pending → sending: the send is about to be INITIATED and its outcome becomes
+	// unknown until the relay answers. Committed BEFORE the SMTP conversation starts, so a
+	// crash mid-send leaves an ambiguity marker instead of a resend hazard. Guarded on
+	// 'pending' so a concurrent drive claims it at most once.
+	//
+	// $4 is the AMBIGUITY marker this attempt starts with. A mailer that can report its
+	// post-DATA boundary starts DEFINITIVE (false) and is narrowed upward by
+	// MarkDigestDeliveryAmbiguous at the real boundary; a mailer that cannot report it
+	// starts true, so the whole exchange is treated conservatively as the ambiguous window.
+	//
+	// last_reason / last_status_code are PRESERVED across the claim: erasing them at the
+	// start of every retry destroyed the previous attempt's diagnosis, so a flapping
+	// tenant's history could not be read off its own row.
+	MarkDigestDeliverySending(ctx context.Context, arg MarkDigestDeliverySendingParams) (NotificationDigestDelivery, error)
+	// pending → skipped: the day had nothing sendable (no eligible notification, or every
+	// eligible row was isolated by the closed message-schema check). Terminal and OBSERVED
+	// — not a failure, and never a silent drop.
+	MarkDigestDeliverySkipped(ctx context.Context, arg MarkDigestDeliverySkippedParams) (NotificationDigestDelivery, error)
+	// sending → unconfirmed: TERMINAL AMBIGUOUS. The send was initiated, the exchange
+	// entered its post-DATA window, and acceptance could never be established (lost verdict,
+	// process crash, or exhausted attempts while still ambiguous). It does NOT claim
+	// delivery, and the row is never re-driven: zero resend outranks a speculative re-send
+	// repair (idempotency is never-cut; a duplicate delivery must never create a duplicate
+	// product event). Guarded on 'sending' AND on the durable ambiguity marker, so a row
+	// that provably never entered the window can NOT be written off as unconfirmed.
+	MarkDigestDeliveryUnconfirmed(ctx context.Context, arg MarkDigestDeliveryUnconfirmedParams) (NotificationDigestDelivery, error)
 	// OBS-004 expiry sweep on the derived current view: any live offer past its
 	// freshness deadline becomes Stale (renders age-only, never satisfies a
 	// current-data gate — that decision is in the domain). Closed offers are left as
@@ -1023,6 +1209,13 @@ type Querier interface {
 	// Transition NeedsReview -> Rejected and deactivate. A rejected mapping never
 	// feeds an executable path and frees the variant for a fresh candidate later.
 	RejectIdentity(ctx context.Context, id uuid.UUID) (MarketProductIdentity, error)
+	// sending → pending: the relay DEFINITIVELY did not accept the message (a typed SMTP
+	// response, or a failure before the body terminator was written), so a retry cannot
+	// duplicate it. Releasing the claim is only ever driven by a definitive non-acceptance —
+	// an UNKNOWN outcome stays 'sending' and is never released. last_reason is a bounded
+	// machine token; last_status_code is the numeric relay code (0 when none). The ambiguity
+	// marker is cleared with the release: the next attempt starts its own window.
+	ReleaseDigestDeliveryToPending(ctx context.Context, arg ReleaseDigestDeliveryToPendingParams) (NotificationDigestDelivery, error)
 	RenameOrganization(ctx context.Context, arg RenameOrganizationParams) (Organization, error)
 	// Reopen a Confirmed mapping on a merge/split/redirect/variant-conflict signal
 	// (§16). Guarded WHERE state='confirmed' AND active so only a live Confirmed

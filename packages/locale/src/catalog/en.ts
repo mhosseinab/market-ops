@@ -213,6 +213,20 @@ export const en: Catalog = {
   "chat.failure.tokenCeiling": "The response exceeded the length limit.",
   "chat.failure.providerError": "The assistant service returned an error.",
   "chat.failure.transient": "The assistant is temporarily unavailable.",
+  "chat.failure.contextScopeMissing":
+    "The account this request belongs to could not be confirmed. Continue in the structured screens.",
+  "chat.failure.contextMalformed":
+    "The details attached to this request could not be read. Continue in the structured screens.",
+  "chat.failure.contextUnavailable":
+    "The referenced items are unavailable right now. Continue in the structured screens.",
+  "chat.failure.contextPickerUnavailable":
+    "The assistant needs one specific item and no options could be offered. Choose the item in the structured screens.",
+  "chat.failure.contextNotFound":
+    "The item you referred to was not found in this account. Choose it in the structured screens.",
+  "chat.failure.turnIncomplete":
+    "The turn ended without an answer. Use the structured screens for a complete, grounded view.",
+  "chat.failure.intentUnclassified":
+    "The request could not be interpreted. Rephrase it, or use the structured screens.",
   "chat.failure.unsupported": "This response could not be completed.",
 
   "action.retry": "Try again",
@@ -421,6 +435,10 @@ export const en: Catalog = {
   "cost.confirm": "Confirm {count} valid rows",
   "cost.duplicateBlock": "{count} duplicate rows must be resolved before confirm.",
   "cost.committed": "{count} rows committed.",
+  "cost.file.current": "Current source:",
+  "cost.file.reading": "Reading the chosen file…",
+  "cost.file.error":
+    "The chosen file could not be read; the source is unchanged. Choose the file again.",
   "cost.preview.error": "Previewing the file failed. Your file is kept; you can try again.",
   "cost.commit.error":
     "The commit did not complete and its outcome is unknown. Re-run the preview to see the current state before committing again.",
@@ -763,8 +781,9 @@ export const en: Catalog = {
   "bulk.col.status": "Status",
   "bulk.col.result": "Result",
   "bulk.result.excluded": "Excluded",
-  "bulk.result.awaitingExternal": "Awaiting external execution",
   "bulk.result.recommendOnly": "{count} tracked recommend-only; awaiting external execution.",
+  "bulk.result.settled":
+    "{count} approved; no execution is in flight. See Actions for each write's result.",
   "bulk.reason.qualityUnknown": "Observation quality unknown",
   "bulk.reason.conflicted": "Conflicted observation",
   "bulk.reason.staleObservation": "Stale observation",
@@ -781,6 +800,19 @@ export const en: Catalog = {
   "bulk.readiness.error.title": "Some margin readiness could not be loaded",
   "bulk.readiness.error.body":
     "Some rows on this page failed to load their readiness. Other rows are shown; retry to load the rest.",
+
+  "bulk.preview.error.title": "The selection set could not be built",
+  "bulk.preview.error.body":
+    "The server builds and versions the selection set. Nothing was approved; try previewing again.",
+  "bulk.preview.pending": "Building the selection set…",
+  "bulk.preview.empty": "No candidate has an approval control to include.",
+  "bulk.confirm.error.title": "The bulk approval could not be submitted",
+  "bulk.confirm.error.body": "Nothing was approved. Re-preview the selection set and try again.",
+  "bulk.candidates.incomplete":
+    "More actions exist than this page shows; the selection set covers this page only.",
+  "bulk.result.state.authorized": "Approved",
+  "bulk.result.state.alreadyAuthorized": "Already approved",
+  "bulk.result.notAMember": "Not in the selection set",
 
   "settings.connection.title": "DK connection",
   "settings.connection.manage": "Manage connection →",

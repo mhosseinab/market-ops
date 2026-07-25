@@ -19,6 +19,7 @@ import {
   productDiagnostics,
   readinessMissing,
   recommendationDetail,
+  selectionPreview,
   sessionOwner,
   target,
 } from "./fixtures";
@@ -158,6 +159,13 @@ export const handlers = [
     HttpResponse.json({ actionId: execAccepted.actionId, eligible: true, state: "failed" }),
   ),
   http.post(`${B}/approvals/bulk/confirm`, () => HttpResponse.json(bulkValid)),
+  // The SERVER-minted selection set (issue #90): the browser never mints a
+  // selection-set lineage or version. The bulk CANDIDATE source is GET /actions,
+  // whose default handler above serves the issue #106 multi-mode queue; the
+  // BulkApproval suite installs its own `awaitingActions` handler, because MSW
+  // resolves the FIRST matching handler and a screen-specific queue must not be a
+  // silent global default for every other screen.
+  http.post(`${B}/selection-sets/preview`, () => HttpResponse.json(selectionPreview)),
 
   // ── S29: chat dock ──────────────────────────────────────────────────────────
   http.get(`${B}/briefing`, () => HttpResponse.json(dailyBriefing)),

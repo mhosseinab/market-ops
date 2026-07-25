@@ -88,6 +88,26 @@ type ChatTurn struct {
 	// never infers the bound entity from free text when a binding is present; it
 	// carries no approval authority.
 	Context *conversation.ContextBinding
+	// ContextOrganizationID / ContextMarketplaceAccountID are the bound context's
+	// TENANT PROVENANCE: the organization and marketplace account the conversation
+	// (and therefore its context binding) is PERSISTED under. They are read from the
+	// stored conversation row — NEVER copied from the inbound request's authenticated
+	// scope (§4.6 identity quarantine, PRD §12). The LLM plane validates this
+	// provenance against the turn's authenticated scope and fails closed on an absent
+	// or foreign tenant; filling it from the request would make that check a tautology
+	// and silently delete the guard. uuid.Nil / nil mean "no provenance recorded" and
+	// are emitted as ABSENT, never as a placeholder — provenance is never manufactured.
+	// NOTE for consumers and future refactors: on today's gateway path
+	// ContextOrganizationID always COINCIDES with the turn's scope OrganizationID by
+	// construction, because BeginTurn either creates the conversation under the
+	// principal's org or loads it via the org-filtered GetConversationForOrg; the
+	// organization half of the consumer's scope check is therefore defence-in-depth
+	// against a future non-org-filtered read, NOT an independent discriminator, and
+	// the ACCOUNT half is the load-bearing one. Nothing downstream (including 108c's
+	// GatewayReadPort / per-intent binding) may treat the organization comparison as
+	// tenant authorization, and no refactor may fold these two fields together.
+	ContextOrganizationID       uuid.UUID
+	ContextMarketplaceAccountID *uuid.UUID
 	// Locale is the conversation's AUTHORITATIVE bound locale (LOC-001, issue #120):
 	// the exact validated wire locale, resolved and versioned by the gateway. It is
 	// handed to the LLM plane as read-only pass-through business data so the response
@@ -163,6 +183,16 @@ func authoritativeChatAccount(requestAccount, storedAccount *uuid.UUID, resolved
 		return chatAccountDecision{account: stored, mismatch: true}
 	}
 	return chatAccountDecision{account: stored}
+}
+
+// optionalAccount is the inverse of derefUUID: it maps a resolved account back to
+// the optional wire field, emitting uuid.Nil (the no-account context) as ABSENT
+// rather than a zero-uuid placeholder (§4.6 quarantine over inference).
+func optionalAccount(id uuid.UUID) *uuid.UUID {
+	if id == uuid.Nil {
+		return nil
+	}
+	return &id
 }
 
 // derefUUID returns the pointed-to uuid, or uuid.Nil (the no-account context)
@@ -299,10 +329,21 @@ func (s *gatewayServer) Chat(
 	}
 
 	turn := ChatTurn{
-		UserID:               p.UserID,
-		OrganizationID:       p.OrganizationID,
-		ConversationID:       req.Body.ConversationId,
-		MarketplaceAccountID: req.Body.MarketplaceAccountId,
+		UserID:         p.UserID,
+		OrganizationID: p.OrganizationID,
+		ConversationID: req.Body.ConversationId,
+		// The turn's SCOPE account is the one the gateway AUTHORITATIVELY resolved
+		// just above (decision.account) — never the raw optional request field
+		// (issue #108 G3, §4.6 identity quarantine). The stored conversation's
+		// account governs, a contradicting request account was already denied, and
+		// an omitted one inherits the stored value; forwarding the raw field instead
+		// would (a) make the LLM plane's scope-vs-provenance check degenerate on its
+		// account half, since both sides would trace back to the request, and (b)
+		// strip the account from every continuation that omits the optional field.
+		// uuid.Nil (the no-account context) is emitted as ABSENT, never as a zero
+		// placeholder, so the consumer sees absence and quarantines with a precise
+		// reason instead of comparing a manufactured value.
+		MarketplaceAccountID: optionalAccount(decision.account),
 		Message:              req.Body.Message,
 		// The validated wire locale is authoritative even when no durability store is
 		// wired: it is always handed to the LLM plane. When a store IS wired, the
@@ -362,6 +403,12 @@ func (s *gatewayServer) Chat(
 		conversationID = conv.ID
 		turn.ConversationID = &conv.ID
 		turn.Context = conv.Context
+		// Tenant provenance for the bound context comes from the PERSISTED
+		// conversation row (conv), not from the request principal or the request's
+		// optional account field: the consumer's scope check only means something if
+		// the two are independently sourced (§4.6 identity quarantine, PRD §12).
+		turn.ContextOrganizationID = conv.OrganizationID
+		turn.ContextMarketplaceAccountID = conv.MarketplaceAccountID
 		boundLocale = conv.Locale
 		if conv.Locale != nil {
 			turn.Locale = conv.Locale.Locale
@@ -595,6 +642,18 @@ func (h *httpLLMChat) StartTurn(ctx context.Context, turn ChatTurn) (io.ReadClos
 		}
 		if turn.Context.EntityID != nil {
 			bound["entity_id"] = *turn.Context.EntityID
+		}
+		// The bound context's TENANT PROVENANCE, read from the persisted conversation
+		// (never the inbound request scope). The LLM plane validates it against the
+		// turn's authenticated scope and fails closed on an absent or foreign tenant.
+		// Absent provenance is OMITTED — never a zero-uuid placeholder — so the
+		// consumer quarantines with a precise reason instead of comparing a
+		// manufactured value (§4.6 identity quarantine, PRD §12).
+		if turn.ContextOrganizationID != uuid.Nil {
+			bound["organization_id"] = turn.ContextOrganizationID.String()
+		}
+		if turn.ContextMarketplaceAccountID != nil {
+			bound["account_id"] = turn.ContextMarketplaceAccountID.String()
 		}
 		payload["context"] = bound
 	}

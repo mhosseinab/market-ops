@@ -27,7 +27,14 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Final
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from llm.envelope.models import (
     _INT64_MAX,
@@ -434,6 +441,80 @@ class ResponseEnvelope(BaseModel):
     def operational_claims(self) -> list[Claim]:
         """Every claim that must carry evidence (CHAT-005)."""
         return [*self.observed_facts, *self.dk_signals, *self.seller_config]
+
+
+# --- the canonical ambiguity picker (CHAT-007, PRD §8.1) ---------------------
+
+# The card discriminator the web dock switches on (apps/web/src/chat/envelope.ts).
+PICKER_CARD_KIND = "picker"
+# Catalog keys for the picker's surrounding copy. Keys ONLY — the fa-IR/en copy
+# lives in packages/locale and is authored by persian_localization_ux, never here
+# (localization boundary, PRD §11). Option labels are authoritative READ DATA.
+PICKER_TITLE_KEY = "chat.picker.title"
+PICKER_HINT_KEY = "chat.picker.hint"
+
+
+class PickerCardOption(BaseModel):
+    """One option in the canonical structured picker: ``{id, label, contextKind}``.
+
+    A **display** object, nothing more. It names the entity a user could choose
+    (``id``, an LTR technical identifier the surface isolates), how to show it
+    (``label`` — authoritative read data, never model-authored copy), and which
+    context chip choosing it would activate (``contextKind``, the wire kind).
+
+    It is structurally NOT an approval control (§4.6, §12.3): there is no action
+    id, no parameter version, no context version, no expiry and no confirmation
+    token on this model, and ``extra="forbid"`` means none can be smuggled in.
+    Selecting an option only starts a NEW turn bound to that context; it can never
+    approve, execute or confirm anything.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", populate_by_name=True, serialize_by_alias=True
+    )
+
+    id: str
+    label: str
+    context_kind: str = Field(
+        validation_alias=AliasChoices("contextKind", "context_kind"),
+        serialization_alias="contextKind",
+    )
+
+
+class PickerCard(BaseModel):
+    """The structured picker a turn terminates in when the subject is ambiguous.
+
+    CHAT-007 / PRD §8.1: a request that could lead to a card ALWAYS renders this
+    picker instead of guessing a subject — quarantine over inference. The card is
+    non-executable and carries no approval control; the surrounding copy is
+    catalog keys, so no user-facing string literal is authored in this plane.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", populate_by_name=True, serialize_by_alias=True
+    )
+
+    kind: str = PICKER_CARD_KIND
+    options: list[PickerCardOption]
+    title_key: str = Field(default=PICKER_TITLE_KEY, serialization_alias="titleKey")
+    hint_key: str = Field(default=PICKER_HINT_KEY, serialization_alias="hintKey")
+
+    @field_validator("kind")
+    @classmethod
+    def _fixed_kind(cls, v: str) -> str:
+        if v != PICKER_CARD_KIND:
+            raise ValueError(f"a picker card's kind is always {PICKER_CARD_KIND!r}")
+        return v
+
+    @field_validator("options")
+    @classmethod
+    def _at_least_one_option(cls, v: list[PickerCardOption]) -> list[PickerCardOption]:
+        # An option-less picker is not a picker: it would render as a dead end
+        # that invites the user to guess. Callers fail closed to the structured
+        # screen instead (§12.4).
+        if not v:
+            raise ValueError("a picker card carries at least one option (CHAT-007)")
+        return v
 
 
 class CannotAnswer(BaseModel):

@@ -41,6 +41,13 @@ type ExecutionService interface {
 	// render a tracked action as "not executed" (EXE-005, §4.6 no silent fallback).
 	// A foreign account id is rejected with ErrAccountNotFound (issue #102), and
 	// the id set stays account-predicated — never another tenant's projection.
+	//
+	// This is the ONE overlay read the transport consumes, so it is the only one this
+	// consumer-specific interface declares. execution.Service also exposes
+	// ListUnifiedByAccountForOrg and the by-action ListUnifiedByActionsForOrg
+	// (issue #90 blocker 3); neither can serve this seam, because under the PD-4
+	// rule (1) projection a page may carry SEVERAL card versions of one action and
+	// only the card id addresses the exact version an execution was bound to.
 	ListUnifiedByCardIDsForOrg(ctx context.Context, organizationID, account uuid.UUID, cardIDs []uuid.UUID) ([]execution.UnifiedAction, error)
 	// ListPendingReconciliationForOrg backs GET /ops/queues (PD-3 item 8, S37),
 	// scoped to the caller's account.

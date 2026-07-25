@@ -71,6 +71,23 @@ func (d *UrgentEmailDispatcher) EnqueueUrgentEmailTx(ctx context.Context, tx pgx
 	return err
 }
 
+// DigestAccountDispatcher is the concrete River-backed per-account digest enqueuer
+// wired in main once the River client exists. It structurally satisfies
+// DigestAccountEnqueuer, so the digest service depends on no concrete River client.
+type DigestAccountDispatcher struct{ client *jobs.Client }
+
+// NewDigestAccountDispatcher wires the enqueuer over the platform River client.
+func NewDigestAccountDispatcher(client *jobs.Client) *DigestAccountDispatcher {
+	return &DigestAccountDispatcher{client: client}
+}
+
+// EnqueueDigestAccountTx enqueues the durable per-(account, business_day) digest
+// intent on tx, so the delivery row and its driving job commit atomically.
+func (d *DigestAccountDispatcher) EnqueueDigestAccountTx(ctx context.Context, tx pgx.Tx, account uuid.UUID, day time.Time) error {
+	_, err := jobs.EnqueueDigestAccountTx(ctx, d.client, tx, account, day)
+	return err
+}
+
 // UrgentOutboxRecord is the notify-domain view of one durable outbox row (a
 // delivery-state projection). It is decoupled from db.NotificationUrgentOutbox so the
 // dispatcher's fail-closed / idempotent / dead-letter decisions are unit-testable

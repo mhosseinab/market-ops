@@ -406,6 +406,12 @@ type ListApprovalCardsByAccountParams struct {
 // a foreign account's executed card is never projected here. A deterministic id
 // tie-break keeps ordering stable across rows sharing a created_at (stable
 // keyset paging).
+//
+// NOT a request path (issue #90 blocker 3): superseded by ListApprovalCardsPage
+// for every caller-facing read (its bare LIMIT carries no completeness signal).
+// Retained for internal fixed-bound reads only; it projects the SAME PD-4 rule (1)
+// set as ListApprovalCardsPage, so the two reads can never disagree about what an
+// action queue contains.
 func (q *Queries) ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error) {
 	rows, err := q.db.Query(ctx, listApprovalCardsByAccount, arg.MarketplaceAccountID, arg.Limit)
 	if err != nil {
@@ -509,6 +515,161 @@ func (q *Queries) ListApprovalCardsByAccountAndState(ctx context.Context, arg Li
 			&i.PriceExponent,
 			&i.ExpiresAt,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listApprovalCardsPage = `-- name: ListApprovalCardsPage :many
+SELECT projected.id, projected.recommendation_id, projected.marketplace_account_id, projected.lineage_id, projected.version, projected.action_id, projected.parameter_version, projected.context_version, projected.policy_version, projected.cost_profile_version, projected.evidence_versions, projected.idempotency_key, projected.state, projected.price_mantissa, projected.price_currency, projected.price_exponent, projected.expires_at, projected.created_at, r.variant_id FROM (
+    SELECT ac.id, ac.recommendation_id, ac.marketplace_account_id, ac.lineage_id, ac.version, ac.action_id, ac.parameter_version, ac.context_version, ac.policy_version, ac.cost_profile_version, ac.evidence_versions, ac.idempotency_key, ac.state, ac.price_mantissa, ac.price_currency, ac.price_exponent, ac.expires_at, ac.created_at
+    FROM approval_cards ac
+    WHERE ac.marketplace_account_id = $1
+      AND (
+          ac.version = (
+              SELECT max(head.version) FROM approval_cards head
+              WHERE head.lineage_id = ac.lineage_id
+          )
+          OR EXISTS (SELECT 1 FROM action_executions ae WHERE ae.card_id = ac.id)
+          OR EXISTS (SELECT 1 FROM recommend_only_actions ro WHERE ro.card_id = ac.id)
+      )
+) projected
+JOIN recommendations r ON r.id = projected.recommendation_id
+WHERE ($2::text IS NULL OR projected.state = $2::text)
+  AND (
+    $3::timestamptz IS NULL
+    OR (projected.created_at, projected.id) < ($3::timestamptz, $4::uuid)
+  )
+ORDER BY projected.created_at DESC, projected.id DESC
+LIMIT $5
+`
+
+type ListApprovalCardsPageParams struct {
+	MarketplaceAccountID uuid.UUID
+	State                pgtype.Text
+	CursorCreatedAt      pgtype.Timestamptz
+	CursorID             pgtype.UUID
+	PageLimit            int32
+}
+
+type ListApprovalCardsPageRow struct {
+	ID                   uuid.UUID
+	RecommendationID     uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	LineageID            uuid.UUID
+	Version              int32
+	ActionID             uuid.UUID
+	ParameterVersion     int64
+	ContextVersion       int64
+	PolicyVersion        int64
+	CostProfileVersion   int64
+	EvidenceVersions     []byte
+	IdempotencyKey       string
+	State                string
+	PriceMantissa        int64
+	PriceCurrency        string
+	PriceExponent        int16
+	ExpiresAt            time.Time
+	CreatedAt            time.Time
+	VariantID            uuid.UUID
+}
+
+// The BOUNDED, keyset-paginated actions queue (issue #90 blocker 3, §17 bounded
+// reads). It supersedes the two unpaginated reads below as the ONLY request-path
+// actions read: those silently CLAMPED an over-large limit to 500 and returned no
+// completeness signal, so a caller with more than 500 current lineage heads
+// received a truncated queue it could not distinguish from a complete one.
+//
+// The PROJECTION is PD-4 rule (1) for issue #106 — the same union the two reads
+// below use, carried onto the request path so pagination does not silently narrow
+// it back to lineage heads:
+//
+//	current lineage heads  UNION  card versions that carry an execution
+//
+// The second branch is what keeps EXE-005 / OUT-001 / AUD-001 visibility intact.
+// The domain may legitimately mint a NEWER Draft on the SAME action lineage after
+// an action was executed (recommendation.EditPrice preserves action_id), so a
+// greatest-version-only read silently drops the older TERMINAL card version — and
+// with it the common action API visibility, audit selection, and outcome discovery
+// for the DEFAULT (recommend-only, writes dark) execution mode. "Carries an
+// execution" spans BOTH modes (write action_executions OR EXE-005
+// recommend_only_actions), matched on the EXACT card version each was bound to,
+// never on the lineage, so a newer version never inherits an older version's
+// execution. The disjunction deduplicates by construction: a head that is ITSELF
+// execution-bearing satisfies both branches and still yields exactly ONE row.
+//
+// Shape (identical to the notification feed's keyset idiom — one pagination
+// convention in this repo, issue #128):
+//   - the OPTIONAL §8.4 state predicate is AUTHORITATIVE and applied to the
+//     PROJECTED set before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING
+//     rows, never an unfiltered newest-N prefix;
+//   - deterministic (created_at DESC, id DESC) ordering with the row-value cursor
+//     comparison over the card PRIMARY KEY, so ties on created_at break by id and
+//     no row is returned TWICE across pages. Execution-bearing versions are
+//     immutable history and page stably; a lineage that mints a NEW head mid-paging
+//     sorts NEWER than the cursor and is therefore observed on a refreshed FIRST
+//     page, not on a later one. Stability over a mutable head would need a
+//     different key (e.g. the lineage's first version) and is a deliberate non-goal
+//     here — the queue is read newest-first and refreshed, not scrolled as a
+//     snapshot;
+//   - a NULL cursor is the first (newest) page; the caller passes
+//     page_limit = requested_limit + 1 and treats the extra row as the hasMore
+//     signal (then trims it).
+//
+// The account predicate is the authorization on BOTH branches (issue #102) — a
+// foreign account's executed card is never projected here; the cursor is only a
+// position.
+//
+// This is a pure READ over append-only history: it never rewrites, collapses,
+// merges, or re-stamps a past card version — each projected version keeps its own
+// version and its own parameter/context versions (approval versioning is
+// never-cut, §4.6).
+//
+// variant_id is joined from the recommendation (a card and its recommendation are
+// account-bound by migration 0025's composite FK, so the join cannot widen the
+// tenant scope). It is what lets a caller build a bulk selection member
+// (variantId + recommendationId) from ONE bounded read instead of an N+1 fan-out.
+func (q *Queries) ListApprovalCardsPage(ctx context.Context, arg ListApprovalCardsPageParams) ([]ListApprovalCardsPageRow, error) {
+	rows, err := q.db.Query(ctx, listApprovalCardsPage,
+		arg.MarketplaceAccountID,
+		arg.State,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.PageLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListApprovalCardsPageRow{}
+	for rows.Next() {
+		var i ListApprovalCardsPageRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.RecommendationID,
+			&i.MarketplaceAccountID,
+			&i.LineageID,
+			&i.Version,
+			&i.ActionID,
+			&i.ParameterVersion,
+			&i.ContextVersion,
+			&i.PolicyVersion,
+			&i.CostProfileVersion,
+			&i.EvidenceVersions,
+			&i.IdempotencyKey,
+			&i.State,
+			&i.PriceMantissa,
+			&i.PriceCurrency,
+			&i.PriceExponent,
+			&i.ExpiresAt,
+			&i.CreatedAt,
+			&i.VariantID,
 		); err != nil {
 			return nil, err
 		}

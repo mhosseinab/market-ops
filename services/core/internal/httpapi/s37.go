@@ -153,10 +153,26 @@ func (s *gatewayServer) PreviewSelectionSet(
 	}
 	result, err := s.approval.PreviewBulkSelectionForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, lineage, req.Body.Name, criteria, members)
 	if err != nil {
-		if errors.Is(err, recommendation.ErrUnknownMember) || errors.Is(err, recommendation.ErrAccountNotFound) {
-			// A foreign account or an unknown/mismatched member are indistinguishable
-			// to the caller (no existence oracle) — both are a uniform not-found.
-			return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
+		if errors.Is(err, recommendation.ErrUnknownMember) ||
+			errors.Is(err, recommendation.ErrAccountNotFound) ||
+			errors.Is(err, recommendation.ErrLineageNotOwned) {
+			// A foreign account, an unknown/mismatched member, and a selection-set
+			// LINEAGE owned by another tenant (issue #90 blocker 1) collapse to ONE
+			// uniform not-found: the STATUS and the BODY are byte-for-byte identical for
+			// all three (asserted by TestPreviewSelectionSet_NotFoundCausesAreByteIdentical),
+			// so the response text cannot be used to tell "this lineage belongs to
+			// someone else" from "no such member". The distinction is observable to
+			// OPERATORS through the tenant-isolation counter + structured log, never to
+			// the caller.
+			//
+			// This does NOT make a foreign lineage indistinguishable from an UNCLAIMED
+			// one: an unclaimed lineage id is claimed by this very call and the preview
+			// mints version 1 (a legal create, 200), so a caller already holding a
+			// candidate lineage id can tell "claimed by someone" from "free". That is a
+			// bounded, recorded property of the create semantics (see
+			// recommendation.ErrLineageNotOwned), not something this mapping claims to
+			// close.
+			return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 404, Body: selectionNotFoundErr()}, nil
 		}
 		return gateway.PreviewSelectionSetdefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 	}
@@ -185,18 +201,30 @@ func (s *gatewayServer) ListActions(
 	if req.Params.State != nil {
 		stateFilter = string(*req.Params.State)
 	}
-	var limit int32
-	if req.Params.Limit != nil {
-		limit = *req.Params.Limit
-	}
-	rows, err := s.approval.ListActionsForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, stateFilter, limit)
+	// Bounded keyset page (issue #90 blocker 3, §17): the optional limit and opaque
+	// cursor are passed through UNRESOLVED and validated in the service, so the
+	// fail-closed rules live in one place. An over-large limit and a bad/foreign
+	// cursor are both canonical 400s — never a silently clamped or silently
+	// first-page result.
+	page, err := s.approval.ListActionsForOrg(ctx, orgFromCtx(ctx), req.Params.MarketplaceAccountId, stateFilter,
+		recommendation.ActionsPageRequest{Limit: req.Params.Limit, Cursor: req.Params.Cursor})
 	if err != nil {
-		if errors.Is(err, recommendation.ErrAccountNotFound) {
+		switch {
+		case errors.Is(err, recommendation.ErrAccountNotFound):
 			// A foreign account id is a uniform not-found — never another account's queue.
 			return gateway.ListActionsdefaultJSONResponse{StatusCode: 404, Body: approvalErr(err)}, nil
+		case errors.Is(err, recommendation.ErrLimitAboveMax):
+			// A FIXED client-facing message, symmetric with the cursor arm below: the
+			// internal sentinel's phrasing is a server implementation detail and never
+			// echoed to a caller.
+			return gateway.ListActionsdefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("page limit is above the maximum")}, nil
+		case errors.Is(err, recommendation.ErrInvalidCursor):
+			return gateway.ListActionsdefaultJSONResponse{StatusCode: 400, Body: invalidArgErr("invalid pagination cursor")}, nil
+		default:
+			return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 		}
-		return gateway.ListActionsdefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 	}
+	rows := page.Items
 	// Overlay the execution mode + canonical state per action (issue #106) so the
 	// list groups write AND recommend-only modes by canonical state without deep-
 	// link-only discovery.
@@ -210,16 +238,17 @@ func (s *gatewayServer) ListActions(
 	// written nothing. A pre-execution card version therefore carries NO overlay
 	// fields at all.
 	//
-	// Coverage is STRUCTURAL, not coincidental (finding F1): the overlay is fetched
-	// for the EXACT card ids of the page just returned. A separately-limited
-	// by-account overlay reads a DIFFERENT table with a DIFFERENT sort key
-	// (execution created_at / recommend-only approved_at vs the page's card
-	// created_at), so an execution-bearing card version could land inside the page
-	// yet outside the overlay's own top-N and be emitted with NO overlay fields —
-	// which the queue renders as a pre-execution card, i.e. the same false "nothing
-	// has been executed" claim the fail-closed 503 above exists to prevent, reached
-	// through a different door. Asking by returned ids makes a miss impossible at
-	// any limit.
+	// Coverage is STRUCTURAL, not coincidental (finding F1; the same page-scoping
+	// property issue #90 blocker 3 requires of a CURSOR-PAGINATED read): the overlay
+	// is fetched for the EXACT card ids of the page just returned, so a page deeper
+	// than any account-wide newest-N is covered by construction. A separately-limited
+	// by-account overlay reads a DIFFERENT table with a DIFFERENT sort key (execution
+	// created_at / recommend-only approved_at vs the page's card created_at), so an
+	// execution-bearing card version could land inside the page yet outside the
+	// overlay's own top-N and be emitted with NO overlay fields — which the queue
+	// renders as a pre-execution card, i.e. the same false "nothing has been executed"
+	// claim the fail-closed 503 above exists to prevent, reached through a different
+	// door. Asking by returned ids makes a miss impossible at any limit or page depth.
 	//
 	// Scope the overlay to the caller's own account (issue #102): the account id was
 	// already validated by ListActionsForOrg above, so a foreign id can only surface
@@ -264,7 +293,15 @@ func (s *gatewayServer) ListActions(
 		}
 		items = append(items, summary)
 	}
-	return gateway.ListActions200JSONResponse(gateway.ActionList{Items: items}), nil
+	// Completeness travels WITH the page (issue #90 blocker 3): hasMore/nextCursor
+	// are always present, so a caller can distinguish "this is the whole queue" from
+	// "there is more" — the distinction the previous silent clamp destroyed.
+	hasMore := page.HasMore
+	return gateway.ListActions200JSONResponse(gateway.ActionList{
+		Items:      items,
+		HasMore:    &hasMore,
+		NextCursor: page.NextCursor,
+	}), nil
 }
 
 // reportOverlayActionMismatch emits the observable signal for an execution overlay
@@ -277,7 +314,7 @@ func (s *gatewayServer) ListActions(
 // approval-control material), so the anomaly is reproducible from telemetry without
 // giving the counter unbounded cardinality.
 func (s *gatewayServer) reportOverlayActionMismatch(
-	ctx context.Context, account uuid.UUID, card db.ApprovalCard, u execution.UnifiedAction,
+	ctx context.Context, account uuid.UUID, card db.ListApprovalCardsPageRow, u execution.UnifiedAction,
 ) {
 	recordActionOverlayMismatch(ctx)
 	logger := s.logger
@@ -752,10 +789,17 @@ func toRecommendationDetail(row db.Recommendation) (gateway.RecommendationDetail
 	return out, nil
 }
 
-func toActionSummary(c db.ApprovalCard) gateway.ActionSummary {
+// toActionSummary maps one row of the paginated actions page onto the wire summary.
+// variantId is carried through from the row's joined recommendation (server-derived,
+// never a client assertion) so a bulk-approval surface can build a selection-set
+// member — which needs the PAIR (variantId, recommendationId) — from this one
+// bounded read.
+func toActionSummary(c db.ListApprovalCardsPageRow) gateway.ActionSummary {
+	variantID := c.VariantID
 	return gateway.ActionSummary{
 		Id:               c.ID,
 		RecommendationId: c.RecommendationID,
+		VariantId:        &variantID,
 		Version:          int64(c.Version),
 		State:            gateway.ApprovalState(c.State),
 		Price:            gateway.MoneyAmount{Mantissa: wireMantissa(c.PriceMantissa), Currency: c.PriceCurrency, Exponent: int(c.PriceExponent)},
@@ -834,6 +878,17 @@ func toSelectionSetPreviewResult(r recommendation.PreviewResult) gateway.Selecti
 func ptrMoneyAmount(m money.Money) *gateway.MoneyAmount {
 	v := toMoneyAmount(m)
 	return &v
+}
+
+// selectionNotFoundErr is the UNIFORM not-found envelope for the selection-set
+// preview: an unknown/mismatched member, a foreign marketplace account, and a
+// selection-set lineage owned by another tenant (issue #90) produce the SAME body,
+// byte for byte, at the same 404. One fixed message — never err.Error() — is what
+// makes that true; the distinction is recorded for operators in the tenant-isolation
+// telemetry instead. (It does not, and does not claim to, hide a CLAIMED lineage
+// from an unclaimed one: claiming a free lineage is a legal create that returns 200.)
+func selectionNotFoundErr() gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{Code: "APPROVAL_ERROR", Message: "selection set not found"}
 }
 
 func guardrailErr(err error) gateway.ErrorEnvelope {

@@ -41,6 +41,10 @@ class ActionSummary:
                 representable because the account's entry currency is known; it stays excluded from executable paths until
                 S16+S35.
             expires_at (datetime.datetime):
+            variant_id (UUID | Unset): The variant this action's recommendation is for. ADDITIVE and optional (an existing
+                client may ignore it). It is what lets a bulk-approval surface build a selection-set member — which requires the
+                PAIR (variantId, recommendationId) — from ONE bounded actions read instead of an N+1 per-action recommendation
+                fan-out. It is server-derived from the recommendation, never a client assertion.
             idempotency_key (str | Unset):
             created_at (datetime.datetime | Unset):
             execution_mode (ExecutionMode | Unset): The execution mode of a completed Execute call. `write` attempted a real
@@ -64,6 +68,7 @@ class ActionSummary:
     state: ApprovalState
     price: MoneyAmount
     expires_at: datetime.datetime
+    variant_id: UUID | Unset = UNSET
     idempotency_key: str | Unset = UNSET
     created_at: datetime.datetime | Unset = UNSET
     execution_mode: ExecutionMode | Unset = UNSET
@@ -83,6 +88,10 @@ class ActionSummary:
         price = self.price.to_dict()
 
         expires_at = self.expires_at.isoformat()
+
+        variant_id: str | Unset = UNSET
+        if not isinstance(self.variant_id, Unset):
+            variant_id = str(self.variant_id)
 
         idempotency_key = self.idempotency_key
 
@@ -118,6 +127,8 @@ class ActionSummary:
                 "expiresAt": expires_at,
             }
         )
+        if variant_id is not UNSET:
+            field_dict["variantId"] = variant_id
         if idempotency_key is not UNSET:
             field_dict["idempotencyKey"] = idempotency_key
         if created_at is not UNSET:
@@ -149,6 +160,13 @@ class ActionSummary:
         price = MoneyAmount.from_dict(d.pop("price"))
 
         expires_at = datetime.datetime.fromisoformat(d.pop("expiresAt"))
+
+        _variant_id = d.pop("variantId", UNSET)
+        variant_id: UUID | Unset
+        if isinstance(_variant_id, Unset):
+            variant_id = UNSET
+        else:
+            variant_id = UUID(_variant_id)
 
         idempotency_key = d.pop("idempotencyKey", UNSET)
 
@@ -194,6 +212,7 @@ class ActionSummary:
             state=state,
             price=price,
             expires_at=expires_at,
+            variant_id=variant_id,
             idempotency_key=idempotency_key,
             created_at=created_at,
             execution_mode=execution_mode,

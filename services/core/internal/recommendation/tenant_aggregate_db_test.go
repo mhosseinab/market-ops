@@ -164,9 +164,20 @@ func seedUnderCountSet(t *testing.T, pool *pgxpool.Pool, account uuid.UUID) uuid
 	t.Helper()
 	ctx := context.Background()
 	var id uuid.UUID
+	// The lineage must be OWNED before a version can exist in it (issue #90,
+	// migration 0045): selection_sets (lineage_id, marketplace_account_id) is a
+	// composite FK onto selection_set_lineages, so even a raw seed insert has to
+	// claim ownership first. That is the tenant-isolation invariant under test in
+	// lineage_ownership_db_test.go; here it is just the seed precondition.
+	lineage := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO selection_set_lineages (lineage_id, marketplace_account_id) VALUES ($1, $2)`,
+		lineage, account); err != nil {
+		t.Fatalf("claim seed lineage: %v", err)
+	}
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO selection_sets (marketplace_account_id, lineage_id, version, name, member_count)
-		VALUES ($1, $2, 1, 'probe', 1) RETURNING id`, account, uuid.New()).Scan(&id); err != nil {
+		VALUES ($1, $2, 1, 'probe', 1) RETURNING id`, account, lineage).Scan(&id); err != nil {
 		t.Fatalf("seed under-count set: %v", err)
 	}
 	return id

@@ -19,6 +19,7 @@ import type {
   OutcomeList,
   OutcomeView,
   RecommendationDetail,
+  SelectionSetPreviewResult,
   SessionInfo,
   TodayFeed,
 } from "../../data/types";
@@ -651,6 +652,48 @@ export const outcomeList: OutcomeList = {
 };
 
 /**
+ * The account's control-bearing actions queue (§8.4 AwaitingConfirmation). It is
+ * the ONLY authoritative source of the (variantId, recommendationId) pairs a bulk
+ * selection member is built from, and it carries the page's completeness signal
+ * (issue #90 blocker 3).
+ */
+export const awaitingActions: ActionList = {
+  items: [
+    {
+      id: "60000000-0000-0000-0000-000000000001",
+      recommendationId: RECOMMENDATION_ID,
+      variantId: VARIANT_ID,
+      version: 1,
+      state: "awaiting_confirmation",
+      price: { mantissa: "1250000", currency: "IRR", exponent: 0 },
+      expiresAt: "2026-07-24T13:00:00Z",
+    },
+  ],
+  hasMore: false,
+  nextCursor: null,
+};
+
+/**
+ * The SERVER-minted selection-set preview: the lineage and version are assigned
+ * server-side and a confirmation binds to EXACTLY this pair (issue #90).
+ */
+export const selectionPreview: SelectionSetPreviewResult = {
+  id: "70000000-0000-0000-0000-000000000001",
+  lineageId: "30000000-0000-0000-0000-000000000003",
+  version: 1,
+  name: "bulk-approval",
+  memberCount: 1,
+  members: [
+    {
+      variantId: VARIANT_ID,
+      recommendationId: RECOMMENDATION_ID,
+      disposition: "executable",
+    },
+  ],
+  aggregateImpact: { known: false },
+};
+
+/**
  * A valid bulk confirmation bound to the previewed selection-set version: each
  * executable member is durably authorized and returned as an explicit per-item
  * result (issue #90).
@@ -662,8 +705,8 @@ export const bulkValid: BulkApprovalConfirmResult = {
   executionPending: true,
   items: [
     {
-      variantId: "40000000-0000-0000-0000-000000000001",
-      recommendationId: "50000000-0000-0000-0000-000000000001",
+      variantId: VARIANT_ID,
+      recommendationId: RECOMMENDATION_ID,
       disposition: "executable",
       state: "authorized",
       reason: "authorized",

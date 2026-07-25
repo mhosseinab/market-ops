@@ -215,6 +215,20 @@ export const faIR: Catalog = {
   "chat.failure.tokenCeiling": "پاسخ از حد مجاز طول فراتر رفت.",
   "chat.failure.providerError": "سرویس دستیار خطا بازگرداند.",
   "chat.failure.transient": "دستیار موقتاً در دسترس نیست.",
+  "chat.failure.contextScopeMissing":
+    "حساب مربوط به این درخواست تشخیص داده نشد. از صفحه‌های ساختاریافته ادامه دهید.",
+  "chat.failure.contextMalformed":
+    "اطلاعات همراه این درخواست خوانده نشد. از صفحه‌های ساختاریافته ادامه دهید.",
+  "chat.failure.contextUnavailable":
+    "موارد ارجاع‌شده در حال حاضر در دسترس نیست. از صفحه‌های ساختاریافته ادامه دهید.",
+  "chat.failure.contextPickerUnavailable":
+    "دستیار به یک مورد مشخص نیاز دارد و گزینه‌ای برای انتخاب در دسترس نیست. مورد را در صفحه‌های ساختاریافته انتخاب کنید.",
+  "chat.failure.contextNotFound":
+    "موردی که به آن اشاره کردید در این حساب یافت نشد. آن را در صفحه‌های ساختاریافته انتخاب کنید.",
+  "chat.failure.turnIncomplete":
+    "این نوبت بدون پاسخ به پایان رسید. برای نمای کامل و مستند از صفحه‌های ساختاریافته استفاده کنید.",
+  "chat.failure.intentUnclassified":
+    "درخواست تفسیر نشد. آن را بازنویسی کنید یا از صفحه‌های ساختاریافته استفاده کنید.",
   "chat.failure.unsupported": "این پاسخ کامل نشد.",
 
   "action.retry": "تلاش دوباره",
@@ -420,6 +434,10 @@ export const faIR: Catalog = {
   "cost.confirm": "تایید {count} ردیف معتبر",
   "cost.duplicateBlock": "{count} ردیف تکراری پیش از تایید باید رفع شود.",
   "cost.committed": "{count} ردیف ثبت شد.",
+  "cost.file.current": "منبع فعلی:",
+  "cost.file.reading": "در حال خواندن فایل انتخاب‌شده…",
+  "cost.file.error":
+    "خواندن فایل انتخاب‌شده ناموفق بود؛ منبع تغییر نکرد. فایل را دوباره انتخاب کنید.",
   "cost.preview.error":
     "پیش‌نمایش فایل ناموفق بود. فایل شما حفظ شده است؛ می‌توانید دوباره تلاش کنید.",
   "cost.commit.error":
@@ -763,8 +781,9 @@ export const faIR: Catalog = {
   "bulk.col.status": "وضعیت",
   "bulk.col.result": "نتیجهٔ اجرا",
   "bulk.result.excluded": "کنار گذاشته شد",
-  "bulk.result.awaitingExternal": "در انتظار اجرای خارجی",
   "bulk.result.recommendOnly": "{count} مورد در حالت پیشنهادی ثبت شد؛ در انتظار اجرای خارجی.",
+  "bulk.result.settled":
+    "{count} مورد تایید شد؛ هیچ اجرایی در جریان نیست. نتیجهٔ هر نوشتن را در «اقدام‌ها» ببینید.",
   "bulk.reason.qualityUnknown": "کیفیت مشاهده نامشخص",
   "bulk.reason.conflicted": "مشاهدهٔ متناقض",
   "bulk.reason.staleObservation": "مشاهدهٔ قدیمی‌شده",
@@ -781,6 +800,19 @@ export const faIR: Catalog = {
   "bulk.readiness.error.title": "آمادگی حاشیهٔ برخی ردیف‌ها بارگذاری نشد",
   "bulk.readiness.error.body":
     "آمادگی حاشیهٔ برخی ردیف‌های این صفحه بارگذاری نشد. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
+
+  "bulk.preview.error.title": "مجموعهٔ انتخاب ساخته نشد",
+  "bulk.preview.error.body":
+    "ساخت و نسخه‌گذاری مجموعهٔ انتخاب بر عهدهٔ سرور است. هیچ چیزی تایید نشد؛ دوباره پیش‌نمایش بگیرید.",
+  "bulk.preview.pending": "در حال ساخت مجموعهٔ انتخاب…",
+  "bulk.preview.empty": "هیچ نامزدی کنترل تایید ندارد که در مجموعه قرار گیرد.",
+  "bulk.confirm.error.title": "تایید دسته‌ای ثبت نشد",
+  "bulk.confirm.error.body": "هیچ چیزی تایید نشد. دوباره پیش‌نمایش بگیرید و تلاش کنید.",
+  "bulk.candidates.incomplete":
+    "اقدام‌های بیشتری از آنچه در این صفحه دیده می‌شود وجود دارد؛ مجموعهٔ انتخاب فقط همین صفحه را دربر می‌گیرد.",
+  "bulk.result.state.authorized": "تاییدشده",
+  "bulk.result.state.alreadyAuthorized": "پیش‌تر تاییدشده",
+  "bulk.result.notAMember": "خارج از مجموعهٔ انتخاب",
 
   "settings.connection.title": "اتصال دیجی‌کالا",
   "settings.connection.manage": "مدیریت اتصال ←",

@@ -4,9 +4,15 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
+
+// testDay is the PINNED business day the isolation loop reports on. The fan-out is
+// per-(account, business_day) since issue #124, so every isolation signal names the day
+// it belongs to instead of an implicit "today" recomputed on each retry.
+var testDay = time.Date(2026, 3, 11, 0, 0, 0, 0, time.UTC)
 
 // These are the issue #124 negative-first unit tests for PER-ACCOUNT digest failure
 // ISOLATION in the fan-out (identity/tenant quarantine, §4.6): one account's delivery
@@ -46,7 +52,7 @@ func TestGenerateEach_IsolatesPerAccountFailure(t *testing.T) {
 	}
 
 	// bad is FIRST — the earliest "poison" account in the stable created_at order.
-	sent, err := svc.generateEach(context.Background(), []uuid.UUID{bad, b, c}, perAccount)
+	sent, err := svc.generateEach(context.Background(), testDay, []uuid.UUID{bad, b, c}, perAccount)
 
 	// Isolation: the failure of the FIRST account must NOT abort the pass — every
 	// account AFTER it is still attempted, and both healthy accounts deliver.
@@ -78,7 +84,7 @@ func TestGenerateEach_AllSucceedIsClean(t *testing.T) {
 	fired := 0
 	svc := (&DigestService{}).WithAccountFailedObserver(func(context.Context, uuid.UUID, error) { fired++ })
 
-	sent, err := svc.generateEach(context.Background(), ids, func(context.Context, uuid.UUID) (bool, error) {
+	sent, err := svc.generateEach(context.Background(), testDay, ids, func(context.Context, uuid.UUID) (bool, error) {
 		return true, nil
 	})
 	if err != nil {
@@ -102,7 +108,7 @@ func TestGenerateEach_IsolatesEveryFailingAccount(t *testing.T) {
 	fired := 0
 	svc := (&DigestService{}).WithAccountFailedObserver(func(context.Context, uuid.UUID, error) { fired++ })
 
-	sent, err := svc.generateEach(context.Background(), ids, func(context.Context, uuid.UUID) (bool, error) {
+	sent, err := svc.generateEach(context.Background(), testDay, ids, func(context.Context, uuid.UUID) (bool, error) {
 		return false, boom
 	})
 	if sent != 0 {
@@ -124,7 +130,7 @@ func TestGenerateEach_StopsOnCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	attempted := 0
-	sent, err := (&DigestService{}).generateEach(ctx, []uuid.UUID{uuid.New(), uuid.New()}, func(context.Context, uuid.UUID) (bool, error) {
+	sent, err := (&DigestService{}).generateEach(ctx, testDay, []uuid.UUID{uuid.New(), uuid.New()}, func(context.Context, uuid.UUID) (bool, error) {
 		attempted++
 		return true, nil
 	})

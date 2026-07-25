@@ -11,12 +11,19 @@ import { StatCard } from "./primitives";
 // structured approve control.
 //
 // APR-001 at the SET level (mirrors the individual ApprovalCard): the approve
-// button is bound to the EXACT previewed selection-set version. ANY change to the
-// set or its filters mints a new version; the previewed version then diverges and
-// the control renders DISABLED behind an invalidation banner that requires a fresh
-// preview. Free text, Enter, and keyboard shortcuts CANNOT confirm — the only path
-// to a bulk approval is this button, and it carries the bound version to the
-// server, which re-verifies it (a stale bound version is rejected).
+// button is bound to the EXACT SERVER-MINTED selection-set version (issue #90). The
+// lineage and version displayed here come from the server's preview response — this
+// component never derives, counts, or defaults them. ANY change to the set or its
+// filters makes the previewed selection stale; the owning screen then passes
+// stale=true / previewValid=false and the control renders DISABLED behind an
+// invalidation banner that requires a fresh preview. Free text, Enter, and keyboard
+// shortcuts CANNOT confirm — the only path to a bulk approval is this button, and it
+// carries the server's bound version, which the server re-verifies (a stale bound
+// version authorizes nothing).
+//
+// Before the first preview there IS no selection-set identity: lineage and version
+// are null and the identity renders as an explicit unavailable node, never a
+// fabricated "v1".
 
 export interface BulkCounts {
   readonly executable: number;
@@ -27,45 +34,51 @@ export interface BulkCounts {
 export function BulkToolbar({
   lineage,
   version,
-  previewedVersion,
+  previewValid,
+  stale,
   counts,
   aggregateImpact,
   maxMovement,
   exclusions,
   confirmPending = false,
+  previewPending = false,
   onPreview,
   onApprove,
 }: {
-  lineage: string;
-  version: number;
-  previewedVersion: number | null;
+  lineage: string | null;
+  version: number | null;
+  previewValid: boolean;
+  stale: boolean;
   counts: BulkCounts;
   aggregateImpact: ReactNode;
   maxMovement: ReactNode;
   exclusions: ReactNode;
   confirmPending?: boolean;
+  previewPending?: boolean;
   onPreview: () => void;
   onApprove: () => void;
 }) {
   const t = useT();
   const { locale } = useLocale();
 
-  const previewValid = previewedVersion !== null && previewedVersion === version;
-  const stale = previewedVersion !== null && previewedVersion !== version;
-  const canApprove = previewValid && counts.executable > 0 && !confirmPending;
+  const canApprove = previewValid && counts.executable > 0 && !confirmPending && !previewPending;
 
   return (
     <section
       className="panel bulk-toolbar"
       data-testid="bulk-toolbar"
-      data-set-version={version}
-      data-previewed-version={previewedVersion ?? ""}
+      data-set-version={version ?? ""}
       data-preview-valid={previewValid ? "true" : "false"}
     >
       <div className="panel__head">
         <h2 className="panel__title">{t("bulk.preview.title")}</h2>
-        <span className="muted" data-testid="selection-set" data-version={version}>
-          {t("bulk.selectionSet")} <LtrToken text={`${lineage}·v${version}`} />
+        <span className="muted" data-testid="selection-set" data-version={version ?? ""}>
+          {t("bulk.selectionSet")}{" "}
+          {lineage !== null && version !== null ? (
+            <LtrToken text={`${lineage}·v${version}`} />
+          ) : (
+            <span>{t("common.notAvailable")}</span>
+          )}
         </span>
       </div>
 
@@ -116,9 +129,10 @@ export function BulkToolbar({
           type="button"
           className="btn btn--secondary"
           data-testid="bulk-preview"
+          disabled={previewPending}
           onClick={onPreview}
         >
-          {previewedVersion === null ? t("bulk.action.preview") : t("bulk.action.rePreview")}
+          {lineage === null ? t("bulk.action.preview") : t("bulk.action.rePreview")}
         </button>
         <button
           type="button"

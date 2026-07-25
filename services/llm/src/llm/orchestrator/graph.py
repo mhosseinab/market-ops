@@ -27,8 +27,8 @@ terminal write is at most a Draft.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, AsyncIterator
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from dataclasses import dataclass, field
 from typing import Any, TypedDict, cast
 
 from langchain.agents.middleware.tool_call_limit import ToolCallLimitExceededError
@@ -37,12 +37,15 @@ from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
 
 from llm.config import Settings
-from llm.envelope.models import TurnFailure
+from llm.contextres.ports import CandidatePort, NoCandidatePort
+from llm.envelope.models import TurnFailure, screens_failure
 from llm.flows.deep_links import SCREENS_FALLBACK
 from llm.flows.dispatch import contain
 from llm.intents.classifier import IntentClassifier
-from llm.metrics import ContainmentMetrics
+from llm.intents.models import IntentClass
+from llm.metrics import ContainmentMetrics, ContextResolutionMetrics
 from llm.orchestrator.agent import AgentHandle, TokenCeilingError, ToolTimeoutError
+from llm.orchestrator.context_node import resolve_turn_context
 from llm.providers.transient import NonRetryableProviderError, TransientTurnError
 
 # Re-exported: the transport-failure taxonomy is defined at the owned provider
@@ -61,11 +64,37 @@ __all__ = [
 
 
 class TurnState(TypedDict, total=False):
-    """JSON-safe per-turn state (no framework objects, no agent handles)."""
+    """JSON-safe per-turn state (no framework objects, no agent handles).
+
+    Every value here is plain JSON (str / int / dict / list / None) so the state
+    stays serializable and free of pydantic models and framework types. The
+    context keys are written by the deterministic context node
+    (:mod:`llm.orchestrator.context_node`) and read downstream:
+
+    * ``organization_id`` / ``marketplace_account_id`` — the turn's SCOPE, the
+      only source of the resolver's ``RequestScope``. ``organization_id`` is the
+      caller's authenticated organization; ``marketplace_account_id`` is the
+      account the GATEWAY resolved for the turn (the stored conversation governs
+      — see :class:`llm.app.ChatRequest`, which also records the pre-existing
+      new-conversation ownership gap this scope check does not close);
+    * ``turn_context`` — the gateway's typed, UNTRUSTED context payload
+      (:class:`~llm.contextres.turn.TurnContext` in dict form), validated against
+      the scope above;
+    * ``intent`` — the classified intent class as a stable machine token;
+    * ``context_resolution`` — the deterministic outcome (kind + the resolver's
+      own stable reason token + any resolved time range);
+    * ``active_context`` — the single resolved chip, or ``None``. NEVER guessed.
+    """
 
     message: str
+    organization_id: str | None
     marketplace_account_id: str | None
     conversation_id: str | None
+    turn_context: dict[str, Any] | None
+    # Deterministic pre-agent decisions.
+    intent: str | None
+    context_resolution: dict[str, Any] | None
+    active_context: dict[str, Any] | None
     # Outputs (exactly one of answer / failure is set when the turn ends).
     answer: dict[str, Any] | None
     failure: dict[str, Any] | None
@@ -83,11 +112,19 @@ class TurnResult:
         return self.failure is None
 
 
-_DEEP_LINK = SCREENS_FALLBACK  # deterministic recovery route (§12.4, issue #56).
+# The deterministic recovery route every §12.4 failure carries (issue #56). It
+# is the SAME constant :func:`llm.envelope.models.screens_failure` stamps, so the
+# orchestrator and the context node cannot drift apart.
+_DEEP_LINK = SCREENS_FALLBACK
 
 
 def _turn_failure(code: str, message: str) -> TurnFailure:
-    return TurnFailure(code=code, message=message, deep_link=_DEEP_LINK)
+    """A §12.4 failure with the deterministic recovery route (issue #56).
+
+    One shared factory (:func:`llm.envelope.models.screens_failure`) with the
+    context node, so every fail-closed seam in the turn carries the same link.
+    """
+    return screens_failure(code, message)
 
 
 def _failure(code: str, message: str) -> dict[str, Any]:
@@ -167,11 +204,17 @@ def _transient_failure(last_transient: TransientTurnError | None) -> TurnFailure
 
 @dataclass
 class _Containment:
-    """The deterministic pre-agent containment decision (§12.3, CHAT-041)."""
+    """The deterministic pre-agent containment decision (§12.3, CHAT-041).
+
+    ``intent`` is the classified class when classification succeeded (a stable
+    machine token, carried onto graph state and used by the context node); it is
+    ``None`` only when the turn failed closed as unclassifiable.
+    """
 
     guidance: dict[str, Any] | None = None
     failure: TurnFailure | None = None
     proceed: bool = False
+    intent: IntentClass | None = None
 
 
 def _classify_and_contain(
@@ -196,8 +239,110 @@ def _classify_and_contain(
     guidance = contain(decision.intent)
     if guidance is not None:
         metrics.record_containment(decision.intent.value)
-        return _Containment(guidance={"guidance": guidance.model_dump()})
-    return _Containment(proceed=True)
+        return _Containment(
+            guidance={"guidance": guidance.model_dump()}, intent=decision.intent
+        )
+    return _Containment(proceed=True, intent=decision.intent)
+
+
+@dataclass
+class _PreAgent:
+    """One deterministic pre-agent stage's decision (containment, resolution).
+
+    ``updates`` are the JSON-safe graph-state keys the stage writes in every
+    case. Exactly one of ``failure`` (fail closed), ``answer`` (terminal answer —
+    guidance or the structured picker) or ``proceed`` is meaningful.
+    """
+
+    updates: dict[str, Any] = field(default_factory=dict)
+    answer: dict[str, Any] | None = None
+    failure: TurnFailure | None = None
+    proceed: bool = False
+
+
+def _containment_stage(
+    state: TurnState, classifier: IntentClassifier, metrics: ContainmentMetrics
+) -> _PreAgent:
+    """Stage 1: classify and CONTAIN. Runs before any context or tool work."""
+    outcome = _classify_and_contain(classifier, metrics, state["message"])
+    updates: dict[str, Any] = {}
+    if outcome.intent is not None:
+        updates["intent"] = outcome.intent.value
+    if outcome.failure is not None:
+        return _PreAgent(updates=updates, failure=outcome.failure)
+    if outcome.guidance is not None:
+        # Free text never approves: guidance-only, no transition (§12.3).
+        return _PreAgent(updates=updates, answer=outcome.guidance)
+    return _PreAgent(updates=updates, proceed=True)
+
+
+def _resolution_stage(
+    state: TurnState, candidate_port: CandidatePort, metrics: ContextResolutionMetrics
+) -> _PreAgent:
+    """Stage 2: resolve the turn's single active context deterministically.
+
+    Only reached for a tool-capable intent that survived containment (§8.1).
+    """
+    raw_intent = state.get("intent")
+    if raw_intent is None:
+        # Defensive: containment always stamps the intent before this stage. A
+        # missing one is a wiring bug, so fail closed rather than guess a class.
+        return _PreAgent(
+            failure=_turn_failure(
+                "INTENT_UNCLASSIFIED",
+                "the assistant could not interpret the request; use the structured screen",
+            )
+        )
+    outcome = resolve_turn_context(
+        turn_context=state.get("turn_context"),
+        organization_id=state.get("organization_id"),
+        account_id=state.get("marketplace_account_id"),
+        intent=IntentClass(raw_intent),
+        candidate_port=candidate_port,
+        metrics=metrics,
+    )
+    return _PreAgent(
+        updates=outcome.updates,
+        answer=outcome.answer,
+        failure=outcome.failure,
+        proceed=outcome.proceed,
+    )
+
+
+def _stage_state(stage: _PreAgent) -> TurnState:
+    """Project a stage decision onto the partial graph-state update it writes."""
+    out = cast("TurnState", dict(stage.updates))
+    if stage.failure is not None:
+        out["answer"] = None
+        out["failure"] = stage.failure.model_dump()
+    elif stage.answer is not None:
+        out["answer"] = stage.answer
+        out["failure"] = None
+    return out
+
+
+def _turn_ended(state: TurnState) -> bool:
+    """True once a stage has produced the turn's terminal answer or failure."""
+    return state.get("answer") is not None or state.get("failure") is not None
+
+
+def _terminal_chunk(stage: _PreAgent) -> TurnStreamChunk:
+    """The single stream chunk a non-proceeding stage terminates the turn with.
+
+    A stage that does not proceed ALWAYS carries one of the two terminal
+    outcomes; anything else would let a turn end silently, so it fails closed.
+    """
+    if stage.failure is not None:
+        return TurnStreamChunk(kind="failure", failure=stage.failure)
+    if stage.answer is not None:
+        return TurnStreamChunk(kind="final", answer=stage.answer)
+    return TurnStreamChunk(
+        kind="failure",
+        failure=_turn_failure(
+            "TURN_INCOMPLETE",
+            "the assistant could not complete the request; use the structured screen",
+        ),
+    )
 
 
 class TurnGraph:
@@ -216,15 +361,29 @@ class TurnGraph:
         metrics: ContainmentMetrics,
         agent: AgentHandle,
         classifier: IntentClassifier,
+        candidate_port: CandidatePort,
+        resolution_metrics: ContextResolutionMetrics,
     ) -> None:
         self._compiled = compiled
         self._settings = settings
         self.metrics = metrics
         self._agent = agent
         self._classifier = classifier
+        self._candidate_port = candidate_port
+        self.resolution_metrics = resolution_metrics
+
+    def run_state(self, state: TurnState) -> TurnState:
+        """Run the buffered turn and return the FULL resolved graph state.
+
+        Exposes the deterministic context keys (``intent``,
+        ``context_resolution``, ``active_context``) that the downstream flow
+        dispatcher consumes; :meth:`run` is the narrow answer/failure view.
+        """
+        out: TurnState = self._compiled.invoke(dict(state))
+        return out
 
     def run(self, state: TurnState) -> TurnResult:
-        out: TurnState = self._compiled.invoke(dict(state))
+        out = self.run_state(state)
         return TurnResult(answer=out.get("answer"), failure=_as_failure(out.get("failure")))
 
     async def astream_turn(self, state: TurnState) -> AsyncGenerator[TurnStreamChunk, None]:
@@ -232,18 +391,30 @@ class TurnGraph:
 
         Containment runs FIRST (no token ever precedes it): a guidance-only intent
         yields a single ``final`` guidance chunk and NO tokens; an unclassifiable
-        turn yields a structured ``failure``. Otherwise the agent is streamed, its
-        free-text content forwarded as ``token`` chunks and the validated envelope
-        emitted as the terminal ``final`` chunk. A mapped §12.4 failure discovered
-        mid-stream still surfaces as a structured ``failure``.
+        turn yields a structured ``failure``. Deterministic context resolution runs
+        SECOND — still before any token: an ambiguous turn yields the structured
+        picker as its single ``final`` chunk (CHAT-007) and an unresolvable one
+        yields a structured ``failure``. Only a turn with a settled subject reaches
+        the agent, whose free-text content is forwarded as ``token`` chunks and
+        whose validated envelope is the terminal ``final`` chunk. A mapped §12.4
+        failure discovered mid-stream still surfaces as a structured ``failure``.
         """
-        outcome = _classify_and_contain(self._classifier, self.metrics, state["message"])
-        if outcome.failure is not None:
-            yield TurnStreamChunk(kind="failure", failure=outcome.failure)
+        working = cast("TurnState", dict(state))
+
+        containment = _containment_stage(working, self._classifier, self.metrics)
+        working.update(_stage_state(containment))
+        if not containment.proceed:
+            yield _terminal_chunk(containment)
             return
-        if outcome.guidance is not None:
-            yield TurnStreamChunk(kind="final", answer=outcome.guidance)
+
+        resolution = _resolution_stage(
+            working, self._candidate_port, self.resolution_metrics
+        )
+        working.update(_stage_state(resolution))
+        if not resolution.proceed:
+            yield _terminal_chunk(resolution)
             return
+
         async for chunk in _astream_agent(self._agent, self._settings, state["message"]):
             yield chunk
 
@@ -275,36 +446,68 @@ def build_turn_graph(
     settings: Settings,
     classifier: IntentClassifier,
     metrics: ContainmentMetrics | None = None,
+    *,
+    candidate_port: CandidatePort | None = None,
+    resolution_metrics: ContextResolutionMetrics | None = None,
 ) -> TurnGraph:
-    """Build the P0 turn graph: classify → CONTAIN → (guidance | agent).
+    """Build the P0 turn graph: CONTAIN → RESOLVE CONTEXT → (answer | agent).
 
-    Every turn passes through :func:`llm.flows.dispatch.contain` BEFORE any tool
-    or agent runs. ApproveAction/ConfirmResult are answered with guidance to the
-    external structured control and a free-text-containment metric — never a
-    transition (§12.3, CHAT-041). Only a tool-capable intent reaches the agent,
-    whose terminal write is at most a Draft.
+    Three deterministic stages, wired as three nodes so the topology mirrors the
+    ordering the invariants require:
+
+    1. ``contain`` — every turn passes through :func:`llm.flows.dispatch.contain`
+       BEFORE any context, tool or agent work. ApproveAction/ConfirmResult are
+       answered with guidance to the external structured control and a
+       free-text-containment metric — never a transition (§12.3, CHAT-041).
+    2. ``resolve_context`` — the deterministic context resolver (§8.1, CHAT-007)
+       settles the turn's single subject: RESOLVED puts the chip on state, PICKER
+       terminates the turn in the canonical structured picker, NOT_FOUND fails
+       closed. A subject is never guessed.
+    3. ``agent`` — only a turn with a settled subject reaches the leaf agent,
+       whose terminal write is at most a Draft.
+
+    ``candidate_port`` defaults to the fail-closed
+    :class:`~llm.contextres.ports.NoCandidatePort`; the gateway-backed
+    implementation is sub-scope 108c of issue #108.
     """
     containment_metrics = metrics if metrics is not None else ContainmentMetrics()
+    context_metrics = (
+        resolution_metrics if resolution_metrics is not None else ContextResolutionMetrics()
+    )
+    port = candidate_port if candidate_port is not None else NoCandidatePort()
 
-    def containment_node(state: TurnState) -> TurnState:
-        """Classify the turn and contain approve/confirm attempts (live path)."""
-        outcome = _classify_and_contain(classifier, containment_metrics, state["message"])
-        if outcome.failure is not None:
-            # Fail closed to the structured screen — never guess an intent (§12.4).
-            return {"answer": None, "failure": outcome.failure.model_dump()}
-        if outcome.guidance is not None:
-            # Free text never approves: guidance-only, no transition (§12.3).
-            return {"answer": outcome.guidance, "failure": None}
-        # Tool-capable: proceed to the agent (terminal write is at most a Draft).
+    def contain_node(state: TurnState) -> TurnState:
+        return _stage_state(_containment_stage(state, classifier, containment_metrics))
+
+    def resolve_context_node(state: TurnState) -> TurnState:
+        return _stage_state(_resolution_stage(state, port, context_metrics))
+
+    def agent_node(state: TurnState) -> TurnState:
         return _run_agent(agent, settings, state)
 
+    def _next(after: str) -> Callable[[TurnState], str]:
+        def route(state: TurnState) -> str:
+            return END if _turn_ended(state) else after
+
+        return route
+
     builder = StateGraph(TurnState)
-    builder.add_node("turn", containment_node)
-    builder.add_edge(START, "turn")
-    builder.add_edge("turn", END)
+    builder.add_node("contain", contain_node)
+    builder.add_node("resolve_context", resolve_context_node)
+    builder.add_node("agent", agent_node)
+    builder.add_edge(START, "contain")
+    builder.add_conditional_edges(
+        "contain", _next("resolve_context"), {END: END, "resolve_context": "resolve_context"}
+    )
+    builder.add_conditional_edges(
+        "resolve_context", _next("agent"), {END: END, "agent": "agent"}
+    )
+    builder.add_edge("agent", END)
     # No checkpointer: per-request, in-process state (§19.3).
     compiled = builder.compile()
-    return TurnGraph(compiled, settings, containment_metrics, agent, classifier)
+    return TurnGraph(
+        compiled, settings, containment_metrics, agent, classifier, port, context_metrics
+    )
 
 
 def _run_agent(agent: AgentHandle, settings: Settings, state: TurnState) -> TurnState:

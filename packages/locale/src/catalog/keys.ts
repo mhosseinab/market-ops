@@ -253,6 +253,16 @@ export const MESSAGE_KEYS = [
   "chat.failure.tokenCeiling",
   "chat.failure.providerError",
   "chat.failure.transient",
+  // Deterministic turn-context resolution + classification (#108). These fail
+  // CLOSED on normal paths, so each needs actionable copy of its own — the
+  // generic `unsupported` body would also fire the drift alarm.
+  "chat.failure.contextScopeMissing",
+  "chat.failure.contextMalformed",
+  "chat.failure.contextUnavailable",
+  "chat.failure.contextPickerUnavailable",
+  "chat.failure.contextNotFound",
+  "chat.failure.turnIncomplete",
+  "chat.failure.intentUnclassified",
   "chat.failure.unsupported",
 
   // ── S26 screens ──────────────────────────────────────────────────────────
@@ -456,6 +466,9 @@ export const MESSAGE_KEYS = [
   "cost.confirm",
   "cost.duplicateBlock",
   "cost.committed",
+  "cost.file.current",
+  "cost.file.reading",
+  "cost.file.error",
   "cost.preview.error",
   "cost.commit.error",
   "cost.single.error",
@@ -817,8 +830,8 @@ export const MESSAGE_KEYS = [
   "bulk.col.status",
   "bulk.col.result",
   "bulk.result.excluded",
-  "bulk.result.awaitingExternal",
   "bulk.result.recommendOnly",
+  "bulk.result.settled",
   "bulk.reason.qualityUnknown",
   "bulk.reason.conflicted",
   "bulk.reason.staleObservation",
@@ -834,6 +847,16 @@ export const MESSAGE_KEYS = [
   "bulk.pagination.next",
   "bulk.readiness.error.title",
   "bulk.readiness.error.body",
+  "bulk.preview.error.title",
+  "bulk.preview.error.body",
+  "bulk.preview.pending",
+  "bulk.preview.empty",
+  "bulk.confirm.error.title",
+  "bulk.confirm.error.body",
+  "bulk.candidates.incomplete",
+  "bulk.result.state.authorized",
+  "bulk.result.state.alreadyAuthorized",
+  "bulk.result.notAMember",
 
   // Settings (admin levels §8.3)
   "settings.connection.title",

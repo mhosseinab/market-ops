@@ -37,6 +37,10 @@ func (f *fakeExecution) ListUnifiedByCardIDsForOrg(context.Context, uuid.UUID, u
 	return nil, nil
 }
 
+func (f *fakeExecution) ListUnifiedByActionsForOrg(context.Context, uuid.UUID, uuid.UUID, []uuid.UUID) ([]execution.UnifiedAction, error) {
+	return nil, nil
+}
+
 func (f *fakeExecution) ListPendingReconciliationForOrg(context.Context, uuid.UUID, uuid.UUID, int32) ([]db.ActionExecution, error) {
 	return nil, nil
 }

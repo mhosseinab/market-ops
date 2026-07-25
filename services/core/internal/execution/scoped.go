@@ -150,6 +150,22 @@ func (s *Service) ListUnifiedByCardIDsForOrg(ctx context.Context, organizationID
 	return s.ListUnifiedByCardIDs(ctx, account, cardIDs)
 }
 
+// ListUnifiedByActionsForOrg projects both execution modes for an EXPLICIT set of
+// action ids, scoped to the caller's OWN account (issue #102 posture, issue #90
+// blocker 3). The requested account MUST equal the caller's resolved account; a
+// foreign account id yields ErrAccountNotFound, so a supplied id list can never
+// reach another tenant's executions.
+func (s *Service) ListUnifiedByActionsForOrg(ctx context.Context, organizationID, requestedAccount uuid.UUID, actionIDs []uuid.UUID) ([]UnifiedAction, error) {
+	account, err := s.accountForOrg(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+	if requestedAccount != account {
+		return nil, ErrAccountNotFound
+	}
+	return s.ListUnifiedByActions(ctx, account, actionIDs)
+}
+
 // ListPendingReconciliationForOrg returns the pending-reconciliation queue for the
 // caller's own account only (issue #102). The requested account MUST equal the
 // caller's resolved account; a foreign account id yields ErrAccountNotFound.

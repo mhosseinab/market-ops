@@ -2,8 +2,10 @@ package recommendation
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel/metric"
 
 	"github.com/mhosseinab/market-ops/services/core/internal/audit"
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
@@ -42,4 +44,14 @@ func AggregateContributionForTest(contribs []MemberContribution) (*money.Money, 
 // production binary — production always uses the audit.Append default.
 func (s *Service) SetAuditAppendForTest(fn func(ctx context.Context, q *db.Queries, ev audit.Event) (db.AuditRecord, error)) {
 	s.auditAppend = fn
+}
+
+// SetSelectionTelemetryForTest wires the selection/bulk observability seam over an
+// EXPLICIT meter provider and logger so a test can assert the counter names, the
+// `seam` attribute, and the structured-log field names the tenant-isolation boundary
+// emits (CLAUDE.md mandatory-TDD: observability field emission). It lives in a
+// _test.go file, so production always uses the process-wide instance.
+func (s *Service) SetSelectionTelemetryForTest(mp metric.MeterProvider, logger *slog.Logger) *Service {
+	s.telemetry = newSelectionTelemetry(mp, logger)
+	return s
 }

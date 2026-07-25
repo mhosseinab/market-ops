@@ -1,9 +1,19 @@
 import { faIR } from "@market-ops/locale";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { formatCount } from "../data/format";
 import type { ObservationTarget, ObservedOffer } from "../data/types";
-import { bulkValid, offer, readinessComplete, target } from "../test/msw/fixtures";
+import {
+  awaitingActions,
+  bulkValid,
+  offer,
+  RECOMMENDATION_ID,
+  readinessComplete,
+  selectionPreview,
+  target,
+  VARIANT_ID,
+} from "../test/msw/fixtures";
 import { BASE } from "../test/msw/handlers";
 import { server } from "../test/msw/server";
 import { renderRoute } from "../test/renderRoute";
@@ -36,53 +46,315 @@ afterEach(() => {
   document.documentElement.removeAttribute("lang");
 });
 
+// The bulk CANDIDATE source. GET /actions is shared with the Actions screen, whose
+// default handler serves the issue #106 multi-mode queue; this suite needs the
+// control-bearing (AwaitingConfirmation) queue that carries the (variantId,
+// recommendationId) pairs a selection member is built from, so it installs its own
+// handler rather than making a screen-specific queue the global default. A per-test
+// `server.use` still overrides this one (MSW resolves the most recently added
+// matching handler first).
+beforeEach(() => {
+  server.use(http.get(`${BASE}/actions`, () => HttpResponse.json(awaitingActions)));
+});
+
 function withExecutableCandidate() {
   // Complete readiness + the default Verified offer → an executable candidate.
   server.use(http.get(`${BASE}/cost/readiness`, () => HttpResponse.json(readinessComplete)));
 }
 
-describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set level)", () => {
-  it("preview → mutate set → preview invalidated → re-preview → confirm bound to the set version", async () => {
+describe("Bulk approval (journey 3 — SERVER-minted selection set, APR-001 at set level)", () => {
+  it("preview mints the set SERVER-side and the confirmation binds to exactly that lineage + version", async () => {
     withExecutableCandidate();
-    let captured: { selectionSetLineage: string; boundVersion: number } | null = null;
+    // The server's minted identity. If the screen ever submits anything else — a
+    // client-generated lineage, a locally counted version — the confirm handler
+    // rejects it exactly as a real backend would (unknown lineage → 404), and this
+    // test fails.
+    const SERVER_LINEAGE = "30000000-0000-0000-0000-000000000003";
+    const SERVER_VERSION = 7;
+    let previewBody: {
+      marketplaceAccountId: string;
+      lineageId?: string;
+      members: { variantId: string; recommendationId: string }[];
+      criteria?: Record<string, string>;
+    } | null = null;
+    let confirmBody: { selectionSetLineage: string; boundVersion: number } | null = null;
+    let previewCalls = 0;
+
     server.use(
+      http.post(`${BASE}/selection-sets/preview`, async ({ request }) => {
+        previewCalls += 1;
+        previewBody = (await request.json()) as typeof previewBody;
+        return HttpResponse.json({
+          ...selectionPreview,
+          lineageId: SERVER_LINEAGE,
+          version: SERVER_VERSION,
+        });
+      }),
       http.post(`${BASE}/approvals/bulk/confirm`, async ({ request }) => {
-        captured = (await request.json()) as typeof captured;
-        return HttpResponse.json({ ...bulkValid, boundVersion: captured?.boundVersion ?? 0 });
+        confirmBody = (await request.json()) as typeof confirmBody;
+        // A real backend resolves the lineage: an unknown (client-minted) one 404s.
+        if (confirmBody?.selectionSetLineage !== SERVER_LINEAGE) {
+          return HttpResponse.json(
+            { code: "APPROVAL_ERROR", message: "selection set not found" },
+            { status: 404 },
+          );
+        }
+        return HttpResponse.json({
+          ...bulkValid,
+          selectionSetLineage: SERVER_LINEAGE,
+          boundVersion: confirmBody.boundVersion,
+        });
       }),
     );
     renderRoute("/bulk");
 
-    // Before any preview the structured control is DISABLED (no bound version).
+    // Before any preview there is NO server-minted identity, so the structured
+    // control is disabled — there is nothing it could bind to.
     const approve = await screen.findByTestId("bulk-approve", undefined, { timeout: 5000 });
     expect(approve).toBeDisabled();
 
-    // Preview binds the control to the current selection-set version.
+    // Preview POSTs the selected membership and binds to the server's response.
     fireEvent.click(screen.getByTestId("bulk-preview"));
     await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
       timeout: 5000,
     });
+    expect(previewCalls).toBe(1);
+    const sentPreview = previewBody as unknown as {
+      members: { variantId: string; recommendationId: string }[];
+      lineageId?: string;
+    };
+    expect(sentPreview.members).toEqual([
+      { variantId: VARIANT_ID, recommendationId: RECOMMENDATION_ID },
+    ]);
+    // The FIRST preview starts a new lineage: the client never proposes one.
+    expect(sentPreview.lineageId).toBeUndefined();
+    // The rendered selection identity is the SERVER's.
+    expect(screen.getByTestId("selection-set")).toHaveTextContent(
+      `${SERVER_LINEAGE}·v${SERVER_VERSION}`,
+    );
 
-    // Mutate the set (a filter change mints a new version) → preview INVALIDATED.
+    // Mutate the set (a filter change) → the previewed selection is stale and the
+    // control disables until a fresh server preview is taken.
     fireEvent.click(screen.getByText(faIR["readiness.complete"]));
     expect(
       await screen.findByTestId("bulk-invalidated", undefined, { timeout: 5000 }),
     ).toBeInTheDocument();
     expect(screen.getByTestId("bulk-approve")).toBeDisabled();
 
-    // A fresh preview re-binds to the current version; confirm carries THAT version.
+    // A fresh preview REFRESHES the same lineage; the server mints the next version.
     fireEvent.click(screen.getByTestId("bulk-preview"));
+    await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    expect((previewBody as unknown as { lineageId?: string }).lineageId).toBe(SERVER_LINEAGE);
+
+    fireEvent.click(screen.getByTestId("bulk-approve"));
+    await screen.findByTestId("bulk-recommend-only", undefined, { timeout: 5000 });
+
+    const sentConfirm = confirmBody as unknown as {
+      selectionSetLineage: string;
+      boundVersion: number;
+    };
+    expect(sentConfirm.selectionSetLineage).toBe(SERVER_LINEAGE);
+    expect(sentConfirm.boundVersion).toBe(SERVER_VERSION);
+  });
+
+  it("renders the SERVER's per-item results, not a client reconstruction", async () => {
+    withExecutableCandidate();
+    server.use(
+      http.post(`${BASE}/approvals/bulk/confirm`, () =>
+        HttpResponse.json({
+          // A state the SERVER can actually produce (issue #90 fix cycle 2, C6):
+          // the only member failed to authorize, so NOTHING is in flight and
+          // `executionPending` is false. Pinning `true` beside a single `failed`
+          // item exercised an impossible wire state.
+          ...bulkValid,
+          executionPending: false,
+          items: [
+            {
+              variantId: VARIANT_ID,
+              recommendationId: RECOMMENDATION_ID,
+              disposition: "executable",
+              state: "failed",
+              reason: "authorize_failed",
+            },
+          ],
+        }),
+      ),
+    );
+    renderRoute("/bulk");
+
+    fireEvent.click(await screen.findByTestId("bulk-preview", undefined, { timeout: 5000 }));
     await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
       timeout: 5000,
     });
     fireEvent.click(screen.getByTestId("bulk-approve"));
 
-    await screen.findByTestId("bulk-recommend-only", undefined, { timeout: 5000 });
-    expect(captured).not.toBeNull();
-    expect((captured as unknown as { boundVersion: number }).boundVersion).toBe(2);
-    expect(
-      (captured as unknown as { selectionSetLineage: string }).selectionSetLineage,
-    ).toBeTruthy();
+    // The row renders the server's `failed` state — the client would have shown a
+    // pending/authorized outcome from its own candidate state. The copy is the
+    // CANONICAL glossary term, not a bulk-specific duplicate of it (F7).
+    const failed = await screen.findByTestId("result-failed", undefined, { timeout: 5000 });
+    expect(failed).toHaveTextContent(faIR["state.failed"]);
+    expect(screen.queryByTestId("result-authorized")).toBeNull();
+
+    // The post-confirm summary counts the SERVER's authorized items (F8). This
+    // confirmation authorized NOTHING, so no aggregate approval note is announced at
+    // all — and above all not the overstated "1 approved" the local candidate state
+    // would have produced. The per-row `failed` badge above carries the outcome.
+    expect(screen.queryByTestId("bulk-recommend-only")).toBeNull();
+  });
+
+  it("announces the settled summary when every authorization has finished executing (C4)", async () => {
+    // The state M1 made reachable: a resume whose members all reached a terminal
+    // external result — items are `already_authorized`, nothing is in flight. The
+    // aggregate note must still render (design/STATE_MATRIX.md: every reachable
+    // state has a rendering), carrying the SETTLED copy rather than the in-flight one.
+    withExecutableCandidate();
+    server.use(
+      http.post(`${BASE}/approvals/bulk/confirm`, () =>
+        HttpResponse.json({
+          ...bulkValid,
+          executionPending: false,
+          items: [
+            {
+              variantId: VARIANT_ID,
+              recommendationId: RECOMMENDATION_ID,
+              disposition: "executable",
+              state: "already_authorized",
+              reason: "already_authorized",
+            },
+          ],
+        }),
+      ),
+    );
+    renderRoute("/bulk");
+
+    fireEvent.click(await screen.findByTestId("bulk-preview", undefined, { timeout: 5000 }));
+    await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(screen.getByTestId("bulk-approve"));
+
+    const summary = await screen.findByTestId("bulk-recommend-only", undefined, { timeout: 5000 });
+    expect(summary).toHaveTextContent(formatCount(1, "fa-IR"));
+    // The settled copy, not the "awaiting external execution" one.
+    expect(summary.textContent).toContain(
+      faIR["bulk.result.settled"].replace("{count}", formatCount(1, "fa-IR")),
+    );
+    // Reconciliation invariant (PRD §4.6; design/README.md:181 "unknown write result
+    // is NEVER shown as success/failure"; design/README.md:190 the UI "never infers
+    // external results"). `executionPending: false` proves only that nothing is in
+    // flight — a member may sit in pending_reconciliation with an UNKNOWN result. The
+    // summary must therefore not claim external execution finished or succeeded.
+    for (const forbidden of ["به پایان رسید", "با موفقیت", "اجرا شد", "انجام شد"]) {
+      expect(summary.textContent).not.toContain(forbidden);
+    }
+  });
+
+  it("counts ONLY the server-authorized members in a mixed partial-failure set (F8/C6)", async () => {
+    // A realistic partial failure the server can produce: one member authorized, one
+    // failed. The summary announces ONE — never the set size, never the local
+    // executable count.
+    withExecutableCandidate();
+    const OTHER_RECOMMENDATION = "ffffffff-ffff-ffff-ffff-fffffffffff0";
+    const OTHER_VARIANT = "11111111-1111-1111-1111-111111111110";
+    server.use(
+      http.post(`${BASE}/approvals/bulk/confirm`, () =>
+        HttpResponse.json({
+          ...bulkValid,
+          executionPending: true,
+          items: [
+            {
+              variantId: VARIANT_ID,
+              recommendationId: RECOMMENDATION_ID,
+              disposition: "executable",
+              state: "authorized",
+              reason: "authorized",
+            },
+            {
+              variantId: OTHER_VARIANT,
+              recommendationId: OTHER_RECOMMENDATION,
+              disposition: "executable",
+              state: "failed",
+              reason: "authorize_failed",
+            },
+          ],
+        }),
+      ),
+    );
+    renderRoute("/bulk");
+
+    fireEvent.click(await screen.findByTestId("bulk-preview", undefined, { timeout: 5000 }));
+    await waitFor(() => expect(screen.getByTestId("bulk-approve")).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(screen.getByTestId("bulk-approve"));
+
+    const summary = await screen.findByTestId("bulk-recommend-only", undefined, { timeout: 5000 });
+    expect(summary).toHaveTextContent(formatCount(1, "fa-IR"));
+    expect(summary).not.toHaveTextContent(formatCount(2, "fa-IR"));
+    // In-flight ⇒ the awaiting-external copy, not the settled one.
+    expect(summary.textContent).toContain(
+      faIR["bulk.result.recommendOnly"].replace("{count}", formatCount(1, "fa-IR")),
+    );
+  });
+
+  it("surfaces the incomplete-candidate notice when more actions exist beyond the page", async () => {
+    // The completeness signal the server now returns (issue #90 blocker 3): the
+    // candidate set is a PAGE of the queue, so the operator must never read it as
+    // the whole queue. Deleting this notice previously broke no test at all.
+    withExecutableCandidate();
+    server.use(
+      http.get(`${BASE}/actions`, () =>
+        HttpResponse.json({ ...awaitingActions, hasMore: true, nextCursor: "c1" }),
+      ),
+    );
+    renderRoute("/bulk");
+
+    const notice = await screen.findByTestId("bulk-candidates-incomplete", undefined, {
+      timeout: 5000,
+    });
+    expect(notice).toHaveTextContent(faIR["bulk.candidates.incomplete"]);
+  });
+
+  it("does NOT claim the candidate set is incomplete when the queue fits in one page", async () => {
+    // The negative half: the default fixture reports hasMore false, so no
+    // incompleteness notice may be shown (a permanent notice teaches operators to
+    // ignore it).
+    withExecutableCandidate();
+    renderRoute("/bulk");
+
+    await screen.findByTestId("bulk-toolbar", undefined, { timeout: 5000 });
+    expect(screen.queryByTestId("bulk-candidates-incomplete")).toBeNull();
+  });
+
+  it("surfaces a failed preview and approves NOTHING (no client-minted fallback identity)", async () => {
+    withExecutableCandidate();
+    let confirmCalls = 0;
+    server.use(
+      http.post(`${BASE}/selection-sets/preview`, () =>
+        HttpResponse.json(
+          { code: "APPROVAL_ERROR", message: "selection set not found" },
+          {
+            status: 404,
+          },
+        ),
+      ),
+      http.post(`${BASE}/approvals/bulk/confirm`, () => {
+        confirmCalls += 1;
+        return HttpResponse.json(bulkValid);
+      }),
+    );
+    renderRoute("/bulk");
+
+    fireEvent.click(await screen.findByTestId("bulk-preview", undefined, { timeout: 5000 }));
+
+    const error = await screen.findByTestId("bulk-preview-error", undefined, { timeout: 5000 });
+    expect(error).toHaveTextContent(faIR["bulk.preview.error.title"]);
+    // No server identity ⇒ the approve control stays disabled and nothing is sent.
+    expect(screen.getByTestId("bulk-approve")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("bulk-approve"));
+    expect(confirmCalls).toBe(0);
   });
 
   it("never force-includes a blocked candidate (no include control, not executable)", async () => {
@@ -93,6 +365,12 @@ describe("Bulk approval (journey 3 — versioned selection set, APR-001 at set l
     ).toBeInTheDocument();
     // A blocked candidate carries no include control.
     expect(screen.queryByTestId("bulk-include-8842213")).toBeNull();
+    // …and with no includable member the empty-membership notice is rendered, so the
+    // operator is told WHY nothing can be previewed rather than facing a silent
+    // disabled control.
+    expect(
+      await screen.findByTestId("bulk-preview-empty", undefined, { timeout: 5000 }),
+    ).toHaveTextContent(faIR["bulk.preview.empty"]);
     // With zero executable candidates the control stays disabled even after preview.
     fireEvent.click(await screen.findByTestId("bulk-preview", undefined, { timeout: 5000 }));
     expect(screen.getByTestId("bulk-approve")).toBeDisabled();
