@@ -90,6 +90,18 @@ type Querier interface {
 	// code is strictly single-use; a second claim matches no row. Returns the row
 	// (with credential id + expiry) only when the claim succeeds.
 	ClaimPairingCode(ctx context.Context, arg ClaimPairingCodeParams) (ExtensionPairing, error)
+	// Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
+	// within a lineage: a set change is a new version. A bulk approval binds ONE
+	// version, so any set/evidence change (a new version) invalidates it. No
+	// UPDATE/DELETE — the current set is the greatest version per lineage.
+	// BULK-PROTOCOL DESIGN RECORD (b) — lineage→account ownership claim.
+	// Claims a lineage for an account INSERT-ONCE (issue #90). ON CONFLICT DO NOTHING,
+	// never DO UPDATE: ownership is immutable, so an already-owned lineage is left
+	// exactly as it is and the caller then READS the owner (GetSelectionSetLineage) in
+	// the SAME transaction under the held per-lineage advisory lock. Claim-then-read is
+	// race-free: two accounts racing on one lineage serialize on the lock, the loser
+	// reads the winner's row and fails closed (ErrLineageNotOwned).
+	ClaimSelectionSetLineage(ctx context.Context, arg ClaimSelectionSetLineageParams) error
 	// §16 offer disappearance: close the current offer with an END TIME. The last raw
 	// price is left intact — it is NEVER converted to a zero price. Availability
 	// becomes 'disappeared' and quality 'unavailable'.
@@ -460,6 +472,10 @@ type Querier interface {
 	// from a missing one (no existence oracle) and is never disclosed.
 	GetRecommendationForAccount(ctx context.Context, arg GetRecommendationForAccountParams) (Recommendation, error)
 	GetSelectionSet(ctx context.Context, id uuid.UUID) (SelectionSet, error)
+	// The authoritative owner of a selection-set lineage. Exactly one row per lineage
+	// for its whole life (migration 0045); the composite FK on selection_sets makes any
+	// version under a different account unconstructable at the DATABASE.
+	GetSelectionSetLineage(ctx context.Context, lineageID uuid.UUID) (SelectionSetLineage, error)
 	// Resolve a live session to its principal (user + role + organization). Rows
 	// at/after expiry are excluded, so an expired cookie fails closed.
 	GetSessionUser(ctx context.Context, tokenHash string) (GetSessionUserRow, error)
@@ -613,14 +629,19 @@ type Querier interface {
 	// nothing and the service surfaces a not-found — no existence oracle, still
 	// append-only (EVT-005).
 	InsertRelevanceFeedbackForOrg(ctx context.Context, arg InsertRelevanceFeedbackForOrgParams) (EventRelevanceFeedback, error)
-	// Selection-set queries (PRD §7.5, CHAT-050/051). selection_sets is APPEND-ONLY
-	// within a lineage: a set change is a new version. A bulk approval binds ONE
-	// version, so any set/evidence change (a new version) invalidates it. No
-	// UPDATE/DELETE — the current set is the greatest version per lineage.
 	// membership_fingerprint is the canonical hash of the exact membership + aggregate
 	// computed by the atomic create BEFORE any write. It is set once at INSERT and never
 	// UPDATEd (selection_sets is append-only), so a version's fingerprint is immutable —
 	// binding the version at confirm transitively binds this fingerprint (issue #91).
+	//
+	// BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING.
+	// Versions are monotonic ONLY WITHIN one lineage: the next version is
+	// MAX(version)+1 over the rows of THIS lineage AND THIS account (the account
+	// predicate is defense in depth — migration 0045's composite FK already guarantees
+	// every row of a lineage shares one account). Version numbers from DIFFERENT
+	// lineages are NOT comparable and must never be ordered, ranged, or diffed against
+	// one another: "v3" is meaningful only as "(lineage L, version 3)". A bulk
+	// confirmation therefore binds the PAIR (lineage, version), never a bare version.
 	InsertSelectionSet(ctx context.Context, arg InsertSelectionSetParams) (SelectionSet, error)
 	// marketplace_account_id is the tenant key (issue #102): it MUST equal the owning
 	// selection_set's account and — enforced by migration 0025's composite FKs and the
@@ -647,6 +668,15 @@ type Querier interface {
 	// (action_executions carries no account column of its own). A pure SELECT — the
 	// common action API overlays these onto the account's approval cards.
 	ListActionExecutionsByAccount(ctx context.Context, arg ListActionExecutionsByAccountParams) ([]ActionExecution, error)
+	// The write-mode action_executions rows for an EXPLICIT set of action ids under one
+	// account (issue #90 blocker 3). The account-wide newest-N projection above cannot
+	// serve a CURSOR-PAGINATED actions page: a page deeper than the newest N would find
+	// no overlay row and render an already-executed action as if it were still
+	// pre-execution — a fabricated state, not merely a missing enrichment. Keying the
+	// overlay on exactly the page's action ids makes it complete for that page by
+	// construction. The account predicate remains the authorization; the id list only
+	// narrows within it. A pure SELECT.
+	ListActionExecutionsByAccountAndActions(ctx context.Context, arg ListActionExecutionsByAccountAndActionsParams) ([]ActionExecution, error)
 	// Route C scheduler enumeration (S14, OBS-005/§10.2): every ACTIVE target in a
 	// cadence tier, across all accounts, in a stable order. A target deactivated by
 	// identity reopen (DeactivateObservationTargetsForIdentity) is excluded here, so
@@ -661,6 +691,10 @@ type Querier interface {
 	// (greatest) version per lineage, newest first. The unfiltered read: every
 	// current lineage head for the account. A deterministic id tie-break keeps
 	// ordering stable across rows sharing a created_at (stable keyset paging).
+	//
+	// NOT a request path: superseded by ListApprovalCardsPage for every caller-facing
+	// read (its bare LIMIT carries no completeness signal). Retained for internal
+	// fixed-bound reads only.
 	ListApprovalCardsByAccount(ctx context.Context, arg ListApprovalCardsByAccountParams) ([]ApprovalCard, error)
 	// Actions queue narrowed to a single §8.4 state (issue #142). The state
 	// predicate is AUTHORITATIVE and runs on the current (greatest-version) lineage
@@ -669,6 +703,38 @@ type Querier interface {
 	// non-matching ones. Tenant scoping (marketplace_account_id) is unchanged and
 	// the id tie-break keeps paging stable across equal created_at.
 	ListApprovalCardsByAccountAndState(ctx context.Context, arg ListApprovalCardsByAccountAndStateParams) ([]ApprovalCard, error)
+	// The BOUNDED, keyset-paginated actions queue (issue #90 blocker 3, §17 bounded
+	// reads). It supersedes the two unpaginated reads below as the ONLY request-path
+	// actions read: those silently CLAMPED an over-large limit to 500 and returned no
+	// completeness signal, so a caller with more than 500 current lineage heads
+	// received a truncated queue it could not distinguish from a complete one.
+	//
+	// Shape (identical to the notification feed's keyset idiom — one pagination
+	// convention in this repo, issue #128):
+	//   * current (greatest) version per lineage via DISTINCT ON, so the queue is one
+	//     row per action;
+	//   * the OPTIONAL §8.4 state predicate is AUTHORITATIVE and applied to the current
+	//     lineage HEAD before ORDER BY/LIMIT (issue #142) — a page bounds MATCHING rows,
+	//     never an unfiltered newest-N prefix;
+	//   * deterministic (created_at DESC, id DESC) ordering with the row-value cursor
+	//     comparison, so ties on created_at break by id and no row is returned TWICE
+	//     across pages. The key is the CURRENT version's created_at/id, which is
+	//     MUTABLE (a new card version replaces the head with a newer key): a lineage
+	//     that mints a version mid-paging sorts NEWER than the cursor and is therefore
+	//     observed on a refreshed FIRST page, not on a later one. Stability over a
+	//     mutable head would need a different key (e.g. the lineage's first version)
+	//     and is a deliberate non-goal here — the queue is read newest-first and
+	//     refreshed, not scrolled as a snapshot;
+	//   * a NULL cursor is the first (newest) page; the caller passes
+	//     page_limit = requested_limit + 1 and treats the extra row as the hasMore
+	//     signal (then trims it).
+	// The account predicate is the authorization; the cursor is only a position.
+	//
+	// variant_id is joined from the recommendation (a card and its recommendation are
+	// account-bound by migration 0025's composite FK, so the join cannot widen the
+	// tenant scope). It is what lets a caller build a bulk selection member
+	// (variantId + recommendationId) from ONE bounded read instead of an N+1 fan-out.
+	ListApprovalCardsPage(ctx context.Context, arg ListApprovalCardsPageParams) ([]ListApprovalCardsPageRow, error)
 	// The complete append-only audit trail for an action, in occurrence order. This
 	// is the reproduction read (AUD-001): it joins NOTHING in the conversation tables,
 	// so deleting a conversation leaves the trail intact.
@@ -826,6 +892,9 @@ type Querier interface {
 	// projection), newest first. recommend_only_actions carries its own account
 	// column, so no join is needed. A pure SELECT.
 	ListRecommendOnlyActionsByAccount(ctx context.Context, arg ListRecommendOnlyActionsByAccountParams) ([]RecommendOnlyAction, error)
+	// The recommend-only actions for an EXPLICIT set of action ids under one account
+	// (issue #90 blocker 3) — the recommend-only half of the page-scoped overlay above.
+	ListRecommendOnlyActionsByAccountAndActions(ctx context.Context, arg ListRecommendOnlyActionsByAccountAndActionsParams) ([]RecommendOnlyAction, error)
 	ListRecommendationInvalidations(ctx context.Context, marketplaceAccountID uuid.UUID) ([]RecommendationInvalidationEvent, error)
 	ListRecommendationsForVariant(ctx context.Context, arg ListRecommendationsForVariantParams) ([]Recommendation, error)
 	ListRelevanceFeedback(ctx context.Context, eventID uuid.UUID) ([]EventRelevanceFeedback, error)

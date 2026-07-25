@@ -15,7 +15,8 @@ def _get_kwargs(
     *,
     marketplace_account_id: UUID,
     state: ApprovalState | Unset = UNSET,
-    limit: int | Unset = UNSET,
+    limit: int | Unset = 200,
+    cursor: str | Unset = UNSET,
 ) -> dict[str, Any]:
 
     params: dict[str, Any] = {}
@@ -30,6 +31,8 @@ def _get_kwargs(
     params["state"] = json_state
 
     params["limit"] = limit
+
+    params["cursor"] = cursor
 
     params = {k: v for k, v in params.items() if v is not UNSET and v is not None}
 
@@ -67,19 +70,34 @@ def sync_detailed(
     client: Client,
     marketplace_account_id: UUID,
     state: ApprovalState | Unset = UNSET,
-    limit: int | Unset = UNSET,
+    limit: int | Unset = 200,
+    cursor: str | Unset = UNSET,
 ) -> Response[ActionList | ErrorEnvelope]:
     """List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
 
      Returns the account's approval cards (one row per action, current version), newest first, optionally
     filtered by §8.4 state — the grouped multi-row queue the Actions screen needs beyond the single
     deep-linked card read (GET /approvals/card). This is a read; it never advances state.
+    The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads):
+    pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the
+    next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key
+    is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a
+    lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft)
+    moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one
+    — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an
+    append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore`
+    and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit`
+    above the maximum was silently clamped to 500 and the response carried no completeness field, so an
+    account with more than 500 actions received a truncated queue indistinguishable from a complete one;
+    a limit above the maximum is now REJECTED (400) rather than quietly answered with a different
+    question.
 
     Args:
         marketplace_account_id (UUID):
         state (ApprovalState | Unset): One node of the §8.4 approval state machine. The set is
             closed; it is the authoritative lifecycle vocabulary for a card and its history.
-        limit (int | Unset):
+        limit (int | Unset):  Default: 200.
+        cursor (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -93,6 +111,7 @@ def sync_detailed(
         marketplace_account_id=marketplace_account_id,
         state=state,
         limit=limit,
+        cursor=cursor,
     )
 
     response = client.get_httpx_client().request(
@@ -107,19 +126,34 @@ def sync(
     client: Client,
     marketplace_account_id: UUID,
     state: ApprovalState | Unset = UNSET,
-    limit: int | Unset = UNSET,
+    limit: int | Unset = 200,
+    cursor: str | Unset = UNSET,
 ) -> ActionList | ErrorEnvelope | None:
     """List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
 
      Returns the account's approval cards (one row per action, current version), newest first, optionally
     filtered by §8.4 state — the grouped multi-row queue the Actions screen needs beyond the single
     deep-linked card read (GET /approvals/card). This is a read; it never advances state.
+    The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads):
+    pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the
+    next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key
+    is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a
+    lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft)
+    moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one
+    — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an
+    append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore`
+    and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit`
+    above the maximum was silently clamped to 500 and the response carried no completeness field, so an
+    account with more than 500 actions received a truncated queue indistinguishable from a complete one;
+    a limit above the maximum is now REJECTED (400) rather than quietly answered with a different
+    question.
 
     Args:
         marketplace_account_id (UUID):
         state (ApprovalState | Unset): One node of the §8.4 approval state machine. The set is
             closed; it is the authoritative lifecycle vocabulary for a card and its history.
-        limit (int | Unset):
+        limit (int | Unset):  Default: 200.
+        cursor (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -134,6 +168,7 @@ def sync(
         marketplace_account_id=marketplace_account_id,
         state=state,
         limit=limit,
+        cursor=cursor,
     ).parsed
 
 
@@ -142,19 +177,34 @@ async def asyncio_detailed(
     client: Client,
     marketplace_account_id: UUID,
     state: ApprovalState | Unset = UNSET,
-    limit: int | Unset = UNSET,
+    limit: int | Unset = 200,
+    cursor: str | Unset = UNSET,
 ) -> Response[ActionList | ErrorEnvelope]:
     """List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
 
      Returns the account's approval cards (one row per action, current version), newest first, optionally
     filtered by §8.4 state — the grouped multi-row queue the Actions screen needs beyond the single
     deep-linked card read (GET /approvals/card). This is a read; it never advances state.
+    The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads):
+    pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the
+    next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key
+    is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a
+    lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft)
+    moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one
+    — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an
+    append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore`
+    and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit`
+    above the maximum was silently clamped to 500 and the response carried no completeness field, so an
+    account with more than 500 actions received a truncated queue indistinguishable from a complete one;
+    a limit above the maximum is now REJECTED (400) rather than quietly answered with a different
+    question.
 
     Args:
         marketplace_account_id (UUID):
         state (ApprovalState | Unset): One node of the §8.4 approval state machine. The set is
             closed; it is the authoritative lifecycle vocabulary for a card and its history.
-        limit (int | Unset):
+        limit (int | Unset):  Default: 200.
+        cursor (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -168,6 +218,7 @@ async def asyncio_detailed(
         marketplace_account_id=marketplace_account_id,
         state=state,
         limit=limit,
+        cursor=cursor,
     )
 
     response = await client.get_async_httpx_client().request(**kwargs)
@@ -180,19 +231,34 @@ async def asyncio(
     client: Client,
     marketplace_account_id: UUID,
     state: ApprovalState | Unset = UNSET,
-    limit: int | Unset = UNSET,
+    limit: int | Unset = 200,
+    cursor: str | Unset = UNSET,
 ) -> ActionList | ErrorEnvelope | None:
     """List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
 
      Returns the account's approval cards (one row per action, current version), newest first, optionally
     filtered by §8.4 state — the grouped multi-row queue the Actions screen needs beyond the single
     deep-linked card read (GET /approvals/card). This is a read; it never advances state.
+    The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads):
+    pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the
+    next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key
+    is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a
+    lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft)
+    moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one
+    — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an
+    append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore`
+    and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit`
+    above the maximum was silently clamped to 500 and the response carried no completeness field, so an
+    account with more than 500 actions received a truncated queue indistinguishable from a complete one;
+    a limit above the maximum is now REJECTED (400) rather than quietly answered with a different
+    question.
 
     Args:
         marketplace_account_id (UUID):
         state (ApprovalState | Unset): One node of the §8.4 approval state machine. The set is
             closed; it is the authoritative lifecycle vocabulary for a card and its history.
-        limit (int | Unset):
+        limit (int | Unset):  Default: 200.
+        cursor (str | Unset):
 
     Raises:
         errors.UnexpectedStatus: If the server returns an undocumented status code and Client.raise_on_unexpected_status is True.
@@ -208,5 +274,6 @@ async def asyncio(
             marketplace_account_id=marketplace_account_id,
             state=state,
             limit=limit,
+            cursor=cursor,
         )
     ).parsed

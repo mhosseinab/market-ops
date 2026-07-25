@@ -715,8 +715,9 @@ export const faIR: Catalog = {
   "bulk.col.status": "وضعیت",
   "bulk.col.result": "نتیجهٔ اجرا",
   "bulk.result.excluded": "کنار گذاشته شد",
-  "bulk.result.awaitingExternal": "در انتظار اجرای خارجی",
   "bulk.result.recommendOnly": "{count} مورد در حالت پیشنهادی ثبت شد؛ در انتظار اجرای خارجی.",
+  "bulk.result.settled":
+    "{count} مورد تایید شد؛ هیچ اجرایی در جریان نیست. نتیجهٔ هر نوشتن را در «اقدام‌ها» ببینید.",
   "bulk.reason.qualityUnknown": "کیفیت مشاهده نامشخص",
   "bulk.reason.conflicted": "مشاهدهٔ متناقض",
   "bulk.reason.staleObservation": "مشاهدهٔ قدیمی‌شده",
@@ -733,6 +734,19 @@ export const faIR: Catalog = {
   "bulk.readiness.error.title": "آمادگی حاشیهٔ برخی ردیف‌ها بارگذاری نشد",
   "bulk.readiness.error.body":
     "آمادگی حاشیهٔ برخی ردیف‌های این صفحه بارگذاری نشد. سایر ردیف‌ها نمایش داده می‌شوند؛ برای بارگذاری بقیه دوباره تلاش کنید.",
+
+  "bulk.preview.error.title": "مجموعهٔ انتخاب ساخته نشد",
+  "bulk.preview.error.body":
+    "ساخت و نسخه‌گذاری مجموعهٔ انتخاب بر عهدهٔ سرور است. هیچ چیزی تایید نشد؛ دوباره پیش‌نمایش بگیرید.",
+  "bulk.preview.pending": "در حال ساخت مجموعهٔ انتخاب…",
+  "bulk.preview.empty": "هیچ نامزدی کنترل تایید ندارد که در مجموعه قرار گیرد.",
+  "bulk.confirm.error.title": "تایید دسته‌ای ثبت نشد",
+  "bulk.confirm.error.body": "هیچ چیزی تایید نشد. دوباره پیش‌نمایش بگیرید و تلاش کنید.",
+  "bulk.candidates.incomplete":
+    "اقدام‌های بیشتری از آنچه در این صفحه دیده می‌شود وجود دارد؛ مجموعهٔ انتخاب فقط همین صفحه را دربر می‌گیرد.",
+  "bulk.result.state.authorized": "تاییدشده",
+  "bulk.result.state.alreadyAuthorized": "پیش‌تر تاییدشده",
+  "bulk.result.notAMember": "خارج از مجموعهٔ انتخاب",
 
   "settings.connection.title": "اتصال دیجی‌کالا",
   "settings.connection.manage": "مدیریت اتصال ←",

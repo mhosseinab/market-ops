@@ -12,7 +12,31 @@ T = TypeVar("T", bound="BulkApprovalConfirmRequest")
 @_attrs_define
 class BulkApprovalConfirmRequest:
     """A bulk approval confirmation bound to ONE exact selection-set version (CHAT-052). The server rejects it when the
-    bound version is no longer current (any set/evidence change mints a new version).
+    bound version is no longer current (any set/evidence change mints a new version). Currency is evaluated ONCE, at
+    bind time, under the per-lineage lock: a refresh that commits a new version after the binding decision does not
+    retract the in-flight confirmation, and members of the bound version stay authorized even if the later version drops
+    them. Per-member safety is unaffected — every server-side evidence/price/cost/policy/boundary change mints a new
+    card version and is rejected per-member by the individual confirm's authoritative-binding gate.
+    BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful ONLY together with
+    `selectionSetLineage`: versions are monotonic WITHIN one lineage and version numbers from different lineages are NOT
+    comparable. Never order, range, or diff versions across lineages, and never accept a bare version without its
+    lineage — the binding is the PAIR.
+    BULK-PROTOCOL DESIGN RECORD (a) — RESERVATION LIFECYCLE. What #90 establishes: binding a (lineage, version) pair
+    under the per-lineage lock is the SELECTION reservation — it fixes exactly which members, dispositions and aggregate
+    the operator authorized, and it is immutable for that version (#91). Each member is then authorized through its own
+    §8.4 individual confirm and its own durable execution intent (unique by card id). What #90 does NOT establish, and
+    #87 must add: a durable `(account, variant)` EXECUTION reservation spanning the window between authorization and
+    terminal external result, so two different selection sets (or a bulk and an individual confirmation) cannot hold
+    concurrent in-flight writes for the same variant. Until #87 lands, concurrency on one variant is bounded only by the
+    card-level FROM-guard and the card-id-unique intent — sufficient to prevent a duplicate write for one card, NOT to
+    prevent two cards on one variant. #87 owns that reservation's acquire/release/expiry semantics; #90 pins only that
+    it is keyed on `(account, variant)` and must be acquired BEFORE dispatch and released on a terminal external result.
+    BULK-PROTOCOL DESIGN RECORD (e) — `offerIdentity` WIRE COMPATIBILITY. #87's `offerIdentity` on bulk confirm/item
+    results is ADDITIVE and OPTIONAL: it must not enter the `required` set of any existing schema, must not change
+    `additionalProperties: false`, and must never be a CLIENT ASSERTION. The server seals the disposition and the offer
+    identity from its own persisted observation/recommendation state at preview time; a client-supplied `offerIdentity`
+    is a selector to be validated against the sealed value, never an input that can widen or redirect what gets
+    authorized. A mismatch fails closed as a uniform not-found, exactly like an unknown member.
 
         Attributes:
             selection_set_lineage (UUID): The selection-set lineage the preview was built from.

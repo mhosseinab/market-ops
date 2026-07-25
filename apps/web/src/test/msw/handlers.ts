@@ -2,6 +2,7 @@ import { HttpResponse, http } from "msw";
 import type { ChatStreamEvent } from "../../chat/types";
 import {
   approvalCardAwaiting,
+  awaitingActions,
   bulkValid,
   catalogProductPage,
   catalogProductRow,
@@ -17,6 +18,7 @@ import {
   productDiagnostics,
   readinessMissing,
   recommendationDetail,
+  selectionPreview,
   sessionOwner,
   target,
 } from "./fixtures";
@@ -121,6 +123,10 @@ export const handlers = [
     HttpResponse.json({ actionId: execAccepted.actionId, eligible: true, state: "failed" }),
   ),
   http.post(`${B}/approvals/bulk/confirm`, () => HttpResponse.json(bulkValid)),
+  // The bulk candidate source and the SERVER-minted selection set (issue #90): the
+  // browser never mints a selection-set lineage or version.
+  http.get(`${B}/actions`, () => HttpResponse.json(awaitingActions)),
+  http.post(`${B}/selection-sets/preview`, () => HttpResponse.json(selectionPreview)),
 
   // ── S29: chat dock ──────────────────────────────────────────────────────────
   http.get(`${B}/briefing`, () => HttpResponse.json(dailyBriefing)),

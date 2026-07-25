@@ -794,6 +794,44 @@ func (s *Service) ListUnifiedByAccount(ctx context.Context, account uuid.UUID, l
 	return out, nil
 }
 
+// ListUnifiedByActions projects both execution modes for an EXPLICIT set of action
+// ids under one account (issue #90 blocker 3). It is the overlay a CURSOR-PAGINATED
+// actions page needs: the account-wide newest-N projection above cannot cover a page
+// deeper than N, and a missing overlay row is not neutral — the contract reads absent
+// overlay fields as "this action is still pre-execution", so a page-2 executed action
+// would be rendered as a fabricated pre-execution state. Keying on exactly the page's
+// action ids makes the overlay complete for that page by construction.
+//
+// An empty id set reads nothing (no query, no rows). The account predicate remains
+// the authorization; the id list only narrows within it. It is a read; it advances no
+// state.
+func (s *Service) ListUnifiedByActions(ctx context.Context, account uuid.UUID, actionIDs []uuid.UUID) ([]UnifiedAction, error) {
+	if len(actionIDs) == 0 {
+		return nil, nil
+	}
+	q := db.New(s.pool)
+	execs, err := q.ListActionExecutionsByAccountAndActions(ctx, db.ListActionExecutionsByAccountAndActionsParams{
+		MarketplaceAccountID: account, ActionIds: actionIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	ros, err := q.ListRecommendOnlyActionsByAccountAndActions(ctx, db.ListRecommendOnlyActionsByAccountAndActionsParams{
+		MarketplaceAccountID: account, ActionIds: actionIDs,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]UnifiedAction, 0, len(execs)+len(ros))
+	for _, e := range execs {
+		out = append(out, unifiedFromExecution(e))
+	}
+	for _, r := range ros {
+		out = append(out, unifiedFromRecommendOnly(r))
+	}
+	return out, nil
+}
+
 // ListPendingReconciliation returns the account's action_executions still
 // awaiting reconciliation (PD-3 item 8, S37 Operations queue) — an unknown
 // external result that must resolve before any retry (EXE-003, never inferred).

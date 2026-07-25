@@ -22,7 +22,8 @@ describe("pseudo-localization for S28 components (LOC-011)", () => {
         <BulkToolbar
           lineage="sel-1"
           version={2}
-          previewedVersion={1}
+          previewValid={false}
+          stale={true}
           counts={{ executable: 1, warning: 0, blocked: 1 }}
           aggregateImpact={<span />}
           maxMovement={<span />}

@@ -42,9 +42,12 @@ type ApprovalService interface {
 	// EditPriceForOrg mints a new card version with the edited price (CHAT-044,
 	// PD-3 item 2, S37), scoped to the caller's account.
 	EditPriceForOrg(ctx context.Context, organizationID, cardID uuid.UUID, newPrice money.Money, now time.Time) (db.ApprovalCard, error)
-	// ListActionsForOrg returns the caller's own account's actions queue (PD-3
-	// item 5, S37); a foreign account id returns not-found.
-	ListActionsForOrg(ctx context.Context, organizationID, account uuid.UUID, stateFilter string, limit int32) ([]db.ApprovalCard, error)
+	// ListActionsForOrg returns ONE bounded, keyset-paginated page of the caller's
+	// own account's actions queue (PD-3 item 5, S37; issue #90 blocker 3). A foreign
+	// account id returns not-found; a limit above the maximum and a malformed or
+	// foreign cursor both fail closed with a typed error the transport maps to 400 —
+	// the queue is never silently truncated.
+	ListActionsForOrg(ctx context.Context, organizationID, account uuid.UUID, stateFilter string, req recommendation.ActionsPageRequest) (recommendation.ActionsPage, error)
 	// GetRecommendationForOrg returns a single recommendation's full PRC-001
 	// record (PD-3 items 1/3, S37), scoped to the caller's account.
 	GetRecommendationForOrg(ctx context.Context, organizationID, id uuid.UUID) (db.Recommendation, error)

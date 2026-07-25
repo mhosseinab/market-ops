@@ -38,6 +38,12 @@ type ExecutionService interface {
 	// account id is rejected with ErrAccountNotFound (issue #102), never another
 	// tenant's projection.
 	ListUnifiedByAccountForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]execution.UnifiedAction, error)
+	// ListUnifiedByActionsForOrg projects both modes for an EXPLICIT set of action
+	// ids under the caller's own account (issue #90 blocker 3). It is what the
+	// CURSOR-PAGINATED actions list overlays: an account-wide newest-N projection
+	// cannot cover a deeper page, and a missing overlay row is read by the contract
+	// as "still pre-execution" — a fabricated state, not a neutral omission.
+	ListUnifiedByActionsForOrg(ctx context.Context, organizationID, account uuid.UUID, actionIDs []uuid.UUID) ([]execution.UnifiedAction, error)
 	// ListPendingReconciliationForOrg backs GET /ops/queues (PD-3 item 8, S37),
 	// scoped to the caller's account.
 	ListPendingReconciliationForOrg(ctx context.Context, organizationID, account uuid.UUID, limit int32) ([]db.ActionExecution, error)

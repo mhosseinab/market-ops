@@ -53,6 +53,11 @@ type Service struct {
 	// and prove a confirmation rolls back atomically when its audit cannot commit
 	// (issue #103). Production always uses audit.Append.
 	auditAppend func(ctx context.Context, q *db.Queries, ev audit.Event) (db.AuditRecord, error)
+	// telemetry overrides the process-wide selection/bulk observability seam. It is
+	// nil in production (the shared instance is used); only a white-box test wires it,
+	// so the emitted instrument, attribute, and structured-log field names can be
+	// asserted against its own meter provider and log handler (export_test.go).
+	telemetry *selectionTelemetry
 }
 
 // NewService builds a recommendation/approval Service bound to the pool. The

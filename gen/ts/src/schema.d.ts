@@ -775,7 +775,9 @@ export interface paths {
         put?: never;
         /**
          * Confirm a bulk approval bound to one selection-set version (CHAT-052).
-         * @description Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The request binds the selection-set lineage and the exact version it previewed; the server rejects the confirmation when that version is no longer current (any set or evidence change mints a new version). A valid bulk confirmation reports `executionPending` true — per-item execution lands in S18. This never approves from free text and never re-queries the set (no drift).
+         * @description Confirms a bulk approval against a SINGLE, exact selection-set version (PRD §7.5, CHAT-051/052). The request binds the selection-set lineage and the exact version it previewed; the server rejects the confirmation when that version is no longer current (any set or evidence change mints a new version). This never approves from free text and never re-queries the set (no drift).
+         *     BINDING IS DECIDED AT BIND TIME. Currency of the bound version is evaluated ONCE, inside the transaction that holds the per-lineage lock, before any member is authorized; the lock is released before the per-member authorization loop so one member's failure cannot roll back another's. A refresh that commits a NEW version AFTER that point does not retract the in-flight confirmation: the operator authorized the bound version's exact sealed membership, and members of that version continue to be authorized even if a later version narrows the set. Nothing about the members themselves escapes revalidation — every server-side evidence, price, cost, policy, or boundary change mints a NEW card version and is caught per-member by the individual confirm's authoritative-binding gate (APR-001), so such a member fails closed as `invalidated`. Only a client-driven membership NARROWING racing an in-flight confirmation is unobserved, and that narrowing is not retroactive.
+         *     `executionPending` reports a LIVE, still-unresolved execution authorization on at least one member — it is NOT implied by a valid confirmation, and it is false once every member's write has produced an external result.
          */
         post: operations["confirmBulkApproval"];
         delete?: never;
@@ -1074,6 +1076,7 @@ export interface paths {
         /**
          * List an account's actions (approval cards) as a grouped queue (PD-3 item 5).
          * @description Returns the account's approval cards (one row per action, current version), newest first, optionally filtered by §8.4 state — the grouped multi-row queue the Actions screen needs beyond the single deep-linked card read (GET /approvals/card). This is a read; it never advances state.
+         *     The queue is BOUNDED and keyset-paginated over `(createdAt, id)` newest-first (§17 bounded reads): pass `limit` for the page size and the opaque `cursor` from a prior response's `nextCursor` for the next page. Ties on `createdAt` break by `id`, so no action is returned TWICE across pages. The key is the CURRENT card version's `(createdAt, id)`, and a lineage's current version is MUTABLE: a lineage that mints a NEW card version while you are paging (a price edit, a recalculated draft) moves to the newest position and is therefore observed on a refreshed FIRST page, not on a later one — an in-progress scroll can miss it. The keyset is a stable, non-duplicating position over an append-only ordering, never a snapshot of the queue at page 1. Completeness is EXPLICIT — `hasMore` and `nextCursor` say whether more matching actions exist beyond this page. Previously a `limit` above the maximum was silently clamped to 500 and the response carried no completeness field, so an account with more than 500 actions received a truncated queue indistinguishable from a complete one; a limit above the maximum is now REJECTED (400) rather than quietly answered with a different question.
          */
         get: operations["listActions"];
         put?: never;
@@ -2378,7 +2381,12 @@ export interface components {
             /** @description True when Approved; execution/reconciliation is S18. */
             executionPending: boolean;
         };
-        /** @description A bulk approval confirmation bound to ONE exact selection-set version (CHAT-052). The server rejects it when the bound version is no longer current (any set/evidence change mints a new version). */
+        /**
+         * @description A bulk approval confirmation bound to ONE exact selection-set version (CHAT-052). The server rejects it when the bound version is no longer current (any set/evidence change mints a new version). Currency is evaluated ONCE, at bind time, under the per-lineage lock: a refresh that commits a new version after the binding decision does not retract the in-flight confirmation, and members of the bound version stay authorized even if the later version drops them. Per-member safety is unaffected — every server-side evidence/price/cost/policy/boundary change mints a new card version and is rejected per-member by the individual confirm's authoritative-binding gate.
+         *     BULK-PROTOCOL DESIGN RECORD (d) — VERSION RANGE / ORDERING. `boundVersion` is meaningful ONLY together with `selectionSetLineage`: versions are monotonic WITHIN one lineage and version numbers from different lineages are NOT comparable. Never order, range, or diff versions across lineages, and never accept a bare version without its lineage — the binding is the PAIR.
+         *     BULK-PROTOCOL DESIGN RECORD (a) — RESERVATION LIFECYCLE. What #90 establishes: binding a (lineage, version) pair under the per-lineage lock is the SELECTION reservation — it fixes exactly which members, dispositions and aggregate the operator authorized, and it is immutable for that version (#91). Each member is then authorized through its own §8.4 individual confirm and its own durable execution intent (unique by card id). What #90 does NOT establish, and #87 must add: a durable `(account, variant)` EXECUTION reservation spanning the window between authorization and terminal external result, so two different selection sets (or a bulk and an individual confirmation) cannot hold concurrent in-flight writes for the same variant. Until #87 lands, concurrency on one variant is bounded only by the card-level FROM-guard and the card-id-unique intent — sufficient to prevent a duplicate write for one card, NOT to prevent two cards on one variant. #87 owns that reservation's acquire/release/expiry semantics; #90 pins only that it is keyed on `(account, variant)` and must be acquired BEFORE dispatch and released on a terminal external result.
+         *     BULK-PROTOCOL DESIGN RECORD (e) — `offerIdentity` WIRE COMPATIBILITY. #87's `offerIdentity` on bulk confirm/item results is ADDITIVE and OPTIONAL: it must not enter the `required` set of any existing schema, must not change `additionalProperties: false`, and must never be a CLIENT ASSERTION. The server seals the disposition and the offer identity from its own persisted observation/recommendation state at preview time; a client-supplied `offerIdentity` is a selector to be validated against the sealed value, never an input that can widen or redirect what gets authorized. A mismatch fails closed as a uniform not-found, exactly like an unknown member.
+         */
         BulkApprovalConfirmRequest: {
             /**
              * Format: uuid
@@ -2391,7 +2399,7 @@ export interface components {
              */
             boundVersion: number;
         };
-        /** @description The AUTHORITATIVE outcome of a bulk confirmation (issue #90). `valid` is false when the bound selection-set version is stale (invalidated by a set/evidence change), in which case NOTHING is authorized and `items` is empty. When `valid`, each executable member is durably authorized through the same §8.4 individual-confirm path and reported in `items` with an explicit per-item state; blocked/warning members are `excluded` and never execute. `executionPending` is true only when at least one member now carries a durable, pending execution authorization. */
+        /** @description The AUTHORITATIVE outcome of a bulk confirmation (issue #90). `valid` is false when the bound selection-set version is stale (invalidated by a set/evidence change), in which case NOTHING is authorized and `items` is empty. When `valid`, each executable member is durably authorized through the same §8.4 individual-confirm path and reported in `items` with an explicit per-item state; blocked/warning members are `excluded` and never execute. `executionPending` is true only when at least one member carries a LIVE, still-unresolved execution authorization (approved, revalidating, or executing). It is NOT implied by an authorized item: a resume whose members have all reached an external result (accepted, rejected, failed, or pending_reconciliation) reports `already_authorized` per item — the authorization is sealed — with `executionPending` false, because nothing is in flight. */
         BulkApprovalConfirmResult: {
             /** Format: uuid */
             selectionSetLineage: string;
@@ -2403,12 +2411,15 @@ export interface components {
              */
             currentVersion?: number;
             valid: boolean;
+            /** @description True only while at least one member carries a LIVE, still-unresolved execution authorization (approved / revalidating / executing). False once every member's write has produced an external result, even though those members still report `already_authorized`. It is derived from each member's FRESHLY read state, so a confirmation that lost a race to a concurrent one still reports the winner's in-flight write as pending. */
             executionPending: boolean;
             /** @description One durable result per member of the bound version. Empty when the confirmation is invalid (nothing authorized). */
             items: components["schemas"]["BulkApprovalItemResult"][];
         };
         /**
-         * @description A per-member bulk-confirmation outcome (issue #90). Only `authorized` and `already_authorized` mean the member carries a durable authorization + execution intent; every other state means the member did NOT execute this call. `failed` is a TRANSIENT failure a resume (re-confirm) retries; the other terminal states are not retried into execution.
+         * @description A per-member bulk-confirmation outcome (issue #90). Only `authorized` and `already_authorized` mean the member carries a durable authorization + execution intent; every other state means the member did NOT execute this call. `failed` means this call neither authorized the member nor voided an authorization: either a TRANSIENT failure (the authorization rolled back, the card is still a live control) or an outcome that could not be DETERMINED (its state re-read failed). Both are resume-safe — a re-confirm retries the live control and re-derives an undetermined outcome. A member that a CONCURRENT confirmation durably approved is never `failed`; it is `already_authorized`. The other terminal states are not retried into execution.
+         *     BULK-PROTOCOL DESIGN RECORD (c) — IDEMPOTENCY-KEY SCHEME. A bulk confirmation mints NO bulk-specific idempotency key. Each member is authorized through the SAME §8.4 individual-confirm path, so the durable idempotency key is the MEMBER CARD's own key — derived from its APR-001 binding (action id + parameter version + context version + policy / cost-profile / evidence versions), unique per card, and the same key the individual confirmation and the downstream execution use. The durable execution intent is unique by card id, so a replayed bulk confirmation collapses to at most ONE authorization and ONE intent per member. A resume is therefore safe by construction and requires no client-supplied request id: re-confirming the same (lineage, version) pair re-derives the same per-member keys.
+         *     `already_authorized` is the SEALED authorization outcome: it is reported for a member whose control was activated by ANOTHER confirmation — a prior one (a resume) or a CONCURRENT one that committed first (a double-clicked confirm, or a client retry of a confirmation whose response was lost) — INCLUDING one whose card has since advanced downstream (revalidating, executing, or a terminal external result — accepted, rejected, pending_reconciliation, failed). The member state behind this outcome is read FRESH at report time, so a member the race durably approved reports a sealed authorization with `executionPending` true, never a failure. Re-attempting a member whose EXECUTION failed is the reconciliation-gated retry path's decision (an unknown result must reconcile first; only a definitively reconciled failure is retry-eligible, EXE-003), never a second bulk authorization.
          * @enum {string}
          */
         BulkApprovalItemState: "authorized" | "already_authorized" | "excluded" | "invalidated" | "failed";
@@ -2761,6 +2772,11 @@ export interface components {
             id: string;
             /** Format: uuid */
             recommendationId: string;
+            /**
+             * Format: uuid
+             * @description The variant this action's recommendation is for. ADDITIVE and optional (an existing client may ignore it). It is what lets a bulk-approval surface build a selection-set member — which requires the PAIR (variantId, recommendationId) — from ONE bounded actions read instead of an N+1 per-action recommendation fan-out. It is server-derived from the recommendation, never a client assertion.
+             */
+            variantId?: string;
             /** Format: int64 */
             version: number;
             state: components["schemas"]["ApprovalState"];
@@ -2778,8 +2794,13 @@ export interface components {
             /** @description The EXE-005 state; present ONLY for a `recommend_only` action. */
             recommendOnlyState?: components["schemas"]["RecommendOnlyState"];
         };
+        /** @description One BOUNDED page of the actions queue (§17 bounded reads). `items` carries this page; `hasMore` and `nextCursor` carry its truthful completeness — `hasMore` is true when more matching actions exist beyond this page, and `nextCursor` is the opaque token to pass back as `cursor` to fetch them (null/absent on the last page). Both are ADDITIVE and optional so an existing client keeps working; a client that ignores them sees only the first page and must not treat it as the whole queue. */
         ActionList: {
             items: components["schemas"]["ActionSummary"][];
+            /** @description True when more matching actions exist beyond this page (a further page can be fetched with `nextCursor`). False on the last page. */
+            hasMore?: boolean;
+            /** @description Opaque keyset continuation token for the next (older) page; null when `hasMore` is false. Pass it back verbatim as the `cursor` query param. */
+            nextCursor?: string | null;
         };
         /** @description One row of the outcomes queue (OUT-001, PD-3 item 5). */
         OutcomeSummary: {
@@ -4722,9 +4743,12 @@ export interface operations {
         parameters: {
             query: {
                 marketplaceAccountId: string;
-                /** @description Optional §8.4 state filter. */
+                /** @description Optional §8.4 state filter. It is AUTHORITATIVE and applied to the current (greatest-version) lineage head BEFORE the page bound, so a page bounds MATCHING actions — never an unfiltered newest-N prefix. */
                 state?: components["schemas"]["ApprovalState"];
+                /** @description Maximum actions to return in this page. Optional: when omitted the server applies a conservative default (200). A value ABOVE the hard maximum (500) is REJECTED with a 400 — it is never silently clamped, because a clamped page is indistinguishable from a complete one. The valid range is 1..500 (`minimum`/`maximum` below); omit the parameter to take the default rather than sending a value below 1. Use `hasMore`/`nextCursor` to read beyond one page. */
                 limit?: number;
+                /** @description Opaque keyset continuation token from a previous response's `nextCursor`. Encodes the `(createdAt, id)` position and the owning account; the server reads STRICTLY OLDER matching rows under the same account. A malformed, tampered, or foreign-account cursor is rejected with a 400 — the cursor is only a position, the account predicate remains the authorization. Omit for the first (newest) page. The position is taken over the CURRENT card version's `(createdAt, id)`: a lineage that mints a newer version after this cursor was issued sorts NEWER than the cursor and appears on a refreshed first page rather than on the next page — re-read from the first page to observe it. */
+                cursor?: string;
             };
             header?: never;
             path?: never;

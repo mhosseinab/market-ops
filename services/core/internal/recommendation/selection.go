@@ -66,6 +66,12 @@ func (s *Service) CreateSelectionSet(ctx context.Context, in SelectionSetInput) 
 	if err := q.LockApprovalLineage(ctx, in.Lineage); err != nil {
 		return db.SelectionSet{}, err
 	}
+	// Tenant isolation (issue #90, §4.6): the SAME claim-or-verify gate the preview
+	// path uses, under the SAME held lineage lock and before any version is minted —
+	// there is no weaker minting path into a foreign lineage.
+	if err := s.claimLineageOwnership(ctx, q, "create_selection_set", in.Lineage, in.Account); err != nil {
+		return db.SelectionSet{}, err
+	}
 	set, err := sealSelectionVersion(ctx, q, in.Account, in.Lineage, in.Name, in.Criteria, nil, in.AggregateImpact)
 	if err != nil {
 		return db.SelectionSet{}, err

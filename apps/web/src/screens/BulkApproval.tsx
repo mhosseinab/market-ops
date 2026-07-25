@@ -11,31 +11,55 @@ import { SectionError } from "../components/SectionError";
 import { ViewState } from "../components/ViewState";
 import { classifyDisposition, type Disposition } from "../data/disposition";
 import { formatCount } from "../data/format";
-import { queryKeys, useBulkConfirm, useObservationTargets, useObservedOffers } from "../data/hooks";
+import {
+  queryKeys,
+  useAwaitingConfirmationActions,
+  useBulkConfirm,
+  useObservationTargets,
+  useObservedOffers,
+  useSelectionPreview,
+} from "../data/hooks";
 import { offerRowKey, offersByTargetId } from "../data/offers";
 import type {
   BulkApprovalConfirmResult,
+  BulkApprovalItemResult,
+  BulkApprovalItemState,
   MarginReadiness,
   MarginReadinessState,
   ObservationTarget,
   ObservedOffer,
+  SelectionSetMemberView,
 } from "../data/types";
 
 // Bulk preview & approval (design screen 4 / journey 3, CHAT-050/052): a filtered
-// candidate set → a NAMED, VERSIONED selection set → a preview that separates
-// executable / warning / blocked → a confirmation BOUND to the previewed
-// selection-set version. The never-cut invariant this surface carries (mirroring
-// the individual ApprovalCard at the set level, APR-001): ANY change to the set or
-// its filters mints a new version, which invalidates the preview and disables the
-// approve control until a fresh preview is taken; the confirm payload carries the
-// bound version verbatim and the server re-verifies it. Blocked candidates are
-// shown but NEVER force-included. Free text / Enter can never confirm.
+// candidate set → a NAMED, VERSIONED selection set MINTED BY THE SERVER → a preview
+// that separates executable / warning / blocked → a confirmation BOUND to exactly
+// that server-minted version. The never-cut invariant this surface carries
+// (mirroring the individual ApprovalCard at the set level, APR-001): ANY change to
+// the set or its filters invalidates the preview and disables the approve control
+// until a fresh preview is taken; the confirm payload carries the SERVER's lineage
+// and version verbatim and the server re-verifies both. Blocked candidates are shown
+// but NEVER force-included. Free text / Enter can never confirm.
 //
-// The P0 gateway exposes no selection-set / preview endpoint, so the selection-set
-// lineage + version are synthesized client-side and per-item from/to/movement +
-// aggregate policy math are rendered explicitly unavailable (carry-forward for
-// api_data_contracts). Disposition is DISPLAYED from the core's own readiness +
-// quality verdicts (classifyDisposition) — no money is recomputed here.
+// Selection identity is SERVER-OWNED (issue #90). This screen previously synthesized
+// the selection-set lineage with crypto.randomUUID() and counted versions locally,
+// so the confirm payload named a lineage that matched no row and the approve button
+// could not succeed against a real backend. It now POSTs its filtered membership to
+// /selection-sets/preview and binds the confirmation to the returned (lineageId,
+// version) pair. The browser contributes MEMBERSHIP ONLY: the version, the
+// membership fingerprint, and every member's disposition are resolved server-side
+// from the members' own persisted recommendations, and the per-item results rendered
+// after a confirmation are the server's authoritative `result.items` — never a
+// client reconstruction.
+//
+// A member is the PAIR (variantId, recommendationId), so a candidate can only be
+// included when the account's actions queue shows a live control-bearing card for
+// its variant; a candidate with no such card is shown but never sent. Per-item
+// from/to/movement + aggregate policy math the P0 contract does not expose to a bulk
+// candidate stay explicitly unavailable (carry-forward for api_data_contracts).
+// Pre-preview disposition is DISPLAYED from the core's own readiness + quality
+// verdicts (classifyDisposition) — advisory only, never authoritative, and no money
+// is recomputed here.
 //
 // Bounded fan-out (issue #245, mirroring #75/Products.tsx): readiness is fetched
 // per variant and the P0 contract exposes no batch/paginated readiness endpoint,
@@ -72,6 +96,10 @@ const READINESS_FILTERS: readonly { id: MarginReadinessState; labelKey: MessageK
 interface Candidate {
   readonly target: ObservationTarget;
   readonly offer?: ObservedOffer;
+  // The live control-bearing card's recommendation for this candidate's variant,
+  // from the account's actions queue. Absent ⇒ there is nothing to authorize, so the
+  // candidate can never be a selection member (it is shown, never sent).
+  readonly recommendationId?: string;
   readonly readiness?: MarginReadiness;
   // When the row's readiness query FAILED, the disposition is left undefined —
   // an errored load is never coerced into an authoritative verdict (error ≠
@@ -95,11 +123,26 @@ function candidateSlug(c: Candidate): string {
   return c.offer ? c.offer.offerIdentity : String(c.target.nativeVariantId);
 }
 
-function newLineage(): string {
-  const c = globalThis.crypto;
-  if (c && typeof c.randomUUID === "function") return c.randomUUID();
-  return `sel-${Date.now()}`;
-}
+// Per-item result copy, keyed by the SERVER's BulkApprovalItemState. Every state the
+// contract can return has an explicit entry, so a state can never render blank or be
+// silently treated as success. Canonical glossary terms are REUSED, never duplicated
+// under a bulk-specific key: `invalidated` and `failed` are the same §8.4 states the
+// rest of the app renders, so they read from `state.*` (design/README.md glossary is
+// the single source for state copy). `excluded` likewise reuses its existing term.
+const ITEM_STATE_META: Record<BulkApprovalItemState, { tone: string; labelKey: MessageKey }> = {
+  authorized: { tone: "pos", labelKey: "bulk.result.state.authorized" },
+  already_authorized: { tone: "pos", labelKey: "bulk.result.state.alreadyAuthorized" },
+  excluded: { tone: "info", labelKey: "bulk.result.excluded" },
+  invalidated: { tone: "warn", labelKey: "state.invalidated" },
+  failed: { tone: "risk", labelKey: "state.failed" },
+};
+
+// The item states that mean the SERVER durably authorized the member. The post-confirm
+// summary counts these, never a locally reconstructed number.
+const AUTHORIZED_ITEM_STATES: readonly BulkApprovalItemState[] = [
+  "authorized",
+  "already_authorized",
+];
 
 // Named cell (Products.tsx pattern): single-element render. The observed raw price
 // (LTR evidence) when present, else an explicit unavailable node — never blanked.
@@ -114,7 +157,21 @@ export function BulkApproval() {
   const { locale } = useLocale();
   const targetsQuery = useObservationTargets();
   const offersQuery = useObservedOffers();
+  const actionsQuery = useAwaitingConfirmationActions();
+  const selectionPreview = useSelectionPreview();
   const bulkConfirm = useBulkConfirm();
+
+  // variantId → the live control-bearing card's recommendation. The actions queue is
+  // the authoritative source of the (variantId, recommendationId) pairs a selection
+  // member is made of; a row it does not cover has no approval control and is never
+  // sent as a member.
+  const recommendationByVariant = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const a of actionsQuery.data?.items ?? []) {
+      if (a.variantId) map.set(a.variantId, a.recommendationId);
+    }
+    return map;
+  }, [actionsQuery.data]);
 
   const targets = useMemo(() => targetsQuery.data?.items ?? [], [targetsQuery.data]);
 
@@ -164,19 +221,27 @@ export function BulkApproval() {
     return map;
   }, [pageTargets, readinessQueries]);
 
-  // The versioned selection set. `version` bumps on ANY membership/filter mutation;
-  // `previewedVersion` pins the version the current preview (and any approve
-  // control) is bound to. `lineage` is stable for the screen session.
-  const [lineage] = useState(newLineage);
-  const [version, setVersion] = useState(1);
-  const [previewedVersion, setPreviewedVersion] = useState<number | null>(null);
+  // `revision` counts LOCAL selection mutations (membership, filters, page). It is
+  // NOT a selection-set version — the server mints those. Its only job is to detect
+  // that the local selection has drifted from the previewed one, which invalidates
+  // the approve control until a fresh server preview is taken.
+  const [revision, setRevision] = useState(1);
+  // `selection` is the SERVER's minted selection set: its lineage, its version, its
+  // sealed membership, and the local revision it was taken at. A confirmation binds
+  // to selection.lineageId + selection.version verbatim.
+  const [selection, setSelection] = useState<{
+    readonly lineageId: string;
+    readonly version: number;
+    readonly members: readonly SelectionSetMemberView[];
+    readonly revision: number;
+  } | null>(null);
   const [readinessFilter, setReadinessFilter] = useState<MarginReadinessState | null>(null);
   const [excluded, setExcluded] = useState<ReadonlySet<string>>(new Set());
   const [result, setResult] = useState<BulkApprovalConfirmResult | null>(null);
 
   function mutateSet(fn: () => void) {
     fn();
-    setVersion((v) => v + 1);
+    setRevision((v) => v + 1);
     setResult(null);
   }
 
@@ -194,8 +259,15 @@ export function BulkApproval() {
       for (const offer of offerList) {
         // A FAILED readiness load is left unclassified — never fabricated into a
         // "missing cost" blocked verdict (error ≠ absence, issue #81/#245).
+        const recommendationId = recommendationByVariant.get(target.variantId);
         if (query?.isError) {
-          rows.push({ target, offer, readiness: undefined, readinessFailed: true });
+          rows.push({
+            target,
+            offer,
+            recommendationId,
+            readiness: undefined,
+            readinessFailed: true,
+          });
           continue;
         }
         const readiness = query?.data;
@@ -203,6 +275,7 @@ export function BulkApproval() {
         rows.push({
           target,
           offer,
+          recommendationId,
           readiness,
           readinessFailed: false,
           disposition: d.disposition,
@@ -211,7 +284,7 @@ export function BulkApproval() {
       }
     }
     return rows.filter((c) => !readinessFilter || c.readiness?.state === readinessFilter);
-  }, [pageTargets, offersByTarget, readinessByTargetId, readinessFilter]);
+  }, [pageTargets, offersByTarget, readinessByTargetId, readinessFilter, recommendationByVariant]);
 
   // Membership: a candidate (one offer identity) is IN the set unless explicitly
   // excluded; a blocked candidate is NEVER counted as executable regardless of
@@ -234,7 +307,56 @@ export function BulkApproval() {
     return { executable, warning, blocked };
   }, [candidates, excluded]);
 
-  const previewValid = previewedVersion !== null && previewedVersion === version;
+  // The approve control is live ONLY while the server-minted selection still
+  // describes the local selection. Any local mutation bumps `revision` and the
+  // previewed selection goes stale — the control disables until a fresh server
+  // preview is taken (APR-001 at the set level).
+  const previewValid = selection !== null && selection.revision === revision;
+  const previewStale = selection !== null && selection.revision !== revision;
+
+  // The membership POSTed to the server: included, classified, non-blocked
+  // candidates that have a live control-bearing card. Deduplicated by
+  // recommendation, since sibling offer identities on one target share one variant
+  // and therefore one approval control.
+  const memberPayload = useMemo(() => {
+    const byRecommendation = new Map<string, { variantId: string; recommendationId: string }>();
+    for (const c of candidates) {
+      if (c.readinessFailed || c.disposition === undefined || c.disposition === "blocked") continue;
+      if (excluded.has(candidateKey(c)) || !c.recommendationId) continue;
+      byRecommendation.set(c.recommendationId, {
+        variantId: c.target.variantId,
+        recommendationId: c.recommendationId,
+      });
+    }
+    return [...byRecommendation.values()];
+  }, [candidates, excluded]);
+
+  // The server's authoritative per-item outcome, keyed by recommendation. Rendering
+  // reads THIS, never a reconstruction from local candidate state.
+  const resultByRecommendation = useMemo(() => {
+    const map = new Map<string, BulkApprovalItemResult>();
+    for (const item of result?.items ?? []) map.set(item.recommendationId, item);
+    return map;
+  }, [result]);
+
+  // The post-confirm summary is SERVER-authoritative (issue #90 fix cycle 1, F8):
+  // it counts the items the server actually reported as authorized. Announcing the
+  // local `counts.executable` overstated a partial failure — every member the server
+  // invalidated or failed was still announced as approved.
+  const authorizedCount = useMemo(
+    () => (result?.items ?? []).filter((i) => AUTHORIZED_ITEM_STATES.includes(i.state)).length,
+    [result],
+  );
+
+  // The aggregate note is gated on the SERVER's authorized count, not on
+  // `executionPending` (issue #90 fix cycle 2, C4). A resume whose members have all
+  // reached a terminal external result is valid, authorized, and NOT pending — gating
+  // on pending left that (newly reachable) state with no aggregate rendering at all.
+  // The copy carries the distinction the flag makes: in flight vs settled.
+  const summaryKey: MessageKey = result?.executionPending
+    ? "bulk.result.recommendOnly"
+    : "bulk.result.settled";
+
   const unavailable = t("common.notAvailable");
 
   const columns: readonly Column<Candidate>[] = [
@@ -327,20 +449,27 @@ export function BulkApproval() {
     {
       id: "result",
       header: "bulk.col.result",
+      // The AUTHORITATIVE per-item outcome, read from the server's response items
+      // and keyed by recommendation (issue #90). The client no longer infers a
+      // result from its own candidate state: a row that the server did not report
+      // on is explicitly "not in the selection set", never an assumed success.
       render: (c) => {
         if (!result?.valid) return <LtrToken text="—" />;
-        if (c.disposition === "blocked" || !included(candidateKey(c)))
+        const item = c.recommendationId
+          ? resultByRecommendation.get(c.recommendationId)
+          : undefined;
+        if (!item) {
           return (
             <span className="muted" data-testid="result-excluded">
-              {t("bulk.result.excluded")}
+              {t("bulk.result.notAMember")}
             </span>
           );
-        if (c.disposition !== "executable")
-          return <span className="muted">{t("bulk.result.excluded")}</span>;
+        }
+        const meta = ITEM_STATE_META[item.state];
         return (
-          <span className="sm-state" data-tone="info" data-testid="result-item">
+          <span className="sm-state" data-tone={meta.tone} data-testid={`result-${item.state}`}>
             <span className="badge__dot" aria-hidden />
-            {t("bulk.result.awaitingExternal")}
+            {t(meta.labelKey)}
           </span>
         );
       },
@@ -377,27 +506,100 @@ export function BulkApproval() {
         skeletonRows={4}
       >
         <BulkToolbar
-          lineage={lineage}
-          version={version}
-          previewedVersion={previewedVersion}
+          lineage={selection?.lineageId ?? null}
+          version={selection?.version ?? null}
+          previewValid={previewValid}
+          stale={previewStale}
           counts={counts}
           aggregateImpact={<span className="muted">{unavailable}</span>}
           maxMovement={<span className="muted">{unavailable}</span>}
           exclusions={<span>{formatCount(counts.blocked, locale)}</span>}
           confirmPending={bulkConfirm.isPending}
+          previewPending={selectionPreview.isPending}
           onPreview={() => {
+            // The SERVER mints the selection set: this POSTs the membership only and
+            // pins whatever lineage + version comes back. Refreshing an existing
+            // lineage mints its NEXT version server-side — the browser never counts.
             setResult(null);
-            setPreviewedVersion(version);
+            const revisionAtPreview = revision;
+            selectionPreview.mutate(
+              {
+                name: "bulk-approval",
+                ...(selection ? { lineageId: selection.lineageId } : {}),
+                criteria: readinessFilter ? { readiness: readinessFilter } : {},
+                members: memberPayload,
+              },
+              {
+                onSuccess: (r) =>
+                  setSelection({
+                    lineageId: r.lineageId,
+                    version: Number(r.version),
+                    members: r.members,
+                    revision: revisionAtPreview,
+                  }),
+              },
+            );
           }}
           onApprove={() => {
-            if (previewedVersion === null) return;
+            // Bound to EXACTLY the server-minted identity. Without a server preview
+            // there is nothing to bind to and no request is made — a client-minted
+            // lineage/version can never reach the confirm endpoint.
+            if (!selection || !previewValid) return;
             setResult(null);
             bulkConfirm.mutate(
-              { selectionSetLineage: lineage, boundVersion: previewedVersion },
+              {
+                selectionSetLineage: selection.lineageId,
+                boundVersion: selection.version,
+              },
               { onSuccess: (r) => setResult(r) },
             );
           }}
         />
+
+        {memberPayload.length === 0 ? (
+          <p className="muted" role="status" data-testid="bulk-preview-empty">
+            {t("bulk.preview.empty")}
+          </p>
+        ) : null}
+
+        {selectionPreview.isPending ? (
+          <p className="muted" role="status" data-testid="bulk-preview-pending">
+            {t("bulk.preview.pending")}
+          </p>
+        ) : null}
+
+        {selectionPreview.isError ? (
+          <SectionError
+            titleKey="bulk.preview.error.title"
+            bodyKey="bulk.preview.error.body"
+            testId="bulk-preview-error"
+            onRetry={() => selectionPreview.reset()}
+          />
+        ) : null}
+
+        {bulkConfirm.isError ? (
+          <SectionError
+            titleKey="bulk.confirm.error.title"
+            bodyKey="bulk.confirm.error.body"
+            testId="bulk-confirm-error"
+            onRetry={() => bulkConfirm.reset()}
+          />
+        ) : null}
+
+        {actionsQuery.isError ? (
+          <SectionError
+            titleKey="bulk.preview.error.title"
+            bodyKey="bulk.preview.error.body"
+            testId="bulk-actions-error"
+            onRetry={() => void actionsQuery.refetch()}
+          />
+        ) : null}
+
+        {actionsQuery.data?.hasMore ? (
+          <p className="muted" data-testid="bulk-candidates-incomplete">
+            {t("bulk.candidates.incomplete")}
+          </p>
+        ) : null}
 
         {result && !result.valid ? (
           <div className="banner banner--warn" role="alert" data-testid="bulk-stale-result">
@@ -408,10 +610,10 @@ export function BulkApproval() {
           </div>
         ) : null}
 
-        {result?.valid && result.executionPending ? (
+        {result?.valid && authorizedCount > 0 ? (
           <p className="success-note" data-testid="bulk-recommend-only">
-            {t("bulk.result.recommendOnly", {
-              count: formatCount(counts.executable, locale),
+            {t(summaryKey, {
+              count: formatCount(authorizedCount, locale),
             })}
           </p>
         ) : null}

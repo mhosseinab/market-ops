@@ -21,13 +21,20 @@ class BulkApprovalConfirmResult:
     is stale (invalidated by a set/evidence change), in which case NOTHING is authorized and `items` is empty. When
     `valid`, each executable member is durably authorized through the same §8.4 individual-confirm path and reported in
     `items` with an explicit per-item state; blocked/warning members are `excluded` and never execute.
-    `executionPending` is true only when at least one member now carries a durable, pending execution authorization.
+    `executionPending` is true only when at least one member carries a LIVE, still-unresolved execution authorization
+    (approved, revalidating, or executing). It is NOT implied by an authorized item: a resume whose members have all
+    reached an external result (accepted, rejected, failed, or pending_reconciliation) reports `already_authorized` per
+    item — the authorization is sealed — with `executionPending` false, because nothing is in flight.
 
         Attributes:
             selection_set_lineage (UUID):
             bound_version (int):
             valid (bool):
-            execution_pending (bool):
+            execution_pending (bool): True only while at least one member carries a LIVE, still-unresolved execution
+                authorization (approved / revalidating / executing). False once every member's write has produced an external
+                result, even though those members still report `already_authorized`. It is derived from each member's FRESHLY
+                read state, so a confirmation that lost a race to a concurrent one still reports the winner's in-flight write as
+                pending.
             items (list[BulkApprovalItemResult]): One durable result per member of the bound version. Empty when the
                 confirmation is invalid (nothing authorized).
             current_version (int | Unset): The current selection-set version (differs from bound when stale).
