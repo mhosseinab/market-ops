@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   nextRevocationAttemptAt,
+  REVOCATION_PENDING_MAX_AGE_MS,
   REVOCATION_RETRY_CEILING_MS,
+  revocationPendingAgeExceeded,
   revocationRetryDelayMs,
   revocationRetryDue,
 } from "./revocation-backoff";
@@ -92,5 +94,47 @@ describe("revocation retry backoff (#149 F3) — bounded, jittered, capped", () 
     const next = nextRevocationAttemptAt(1, CRED_A, now);
     expect(Date.parse(next)).toBeGreaterThan(now);
     expect(new Date(next).toISOString()).toBe(next); // JSON-safe, canonical
+  });
+});
+
+// Issue #149, fix 3: the pending marker needs a DURABLE AGE BOUND as well as an
+// attempt budget. The attempt budget only advances when a request was actually
+// made and came back non-authoritative, so a device with ZERO server contact
+// (offline, or a forced user retry that must not consume the authoritative
+// budget) could hold the marker — and therefore block re-pairing — indefinitely.
+//
+// A clock-driven transition INTO the "could not confirm" quarantine is SAFE and
+// permitted: it never claims a revocation happened. What the device clock may
+// never produce is a terminal `revoked` (G1) — that invariant is untouched here.
+describe("pending-revocation AGE bound (#149 fix 3) — bounded even with zero server contact", () => {
+  const requestedAt = "2026-07-01T00:00:00.000Z";
+  const t0 = Date.parse(requestedAt);
+
+  it("is NOT exceeded inside the window, and IS exceeded once past it", () => {
+    const p = pending({ requestedAt, attempts: 0 });
+    expect(revocationPendingAgeExceeded(p, t0)).toBe(false);
+    expect(revocationPendingAgeExceeded(p, t0 + REVOCATION_PENDING_MAX_AGE_MS - 1)).toBe(false);
+    expect(revocationPendingAgeExceeded(p, t0 + REVOCATION_PENDING_MAX_AGE_MS)).toBe(true);
+    expect(revocationPendingAgeExceeded(p, t0 + 10 * REVOCATION_PENDING_MAX_AGE_MS)).toBe(true);
+  });
+
+  it("the bound is finite and durable-record-derived (requestedAt), not attempt-derived", () => {
+    expect(Number.isFinite(REVOCATION_PENDING_MAX_AGE_MS)).toBe(true);
+    expect(REVOCATION_PENDING_MAX_AGE_MS).toBeGreaterThan(0);
+    // Zero attempts ever made — the attempt budget can never fire here, which is
+    // exactly the case this bound exists for.
+    expect(revocationPendingAgeExceeded(pending({ requestedAt, attempts: 0 }), t0 + 1)).toBe(false);
+  });
+
+  it("FAILS CLOSED on an absent/unparseable requestedAt — never abandons a marker on bad data", () => {
+    // Fail closed here means "keep retrying", i.e. NOT exceeded: the marker
+    // stays live rather than being quarantined on unreadable bookkeeping.
+    for (const bad of ["", "not-a-date", undefined as unknown as string]) {
+      expect(revocationPendingAgeExceeded(pending({ requestedAt: bad }), Date.now())).toBe(false);
+    }
+  });
+
+  it("a clock skewed BACKWARD never trips the bound", () => {
+    expect(revocationPendingAgeExceeded(pending({ requestedAt }), t0 - 1_000_000)).toBe(false);
   });
 });

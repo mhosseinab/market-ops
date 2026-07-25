@@ -67,6 +67,16 @@ export const KEY_LAST_UPLOAD = "lastUploadAt";
 // credential material stays in KEY_CREDENTIAL (one store for the secret), which
 // is exactly why a failed revoke must NOT clear that key.
 export const KEY_REVOCATION_PENDING = "revocationPending";
+// Durable QUARANTINE record for a revocation that could not be confirmed (issue
+// #149, fix 3). Distinct from KEY_REVOCATION_PENDING on purpose:
+//   - the pending marker BLOCKS re-pairing; the quarantine record must NOT, so a
+//     user is never locked out of the extension by an authority that never
+//     answered;
+//   - it holds the credential MATERIAL, because the quarantined revoke keeps
+//     retrying — silently discarding the credential is what defeated EXT-009.
+// It is JSON-safe so it survives an MV3 worker restart byte-identically, and it
+// is walked by the storage audit exactly like KEY_CREDENTIAL.
+export const KEY_REVOCATION_UNCONFIRMED = "revocationUnconfirmed";
 // Durable operational-telemetry outbox (issue #162): bounded, allow-listed metric
 // snapshots that must survive an MV3 worker restart and be exported to an
 // operational sink. Persisted here so the storage audit walks it too — a batch
@@ -82,6 +92,24 @@ const ALLOWED_CREDENTIAL_KEYS = new Set([
   "credentialId",
   "marketplaceAccountId",
   "expiresAt",
+]);
+
+// The ONLY fields of the unconfirmed-revocation quarantine record (issue #149).
+// It carries the credential MATERIAL (the quarantined revoke keeps retrying with
+// it), so it is allow-list-audited exactly like the stored credential — a new
+// home for a secret must never escape the storage audit.
+const ALLOWED_UNCONFIRMED_REVOCATION_KEYS = new Set([
+  "credential",
+  "credentialId",
+  "marketplaceAccountId",
+  "credentialExpiresAt",
+  "requestedAt",
+  "attempts",
+  "evidence",
+  // The persisted backoff schedule. It is NOT decorative: without it the
+  // quarantined retry would fall back to one gateway request per alarm tick per
+  // extension — the thundering herd the pending marker's backoff already closed.
+  "nextAttemptAt",
 ]);
 
 // Field-name shapes that would indicate a seller-API / long-lived token slipped
@@ -129,6 +157,18 @@ export function auditNoSellerToken(snapshot: Record<string, unknown>): string[] 
     for (const key of Object.keys(cred as object)) {
       if (!ALLOWED_CREDENTIAL_KEYS.has(key)) {
         offenders.push(`${KEY_CREDENTIAL}.${key} (not an allow-listed capture-credential field)`);
+      }
+    }
+  }
+  // The quarantine record is the OTHER place credential material lives (#149),
+  // so it gets the same allow-list treatment — never a weaker one.
+  const quarantined = snapshot[KEY_REVOCATION_UNCONFIRMED];
+  if (quarantined && typeof quarantined === "object") {
+    for (const key of Object.keys(quarantined as object)) {
+      if (!ALLOWED_UNCONFIRMED_REVOCATION_KEYS.has(key)) {
+        offenders.push(
+          `${KEY_REVOCATION_UNCONFIRMED}.${key} (not an allow-listed quarantined-revocation field)`,
+        );
       }
     }
   }
@@ -182,6 +222,35 @@ export interface PendingRevocation {
   serverContacted?: boolean;
 }
 
+// A revocation the authority NEVER evidenced, moved into QUARANTINE (issue
+// #149, fix 3). Unlike PendingRevocation it DOES carry the credential material:
+// the quarantined revoke keeps retrying, and the alternative — silently
+// discarding the credential — is exactly the EXT-009 defeat #149 is about (the
+// server row may still be live for its remaining TTL).
+//
+// Every field is allow-listed by ALLOWED_UNCONFIRMED_REVOCATION_KEYS above and
+// JSON-safe, so the record survives an MV3 worker restart byte-identically.
+export interface UnconfirmedRevocation {
+  // The capture credential the retry must present. NEVER a seller-API token
+  // (EXT-001) — it is the same material KEY_CREDENTIAL held, just relocated.
+  credential: string;
+  credentialId: string;
+  marketplaceAccountId: string;
+  // The credential's authoritative server-side expiry. At/after it the
+  // credential cannot authenticate anything, so the quarantine record is
+  // discarded — with its own metric + log and a state transition, never
+  // silently.
+  credentialExpiresAt: string;
+  requestedAt: string;
+  attempts: number;
+  // The BOUNDED, locale-neutral evidence token from the last attempt (see
+  // gateway.ts RevocationEvidence), so telemetry can tell a deploy-window
+  // unconfirmed from an unreachable authority. Never an interpolated status.
+  evidence: string;
+  // The persisted backoff schedule, carried over from the pending marker.
+  nextAttemptAt?: string;
+}
+
 // A queued upload item: the allow-listed capture, its stable dedup key, and the
 // retry bookkeeping. Persisted verbatim so an offline replay after a browser
 // restart is byte-identical (idempotent).
@@ -233,4 +302,10 @@ export interface PopupState {
   // retry or discard. A non-empty list is a VISIBLE, real degradation surface
   // (EXT-009) — never a silent drop.
   deadLetter: DeadLetterSummary[];
+  // Issue #149, fix 3: an unconfirmed revocation is still outstanding in
+  // quarantine. A BOUNDED boolean, never free text. It stays true after a
+  // RE-PAIR (when `capability` is `ready` again and `degradation` is null), so
+  // the fact that some earlier credential may still be live at the authority
+  // never becomes invisible.
+  revocationUnconfirmed: boolean;
 }

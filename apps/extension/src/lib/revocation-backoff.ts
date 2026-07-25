@@ -44,6 +44,38 @@ const MAX_EXPONENT = 20;
 // `credential_revocation{outcome:"abandoned_unconfirmed"}` metric.
 export const REVOCATION_MAX_ATTEMPTS = 48;
 
+// The DURABLE AGE BOUND on a pending revocation (issue #149, fix 3).
+//
+// The attempt budget above is clock-independent, which is its virtue and its
+// gap: it only advances when a real request was MADE and came back
+// non-authoritative. A device with ZERO server contact — offline, or one whose
+// forced user retries correctly do not consume the authoritative budget — could
+// therefore hold the pending marker forever, and the pending marker BLOCKS
+// re-pairing. A user must never be locked out of the extension by an authority
+// that never answered.
+//
+// So the marker also ages out, measured from the durable `requestedAt`. The
+// resulting transition is INTO the "could not confirm" quarantine, which claims
+// nothing about the server: the credential material is retained there and the
+// revoke keeps retrying. That is why a clock-driven transition is safe HERE
+// while a clock-driven terminal `revoked` remains forbidden (G1).
+//
+// 24 hours is chosen deliberately: it is comfortably longer than a transient
+// outage, shorter than the ~31 hours the 48-attempt budget spans under the
+// backoff above, and both bounds now converge on the SAME quarantine terminal —
+// so whichever fires first, the outcome is identical and honest.
+export const REVOCATION_PENDING_MAX_AGE_MS = 24 * 60 * 60_000;
+
+// revocationPendingAgeExceeded reports whether the durable pending marker has
+// outlived REVOCATION_PENDING_MAX_AGE_MS. It FAILS CLOSED on an absent or
+// unparseable `requestedAt` — "not exceeded", i.e. keep retrying — so unreadable
+// bookkeeping can never be the reason a revoke stops being pursued.
+export function revocationPendingAgeExceeded(pending: PendingRevocation, nowMs: number): boolean {
+  const requestedAt = Date.parse(pending.requestedAt ?? "");
+  if (!Number.isFinite(requestedAt)) return false;
+  return nowMs - requestedAt >= REVOCATION_PENDING_MAX_AGE_MS;
+}
+
 // revocationAttemptsExhausted reports whether the clock-independent attempt
 // budget for an unconfirmed revocation is spent. It fails CLOSED on a
 // non-finite/absent count (a marker written by an older or partially-written

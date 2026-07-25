@@ -438,12 +438,16 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 			// An absent/revoked/expired/unknown credential fails closed with 401,
 			// which is also what makes a repeated self-revoke idempotent.
 			//
-			// 401 is LOAD-BEARING on these routes, not a generic refusal: the
-			// contract binds it to "this credential is not valid at the
-			// authority", and the extension therefore treats a 401 on
-			// /ext/pairing/self-revoke as a CONFIRMED revocation and discards
-			// its credential material. So 401 may be returned ONLY when the
-			// pairing plane authoritatively says the credential is invalid.
+			// 401 is LOAD-BEARING on these routes, not a generic refusal, and it
+			// is DISCRIMINATED (issue #149, fix 3). A bare 401 proves nothing —
+			// an unmounted route, a reverse proxy, a WAF, or a gateway build
+			// predating this route all answer 401 {"code":"NO_SESSION"}. So the
+			// client requires POSITIVE PROOF: only the branch below, reached
+			// solely on pairing.ErrInvalidCredential, answers with
+			// CAPTURE_CREDENTIAL_INVALID, and only THAT code may be read as a
+			// confirmed revocation. An ABSENT bearer keeps the generic
+			// NO_SESSION: the absence of a credential is not an authoritative
+			// statement that any credential is dead.
 			// A missing pairing plane or a TRANSIENT store failure (DB outage,
 			// pool exhaustion, statement timeout) says nothing about the
 			// credential — answering 401 there would tell the extension a
@@ -466,7 +470,10 @@ func (m *authMiddleware) wrap(next http.Handler) http.Handler {
 					writeError(w, http.StatusInternalServerError, internalErr())
 					return
 				}
-				writeError(w, http.StatusUnauthorized, noSessionErr())
+				// The pairing plane AUTHORITATIVELY judged this credential
+				// invalid. This is the only 401 on these routes that evidences
+				// revocation, so it is the only one carrying the distinct code.
+				writeError(w, http.StatusUnauthorized, captureCredentialInvalidErr())
 				return
 			}
 			ctx := context.WithValue(r.Context(), captureAccountKey, resolved.MarketplaceAccountID)

@@ -12,6 +12,7 @@ import { UploadQueue } from "../lib/queue";
 import {
   nextRevocationAttemptAt,
   revocationAttemptsExhausted,
+  revocationPendingAgeExceeded,
   revocationRetryDue,
 } from "../lib/revocation-backoff";
 import { pendingAllocationGateway, runScheduledCycle } from "../lib/schedule";
@@ -22,9 +23,11 @@ import {
   KEY_CREDENTIAL,
   KEY_LAST_UPLOAD,
   KEY_REVOCATION_PENDING,
+  KEY_REVOCATION_UNCONFIRMED,
   type PendingRevocation,
   type PopupState,
   sanitizeCredential,
+  type UnconfirmedRevocation,
 } from "../lib/storage";
 import {
   TelemetryOutbox,
@@ -72,6 +75,26 @@ const ownedTargets = new OwnedTargetIndex();
 // the temporal dead zone when the cold-start sync runs.
 let syncGeneration = 0;
 
+// In-memory fail-closed gate for a user Revoke whose DURABLE writes failed
+// (issue #149, F1). chrome.storage.local.set can reject (QUOTA_BYTES);
+// handlePair was already guarded for exactly that, while the user-initiated kill
+// switch was not — so a storage rejection left capture ENABLED, emitted no
+// telemetry, and let the next scheduled refresh keep using the credential the
+// user had just asked to revoke. Storage is precisely what is broken on that
+// path, so the gate cannot itself be durable: it is a memory-only, one-way
+// switch that can only make the capability MORE restrictive, and it is cleared
+// only by a successful re-pair. It fails closed across a worker restart too — a
+// respawn finds no credential change and simply reports whatever the (unwritten)
+// durable state says, which is never MORE permissive than before the revoke.
+let localCaptureLock = false;
+
+// The BOUNDED evidence token recorded when a pending revoke is quarantined by
+// its AGE bound rather than by an attempt's result: no attempt ever produced an
+// answer, so no per-attempt evidence exists to carry over. It sits alongside the
+// gateway's RevocationEvidence tokens in the quarantine record's `evidence`
+// field, and like them it is locale-neutral and never interpolated.
+const AGED_OUT_EVIDENCE = "unconfirmed_aged_out";
+
 void initDevErrorReporting("service-worker");
 
 // On service-worker start (cold start / re-spawn), rebuild the Confirmed-owned-
@@ -86,6 +109,13 @@ void syncOwnedTargets();
 // intention: an MV3 teardown between "user pressed Revoke" and "the authority
 // invalidated the credential" must never silently drop the kill switch.
 void retryPendingRevocationSafely();
+
+// On service-worker start, resume any revocation that has been QUARANTINED as
+// "could not confirm" (issue #149, fix 3). The quarantine is a durable state,
+// not a graveyard: the revoke keeps being retried with the quarantined
+// credential under the same bounded backoff, so a gateway that comes back (or
+// finishes its rollout) still gets to confirm the kill switch.
+void retryQuarantinedRevocationSafely();
 
 // On worker (re)spawn the in-memory metric registry is empty and any per-boot
 // gauge (e.g. queue_depth) has been lost. Re-derive queue depth from the
@@ -111,6 +141,7 @@ chrome.runtime.onStartup?.addListener(() => {
   void syncOwnedTargets();
   // A browser restart must also resume an unconfirmed revocation (#149).
   void retryPendingRevocationSafely();
+  void retryQuarantinedRevocationSafely();
 });
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === FLUSH_ALARM) {
@@ -123,6 +154,9 @@ chrome.alarms.onAlarm.addListener((a) => {
     // CLAUDE.md's load-shedding priority by letting the revocation path starve
     // the upload path.
     void retryPendingRevocationSafely();
+    // A THIRD independent chain, for the same reason: a quarantined revoke must
+    // keep being pursued, and its storage writes must never starve the others.
+    void retryQuarantinedRevocationSafely();
     void flush().then(pumpTelemetry);
   }
   if (a.name === SCHEDULE_ALARM) {
@@ -421,6 +455,10 @@ async function handlePair(code: string): Promise<ExtResponse> {
     // fingerprint check already rejects a foreign-credential result; this bump
     // additionally rejects a same-account replacement whose generation is stale.
     syncGeneration++;
+    // A successful re-pair is the ONLY thing that clears the F1 in-memory gate:
+    // the durable state has just been written successfully, so storage works and
+    // this credential is genuinely live.
+    localCaptureLock = false;
     await setCapability("ready");
     // Immediately populate the Confirmed-owned-target projection from the server
     // so passive/on-demand capture is live right after pairing — never inert
@@ -476,7 +514,33 @@ async function handleSetEnabled(enabled: boolean): Promise<ExtResponse> {
 //      it, because it is the only thing a retry can be made with;
 //   4. `revocation_pending` is reported as VISIBLY DISTINCT from `revoked` — the
 //      popup never claims a kill switch that has not actually killed anything.
+//
+// Every durable write below is GUARDED (issue #149, F1). chrome.storage.local
+// .set can reject (QUOTA_BYTES); handlePair was already guarded for exactly
+// that, while the user-initiated kill switch — the one path that must never fail
+// open — was left bare. An unguarded rejection escaped `handle().then(
+// sendResponse)`, so the popup received NO response, the capability stayed
+// `ready`, nothing was counted, and the next scheduled refresh re-synced owned
+// targets with the credential being revoked.
 async function handleRevoke(): Promise<ExtResponse> {
+  try {
+    return await revokeLocked();
+  } catch (e) {
+    // The durable record of the revoke could not be written. Fail CLOSED in
+    // memory — storage is exactly what is broken, so an in-memory gate is the
+    // only honest option — respond to the popup regardless, and COUNT it: a
+    // fallback engaging with nothing emitted is always a bug (CLAUDE.md).
+    localCaptureLock = true;
+    incr("credential_revocation", { outcome: "local_storage_error" });
+    incr("capability_transition", { to: "revocation_unconfirmed" });
+    log("error", "credential_revocation_storage_error", {
+      error: e instanceof Error ? e.message : "unknown",
+    });
+    return { ok: true, state: await safePopupState() };
+  }
+}
+
+async function revokeLocked(): Promise<ExtResponse> {
   // Invalidate every outstanding sync FIRST (issue #253): bump the generation and
   // clear the index synchronously, BEFORE the async storage writes below, so an
   // in-flight request that completes during those awaits can neither repopulate
@@ -555,6 +619,7 @@ async function handleRevoke(): Promise<ExtResponse> {
 async function settlePendingRevocation(
   pending: PendingRevocation,
   cred: PairingCredential,
+  opts: { force?: boolean } = {},
 ): Promise<void> {
   // Count the attempt BEFORE the request so a teardown mid-flight still records
   // that one was made (the marker is the durable record, not the response), and
@@ -577,6 +642,22 @@ async function settlePendingRevocation(
     return;
   }
 
+  // A FORCED (user-initiated) attempt that never reached the server does not
+  // consume the AUTHORITATIVE attempt budget (issue #149, fix 3). That budget
+  // exists to bound how long we keep asking an authority that keeps answering
+  // non-authoritatively; a transport failure is not an answer. A reviewer probe
+  // showed an OFFLINE user pressing Pair draining 47 of the 48 attempts this
+  // way — deterministic, no clock skew — turning a user's retry into the thing
+  // that ended their own revoke. The marker's own AGE bound (checked in
+  // retryPendingRevocation) is what keeps this from being unbounded.
+  const forcedWithoutContact = Boolean(opts.force) && !result.reachedServer;
+  if (forcedWithoutContact) {
+    await store.set(KEY_REVOCATION_PENDING, { ...attempted, attempts: pending.attempts });
+    incr("credential_revocation", { outcome: "forced_no_contact" });
+    log("warn", "credential_revocation_forced_no_contact", { evidence: result.evidence });
+    return;
+  }
+
   // No authoritative answer. If the credential ALSO looks expired by the device
   // clock, that changes nothing about the outcome — it is recorded only so the
   // refusal is observable. A reachable gateway answers 401 for a genuinely
@@ -591,19 +672,33 @@ async function settlePendingRevocation(
     });
   }
 
-  // The marker's HARD lifetime bound, and it is CLOCK-INDEPENDENT: the attempt
-  // count only advances when a real request came back non-authoritative. When it
-  // is spent, stop retrying and terminate into `unknown` — NEVER `revoked`,
-  // because no authority ever confirmed anything (see revocation-backoff.ts).
-  if (revocationAttemptsExhausted(attempts)) {
-    await abandonUnconfirmedRevocation(attempts);
+  // The marker's CLOCK-INDEPENDENT bound: the attempt count only advances when a
+  // real request came back non-authoritative. When it is spent, stop holding the
+  // PENDING marker and move the revoke into the "could not confirm" QUARANTINE —
+  // never `revoked` (no authority confirmed anything) and never a silent discard
+  // of the credential (the revoke keeps being retried there).
+  // …and the marker's AGE bound, applied only AFTER the attempt so an available
+  // authority is never skipped (G1). Whichever bound fires, the terminal is the
+  // same honest quarantine.
+  const aged = revocationPendingAgeExceeded(pending, Date.now());
+  if (revocationAttemptsExhausted(attempts) || aged) {
+    await quarantineUnconfirmedRevocation(
+      { ...attempted, attempts },
+      cred,
+      result.evidence,
+      aged ? "age_exceeded" : "attempts_exhausted",
+    );
     return;
   }
 
   // No authoritative answer: keep the credential material (needed to retry),
   // keep capture disabled, and stay VISIBLY pending. Never a silent success.
   incr("credential_revocation", { outcome: "pending" });
-  log("warn", "credential_revocation_pending", { attempts, reachedServer: result.reachedServer });
+  log("warn", "credential_revocation_pending", {
+    attempts,
+    reachedServer: result.reachedServer,
+    evidence: result.evidence,
+  });
 }
 
 // finalizeRevocation is the ONLY place a CONFIRMED revocation ends: the
@@ -626,26 +721,155 @@ async function finalizeRevocation(): Promise<void> {
   log("info", "credential_cleared", { outcome: "confirmed" });
 }
 
-// abandonUnconfirmedRevocation ends a revoke the authority NEVER confirmed, once
-// its clock-independent attempt budget is spent (issue #149, G1).
+// quarantineUnconfirmedRevocation is the explicit "COULD NOT CONFIRM" terminal
+// (issue #149, fix 3) — the replacement for the previous
+// `abandonUnconfirmedRevocation`, which DISCARDED the credential outright and
+// reported `unknown`. That discard defeated EXT-009: the server row may well be
+// live for its remaining TTL, and destroying the only material a retry could use
+// guaranteed it would never be killed. §4.6 calls for quarantine over inference.
 //
-// It deliberately does NOT reach `revoked`: nothing confirmed the credential is
-// dead, and the server row may well be live for its real remaining TTL, so
-// claiming a completed kill switch would be exactly the #149 defect. It lands on
-// `unknown` — "not paired" — which is honest and, like every non-ready state,
-// fails closed (Unknown never enables, PRD §4.6). The honest meaning "we could
-// not confirm this" has no glossary term, so the distinction is carried by the
-// METRIC (`abandoned_unconfirmed`), never by invented user-facing copy.
+// So the revoke is quarantined, not abandoned:
+//   - the credential material is RELOCATED into a durable, allow-list-audited
+//     quarantine record (KEY_REVOCATION_UNCONFIRMED) that survives an MV3
+//     restart, so the retry can continue for as long as the credential can
+//     possibly be alive;
+//   - the pending marker and KEY_CREDENTIAL are removed, which UNBLOCKS
+//     re-pairing (handlePair refuses only on the pending marker) — a user is
+//     never locked out by an authority that never answered;
+//   - the owned-target projection is torn down with a generation bump, exactly
+//     as tearDownCredential does (identity quarantine, §4.6);
+//   - the capability becomes `revocation_unconfirmed`: fails closed, and is
+//     VISIBLY distinct from `revoked` (a completed kill switch it did not
+//     achieve) and from `revocation_pending`;
+//   - it is AUDITED with its own metric outcome, its own capability transition,
+//     and a structured log carrying the BOUNDED reason + evidence tokens. It is
+//     never folded into `revoked` or into a generic failure.
 //
-// The credential material is discarded with the marker: no further retry will
-// ever be made with it, so retaining it would only keep a live secret on the
-// device for nothing.
-async function abandonUnconfirmedRevocation(attempts: number): Promise<void> {
-  await tearDownCredential();
+// `reason` is a bounded, locale-neutral token: which of the two bounds fired.
+async function quarantineUnconfirmedRevocation(
+  pending: PendingRevocation,
+  cred: PairingCredential,
+  evidence: string,
+  reason: "attempts_exhausted" | "age_exceeded",
+): Promise<void> {
+  const record: UnconfirmedRevocation = {
+    credential: cred.credential,
+    credentialId: cred.credentialId,
+    marketplaceAccountId: cred.marketplaceAccountId,
+    credentialExpiresAt: cred.expiresAt,
+    requestedAt: pending.requestedAt,
+    attempts: pending.attempts,
+    evidence,
+    nextAttemptAt: pending.nextAttemptAt,
+  };
+  await store.set(KEY_REVOCATION_UNCONFIRMED, record);
+  syncGeneration++;
+  ownedTargets.replaceAll([], { generation: syncGeneration, marketplaceAccountId: null });
+  await store.remove(KEY_CREDENTIAL);
+  await store.remove(KEY_REVOCATION_PENDING);
+  await setCapability("revocation_unconfirmed");
+  incr("credential_revocation", { outcome: "quarantined_unconfirmed" });
+  incr("capability_transition", { to: "revocation_unconfirmed" });
+  log("warn", "credential_revocation_quarantined", {
+    attempts: pending.attempts,
+    evidence,
+    reason,
+  });
+}
+
+// retryQuarantinedRevocationSafely is the ONLY way callers drive the quarantined
+// retry. Like its pending-marker sibling it converts a storage rejection into a
+// counted outcome and returns normally, so no caller's downstream work is
+// skipped and no rejection escapes a void-ed promise.
+async function retryQuarantinedRevocationSafely(): Promise<void> {
+  try {
+    await retryQuarantinedRevocation();
+  } catch (e) {
+    incr("credential_revocation", { outcome: "retry_error" });
+    log("error", "credential_revocation_retry_error", {
+      error: e instanceof Error ? e.message : "unknown",
+    });
+  }
+}
+
+// retryQuarantinedRevocation keeps pursuing a quarantined revoke on the flush
+// alarm and across worker restarts. A no-op when nothing is quarantined.
+async function retryQuarantinedRevocation(): Promise<void> {
+  const q = await store.get<UnconfirmedRevocation>(KEY_REVOCATION_UNCONFIRMED);
+  if (!q) return;
+
+  // BOUNDED LIFETIME, non-silently. Past the credential's authoritative expiry
+  // the credential cannot authenticate anything, so retrying is pointless and
+  // retaining the material is a live secret kept for nothing. Discarding it is a
+  // real state transition with its own metric + log — never a silent delete, and
+  // never a terminal `revoked` (nothing was ever confirmed).
+  const expiresAt = Date.parse(q.credentialExpiresAt);
+  if (Number.isFinite(expiresAt) && expiresAt <= Date.now()) {
+    await discardExpiredQuarantine(q);
+    return;
+  }
+
+  if (!revocationRetryDue(q, Date.now())) {
+    incr("credential_revocation", { outcome: "quarantine_deferred" });
+    return;
+  }
+
+  // Count + schedule BEFORE the request, so a teardown mid-flight cannot reset
+  // the backoff to one request per alarm tick.
+  const attempts = q.attempts + 1;
+  const attempted: UnconfirmedRevocation = {
+    ...q,
+    attempts,
+    nextAttemptAt: nextRevocationAttemptAt(attempts, q.credentialId, Date.now()),
+  };
+  await store.set(KEY_REVOCATION_UNCONFIRMED, attempted);
+
+  const result = await gateway.revokeCredential(q.credential);
+  if (result.outcome === "confirmed") {
+    await resolveQuarantine(result.evidence);
+    return;
+  }
+  await store.set(KEY_REVOCATION_UNCONFIRMED, { ...attempted, evidence: result.evidence });
+  incr("credential_revocation", { outcome: "quarantine_retry_pending" });
+  log("warn", "credential_revocation_quarantine_pending", {
+    attempts,
+    evidence: result.evidence,
+    reachedServer: result.reachedServer,
+  });
+}
+
+// resolveQuarantine exits the quarantine HONESTLY: the authority finally
+// confirmed, so the record is cleared and a DISTINCT outcome is emitted — a
+// revocation confirmed late is not the same operational event as one confirmed
+// on the spot, and telemetry must be able to tell them apart.
+//
+// The capability is touched ONLY if it is still `revocation_unconfirmed`. If the
+// user has re-paired since (the quarantine deliberately does not block that),
+// the capability belongs to a NEWER credential and resolving an OLD credential's
+// revoke must never clobber it into `revoked`.
+async function resolveQuarantine(evidence: string): Promise<void> {
+  await store.remove(KEY_REVOCATION_UNCONFIRMED);
+  incr("credential_revocation", { outcome: "confirmed_after_quarantine" });
+  log("info", "credential_revocation_confirmed_after_quarantine", { evidence });
+  if ((await rawCapability()) !== "revocation_unconfirmed") return;
+  await setCapability("revoked");
+  incr("capability_transition", { to: "revoked" });
+}
+
+// discardExpiredQuarantine ends a quarantined revoke at the credential's
+// authoritative expiry. It lands on `unknown` ("not paired"), NEVER `revoked`:
+// the credential aging out is not the authority confirming a revocation, and the
+// popup must not claim a kill switch it never achieved.
+async function discardExpiredQuarantine(q: UnconfirmedRevocation): Promise<void> {
+  await store.remove(KEY_REVOCATION_UNCONFIRMED);
+  incr("credential_revocation", { outcome: "quarantine_expired" });
+  log("warn", "credential_revocation_quarantine_expired", {
+    attempts: q.attempts,
+    evidence: q.evidence,
+  });
+  if ((await rawCapability()) !== "revocation_unconfirmed") return;
   await setCapability("unknown");
-  incr("credential_revocation", { outcome: "abandoned_unconfirmed" });
   incr("capability_transition", { to: "unknown" });
-  log("warn", "credential_revocation_abandoned", { attempts });
 }
 
 // tearDownCredential is the ONE place capture-credential material is discarded.
@@ -735,12 +959,29 @@ async function retryPendingRevocation(opts: { force?: boolean } = {}): Promise<v
   }
 
   if (!opts.force && !revocationRetryDue(pending, Date.now())) {
-    // Inside the backoff window — deferred, not dropped. The marker (and its
-    // schedule) stay durable, so the next due tick retries.
+    // Inside the backoff window. Before deferring, apply the marker's DURABLE
+    // AGE BOUND (issue #149, fix 3). The attempt budget only advances when a
+    // request was actually MADE, so a device with zero server contact could
+    // otherwise hold this marker forever — and the pending marker BLOCKS
+    // re-pairing. A user must never be locked out by an authority that never
+    // answered.
+    //
+    // The check lives HERE, and after an attempt (see settlePendingRevocation),
+    // never before one: a clock-driven bound must never SKIP an authority that
+    // is sitting there ready to answer (G1). A clock-driven transition INTO the
+    // quarantine is safe — it claims nothing about the server, retains the
+    // credential and keeps retrying. What the device clock may never produce is
+    // a terminal `revoked`; that invariant is untouched.
+    if (revocationPendingAgeExceeded(pending, Date.now())) {
+      await quarantineUnconfirmedRevocation(pending, cred, AGED_OUT_EVIDENCE, "age_exceeded");
+      return;
+    }
+    // Deferred, not dropped. The marker (and its schedule) stay durable, so the
+    // next due tick retries.
     incr("credential_revocation", { outcome: "deferred" });
     return;
   }
-  await settlePendingRevocation(pending, cred);
+  await settlePendingRevocation(pending, cred, opts);
 }
 
 // Operator recovery for exhausted deliveries (issue #150 / EXT-009). Retry
@@ -835,6 +1076,14 @@ async function rawCapability(): Promise<Capability> {
 // restrictive, never promote out of unknown/disabled/revoked.
 async function getCapability(): Promise<Capability> {
   const stored = await rawCapability();
+  // The in-memory fail-closed gate for a Revoke whose durable writes failed
+  // (issue #149, F1). Like the marker override it is ONE-WAY: it can only make
+  // the capability more restrictive, never promote out of unknown/disabled/
+  // revoked, and it reports the honest "could not confirm" state rather than a
+  // `revocation_pending` it has nothing durable to retry from.
+  if (localCaptureLock && (stored === "ready" || stored === "revocation_pending")) {
+    return "revocation_unconfirmed";
+  }
   if (stored !== "ready") return stored;
   const pending = await store.get<PendingRevocation>(KEY_REVOCATION_PENDING);
   return pending ? "revocation_pending" : stored;
@@ -858,6 +1107,15 @@ async function setCapability(c: Capability): Promise<void> {
 // and `revoked` are left exactly as they are — the repair is not licence to
 // rewrite an unrelated state.
 async function demoteToRevoked(): Promise<void> {
+  // Mirror the #253 owned-target teardown that handleRevoke and
+  // tearDownCredential both perform (issue #149, F2). Without it an ORPHAN
+  // resolution ended a revoke while the in-memory Confirmed-owned-target
+  // projection SURVIVED, so a re-pair as another account could upload account
+  // A's target on a request authenticated with account B's credential —
+  // identity quarantine (§4.6). It runs UNCONDITIONALLY: clearing the index is
+  // always the fail-closed direction, whatever the stored capability says.
+  syncGeneration++;
+  ownedTargets.replaceAll([], { generation: syncGeneration, marketplaceAccountId: null });
   const raw = await rawCapability();
   if (raw !== "ready" && raw !== "revocation_pending") return;
   await setCapability("revoked");
@@ -875,5 +1133,33 @@ async function popupState(): Promise<PopupState> {
     degradation: degradationReason(capability),
     scheduleEnabled: (await store.get<boolean>(KEY_SCHEDULE_ENABLED)) ?? false,
     deadLetter: await queue.deadLetterSummaries(),
+    // Issue #149, fix 3: an outstanding "could not confirm" revocation stays
+    // VISIBLE even after a re-pair, when `capability` reads `ready` again and
+    // there is no degradation to show. A credential that may still be live at
+    // the authority must never become invisible (EXT-009).
+    revocationUnconfirmed: Boolean(
+      await store.get<UnconfirmedRevocation>(KEY_REVOCATION_UNCONFIRMED),
+    ),
   };
+}
+
+// safePopupState is used ONLY on the guarded Revoke failure path (issue #149,
+// F1): storage is broken there, so even reading it back may fail. It degrades to
+// the honest, fail-closed "could not confirm" snapshot rather than letting the
+// message handler reject and leave the popup with no response at all.
+async function safePopupState(): Promise<PopupState> {
+  try {
+    return await popupState();
+  } catch {
+    return {
+      capability: "revocation_unconfirmed",
+      marketplaceAccountId: null,
+      lastUploadAt: null,
+      queuedCount: 0,
+      degradation: degradationReason("revocation_unconfirmed"),
+      scheduleEnabled: false,
+      deadLetter: [],
+      revocationUnconfirmed: true,
+    };
+  }
 }

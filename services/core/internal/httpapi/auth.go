@@ -155,6 +155,31 @@ func noSessionErr() gateway.ErrorEnvelope {
 	return gateway.ErrorEnvelope{Code: "NO_SESSION", Message: "authentication required"}
 }
 
+// captureCredentialInvalidCode is the machine-readable ErrorEnvelope code that
+// makes a 401 on a credential-scoped route POSITIVE PROOF that the pairing plane
+// itself judged the presented capture credential invalid (issue #149).
+//
+// It exists because a bare 401 proves nothing: an unmounted route, a reverse
+// proxy, a WAF, or a gateway build predating this route all answer 401 with the
+// generic NO_SESSION envelope. A client that read such a 401 as a CONFIRMED
+// revocation would destroy its credential material while the server row stays
+// live — #149's exact impact. Only the middleware branch reached solely on
+// pairing.ErrInvalidCredential may emit this code.
+//
+// ErrorEnvelope.code is a free-form string in contracts/gateway.openapi.yaml (no
+// enum), so this is an additive, contract-compatible change; nothing under gen/
+// needs regenerating.
+const captureCredentialInvalidCode = "CAPTURE_CREDENTIAL_INVALID"
+
+// captureCredentialInvalidErr is the ONLY 401 envelope a client may read as an
+// authoritative statement that the presented capture credential is not valid.
+func captureCredentialInvalidErr() gateway.ErrorEnvelope {
+	return gateway.ErrorEnvelope{
+		Code:    captureCredentialInvalidCode,
+		Message: "capture credential is not valid",
+	}
+}
+
 func forbiddenErr() gateway.ErrorEnvelope {
 	return gateway.ErrorEnvelope{Code: "FORBIDDEN", Message: "not permitted for this role"}
 }

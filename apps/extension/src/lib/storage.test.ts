@@ -3,6 +3,7 @@ import {
   auditNoSellerToken,
   KEY_CREDENTIAL,
   KEY_QUEUE,
+  KEY_REVOCATION_UNCONFIRMED,
   MemoryStore,
   sanitizeCredential,
 } from "./storage";
@@ -82,6 +83,54 @@ describe("storage audit — EXT-001: ONLY a capture credential, NEVER a seller t
       other: { dk_api_secret: "x" },
     };
     const offenders = auditNoSellerToken(snapshot);
+    expect(offenders.length).toBeGreaterThan(0);
+  });
+});
+
+// Issue #149, fix 3: the "could not confirm" QUARANTINE record is a NEW place
+// capture-credential material lives. A new home for a secret must not escape the
+// storage audit — otherwise EXT-001's allow-list check would simply stop
+// covering the credential the moment it moved.
+describe("storage audit — the unconfirmed-revocation quarantine record (#149)", () => {
+  it("its key name is not seller-token-shaped, and a clean record has NO offenders", () => {
+    const snapshot = {
+      [KEY_REVOCATION_UNCONFIRMED]: {
+        credential: "cap-cred-hex",
+        credentialId: "33333333-3333-3333-3333-333333333333",
+        marketplaceAccountId: "11111111-1111-1111-1111-111111111111",
+        credentialExpiresAt: "2026-08-01T00:00:00Z",
+        requestedAt: "2026-07-25T00:00:00Z",
+        attempts: 48,
+        evidence: "unconfirmed_generic_401",
+        nextAttemptAt: "2026-07-25T01:00:00Z",
+      },
+    };
+    expect(auditNoSellerToken(snapshot)).toEqual([]);
+  });
+
+  it("FAILS CLOSED on a NON-allow-listed field in the quarantine record", () => {
+    const offenders = auditNoSellerToken({
+      [KEY_REVOCATION_UNCONFIRMED]: {
+        credential: "cap-cred-hex",
+        credentialId: "33333333-3333-3333-3333-333333333333",
+        marketplaceAccountId: "11111111-1111-1111-1111-111111111111",
+        credentialExpiresAt: "2026-08-01T00:00:00Z",
+        requestedAt: "2026-07-25T00:00:00Z",
+        attempts: 1,
+        evidence: "unconfirmed_transport",
+        // Not allow-listed — page-derived/session-adjacent data must never ride
+        // along in the quarantine record (docs/12).
+        lastSeenUrl: "https://www.digikala.com/product/dkp-1/",
+      },
+    });
+    expect(offenders.length).toBeGreaterThan(0);
+    expect(offenders.join(" ")).toContain("lastSeenUrl");
+  });
+
+  it("FAILS CLOSED on a seller-token-shaped key smuggled into the quarantine record", () => {
+    const offenders = auditNoSellerToken({
+      [KEY_REVOCATION_UNCONFIRMED]: { credential: "ok", seller_token: "leak" },
+    });
     expect(offenders.length).toBeGreaterThan(0);
   });
 });

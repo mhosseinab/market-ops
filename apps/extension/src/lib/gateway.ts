@@ -17,14 +17,50 @@ export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 //               recorded and retried, and capture stays disabled meanwhile.
 export type RevocationOutcome = "confirmed" | "pending";
 
+// A BOUNDED, locale-neutral evidence token for one self-revoke attempt (issue
+// #149, fix 3). It exists so telemetry can tell a deploy-window unconfirmed
+// (route not mounted yet / a proxy 401) from a genuinely unreachable authority,
+// WITHOUT ever interpolating a status code or a response body into a label.
+export type RevocationEvidence =
+  // The contract's only success status, so the real handler demonstrably ran.
+  | "confirmed_204"
+  // A 401 carrying the authority's own CAPTURE_CREDENTIAL_INVALID verdict.
+  | "confirmed_credential_invalid"
+  // A 401 with any other code, no body, or an unparseable body: a reverse
+  // proxy, a WAF, or a gateway build that has not mounted the route yet.
+  | "unconfirmed_generic_401"
+  // 404/405 — this gateway build does not serve the route.
+  | "unconfirmed_route_missing"
+  // Any other status (other 2xx, other 4xx, 5xx, 503).
+  | "unconfirmed_status"
+  // The request never reached the gateway at all.
+  | "unconfirmed_transport";
+
 // The result of one self-revoke attempt. `reachedServer` is deliberately
 // SEPARATE from the outcome: a 500 and a network failure are both "pending",
-// but only the former proves the gateway is reachable from this device. The
-// pending marker's expiry shortcut is judged against the DEVICE clock, so it
-// requires that proof before it may finalize (issue #149).
+// but only the former proves the gateway is reachable from this device.
 export interface RevocationResult {
   outcome: RevocationOutcome;
   reachedServer: boolean;
+  evidence: RevocationEvidence;
+}
+
+// CAPTURE_CREDENTIAL_INVALID is the gateway's machine-readable verdict that the
+// pairing plane itself judged the presented capture credential invalid. It is
+// the ONLY code on a 401 that evidences revocation (services/core
+// httpapi.captureCredentialInvalidCode).
+const CREDENTIAL_INVALID_CODE = "CAPTURE_CREDENTIAL_INVALID";
+
+// errorCode reads the ErrorEnvelope `code` from a response, or null when there
+// is no body, the body is not JSON, or it carries no string code. Fail closed:
+// an unreadable body is never treated as a verdict.
+async function errorCode(resp: Response): Promise<string | null> {
+  try {
+    const body = (await resp.json()) as { code?: unknown } | null;
+    return body && typeof body.code === "string" ? body.code : null;
+  } catch {
+    return null;
+  }
 }
 
 export class GatewayClient {
@@ -81,23 +117,34 @@ export class GatewayClient {
   // server-side from the Bearer, so the extension can never revoke another
   // device's or account's pairing (identity quarantine).
   //
-  // Status → outcome, and why:
-  //   204 (and any 2xx) — the authority revoked it: CONFIRMED.
-  //   401               — the credential does not authenticate AT ALL any more
-  //                       (already revoked, expired, or unknown). That is the
-  //                       same end state a successful revoke produces, so it is
-  //                       CONFIRMED — treating it as pending would strand a
-  //                       pending marker forever on an expired credential.
-  //                       The gateway upholds the other half of this bargain:
-  //                       it answers 503/500 (never 401) for an unconfigured
-  //                       plane or a transient store failure, so a 401 always
-  //                       means the authority genuinely does not recognise the
-  //                       credential.
-  //   anything else (4xx other than 401, 5xx, 503, network/transport failure)
-  //                     — NOT an authoritative statement that the credential is
-  //                       dead, so it stays PENDING: capture remains disabled,
-  //                       the credential material is retained, and the revoke is
-  //                       retried. Never a silent "assume it worked".
+  // Confirmation requires POSITIVE PROOF of revocation (issue #149, fix 3). An
+  // earlier build treated `resp.ok || resp.status === 401` as confirmed. A probe
+  // proved an UNMOUNTED route and a genuine authoritative revocation return
+  // byte-identical `401 {"code":"NO_SESSION","message":"authentication
+  // required"}` — so any gateway build that had not mounted this route yet
+  // (staged rollout, rollback, canary, reverse proxy, WAF) was read as CONFIRMED
+  // and the extension destroyed its credential while the server row stayed live.
+  // That is issue #149 verbatim, so the rule is now fail-closed:
+  //
+  //   204 exactly            — CONFIRMED. The contract's only success status, so
+  //                            the real handler demonstrably ran. Any OTHER 2xx
+  //                            is NOT proof: a proxy "200 OK" page is not the
+  //                            handler.
+  //   401 + code ===
+  //   CAPTURE_CREDENTIAL_INVALID
+  //                          — CONFIRMED. The authority's own verdict that the
+  //                            credential is not valid. This is what keeps a
+  //                            repeated revoke idempotent and stops a pending
+  //                            marker stranding on an expired credential.
+  //   401, any other/absent/
+  //   unparseable code       — NOT confirmed (generic proxy / pre-rollout 401).
+  //   404 / 405              — NOT confirmed; the route is not mounted here.
+  //   anything else, incl.
+  //   5xx / 503              — NOT confirmed, but the server was reached.
+  //   transport throw        — NOT confirmed and the server was never reached.
+  //
+  // The accepted cost is more unconfirmed states during a deploy window; an
+  // unconfirmed revocation is quarantined and retried, never silently completed.
   async revokeCredential(credential: string): Promise<RevocationResult> {
     let resp: Response;
     try {
@@ -108,10 +155,26 @@ export class GatewayClient {
     } catch {
       // Network/transport error — no authoritative answer, and no evidence the
       // gateway is reachable from this device at all.
-      return { outcome: "pending", reachedServer: false };
+      return { outcome: "pending", reachedServer: false, evidence: "unconfirmed_transport" };
     }
-    if (resp.ok || resp.status === 401) return { outcome: "confirmed", reachedServer: true };
-    return { outcome: "pending", reachedServer: true };
+    if (resp.status === 204) {
+      return { outcome: "confirmed", reachedServer: true, evidence: "confirmed_204" };
+    }
+    if (resp.status === 401) {
+      const code = await errorCode(resp);
+      if (code === CREDENTIAL_INVALID_CODE) {
+        return {
+          outcome: "confirmed",
+          reachedServer: true,
+          evidence: "confirmed_credential_invalid",
+        };
+      }
+      return { outcome: "pending", reachedServer: true, evidence: "unconfirmed_generic_401" };
+    }
+    if (resp.status === 404 || resp.status === 405) {
+      return { outcome: "pending", reachedServer: true, evidence: "unconfirmed_route_missing" };
+    }
+    return { outcome: "pending", reachedServer: true, evidence: "unconfirmed_status" };
   }
 
   // fetchOwnedTargets reads the paired account's Confirmed owned observation

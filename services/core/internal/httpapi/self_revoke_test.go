@@ -441,3 +441,108 @@ func TestSelfRevokeEmitsObservability(t *testing.T) {
 		t.Fatalf("no %s counter datapoint emitted — the kill-switch boundary is unobservable", pairingSelfRevokeMetric)
 	}
 }
+
+// TestCredentialScoped401CarriesPositiveProofOnlyWhenAuthoritative is the issue
+// #149 fix-3 regression for POSITIVE PROOF of revocation.
+//
+// A generic 401 is not evidence of anything. An unmounted route, a reverse
+// proxy, a WAF, or a gateway build that predates this route all answer 401
+// {"code":"NO_SESSION"} — byte-identical to what an authoritative "this
+// credential is dead" used to look like. A client that reads that as CONFIRMED
+// destroys its credential material while the server row stays LIVE, which is
+// issue #149 verbatim.
+//
+// So the ONLY 401 that evidences revocation is the one the pairing plane itself
+// authoritatively produced (pairing.ErrInvalidCredential), and it carries a
+// DISTINCT machine-readable code. Every other 401 — above all the one for an
+// ABSENT bearer, which says nothing about any credential — keeps the generic
+// code. 503 (unconfigured plane) and 500 (transient store failure) never carry
+// it either: they are not statements about the credential at all.
+func TestCredentialScoped401CarriesPositiveProofOnlyWhenAuthoritative(t *testing.T) {
+	live := "live-capture-credential"
+	newPairing := func() *fakePairing {
+		return &fakePairing{account: uuid.New(), credential: live, credentialID: uuid.New()}
+	}
+
+	codeOf := func(t *testing.T, rec *httptest.ResponseRecorder) string {
+		t.Helper()
+		var env gateway.ErrorEnvelope
+		if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+			t.Fatalf("response body is not an ErrorEnvelope: %v (body=%s)", err, rec.Body.String())
+		}
+		return env.Code
+	}
+
+	for _, route := range []struct {
+		name   string
+		method string
+		path   string
+	}{
+		{"self-revoke", http.MethodPost, selfRevokePath},
+		{"owned-targets (the same credential-scoped resolve seam)", http.MethodGet, "/ext/owned-targets"},
+	} {
+		t.Run(route.name, func(t *testing.T) {
+			do := func(t *testing.T, fp *fakePairing, bearer string) *httptest.ResponseRecorder {
+				t.Helper()
+				var opts []Option
+				opts = append(opts, WithAuth(newFakeAuth()), WithCookieSecure(false))
+				if fp != nil {
+					opts = append(opts, WithPairing(fp))
+				}
+				srv := NewServer(":0", BuildInfo{}, testLogger(), opts...)
+				req := httptest.NewRequest(route.method, route.path, nil)
+				if bearer != "" {
+					req.Header.Set("Authorization", "Bearer "+bearer)
+				}
+				rec := httptest.NewRecorder()
+				srv.Handler.ServeHTTP(rec, req)
+				return rec
+			}
+
+			t.Run("an AUTHORITATIVE invalid credential carries the positive-proof code", func(t *testing.T) {
+				rec := do(t, newPairing(), "some-other-credential")
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("unknown credential = %d, want 401", rec.Code)
+				}
+				if got := codeOf(t, rec); got != captureCredentialInvalidCode {
+					t.Fatalf("authoritative-invalid 401 code = %q, want %q — without a distinct code a client cannot tell this from a proxy 401 (issue #149)", got, captureCredentialInvalidCode)
+				}
+			})
+
+			t.Run("an ABSENT bearer is NOT an authoritative statement about a credential", func(t *testing.T) {
+				rec := do(t, newPairing(), "")
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("missing bearer = %d, want 401", rec.Code)
+				}
+				if got := codeOf(t, rec); got == captureCredentialInvalidCode {
+					t.Fatalf("missing-bearer 401 carries %q; absence of a credential is not proof any credential was revoked", got)
+				}
+				if got := codeOf(t, rec); got != "NO_SESSION" {
+					t.Fatalf("missing-bearer 401 code = %q, want NO_SESSION (unchanged)", got)
+				}
+			})
+
+			t.Run("an unconfigured pairing plane stays 503 and never carries the proof code", func(t *testing.T) {
+				rec := do(t, nil, live)
+				if rec.Code != http.StatusServiceUnavailable {
+					t.Fatalf("unconfigured plane = %d, want 503", rec.Code)
+				}
+				if got := codeOf(t, rec); got == captureCredentialInvalidCode {
+					t.Fatalf("unconfigured plane carries the revocation-proof code %q", got)
+				}
+			})
+
+			t.Run("a TRANSIENT store failure stays 500 and never carries the proof code", func(t *testing.T) {
+				fp := newPairing()
+				fp.resolveErr = errors.New("pairing: resolve credential: conn busy")
+				rec := do(t, fp, live)
+				if rec.Code != http.StatusInternalServerError {
+					t.Fatalf("transient store failure = %d, want 500", rec.Code)
+				}
+				if got := codeOf(t, rec); got == captureCredentialInvalidCode {
+					t.Fatalf("transient store failure carries the revocation-proof code %q", got)
+				}
+			})
+		})
+	}
+}

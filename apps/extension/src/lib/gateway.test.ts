@@ -123,22 +123,114 @@ describe("GatewayClient.revokeCredential — server-side self-revoke (#149, EXT-
     expect(init.body).toBeUndefined();
   });
 
-  it("401 is a CONFIRMED revocation — the credential is already invalid at the authority", async () => {
-    // Without this, a pending marker for an expired/already-revoked credential
-    // could never clear and the extension would retry forever.
-    const client = new GatewayClient("http://gw", async () => new Response("{}", { status: 401 }));
-    expect((await client.revokeCredential("cap-cred")).outcome).toBe("confirmed");
+  // Issue #149, fix 3: POSITIVE PROOF of revocation. NEGATIVES FIRST — every
+  // 401 that is NOT the authority's own verdict must stay unconfirmed.
+  //
+  // A probe proved an UNMOUNTED gateway route and a genuine authoritative
+  // revocation returned byte-identical `401 {"code":"NO_SESSION"}`. Any gateway
+  // build that has not mounted the route (staged rollout, rollback, canary,
+  // reverse proxy, WAF) was therefore read as CONFIRMED, and the extension
+  // destroyed its credential while the server row stayed live — issue #149
+  // verbatim. The cost of the fail-closed reading (more unconfirmed states
+  // during a deploy window) is accepted.
+  it("NEGATIVE: a GENERIC 401 (proxy / pre-rollout gateway / unmounted route) is NOT a confirmation", async () => {
+    const generic = [
+      JSON.stringify({ code: "NO_SESSION", message: "authentication required" }),
+      JSON.stringify({ code: "FORBIDDEN" }),
+      "", // no body at all — a bare proxy refusal
+      "<html>401 Unauthorized</html>", // unparseable body
+    ];
+    for (const body of generic) {
+      const client = new GatewayClient(
+        "http://gw",
+        async () => new Response(body === "" ? null : body, { status: 401 }),
+      );
+      const r = await client.revokeCredential("cap-cred");
+      expect(r.outcome).toBe("pending");
+      expect(r.reachedServer).toBe(true);
+      expect(r.evidence).toBe("unconfirmed_generic_401");
+    }
+  });
+
+  it("NEGATIVE: 404/405 (the route is not mounted on this gateway build) is NOT a confirmation", async () => {
+    for (const status of [404, 405]) {
+      const client = new GatewayClient("http://gw", async () => new Response("{}", { status }));
+      const r = await client.revokeCredential("cap-cred");
+      expect(r.outcome).toBe("pending");
+      expect(r.evidence).toBe("unconfirmed_route_missing");
+    }
+  });
+
+  it("NEGATIVE: any OTHER 2xx is not proof the real handler ran — only the contract's 204 is", async () => {
+    // A reverse proxy / captive portal "200 OK" page is not the handler.
+    for (const status of [200, 201, 202]) {
+      const client = new GatewayClient("http://gw", async () => new Response("{}", { status }));
+      const r = await client.revokeCredential("cap-cred");
+      expect(r.outcome).toBe("pending");
+      expect(r.evidence).toBe("unconfirmed_status");
+    }
   });
 
   it("network error, 5xx, and 503 are NOT confirmations — they stay pending", async () => {
-    for (const status of [500, 502, 503, 400, 403, 404]) {
+    for (const status of [500, 502, 503, 400, 403]) {
       const client = new GatewayClient("http://gw", async () => new Response("{}", { status }));
       expect((await client.revokeCredential("cap-cred")).outcome).toBe("pending");
     }
     const offline = new GatewayClient("http://gw", async () => {
       throw new Error("offline");
     });
-    expect((await offline.revokeCredential("cap-cred")).outcome).toBe("pending");
+    const r = await offline.revokeCredential("cap-cred");
+    expect(r.outcome).toBe("pending");
+    expect(r.evidence).toBe("unconfirmed_transport");
+  });
+
+  // POSITIVE PROOF, both admissible forms.
+  it("204 — the contract's ONLY success status — is a confirmation", async () => {
+    const client = new GatewayClient("http://gw", async () => new Response(null, { status: 204 }));
+    const r = await client.revokeCredential("cap-cred");
+    expect(r.outcome).toBe("confirmed");
+    expect(r.evidence).toBe("confirmed_204");
+  });
+
+  it("a 401 carrying the authority's OWN CAPTURE_CREDENTIAL_INVALID verdict is a confirmation", async () => {
+    // This is what keeps a REPEATED revoke idempotent and stops a pending marker
+    // stranding forever on an already-revoked or expired credential.
+    const client = new GatewayClient(
+      "http://gw",
+      async () =>
+        new Response(JSON.stringify({ code: "CAPTURE_CREDENTIAL_INVALID", message: "not valid" }), {
+          status: 401,
+        }),
+    );
+    const r = await client.revokeCredential("cap-cred");
+    expect(r.outcome).toBe("confirmed");
+    expect(r.evidence).toBe("confirmed_credential_invalid");
+  });
+
+  it("the evidence token is a BOUNDED locale-neutral label — never an interpolated status or body", async () => {
+    const bounded = new Set([
+      "confirmed_204",
+      "confirmed_credential_invalid",
+      "unconfirmed_generic_401",
+      "unconfirmed_route_missing",
+      "unconfirmed_status",
+      "unconfirmed_transport",
+    ]);
+    for (const status of [204, 401, 404, 405, 200, 418, 500, 503]) {
+      const client = new GatewayClient(
+        "http://gw",
+        async () => new Response(status === 204 ? null : "{}", { status }),
+      );
+      const r = await client.revokeCredential("cap-cred");
+      // Membership in a CLOSED set is the anti-interpolation proof: an
+      // interpolated status/body could not be a member. (`confirmed_204` names
+      // the contract's success status as a fixed label — it is a member, not an
+      // interpolation, which is why the closed set is the assertion.)
+      expect(bounded.has(r.evidence)).toBe(true);
+    }
+    // Explicitly: an arbitrary/unknown status never leaks into the label.
+    const teapot = new GatewayClient("http://gw", async () => new Response("{}", { status: 418 }));
+    expect((await teapot.revokeCredential("cap-cred")).evidence).toBe("unconfirmed_status");
   });
 
   // Issue #149 (F4). The caller needs to distinguish "the server answered, just
