@@ -1,5 +1,5 @@
 ---
-description: Continuous burn-down loop over the mhosseinab/market-ops issue backlog (tracked on Project #4, "MarketOps Engineering") — a planner subagent (sonnet) orders the whole eligible backlog (or the issue numbers given as args) into an implementation path persisted to disk (survives context compaction), scoring each issue's complexity to route it to sonnet (simple/mechanical) or opus (contracts, safety-triggering, high-severity, cross-area, or ambiguous — with a one-way sonnet→opus upgrade ratchet before any human escalation), then the LEAD keeps fresh per-issue conductor subagents running in 6 always-full parallel slots — each: assignment packet → TDD-implement in a fresh worktree → fresh area/safety review cycles (max 3) → PR against main → auto-merge (squash) once every required review verdict is PASS on the exact pushed SHA and CI is green — refilling the next issue the moment one finishes, until the path is drained. Never merges past a failing/pending check or a missing verdict, never runs live/paid ops, never mutates the Project board's fields.
+description: Continuous burn-down loop over the mhosseinab/market-ops issue backlog (tracked on Project #4, "MarketOps Engineering") — a planner subagent (sonnet) orders the whole eligible backlog (or the issue numbers given as args) into an implementation path persisted to disk (survives context compaction), scoring each issue's complexity to route it to sonnet (simple/mechanical) or opus (contracts, safety-triggering, high-severity, cross-area, or ambiguous — with a one-way sonnet→opus upgrade ratchet before any human escalation), then the LEAD keeps fresh per-issue conductor subagents running in 4 always-full parallel slots (4, not more — measured suite contention above that manufactures phantom flakes) — each: assignment packet → TDD-implement in a fresh worktree → fresh area/safety review cycles (3 on a §4.6 never-cut path, 1 otherwise — non-blocking findings become PR-body notes, never another cycle) → PR against main → auto-merge (squash) once every required review verdict is PASS on the exact pushed SHA and CI is green — refilling the next issue the moment one finishes, until the path is drained. Never merges past a failing/pending check or a missing verdict, never runs live/paid ops, never mutates the Project board's fields.
 argument-hint: "[issue number(s); optional; omit to auto-pick]"
 ---
 
@@ -213,6 +213,35 @@ restarts, and crashes.
   subset — partial local gates cause CI ping-pong (observed: local
   typecheck passed while the full lint gate kept failing CI; two fix
   cycles burned on what one full run would have caught).
+• KNOWN SANDBOX GATE STATE — put this in every packet so no conductor
+  re-derives it (multiple issues each burned time rediscovering it):
+  — `task go:lint` / `task lint:all` WORKS, but only via a Go-1.26-built
+    binary. `/usr/local/bin/golangci-lint` is a stale go1.25 build that
+    aborts at config load having analysed ZERO files; a go1.26 build lives
+    at `/root/go/bin/golangci-lint` (build one with
+    `GOTOOLCHAIN=go1.26.x go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@vX`).
+    Invoke that path explicitly. **A config-load abort is not a pass** — it
+    also means the forbidigo/semgrep money guard never ran, so never read a
+    green local `lint:all` as evidence that guard fired.
+  — `task migrate:verify` WORKS if you start your own scratch Postgres and
+    export `DATABASE_URL`; it is not inherently unavailable. Reviewers have
+    run goose up/down/up green this way. DB-backed tests SKIP silently
+    without `DATABASE_URL` — always run the `env -u DATABASE_URL` control
+    to prove your passing DB tests actually hit Postgres rather than skipped.
+  — `task contracts:drift`, and therefore `task ci:local`, is GENUINELY red
+    on clean `origin/main`: `gen:python`'s post-generation `ruff` is
+    unpinned while `openapi-python-client` is pinned, so
+    `gen/python/README.md` reflows every run. Reproduce it on a clean
+    detached worktree once, then treat it as non-attributable — unless your
+    diff touches `contracts/` or `gen/`, in which case it is yours.
+  Report each of these with its real exit code and reason; never claim a
+  gate green that you did not run to completion.
+• MUTATION PROBES GO IN A THROWAWAY WORKTREE — `git worktree add --detach`,
+  never the branch worktree. Two agents sharing one worktree have been
+  observed mutating each other's files mid-review (a probe reverted a
+  production file under a concurrent reviewer). Verify
+  `git status --porcelain` is empty and HEAD is the reviewed SHA before
+  pushing.
 
 ═══ PHASE 0 — PRE-FLIGHT (LEAD, once) ═══
 1. In parallel — none of these depend on another:
@@ -307,15 +336,22 @@ fan out for wall-clock speed) ═══
 ═══ THE SCHEDULER (this is what makes it a LOOP) ═══
 The LEAD is a slot-filling scheduler over the implementation path — not a
 one-batch dispatcher:
-• SLOTS: keep 6 conductor slots filled at ALL times while the path has
+• SLOTS: keep 4 conductor slots filled at ALL times while the path has
   eligible entries — the moment an issue reaches a terminal state, its
   freed slot takes the next entry from the priority queue. Refills spawn
   in the background, batched in one message, each with `model:` set from
   its queue entry's `model` field (MODEL ROUTING) — never un-routed. A free slot + an eligible
   path entry + no stop condition ⇒ refill NOW, in the same turn — never
-  wait idle, never end the turn "for now". Fewer than 6 in flight is
+  wait idle, never end the turn "for now". Fewer than 4 in flight is
   legitimate ONLY when conflicts, contracts-exclusivity, or path
   exhaustion make more impossible — say which, in the progress line.
+  WHY 4 AND NOT MORE: every conductor fans out an implementer plus 2–3
+  reviewers, each independently running test suites on one box. Measured
+  on this repo: the same web suite took 402s under 6-conductor load versus
+  103s idle, and the contention manufactured phantom "flakes" (ChatDock
+  timeouts, Playwright `ERR_CONNECTION_REFUSED`) that cost real fix cycles
+  chasing nothing. Four keeps the box responsive and the failures real.
+  Raise it only if suites are demonstrably not contending.
 • ON EVERY CONDUCTOR RETURN, in the same turn: process its ISSUE REPORT
   (READY-TO-MERGE → step 8 merge lock; ESCALATED / OPEN-PR → bookkeeping),
   write the transition to the durable queue file, TEAR DOWN its worktree
@@ -442,7 +478,25 @@ cycles; steps 8–9 belong to the LEAD) ═══
     `gh issue list --label blocked-step`, never buried in a comment alone)
     and comment the gap + the decision needed.
 
- 5. FIX CYCLE (max 3): dispatch the upheld BLOCKING findings + the issue's
+ 5. FIX CYCLE — CAP DEPENDS ON WHAT THE ISSUE TOUCHES:
+    • **3 cycles** for issues on a §4.6 never-cut path — money arithmetic or
+      Money-typed boundaries, policy evaluation/ordering, approval
+      versioning, idempotency, event deduplication, the permission matrix,
+      connector capability transitions, free-text containment, identity
+      quarantine, append-only tables, auth/credential/session boundaries,
+      Route C parser/normalization. These earn the full adversarial budget.
+    • **1 cycle** for everything else: fix the blockers once, re-review
+      once, then ship or escalate. Optional follow-ups and
+      nice-to-have hardening become PR-body notes, NEVER another cycle.
+    The conductor decides which cap applies from the actual diff (not the
+    issue's label) and STATES the choice and its reason in the ISSUE REPORT.
+    When genuinely uncertain, take 3 — under-reviewing a never-cut path is
+    the more expensive mistake.
+    WHY: measured on this repo, a 3-cycle issue costs ~2.5h wall-clock, and
+    on non-invariant work cycles 2–3 have gone to test-assertion quality
+    and copy wording — real findings, but not worth blocking a merge that
+    the PR body could carry as follow-ups.
+    Dispatch the upheld BLOCKING findings + the issue's
     own Verify sources to a fix worker in the SAME worktree (guidelines
     §13). Each fix test-first (failing reproduction named after the
     finding), smallest change per finding, full Verify re-run, commit. Then
@@ -459,7 +513,7 @@ cycles; steps 8–9 belong to the LEAD) ═══
     (step 6) on a sonnet issue without the upgrade having been tried is a
     violation — cheap-model failure is not a product blocker.
 
- 6. ESCALATION (ratchet tripped, 3 cycles exhausted, or unresolvable
+ 6. ESCALATION (ratchet tripped, the applicable cycle cap exhausted, or unresolvable
     blocker): STOP work on this issue. Per guidelines §13:
     • Apply the `blocked-step` label to the ORIGINAL issue (never
       `gh issue create` a new one — the unit of work already IS a GitHub
@@ -572,8 +626,9 @@ cycles; steps 8–9 belong to the LEAD) ═══
 • Reviewer independence is structural: fresh subagent every cycle, no
   implementer context, higher effort than implementation (profile
   frontmatter), ledger entries are claims to verify.
-• The 3-cycle cap is a budget, not a target — escalating at cycle 1 on a
-  genuine disagreement beats grinding to cycle 3.
+• The cycle cap is a budget, not a target — escalating at cycle 1 on a
+  genuine disagreement beats grinding to the cap. Never spend a cycle on an
+  optional follow-up: if it does not block, it goes in the PR body.
 • MODEL ROUTING is a token budget, never a quality-gate bypass: the review
   contract, verdict requirements, Verify gates, and merge lock are
   IDENTICAL on both tiers; the safety reviewer is always `opus`; uncertain
@@ -610,7 +665,8 @@ report carry everything else.
 End with, per issue (assembled from its conductor's ISSUE REPORT, never
 from raw logs): #N · title · branch · outcome — MERGED (PR URL + merge
 SHA) / OPEN-PR (URL + reason: CI timeout, branch protection, SHA drift) /
-ESCALATED (`blocked-step` applied, comment posted) · cycles used (0–3) ·
+ESCALATED (`blocked-step` applied, comment posted) · cycles used + which cap
+applied (never-cut→3 / other→1) ·
 model (sonnet / opus / sonnet→opus@cycle<n>) ·
 findings fixed / no-op / overruled / open · verdicts (area / safety if run) ·
 CI checks result (green / failed / timed out / none reported) · worktree
