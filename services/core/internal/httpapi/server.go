@@ -62,14 +62,14 @@ func WithObservation(o ObservationService) Option {
 }
 
 // WithCatalog injects the Products read-model service backing the /catalog/*
-// routes (S26, PRD §6.1). Without it those routes fail closed with a structured
+// routes (PRD §6.1). Without it those routes fail closed with a structured
 // error, so no product list or single-product read is served on an unwired plane.
 func WithCatalog(c CatalogService) Option {
 	return func(s *gatewayServer) { s.catalog = c }
 }
 
 // WithDiagnostics injects the READ-ONLY listing/image diagnostics read model
-// backing GET /catalog/product-diagnostics (S26, LST-001). Without it that route
+// backing GET /catalog/product-diagnostics (LST-001). Without it that route
 // fails closed with a structured error, so no diagnostic is served on an unwired
 // plane. The injected service exposes only a read — no generate/publish control.
 func WithDiagnostics(d DiagnosticsService) Option {
@@ -150,14 +150,14 @@ func WithPairing(p PairingService) Option {
 }
 
 // WithGuardrail injects the guardrail-settings service backing the /guardrails
-// routes (PD-3 item 6, S37). Without it those routes fail closed with a
+// routes (PD-3 item 6). Without it those routes fail closed with a
 // structured error.
 func WithGuardrail(g GuardrailService) Option {
 	return func(s *gatewayServer) { s.guardrail = g }
 }
 
 // WithWatchlist injects the EXT-007 watchlist service backing the /watchlist
-// routes (S37). Without it those routes fail closed with a structured error.
+// routes. Without it those routes fail closed with a structured error.
 func WithWatchlist(w WatchlistService) Option {
 	return func(s *gatewayServer) { s.watchlistSvc = w }
 }

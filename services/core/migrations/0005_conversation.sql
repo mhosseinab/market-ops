@@ -10,7 +10,7 @@
 -- execution state. Deleting a conversation must leave the complete action audit
 -- intact, so this table references NOTHING in the append-only action/audit
 -- history and holds no action/approval/execution columns. The action audit is
--- owned by a separate append-only surface (S18); these tables are current-state
+-- owned by a separate append-only surface; these tables are current-state
 -- interaction records only.
 CREATE TABLE conversations (
     id                     uuid        PRIMARY KEY DEFAULT gen_random_uuid(),

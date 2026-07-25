@@ -1,4 +1,4 @@
-import { createI18n, en, faIR } from "@market-ops/locale";
+import { createI18n, en, faIR, LOCALE_PACKS, type LocaleId } from "@market-ops/locale";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
@@ -481,6 +481,147 @@ describe("ChatDock — sends the ACTIVE locale with every turn (LOC-001)", () =>
     expect(bodies[1]?.locale).toBe("en");
     expect(bodies[1]?.localeVersion).toBe(1); // the from-version the gateway echoed
     expect(bodies[1]?.localeTransition).toBe(true);
+  });
+});
+
+// ── The bound locale survives a failed catalog activation (issue #415) ──────
+// The `conversation` frame is the moment the GATEWAY has already PERSISTED the
+// binding. Whether the client can subsequently prepare and commit that catalog is
+// a RENDERING concern on a different axis. Conflating the two leaves a client that
+// holds a conversation id but no bound locale version, so its next turn declares a
+// continuation with NO version — which the core resolves as stale and rejects with
+// 409 (services/core/internal/conversation/locale.go: freshness precedes locale
+// equality). A 409 carries no stream, hence no `conversation` frame, so the client
+// can never repair the binding: the conversation is wedged for the whole session.
+// The context axis is already immune because `boundContextRef` commits before the
+// activation barrier; these tests hold the locale axis to the same ordering.
+describe("ChatDock — a failed catalog activation never loses the bound locale (#415)", () => {
+  /**
+   * A prepared catalog whose resolved locale disagrees with the requested one, on
+   * the nth activation only. The production guard in `conversationLocale` rejects
+   * it with `chat_locale_catalog_unavailable`, so the failure is raised by the real
+   * code path rather than by a stubbed rejection.
+   */
+  function preparerFailingCall(failingCall: number): ConversationLocalePreparer {
+    // Any supported locale OTHER than the requested one, chosen from the pack data
+    // so the fixture never hardcodes which locale is under test.
+    const otherThan = (locale: LocaleId): LocaleId => {
+      const [other] = (Object.keys(LOCALE_PACKS) as readonly LocaleId[]).filter(
+        (id) => id !== locale,
+      );
+      if (other === undefined) throw new Error("fixture needs two supported locales");
+      return other;
+    };
+    let calls = 0;
+    return async (locale) => {
+      const prepared = ++calls === failingCall ? otherThan(locale) : locale;
+      return { locale: prepared, instance: createI18n({ lng: prepared }) };
+    };
+  }
+
+  /**
+   * A gateway stand-in running the SAME locale state machine as the Go core: a
+   * continuation must prove freshness (declared version === current version)
+   * BEFORE its declared locale is compared, and a locale change needs an explicit
+   * transition. Anything else is stale and produces 409 with no stream.
+   */
+  function versionedLocaleChat(bodies: ChatTurnRequest[]) {
+    let bound: { locale: LocaleId; version: number } | undefined;
+    const stale = () =>
+      HttpResponse.json(
+        { code: "CONVERSATION_LOCALE_STALE", message: "stale locale version" },
+        { status: 409 },
+      );
+    server.use(
+      http.post(`${BASE}/chat`, async ({ request }) => {
+        const body = (await request.json()) as ChatTurnRequest;
+        bodies.push(body);
+        const declared: LocaleId = body.locale;
+        const current = body.conversationId === undefined ? undefined : bound;
+        if (current === undefined) {
+          if (body.localeVersion !== undefined) return stale();
+          bound = { locale: declared, version: 1 };
+        } else if (body.localeVersion !== current.version) {
+          return stale();
+        } else if (declared !== current.locale) {
+          if (body.localeTransition !== true) return stale();
+          bound = { locale: declared, version: current.version + 1 };
+        }
+        return sseResponse([
+          {
+            kind: "conversation",
+            conversationId: "conv-1",
+            localeTag: bound?.locale,
+            localeVersion: bound?.version,
+          },
+          { kind: "final", envelope: { sections: [], evidence: [] } },
+        ]);
+      }),
+    );
+  }
+
+  /**
+   * Assert the nth assistant turn completed with a grounded envelope and is NOT a
+   * transport failure. Scoped to that ONE turn, so an earlier turn's envelope can
+   * never stand in for the turn under test.
+   */
+  async function expectTurnCompleted(nth: number) {
+    await waitFor(() => expect(screen.getAllByTestId("chat-msg-assistant").length).toBe(nth));
+    const turn = screen.getAllByTestId("chat-msg-assistant")[nth - 1] as HTMLElement;
+    await waitFor(() => expect(within(turn).getByTestId("chat-envelope")).toBeInTheDocument());
+    expect(within(turn).queryByTestId("chat-transport-failure")).not.toBeInTheDocument();
+  }
+
+  it("a FIRST-turn activation failure still lets the next turn claim the persisted version", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    versionedLocaleChat(bodies);
+    renderRoute("/today", { conversationLocalePreparer: preparerFailingCall(1) });
+    fireEvent.click(await screen.findByLabelText(faIR["topbar.chat.toggle"]));
+    await screen.findByTestId("chat-dock");
+
+    await sendComposer("یک");
+    // Activation threw: the turn fails closed and no terminal UI paints.
+    await screen.findByTestId("chat-transport-failure");
+    await waitFor(() => expect(bodies.length).toBe(1));
+    expect(bodies[0]?.localeVersion).toBeUndefined();
+
+    await sendComposer("دو");
+    await waitFor(() => expect(bodies.length).toBe(2));
+    // The gateway PERSISTED locale v1 on turn 1, so the continuation claims v1 —
+    // the client mirrors what the server stored, not what it managed to render.
+    expect(bodies[1]?.conversationId).toBe("conv-1");
+    expect(bodies[1]?.localeVersion).toBe(1);
+    expect(bodies[1]?.localeTransition).toBeUndefined();
+    // …and THAT turn genuinely completes: no 409, no permanent wedge.
+    await expectTurnCompleted(2);
+  });
+
+  it("a TRANSITION-turn activation failure still lets the next turn claim the new version", async () => {
+    const bodies: ChatTurnRequest[] = [];
+    versionedLocaleChat(bodies);
+    // Fail activation on the SECOND frame — the one that commits the transitioned
+    // binding — so the client's last successful catalog is the pre-transition one.
+    renderRoute("/today", { conversationLocalePreparer: preparerFailingCall(2) });
+    fireEvent.click(await screen.findByLabelText(faIR["topbar.chat.toggle"]));
+    await screen.findByTestId("chat-dock");
+
+    await sendComposer("اول");
+    await waitFor(() => expect(bodies.length).toBe(1));
+    fireEvent.click(screen.getByText(faIR["app.langName.en"]));
+    await sendComposer("second");
+    await waitFor(() => expect(bodies.length).toBe(2));
+    expect(bodies[1]?.localeVersion).toBe(1);
+    expect(bodies[1]?.localeTransition).toBe(true);
+    await screen.findByTestId("chat-transport-failure");
+
+    await sendComposer("third");
+    await waitFor(() => expect(bodies.length).toBe(3));
+    // The gateway appended v2 for `en`; the next turn is a same-locale continuation
+    // at v2. Replaying v1 + transition would be rejected as stale, forever.
+    expect(bodies[2]?.locale).toBe("en");
+    expect(bodies[2]?.localeVersion).toBe(2);
+    expect(bodies[2]?.localeTransition).toBeUndefined();
+    await expectTurnCompleted(3);
   });
 });
 

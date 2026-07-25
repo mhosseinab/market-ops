@@ -23,7 +23,7 @@ import type {
 // Recommendation + approval (design screen 3 / PRC-001 / APR-001): the core
 // safety surface. The ApprovalCard is THE only mutation control; free text never
 // confirms (§8). The right column binds to the AUTHORITATIVE getRecommendationDetail
-// read (S37) so every PRC-001 field renders from server truth — never fabricated,
+// read so every PRC-001 field renders from server truth — never fabricated,
 // never a blanket placeholder. Optional fields the payload genuinely omits render
 // present-or-unavailable-with-STRUCTURED-reason. The StateMachineView renders the
 // §8.4 lifecycle, the eight revalidation gates, and the Invalidated / Expired /

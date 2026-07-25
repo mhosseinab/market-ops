@@ -405,7 +405,7 @@ export const MESSAGE_KEYS = [
   "product.diagnostics.source",
   "product.diagnostics.evidence",
   "product.diagnostics.viewAll",
-  // Diagnostics screen (S26, LST-001)
+  // Diagnostics screen (LST-001)
   "diagnostics.readOnlyNote",
   "diagnostics.noVariant",
   "diagnostics.field.title",

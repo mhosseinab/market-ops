@@ -11,7 +11,7 @@ import (
 )
 
 // DiagnosticsService is the account-scoped, READ-ONLY listing/image diagnostics
-// read model the gateway depends on (S26, LST-001). *diagnostics.ReadService
+// read model the gateway depends on (LST-001). *diagnostics.ReadService
 // satisfies it. It is an interface so the transport can be tested with a fake and
 // httpapi stays free of DB wiring.
 //

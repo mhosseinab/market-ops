@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Issue #127 (S19): the daily digest CTA must deep-link to a REGISTERED,
+// Issue #127: the daily digest CTA must deep-link to a REGISTERED,
 // authenticated, tenant-safe web route. The prior link targeted an unregistered
 // /briefing?account=<uuid> path, which 404s in the deployed app and embedded a
 // raw account UUID in an untyped URL. The link now targets the registered Today

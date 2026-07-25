@@ -1,5 +1,5 @@
 // Package diagnostics derives the READ-ONLY listing/image diagnostics for a
-// variant (S26, LST-001). It reads ONLY already-captured canonical catalog data
+// variant (LST-001). It reads ONLY already-captured canonical catalog data
 // (Product / Variant / Listing) and produces pass/warn results that NAME the
 // observed entity + field and the rule id/version they were evaluated against.
 //

@@ -1,5 +1,5 @@
 -- +goose Up
--- Issue #12 (S8): adopt the GLOBALLY-UNIQUE normalized-email login identity model.
+-- Issue #12: adopt the GLOBALLY-UNIQUE normalized-email login identity model.
 --
 -- The base schema keyed email uniqueness on (organization_id, email), but the
 -- login contract carries NO organization discriminator (contracts/gateway.openapi

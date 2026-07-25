@@ -61,7 +61,7 @@ func TestGatewayTokenIsReadAndDraftOnly(t *testing.T) {
 	}
 }
 
-// TestGatewayCannotWriteGuardrailsEditPriceOrBulkMint is the S37 dedicated,
+// TestGatewayCannotWriteGuardrailsEditPriceOrBulkMint is the dedicated,
 // explicitly-named negative test (dk-p0-product-decisions.md PD-3): the
 // read/Draft-only LLM machine credential must never reach the guardrail write
 // endpoint, the edit-price endpoint, or the bulk selection-set preview/mint

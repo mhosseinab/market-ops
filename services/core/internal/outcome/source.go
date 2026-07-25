@@ -35,7 +35,7 @@ const externalStatePendingReconciliation = "pending_reconciliation"
 // Any query failure returns a non-nil error (the closer leaves the window unclosed
 // and retries) and NEVER a NotMeasurable resolution.
 //
-// Dark posture: until the verified outcome-metric pipeline lands (S35, gated on the
+// Dark posture: until the verified outcome-metric pipeline lands (gated on the
 // region money-verification probes), no outcome_evidence rows exist, so due windows
 // resolve Incomplete and stay open — the honest fail-closed behaviour. This never
 // fabricates a directional result from quarantined observation prices.

@@ -12,7 +12,7 @@ import (
 )
 
 // CatalogService is the account-scoped Products read model the gateway depends on
-// (S26, PRD §6.1). *catalog.ReadService satisfies it. Keeping it an interface lets
+// (PRD §6.1). *catalog.ReadService satisfies it. Keeping it an interface lets
 // the transport be tested with a fake and keeps httpapi free of DB wiring.
 //
 // The organization id is a MANDATORY argument derived from the session principal —

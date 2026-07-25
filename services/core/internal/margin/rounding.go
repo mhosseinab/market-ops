@@ -1,6 +1,6 @@
 // Package margin implements the deterministic contribution model (PRD §9.2) over
 // the authoritative money representation (internal/money) and the versioned,
-// effective-dated cost profiles produced by internal/cost (S12, CST-002/003).
+// effective-dated cost profiles produced by internal/cost (CST-002/003).
 //
 // Contribution =
 //

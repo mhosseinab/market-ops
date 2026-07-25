@@ -111,7 +111,7 @@ type productReadQuerier interface {
 	ListObservedOffers(ctx context.Context, marketplaceAccountID uuid.UUID) ([]db.ObservedOffer, error)
 }
 
-// ReadService is the account-scoped Products read model (S26, PRD §6.1). It owns
+// ReadService is the account-scoped Products read model (PRD §6.1). It owns
 // NO money logic — owned/competitor prices stay raw evidence (money quarantine) —
 // and it gates owned-offer data on the owned_offer_read capability (§15.2).
 type ReadService struct {
