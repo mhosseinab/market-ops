@@ -716,7 +716,8 @@ export const faIR: Catalog = {
   "bulk.col.result": "نتیجهٔ اجرا",
   "bulk.result.excluded": "کنار گذاشته شد",
   "bulk.result.recommendOnly": "{count} مورد در حالت پیشنهادی ثبت شد؛ در انتظار اجرای خارجی.",
-  "bulk.result.settled": "{count} مورد تایید شد؛ اجرای خارجی همهٔ آن‌ها به پایان رسیده است.",
+  "bulk.result.settled":
+    "{count} مورد تایید شد؛ هیچ اجرایی در جریان نیست. نتیجهٔ هر نوشتن را در «اقدام‌ها» ببینید.",
   "bulk.reason.qualityUnknown": "کیفیت مشاهده نامشخص",
   "bulk.reason.conflicted": "مشاهدهٔ متناقض",
   "bulk.reason.staleObservation": "مشاهدهٔ قدیمی‌شده",

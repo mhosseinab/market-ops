@@ -230,6 +230,14 @@ describe("Bulk approval (journey 3 — SERVER-minted selection set, APR-001 at s
     expect(summary.textContent).toContain(
       faIR["bulk.result.settled"].replace("{count}", formatCount(1, "fa-IR")),
     );
+    // Reconciliation invariant (PRD §4.6; design/README.md:181 "unknown write result
+    // is NEVER shown as success/failure"; design/README.md:190 the UI "never infers
+    // external results"). `executionPending: false` proves only that nothing is in
+    // flight — a member may sit in pending_reconciliation with an UNKNOWN result. The
+    // summary must therefore not claim external execution finished or succeeded.
+    for (const forbidden of ["به پایان رسید", "با موفقیت", "اجرا شد", "انجام شد"]) {
+      expect(summary.textContent).not.toContain(forbidden);
+    }
   });
 
   it("counts ONLY the server-authorized members in a mixed partial-failure set (F8/C6)", async () => {

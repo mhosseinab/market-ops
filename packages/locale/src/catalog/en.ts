@@ -720,7 +720,8 @@ export const en: Catalog = {
   "bulk.col.result": "Result",
   "bulk.result.excluded": "Excluded",
   "bulk.result.recommendOnly": "{count} tracked recommend-only; awaiting external execution.",
-  "bulk.result.settled": "{count} approved; external execution has finished for all of them.",
+  "bulk.result.settled":
+    "{count} approved; no execution is in flight. See Actions for each write's result.",
   "bulk.reason.qualityUnknown": "Observation quality unknown",
   "bulk.reason.conflicted": "Conflicted observation",
   "bulk.reason.staleObservation": "Stale observation",
