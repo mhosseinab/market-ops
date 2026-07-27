@@ -257,6 +257,32 @@ remaining entries are blocked or conflict-starved with no agent active; a
 global safety stop occurs; or the user stops it. A completed batch is not a
 terminal condition.
 
+### Concurrency cap and measured contention
+
+Default to four concurrent issue conductors unless the runtime reports a
+lower limit or the suites are demonstrably not contending. Each conductor fans
+out an implementer plus two to three reviewers, each independently running
+test suites on one box. Measured on this repository, the same web suite took
+402 seconds under six-conductor load versus 103 seconds idle, and the
+contention manufactured phantom flakes (ChatDock timeouts, Playwright
+`ERR_CONNECTION_REFUSED`) that cost real fix cycles chasing nothing. Four
+keeps the box responsive and the failures real. Raise the cap only when a
+rehearsed run shows suites are not contending; never raise it on a hunch.
+
+Within one issue, implementer, fix workers, and reviewers run synchronously
+from that issue's conductor (run-in-background is false for those spawns).
+A conductor that backgrounds a stage worker and then ends its turn stalls the
+whole issue until someone re-wakes it — observed failure mode. Only the
+conductor itself runs in the background from the LEAD's side. Independent
+reviewers of the same SHA (area plus specialist) spawn concurrently in one
+message; their findings union into the ledger.
+
+Keep a fallback wake-up armed while anything is in flight (roughly five
+minutes; scheduled wake / `send_later` / the runtime's equivalent) so a quiet
+window — CI still running, a conductor mid-turn — cannot stall the run.
+Heartbeat actions are idempotent: if the state already advanced when one
+fires, it is a no-op, never a duplicate merge or nudge.
+
 ## 8. Worktree lifecycle
 
 The LEAD creates explicit worktrees; spawn APIs do not imply isolation.
@@ -278,6 +304,16 @@ inspection and flag it. If teardown fails twice, report the leftover path.
 
 Before final reporting, reconcile `git worktree list`; every run-created path
 must be removed or explicitly retained for an escalation.
+
+### Mutation probes and shared-worktree discipline
+
+Run mutation probes, exploratory edits, and throwaway experiments in a
+detached worktree created with `git worktree add --detach`, never in a branch
+worktree under review. Two agents sharing one worktree have been observed
+mutating each other's files mid-review, including a probe reverting a
+production file under a concurrent reviewer. Before pushing any reviewed SHA,
+verify `git status --porcelain` is empty and HEAD is the exact reviewed
+commit in the branch worktree.
 
 ## 9. Implementation stage
 
@@ -303,8 +339,13 @@ for the right reason, make the smallest GREEN change, then refactor under
 green. Never-cut invariant negative tests precede happy paths. Deliver complete
 owned seams. Regenerate committed outputs in the same commit for contract,
 sqlc, or migration triggers. Run issue-derived reproduction and acceptance
-commands plus `task ci:local`. Commit with the repository's Conventional
-Commit scopes, stage explicit files, and never bypass hooks.
+commands plus the FULL gate the failing CI job runs (`task ci:local`, or the
+complete per-plane target such as `task ts:lint`) — never a subset, never a
+truncated run. Partial local gates cause CI ping-pong: on one observed
+branch, local typecheck passed while the full lint gate kept failing CI, and
+two fix cycles were burned on what one full run would have caught. Commit
+with the repository's Conventional Commit scopes, stage explicit files, and
+never bypass hooks.
 
 Require this compact handoff:
 
@@ -326,6 +367,45 @@ BLOCKERS: none or concrete blocker
 A skipped, truncated, stale-branch, or predicted command is not passing
 evidence.
 
+### Sandbox state and test-gate knowledge
+
+Carry this observed cloud-sandbox state in every implementation, fix, and
+review packet so no agent re-derives it. Adapt to the live environment, never
+skip the gate:
+
+- `task go:lint` / `task lint:all` works, but only via a Go-1.26-built
+  `golangci-lint` binary. A stale go1.25 build at `/usr/local/bin/golangci-lint`
+  aborts at config load having analysed zero files; a go1.26 build lives at
+  `/root/go/bin/golangci-lint` in observed cloud sandboxes (build one with
+  `GOTOOLCHAIN=go1.26.x go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@vX`).
+  Invoke that path explicitly. **A config-load abort is not a pass** — it
+  also means the forbidigo/semgrep money guard never ran, so never read a
+  green local `lint:all` as evidence that guard fired.
+- `task migrate:verify` works if you start your own scratch Postgres and export
+  `DATABASE_URL`; it is not inherently unavailable. Reviewers have run
+  goose up/down/up green this way. DB-backed tests SKIP silently without
+  `DATABASE_URL` — always run the `env -u DATABASE_URL` control alongside the
+  with-`DATABASE_URL` run to prove your passing DB tests actually hit Postgres
+  rather than skipped.
+- `task contracts:drift` / `task ci:local` are not reliably red. An unpinned
+  `ruff` in `gen:python` can reflow `gen/python/README.md`, but this does
+  not always fire (one issue ran `task ci:local` to exit zero with
+  `contracts:drift` clean). Run it; if it is red for you, report the diff it
+  produced. If your change touches `contracts/` or `gen/`, the result is
+  yours regardless.
+- `task` unavailable → install go-task, or run the underlying per-plane
+  commands the Taskfile target wraps. A Verify gate is never silently
+  skipped; if it truly cannot run locally, name the PR's CI as the deferred
+  gate — the merge lock enforces it anyway.
+- `gh` unavailable → use the connected GitHub app with identical semantics.
+  The step is the contract, not the binary.
+- `advisor` unavailable → substitute a rigorous written self-review of the
+  plan; note the substitution in the report. Advice never overrides a
+  binding source.
+
+Report every gate with its real exit code and reason. Never claim a gate
+green that you did not run to completion.
+
 ## 10. Review, findings ledger, and fix cycles
 
 Create fresh reviewers every cycle. A reviewer gets no implementer transcript,
@@ -336,10 +416,15 @@ re-check.
 The area reviewer reads the matching `.codex/agents/<profile>.toml` as its
 charter and remains read-only. Spawn triggered invariant, security, adversarial,
 and locale reviewers independently. Each reviewer:
+Each reviewer:
 
 - checks the actual `origin/main...<reviewed-sha>` diff;
-- independently reruns the relevant verification;
-- checks test-first evidence for bug fixes and deterministic invariant logic;
+- independently reruns the relevant verification, including the
+  `env -u DATABASE_URL` control whenever DB-backed tests are in scope, to
+  prove the with-`DATABASE_URL` run actually hit Postgres rather than skipped;
+- checks test-first evidence for bug fixes and deterministic invariant logic
+  (deterministic domain logic without a test is a blocker; never-cut paths
+  require a failing-RED reproduction before the GREEN change);
 - begins with exactly `VERDICT: PASS` or `VERDICT: CHANGES_REQUESTED`;
 - gives numbered blockers with severity, requirement/invariant, exact
   `file:line`, observed risk, and smallest safe remediation;
@@ -363,16 +448,43 @@ evidence supports it. The next reviewer receives the overrule and may re-raise
 only with new evidence. A genuine PRD gap is never overruled.
 
 Cycle accounting: initial implementation plus first review is cycle 0. Each
-fix plus fresh re-review consumes one cycle, to a maximum of three. Batch all
-upheld blockers into one fix worker per cycle. Each fix begins with a failing
-reproduction, applies the smallest safe change, runs the full affected gate,
-commits, and returns to fresh review.
+fix plus fresh re-review consumes one cycle. The cap depends on what the
+issue actually touches, judged from the diff (not just the label):
+
+- **Three cycles** on a never-cut path — money arithmetic or Money-typed
+  boundaries, policy evaluation or ordering, approval versioning,
+  idempotency, event deduplication, the permission matrix, connector
+  capability transitions, free-text containment, identity quarantine,
+  append-only tables, auth/credential/session boundaries, Route C
+  parser/normalization. These earn the full adversarial budget.
+- **One cycle** for everything else: fix the blockers once, re-review once,
+  then ship or escalate. Optional follow-ups and nice-to-have hardening
+  become PR-body notes, never another cycle.
+
+The conductor states the chosen cap and its reason in the issue report; when
+genuinely uncertain, take three — under-reviewing a never-cut path is the
+more expensive mistake. Measured on this repository, a three-cycle issue
+costs roughly 2.5 hours wall-clock, and on non-invariant work cycles two and
+three have repeatedly gone to test-assertion quality and copy wording — real
+findings, but not worth blocking a merge the PR body could carry as
+follow-ups.
+
+Batch all upheld blockers into one fix worker per cycle. Each fix begins with
+a failing reproduction named after the finding, applies the smallest safe
+change, runs the FULL gate the failing CI job runs (`task ci:local` or the
+complete per-plane target such as `task ts:lint`), commits, and returns to
+fresh review. Never run a subset — partial local gates cause CI ping-pong.
 
 Escalate early when open blockers do not strictly decrease, the same blocker
 survives two cycles, fixes introduce new blockers twice, an invariant would
-need weakening, or a product decision is missing. Runtime/model fallback is
-not itself a product blocker; retry once with the strongest available
-configuration when the interface permits, and record the attempt.
+need weakening, or a product decision is missing. On a `sonnet`-routed issue
+(or a skill-runtime equivalent fast-class worker), upgrade to the strongest
+available coding/reasoning configuration for all subsequent fix and review
+spawns BEFORE any human escalation — cheap-model failure is not a product
+blocker. Record the upgrade attempt and cycle; never downgrade mid-issue.
+Runtime/model fallback is not itself a product blocker; retry once with the
+strongest available configuration when the interface permits, and record the
+attempt.
 
 On escalation:
 
@@ -382,6 +494,20 @@ On escalation:
    root cause, and exact decision/change required.
 4. Leave Project fields untouched.
 5. Keep the worktree for inspection and continue only with independent issues.
+
+### Known-red is a claim, not a fact
+
+Never inherit a red-gate claim from a packet, a sibling PR body, or another
+conductor's report without running the gate yourself. This run has produced a
+documented false baseline: reviewers across several issues independently
+recorded `go:lint` and `contracts:drift` as pre-existing environmental
+failures and deferred them to CI. Both were wrong — the lint failure was the
+`golangci-lint` PATH shadowing in section 9, and once the correct binary ran
+it exposed three real lint regressions on a branch whose `main` was clean.
+Reproduction by multiple independent reviewers did not make the claim true;
+it only spread it, because each was reproducing the same broken invocation.
+A reviewer who repeats a red-gate claim without re-running the gate has not
+verified that gate.
 
 Stop the entire run if safe independent work cannot continue.
 
@@ -437,9 +563,16 @@ Never:
 - edit `docs/`, `design/`, the frozen DK Seller spec, or `gen/` by hand;
 - proceed when fresh `origin/main` lacks the issue's referenced code;
 - weaken a never-cut invariant, negative test, guard, fixture, or threshold;
+- run a partial gate in a fix cycle (subset of what CI runs) or accept a
+  config-load abort, a skipped DB test, or a stale-branch run as passing
+  evidence — always run the full gate, and prove DB tests actually executed
+  with the `env -u DATABASE_URL` control;
+- inherit a red-gate claim from any packet, sibling PR, or conductor report
+  without re-running the gate against current code;
 - let an implementer approve its own changes or reuse a reviewer across cycles;
 - schedule two writers in one worktree, overlapping evidence paths, or two
   contracts/gen issues concurrently;
+- run a mutation probe or exploratory edit in a branch worktree under review;
 - schedule or merge from summarized memory when the durable file is available;
 - end merely because one batch finished while eligible work and capacity remain.
 

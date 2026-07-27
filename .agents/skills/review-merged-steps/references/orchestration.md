@@ -253,6 +253,43 @@ Every proposed finding includes:
 Only concrete actionable defects are findings. Confirmed low-severity defects
 count; nits and unsupported suspicions do not.
 
+### Sandbox state and test-gate knowledge
+
+Carry this observed cloud-sandbox state in every specialist-reviewer,
+verifier, and accumulated-reviewer packet so no agent re-derives it. Adapt to
+the live environment, never skip the gate. This skill is read-only at the
+repository level, but reviewers and verifiers still reproduce gates locally
+to produce fresh evidence:
+
+- `task go:lint` / `task lint:all` works, but only via a Go-1.26-built
+  `golangci-lint` binary. A stale go1.25 build at
+  `/usr/local/bin/golangci-lint` aborts at config load having analysed zero
+  files; a go1.26 build lives at `/root/go/bin/golangci-lint` in observed
+  cloud sandboxes. Invoke that path explicitly. **A config-load abort is not
+evidence of a clean run** — it also means the forbidigo/semgrep money guard
+  never ran, so never cite a green local `lint:all` as evidence that guard
+  fired or that the reviewed code is lint-clean.
+- `task migrate:verify` works if you start your own scratch Postgres and
+  export `DATABASE_URL`; it is not inherently unavailable. DB-backed tests
+  SKIP silently without `DATABASE_URL` — always run the
+  `env -u DATABASE_URL` control alongside the with-`DATABASE_URL` run to
+  prove the passing DB tests actually hit Postgres rather than skipped. A
+  skipped DB test cannot confirm or refute a finding.
+- `task contracts:drift` / `task ci:local` are not reliably red. An unpinned
+  `ruff` in `gen:python` can reflow `gen/python/README.md`, but this does
+  not always fire. Run it; if it is red, capture the diff. If the reviewed
+  step touched `contracts/` or `gen/`, the result is part of that step's
+  evidence regardless.
+- `task` unavailable → install go-task, or run the underlying per-plane
+  commands the Taskfile target wraps. A Verify gate is never silently
+  skipped; if it truly cannot run locally, mark the finding's verification
+  as `INSUFFICIENT_EVIDENCE` rather than guessing.
+- `gh` unavailable → use the connected GitHub app with identical semantics.
+  The disposition contract is the step, not the binary.
+
+Report every gate with its real exit code and reason. Never cite a gate as
+clean that you did not run to completion.
+
 ## 9. Phase 6/7 — normalize and independently verify findings
 
 Normalize reviewer output into ledger records without deciding truth. No
@@ -270,7 +307,10 @@ The verifier receives a bounded packet and must:
 3. confirm file, line, and symbol;
 4. independently reconstruct the failure path;
 5. search for protections missed by the reviewer;
-6. run a focused reproduction or relevant tests when feasible;
+6. run a focused reproduction or relevant tests when feasible, including the
+   `env -u DATABASE_URL` control whenever DB-backed tests are in scope, to
+   prove the with-`DATABASE_URL` run actually hit Postgres rather than
+   skipped (see section 8 Sandbox state);
 7. determine whether a later step fixed or superseded it;
 8. determine whether it is intended staged behavior or a deferred gate;
 9. confirm current presence at the exact pinned SHA;
@@ -311,6 +351,22 @@ Only `CONFIRMED_PARTIAL_RESIDUAL` authorizes commenting or reopening the
 original issue. Record exact shared root cause, unmet original criterion,
 current evidence, and smallest remaining remediation. Any uncertainty blocks
 the mutation rather than creating a new issue.
+
+### Known-red is a claim, not a fact
+
+Never inherit a red-gate claim from a sibling review, a prior run's report,
+or another verifier's packet without running the gate yourself against the
+pinned SHA. On a previous run, verifiers across several issues independently
+recorded `go:lint` and `contracts:drift` as pre-existing environmental
+failures and marked them `INSUFFICIENT_EVIDENCE` or `REJECTED`. Both were
+wrong — the lint failure was the `golangci-lint` PATH shadowing in section 8,
+and once the correct binary ran it exposed three real lint regressions on a
+branch whose `main` was clean. Reproduction by multiple independent verifiers
+did not make the claim true; it only spread it, because each was reproducing
+the same broken invocation. A verifier who repeats a red-gate claim without
+re-running the gate has not verified that gate; the disposition must be
+`INSUFFICIENT_EVIDENCE` with the reason "gate not re-run," not a confident
+`REJECTED`.
 
 ## 10. Phase 8 — accumulated-branch review
 
@@ -529,7 +585,9 @@ On any uncertain response:
 No creation, comment, or reopen unless all hold:
 
 - concrete failure and code-level evidence;
-- independent verification at pinned main;
+- independent verification at pinned main, with any cited gate re-run fresh
+  by the verifier (never inherited from a sibling packet — see section 9
+  Known-red is a claim, not a fact);
 - not intended staged behavior or merely deferred gate;
 - global duplicate search complete;
 - testable acceptance/remediation;

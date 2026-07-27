@@ -69,10 +69,24 @@ Map collaboration operations as follows:
 
 Use the active runtime's actual thread limit. Keep every available child slot
 busy with a non-conflicting eligible stage, but never exceed the reported cap.
-Stages for one worktree serialize except that independent read-only reviewers
-for the same SHA may run concurrently. The scheduler is stage-based rather than
-Claude's nested conductor topology, so fresh implementers, fix workers, and
-reviewers remain independent even when nested spawning is unavailable.
+Default to four concurrent issue conductors unless the runtime reports a
+lower limit or suites are demonstrably not contending. Measured on this
+repository, the same web suite took 402 seconds under six-conductor load
+versus 103 seconds idle, and the contention manufactured phantom flakes
+(ChatDock timeouts, Playwright `ERR_CONNECTION_REFUSED`) that cost real fix
+cycles chasing nothing. Four keeps the box responsive and the failures real.
+Raise the cap only after a rehearsed run shows suites are not contending.
+
+Within one issue, implementer, fix workers, and reviewers run synchronously
+from that issue's conductor. Backgrounding a stage worker and then ending
+the turn stalls the whole issue until someone re-wakes it. Only the conductor
+itself runs in the background from the LEAD's side. Independent reviewers of
+the same SHA (area plus specialist) spawn concurrently in one message; their
+findings union into the ledger. Stages for one worktree serialize except
+that independent read-only reviewers for the same SHA may run concurrently.
+The scheduler is stage-based rather than Claude's nested conductor topology,
+so fresh implementers, fix workers, and reviewers remain independent even
+when nested spawning is unavailable.
 
 ## Profile routing
 
@@ -126,6 +140,65 @@ Every reached issue ends this run as exactly one of:
 Selected issues not reached before a valid stop are `REMAINING` with their path
 positions. Never silently drop an issue, declare a batch complete, or merge to
 escape the three-cycle cap.
+
+## Test-gate discipline
+
+Every implementation, fix, and review packet carries the repo's observed
+sandbox-gate state and the rule that gates are run fresh, never inherited. See
+[references/orchestration.md](references/orchestration.md) section 9
+(Sandbox state and test-gate knowledge) and section 10 (Known-red is a claim,
+not a fact) for the full contract.
+
+In particular:
+
+- Fix cycles run the FULL gate the failing CI job runs (`task ci:local` or the
+  complete per-plane target such as `task ts:lint`), never a subset. Partial
+  local gates cause CI ping-pong.
+- `task go:lint` works only via a Go-1.26-built `golangci-lint`; a stale
+  go1.25 build aborts at config load having analysed zero files. **A
+  config-load abort is not a pass** — the forbidigo/semgrep money guard never
+  ran.
+- DB-backed tests skip silently without `DATABASE_URL`. Always run the
+  `env -u DATABASE_URL` control alongside the with-`DATABASE_URL` run to prove
+  the passing DB tests actually hit Postgres.
+- Never inherit a red-gate claim from a packet, sibling PR, or another
+  conductor's report without re-running the gate. A documented false baseline
+  once spread across multiple reviewers because each reproduced the same
+  broken invocation.
+
+## Performance budget
+
+The skill defaults to four concurrent issue conductors and treats wall-clock
+and token cost as first-class concerns. See
+[references/orchestration.md](references/orchestration.md) section 7
+(Concurrency cap and measured contention) and section 10 (Cycle accounting)
+for the full contract.
+
+In particular:
+
+- Default to 4 conductor slots, not more. Measured on this repository, the
+  same web suite took 402s under six-conductor load versus 103s idle, and
+  contention manufactured phantom flakes (ChatDock timeouts, Playwright
+  `ERR_CONNECTION_REFUSED`) that cost real fix cycles chasing nothing. Raise
+  the cap only after a rehearsed run proves suites are not contending.
+- Within one issue, implementer, fix workers, and reviewers run
+  synchronously from that issue's conductor (run-in-background false). A
+  backgrounded stage worker whose conductor ends its turn stalls the whole
+  issue. Only the conductor itself runs in the background from the LEAD's
+  side. Area plus specialist reviewers of the same SHA spawn concurrently.
+- The fix-cycle cap is path-dependent: three cycles on a §4.6 never-cut path,
+  one cycle otherwise. Optional follow-ups become PR-body notes, never
+  another cycle. A three-cycle issue costs roughly 2.5 hours wall-clock, so
+  spending cycles two and three on test-assertion quality or copy wording is
+  a known anti-pattern.
+- On a fast-class issue that struggles (reaches cycle 2, ratchet warning, or
+  design-misjudgment findings), upgrade every subsequent fix and review spawn
+  to the strongest available configuration BEFORE human escalation.
+  Cheap-model failure is not a product blocker; never downgrade mid-issue.
+- Run mutation probes and exploratory edits in a detached worktree
+  (`git worktree add --detach`), never in a branch worktree under review.
+  Two agents sharing one worktree have been observed mutating each other's
+  files mid-review.
 
 ## Hard guardrails
 

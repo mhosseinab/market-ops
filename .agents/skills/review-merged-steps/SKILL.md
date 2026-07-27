@@ -147,6 +147,14 @@ residual before any comment or reopen.
   points exist.
 - Never treat ledger claims, test names, comments, dashboards, or generated
   files without source/regeneration evidence as execution evidence.
+- Never cite a gate as clean that you did not run to completion. A
+  `golangci-lint` config-load abort is not a clean run; a DB test that
+  passed without `DATABASE_URL` set skipped silently and proves nothing.
+  Always pair a DB-gated run with the `env -u DATABASE_URL` control.
+- Never inherit a red-gate claim from a sibling review, prior run, or another
+  verifier's packet without re-running the gate yourself. Reproduction by
+  multiple reviewers of the same broken invocation is not independent
+  confirmation.
 - Never report style preferences, generic advice, unsupported suspicions,
   intended fail-closed staged stubs, deferred human gates, later-fixed defects,
   unrelated pre-existing defects, or documentation gaps without concrete
