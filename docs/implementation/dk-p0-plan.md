@@ -48,7 +48,7 @@ market-ops/                             market-ops/
                                         ├── apps/web/      Vite 8 + React SPA (fa-IR RTL)
                                         ├── apps/extension/ Chrome MV3 (TS)
                                         ├── packages/locale/ fa-IR locale pack + en authoring catalog
-                                        ├── deploy/        compose (dev + prod), Caddy, otel/grafana
+                                        ├── deploy/        compose (dev + prod), nginx, otel/grafana
                                         ├── Taskfile.yml   single entry point (task test:all …)
                                         └── .github/workflows/  affected-only CI + drift + pseudo-locale gates
 ```

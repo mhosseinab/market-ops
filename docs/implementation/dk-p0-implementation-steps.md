@@ -90,7 +90,7 @@ actual output.
 **Depends on:** S1.
 
 ```
-Read dk-p0-monorepo.md §8 and docs/PRD.md §19.3 (PostgreSQL 18, Docker Compose, Caddy,
+Read dk-p0-monorepo.md §8 and docs/PRD.md §19.3 (PostgreSQL 18, Docker Compose, Nginx,
 OpenTelemetry/Grafana/Loki/Tempo). Create deploy/compose.dev.yml with postgres:18 (named volume,
 healthcheck), otel-collector, grafana + loki + tempo (provisioned datasources under
 deploy/grafana/), mailpit for email testing, and the Spotlight dev-observability sidecar
@@ -911,15 +911,15 @@ traffic (task dev + seeded activity script).
 ---
 
 ### S34 — Production deployment (GATED — live operation, human "go" required)
-**Goal:** `deploy/compose.prod.yml` topology live on the VPS with Caddy TLS, backups to the isolated destination, restore-tested.
+**Goal:** `deploy/compose.prod.yml` topology live on the VPS with Nginx TLS, backups to the isolated destination, restore-tested.
 **Depends on:** S32, S33.
 
 ```
 STOP — this step touches live infrastructure and requires an explicit human "go" plus VPS +
 domain + backup-destination credentials supplied by a human. Then: read dk-p0-monorepo.md §8 and
-PRD §19.3. Author deploy/compose.prod.yml (core distroless image, llm uv --no-editable image,
-caddy ingress + static web dist, postgres 18 with WAL archiving to the isolated backup
-destination, otel stack), Caddyfile with TLS, image build/push via CI job, deploy runbook
+Author deploy/compose.prod.yml (core distroless image, llm uv --no-editable image,
+nginx ingress + static web dist, postgres 18 with WAL archiving to the isolated backup
+destination, otel stack), nginx TLS config (deploy/nginx/nginx.prod.conf), image build/push via CI job, deploy runbook
 (deploy, rollback = previous image tag + migration down-path policy, secret rotation), backup
 restore drill script. Execute first deploy WITH the human watching; run the restore drill on a
 scratch instance. NO seller production credentials are configured in this step — accounts connect

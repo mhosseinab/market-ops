@@ -8,23 +8,25 @@ asks for a decision. Nothing here is actioned until the product owner rules.
 
 ---
 
-## E-2 — The frozen PRD names Caddy; the repo has always used Nginx (open)
+## E-2 — The frozen PRD names Caddy; the repo has always used Nginx (resolved 2026-07-27)
 
 **Raised:** 2026-07-25, while authoring the production deployment artifacts.
-**Touches:** `docs/PRD.md` §19.3 (frozen product baseline), `dk-p0-plan.md`,
-`dk-p0-implementation-steps.md` S34, `dk-p0-agent-guidelines.md`.
-**Decision needed from:** product owner — the PRD is read-only and only a
-deliberate re-freeze changes it.
+**Resolved:** 2026-07-27 — every Caddy reference in the read-only specs was
+ corrected to Nginx by the product owner's explicit instruction.
+**Touched:** `docs/PRD.md` §19.3 (frozen product baseline), `dk-p0-plan.md`,
+`dk-p0-implementation-steps.md` S2/S34, `dk-p0-agent-guidelines.md`,
+`docs/PRD.html`, `dk-p0-monorepo.md`, `DEPLOYMENT.md`, the `platform_reliability`
+charter, and the historical progress notes.
 
 ### The divergence
 
-PRD §19.3 records the deployment decision as "Docker Compose on one production
-VPS plus isolated backup destination; **Caddy ingress**". Four other documents
-repeat it: the plan's directory tree (`deploy/ … Caddy`), the S34 step script
-("Caddyfile with TLS"), the agent guidelines' delivery-choices list, and the
-`platform_reliability` charter.
+PRD §19.3 had recorded the deployment decision as "Docker Compose on one
+production VPS plus isolated backup destination; **Caddy ingress**". Four other
+documents repeated it: the plan's directory tree (`deploy/ … Caddy`), the S34
+step script ("Caddyfile with TLS"), the agent guidelines' delivery-choices
+list, and the `platform_reliability` charter.
 
-The repository does not implement it and never has:
+The repository did not implement it and never has:
 
 | | |
 |---|---|
@@ -35,10 +37,7 @@ The repository does not implement it and never has:
 
 The visible history is squashed at `c7e76df`, so the commit that made the swap
 is not recoverable from this repo; `deploy/nginx/` is present from that import
-onward. `DEPLOYMENT.md` — the newest operator document — already described an
-Nginx ingress and listed "approved TLS termination and certificate renewal are
-configured for **Nginx**" in its readiness gate, so the working decision was
-Nginx well before this entry.
+onward.
 
 ### Why it needed escalating rather than fixing silently
 
@@ -47,17 +46,15 @@ authored with a Caddy container in front of Nginx, because §19.3 was treated as
 authoritative over the working tree. That is two proxies where the project had
 deliberately settled on one. It was caught in review and removed.
 
-Anyone reading §19.3 or the S34 step script next will make the same mistake.
+### Resolution
 
-### The question
-
-Is Nginx the intended ingress — in which case §19.3, the plan, the S34 step
-script, and the agent guidelines should be corrected at the next re-freeze — or
-was the move to Nginx an undocumented drift that should be reverted to Caddy?
-
-Implementation-side documents that are not read-only (`dk-p0-monorepo.md` §8,
-`DEPLOYMENT.md`, the `platform_reliability` charter) have been updated to
-describe Nginx and to point here. No read-only document was edited.
+Nginx was confirmed as the intended ingress. Every Caddy reference in the
+read-only specs (PRD §19.3, the plan's directory tree, the S2 and S34 step
+scripts, the agent guidelines, and `PRD.html`) has been corrected to Nginx.
+The divergence notes that pointed to this entry from `dk-p0-monorepo.md`,
+`DEPLOYMENT.md`, and the `platform_reliability` charter have been simplified
+now that the root cause is fixed. This entry is retained as the historical
+record of the defect and its correction.
 
 ---
 

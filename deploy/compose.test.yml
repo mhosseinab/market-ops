@@ -65,12 +65,12 @@ services:
 
   # --- one-shot schema migration + dev seed + owner credential -------------
   # `cmd/core` only runs River's OWN internal schema (jobs.Migrate) — it never
-  # applies the goose app-schema migrations (0001..0017). Without this step
-  # `core`/`cmd/seede2e` hit a schema-less DB ("relation users does not
-  # exist") and the whole stack never becomes healthy. Mirrors exactly what
-  # the existing `go` CI job does before `go:test` (task db:reset: goose up +
-  # river migrate-up + fixtures/dev_seed.sql), against THIS compose network's
-  # postgres host instead of localhost.
+  # applies the goose app-schema migrations under services/core/migrations.
+  # Without this step `core`/`cmd/seede2e` hit a schema-less DB ("relation
+  # users does not exist") and the whole stack never becomes healthy. Mirrors
+  # exactly what the existing `go` CI job does before `go:test` (task db:reset:
+  # goose up + river migrate-up + fixtures/dev_seed.sql), against THIS compose
+  # network's postgres host instead of localhost.
   #
   # `cmd/seede2e` (which sets the ONE password `dev_seed.sql`'s owner@dev.local
   # fixture never ships) runs HERE, in the SAME one-shot, immediately after

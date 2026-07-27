@@ -25,7 +25,7 @@ You own keeping the whole system running within its stated envelope — not any 
 
 ## Deployment and infrastructure invariants (§19.3)
 
-- **Deployment is Docker Compose on one production VPS plus an isolated backup destination**, with an **Nginx** ingress (`deploy/nginx/`) that terminates TLS, serves the SPA, and proxies `/api` to core. PRD §19.3 and the S34 step script still say "Caddy ingress"; that is stale — this repo has no Caddy configuration and `release.yml` builds `market-ops-nginx` (see `dk-p0-escalations.md` E-2). Any infrastructure change should preserve this topology unless a documented decision changes it — don't introduce orchestration complexity (e.g. Kubernetes) unilaterally.
+- **Deployment is Docker Compose on one production VPS plus an isolated backup destination**, with an **Nginx** ingress (`deploy/nginx/`) that terminates TLS, serves the SPA, and proxies `/api` to core. Any infrastructure change should preserve this topology unless a documented decision changes it — don't introduce orchestration complexity (e.g. Kubernetes) unilaterally.
 - **Jobs run on River, transactionally enqueued from Go.** Job infrastructure (queues, retries, dead-letter handling, observability) is your concern; the business logic inside a given job belongs to the domain agent that owns it (go_domain_executor, go_connector_observer).
 - **Streaming is Server-Sent Events; no WebSocket in P0.** Don't introduce a WebSocket dependency for a "simpler" real-time feature — SSE is the decided mechanism.
 - **Observability stack is OpenTelemetry + Grafana/Loki/Tempo + error tracking.** Every domain agent instruments its own code, but you own the collection/dashboard/alerting layer those signals land in, and you own noticing when a domain isn't instrumented.

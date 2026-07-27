@@ -260,7 +260,7 @@
   <div class="grid3">
     <div class="card"><h3>Deterministic plane</h3><p class="subtle" style="margin:0">Go owns all money, identity, event, policy, approval, execution, reconciliation, audit, and scheduling. Monorepo: go, python, web, extension, contracts. Go OpenAPI is the contract source; Python/TS clients are generated with a CI drift check.</p></div>
     <div class="card"><h3>Model plane rules</h3><p class="subtle" style="margin:0">Model/provider selection is configuration; Gate 0a picks the cheapest pair clearing every threshold. If the provider degrades, chat falls back to suggested prompts + screens — never to an unqualified model. Failure: one automatic retry, then deep-link.</p></div>
-    <div class="card"><h3>Deploy & observe</h3><p class="subtle" style="margin:0">Docker Compose on one production VPS + isolated backup, Caddy ingress, OpenTelemetry with Grafana/Loki/Tempo. Route C: Go HTTP mainline; chromedp only if Gate 0 proves rendering necessary — else the wedge does not launch.</p></div>
+    <div class="card"><h3>Deploy & observe</h3><p class="subtle" style="margin:0">Docker Compose on one production VPS + isolated backup, Nginx ingress, OpenTelemetry with Grafana/Loki/Tempo. Route C: Go HTTP mainline; chromedp only if Gate 0 proves rendering necessary — else the wedge does not launch.</p></div>
   </div>
 </section>
 

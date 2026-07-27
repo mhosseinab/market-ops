@@ -45,14 +45,6 @@ integration stack runs; certificates come from the one-shot `certbot` service.
 The local integration topology (`compose.test.yml`) uses the same Nginx layer
 with no TLS.
 
-> The read-only documents — PRD §19.3, `dk-p0-plan.md`,
-> `dk-p0-implementation-steps.md` (S34) and `dk-p0-agent-guidelines.md` — still
-> name **Caddy** as the ingress. That is stale: this repository has no Caddy
-> configuration and never has, the ingress is Nginx (`deploy/nginx/`), and
-> `release.yml` builds and scans `market-ops-nginx`. The divergence is logged as
-> E-2 in `docs/implementation/dk-p0-escalations.md`; correcting the frozen PRD
-> needs a deliberate re-freeze, so it is not done here.
-
 PostgreSQL, core, and the LLM plane publish no ports at all. The LLM plane must
 never receive `DATABASE_URL`, the DK seller token, or
 `CONNECTOR_ENCRYPTION_KEY`; `deploy/compose.prod.yml` omits all three from its
@@ -127,11 +119,10 @@ them through the seller authorization exchange and stores them sealed.
 
 ## 3. Configuration and secrets
 
-`task up` generates and persists safe local values automatically. To customize
-individual services, copy the optional template and generate fresh values:
+`task up` generates and persists safe local values automatically. To override
+individual services, create a local `.env` and generate fresh values:
 
 ```sh
-cp .env.example .env
 openssl rand -base64 32
 openssl rand -hex 32
 openssl rand -base64 24
@@ -372,26 +363,11 @@ It serves the built SPA and `/api` through Nginx at one origin.
    curl -fsS http://localhost:8888/
    ```
 
-7. Open `http://localhost:8888`. The SPA currently has no login screen. In
-   Chrome DevTools Console on that origin, create the browser session:
-
-   ```js
-   await fetch("/api/auth/login", {
-     method: "POST",
-     headers: { "content-type": "application/json" },
-     body: JSON.stringify({
-       email: "owner@dev.local",
-       password: "<the password from step 2>",
-     }),
-   });
-   location.reload();
-   ```
-
-   Confirm it with:
-
-   ```js
-   await (await fetch("/api/auth/me")).json();
-   ```
+7. Open `http://localhost:8888/`. The SPA routes unauthenticated browsers to
+   `/login`; sign in with the disposable owner credential from step 2. The
+   authed layout resolves `GET /auth/me` before any protected screen mounts
+   (issue #168), so the session is established through the normal UI rather
+   than a console workaround.
 
 8. In onboarding, submit any nonempty authorization code. The local DK mock
    accepts it and returns offline test tokens. Do not use a real seller code in
@@ -502,21 +478,22 @@ await (
 
 ### Extension blockers that must be fixed before functional release
 
-The current bundle is installable, but it is not operationally release-ready:
+The current bundle is installable. The manifest is correctly scoped at build
+time — `apps/extension/scripts/manifest.mjs` injects the gateway origin from
+`VITE_GATEWAY_BASE_URL` into `host_permissions`, fails closed (build aborts) if
+it is unset, empty, or wider than one concrete HTTPS host, and is pinned by
+`apps/extension/src/lib/manifest-gen.test.ts`. The remaining operational gaps
+are server-backed:
 
-- `apps/extension/public/manifest.json` grants DK hosts only. Chrome requires a
-  matching `host_permissions` entry for service-worker requests to the gateway.
-  The build does not inject the configured gateway origin.
 - the confirmed-owned-target index starts empty and has no production sync
   producer, so capture correctly fails closed
 - watchlist, overlay/history reads, and scheduled allocation still use
   fail-closed adapters
 
-A production extension build must generate or validate a manifest containing
-the exact HTTPS gateway origin, for example
-`https://ops.example.com/*`, while retaining only the required DK host grants.
-Do not add a broad `<all_urls>` permission. Then wire and test the remaining
-server-backed adapters before calling the extension functional.
+A production extension build supplies the real HTTPS gateway origin via
+`VITE_GATEWAY_BASE_URL`; least-privilege scoping is then enforced by the build
+itself. Wire and test the remaining server-backed adapters before calling the
+extension functional.
 
 ## 8. External services
 
@@ -615,7 +592,10 @@ All boxes below must be satisfied before the first live deployment:
 - [ ] the core assembles every production-required catalog, identity, and
       observation adapter
 - [ ] SPA production build passes `assert:prod-clean`
-- [ ] extension manifest generation includes the exact gateway host
+- [x] extension manifest generation includes the exact gateway host
+      (`apps/extension/scripts/manifest.mjs` injects `VITE_GATEWAY_BASE_URL`
+      into `host_permissions` at build time and fails closed on a missing or
+      wider-than-one-host grant; pinned by `manifest-gen.test.ts`)
 - [ ] extension target sync and server-backed adapters are complete
 - [ ] `task ci:local` and `task test:integration` pass on the release commit
 - [ ] rollback rehearsal and database migration policy are reviewed

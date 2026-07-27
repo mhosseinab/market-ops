@@ -1091,7 +1091,7 @@ flowchart TB
 | Database | PostgreSQL 18; sqlc; partitioned observation tables; JSONB evidence only where schema variation is intentional |
 | Jobs | River, transactionally enqueued from Go |
 | Streaming | Server-Sent Events; no WebSocket in P0 |
-| Deployment | Docker Compose on one production VPS plus isolated backup destination; Caddy ingress |
+| Deployment | Docker Compose on one production VPS plus isolated backup destination; Nginx ingress |
 | Observability | OpenTelemetry, Grafana/Loki/Tempo, error tracking |
 | Route C | Go HTTP client mainline; chromedp used only when Gate 0 proves browser rendering necessary and viable |
 
