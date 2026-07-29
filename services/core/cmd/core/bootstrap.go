@@ -156,9 +156,9 @@ func runBootstrapOwner(ctx context.Context, getenv func(string) string, out io.W
 			if err := tx.Commit(ctx); err != nil {
 				return fmt.Errorf("bootstrap: commit: %w", err)
 			}
-			fmt.Fprintf(out, "bootstrap-owner: %s already exists; no credential change.\n", user.Email)
+			writef(out, "bootstrap-owner: %s already exists; no credential change.\n", user.Email)
 			printSummary(out, user, account)
-			fmt.Fprintf(out, "bootstrap-owner: set BOOTSTRAP_ROTATE_PASSWORD=true to rotate this owner's password.\n")
+			writef(out, "bootstrap-owner: set BOOTSTRAP_ROTATE_PASSWORD=true to rotate this owner's password.\n")
 			return nil
 		}
 		if err := authSvc.SetPassword(ctx, user.ID, in.password); err != nil {
@@ -230,10 +230,17 @@ func ensureAccount(ctx context.Context, q *db.Queries, orgID uuid.UUID, in boots
 	return account, nil
 }
 
+// writef emits one diagnostic line. Output is advisory: once the transaction has
+// committed, a failed write to stdout must not turn a successful provisioning
+// run into a reported failure the operator would be tempted to re-run.
+func writef(out io.Writer, format string, args ...any) {
+	_, _ = fmt.Fprintf(out, format, args...)
+}
+
 // printSummary emits the identifiers the release handoff record needs
 // (DEPLOYMENT.md §12). No credential material is printed.
 func printSummary(out io.Writer, user db.User, account db.MarketplaceAccount) {
-	fmt.Fprintf(out, "bootstrap-owner: organization=%s\n", user.OrganizationID)
-	fmt.Fprintf(out, "bootstrap-owner: user=%s email=%s role=%s\n", user.ID, user.Email, user.Role)
-	fmt.Fprintf(out, "bootstrap-owner: marketplaceAccount=%s native=%s\n", account.ID, account.NativeAccountID)
+	writef(out, "bootstrap-owner: organization=%s\n", user.OrganizationID)
+	writef(out, "bootstrap-owner: user=%s email=%s role=%s\n", user.ID, user.Email, user.Role)
+	writef(out, "bootstrap-owner: marketplaceAccount=%s native=%s\n", account.ID, account.NativeAccountID)
 }

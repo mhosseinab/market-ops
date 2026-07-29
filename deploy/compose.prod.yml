@@ -243,7 +243,7 @@ services:
   #     docker compose ... run --rm certbot renew --webroot -w /var/www/certbot
   #     docker compose ... exec nginx nginx -s reload
   certbot:
-    image: certbot/certbot:v5.0.0
+    image: certbot/certbot:v5.7.0
     profiles: ["certs"]
     volumes:
       - letsencrypt:/etc/letsencrypt
