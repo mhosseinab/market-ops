@@ -63,6 +63,7 @@ function popupState(capability: Capability): PopupState {
     degradation: null,
     scheduleEnabled: false,
     deadLetter: [],
+    revocationUnconfirmed: false,
   };
 }
 

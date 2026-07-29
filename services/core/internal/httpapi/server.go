@@ -188,6 +188,9 @@ func NewServer(addr string, info BuildInfo, logger *slog.Logger, opts ...Option)
 	for _, opt := range opts {
 		opt(gs)
 	}
+	// Bind the EXT-009 revocation instruments against whatever MeterProvider is
+	// installed now (issue #149) — the kill-switch boundary must be observable.
+	gs.pairingTelemetry = newPairingTelemetry()
 	strict := gateway.NewStrictHandler(gs, nil)
 	handler := gateway.HandlerFromMux(strict, mux)
 

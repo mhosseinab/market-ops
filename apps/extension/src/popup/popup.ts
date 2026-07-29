@@ -1,4 +1,5 @@
 import { formatDate, formatInteger } from "@market-ops/locale";
+import { REVOCATION_UNCONFIRMED_TOKEN } from "../lib/capability";
 import { EXT_LOCALE, t } from "../lib/i18n";
 import type { ExtMessage, ExtResponse } from "../lib/messages";
 import type { PopupState } from "../lib/storage";
@@ -62,7 +63,31 @@ const DEGRADATION_KEY = {
   not_paired: "ext.degradation.notPaired",
   credential_revoked: "ext.degradation.credentialRevoked",
   capture_disabled: "ext.degradation.captureDisabled",
+  // Issue #149: a revocation the server has not confirmed yet. VISIBLY distinct
+  // from credential_revoked — the popup never reports a kill switch as complete
+  // while the credential may still be live at the authority.
+  revocation_pending: "ext.degradation.revocationPending",
+  // Issue #149, fix 3: `revocation_unconfirmed` is DELIBERATELY ABSENT here —
+  // see REVOCATION_UNCONFIRMED_COPY_KEY below.
 } as const;
+
+// The catalog key the "could not confirm" state (#149, fix 3) WILL render
+// through, once the product owner approves a Persian term for it.
+//
+// Its copy value is PENDING PRODUCT-OWNER APPROVAL. `design/` is read-only and
+// its canonical state glossary is the single source for state copy, so coining a
+// Persian term here would be inventing product language; the locale pack's
+// catalog test also requires a truthy fa-IR value for every declared key, so the
+// key is intentionally NOT declared in packages/locale yet.
+//
+// Until then this is a PLANNED STUB THAT FAILS CLOSED: because the token is
+// absent from DEGRADATION_KEY, the renderer falls back to the stable
+// locale-neutral token. That is visibly unfinished, which is the honest state —
+// shipping placeholder text that reads as approved copy would be worse. A
+// NEGATIVE test pins that this state never borrows `ext.degradation
+// .credentialRevoked` (a kill switch it did not achieve) nor the pending copy.
+// DOWNSTREAM: add the approved term to packages/locale and map the token here.
+export const REVOCATION_UNCONFIRMED_COPY_KEY = "ext.degradation.revocationUnconfirmed";
 
 // A dead-letter failure-reason token → catalog key map (issue #150). The reason
 // is a LOCALE-NEUTRAL token from the queue; this is the ONLY place it becomes
@@ -167,8 +192,34 @@ function render(state: PopupState): void {
     root.appendChild(note);
   }
 
-  // Pairing input (shown when not yet paired / revoked).
-  if (state.capability === "unknown" || state.capability === "revoked") {
+  // Issue #149, fix 3: an OUTSTANDING unconfirmed revocation stays visible even
+  // once the user has re-paired — at which point `capability` reads `ready` and
+  // there is no degradation note at all, while an earlier credential may still
+  // be live at the authority. EXT-009 requires that be a visible, real state.
+  // Rendered from the stable locale-neutral token (an identifier, never an
+  // inline literal) for the same pending-copy reason as above.
+  if (state.revocationUnconfirmed) {
+    const outstanding = document.createElement("p");
+    outstanding.dataset.role = "revocation-unconfirmed";
+    outstanding.textContent = REVOCATION_UNCONFIRMED_TOKEN;
+    root.appendChild(outstanding);
+  }
+
+  // Pairing input (shown when not yet paired / revoked / quarantined).
+  //
+  // `revocation_unconfirmed` is included deliberately (#149): the service worker
+  // PERMITS the re-pair — handlePair refuses only on the *pending* marker — and
+  // the popup is the only surface a user has. Gating it out meant a user whose
+  // gateway was down when they pressed Revoke could not re-pair until the
+  // quarantined credential's expiry, i.e. the permanent re-pair block the
+  // quarantine terminal exists to avoid, reached through the UI instead of the
+  // state machine. No new copy is needed — this reuses the pairing catalog keys,
+  // and the outstanding-revocation indicator above stays visible alongside it.
+  if (
+    state.capability === "unknown" ||
+    state.capability === "revoked" ||
+    state.capability === "revocation_unconfirmed"
+  ) {
     const input = document.createElement("input");
     input.id = "pairing-code";
     input.placeholder = t("ext.pairing.placeholder");

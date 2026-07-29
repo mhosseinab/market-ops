@@ -24,6 +24,128 @@ export type MetricName =
   | "dead_letter_retry"
   | "dead_letter_discard"
   | "capability_transition"
+  // The EXT-009 kill switch's SERVER-side revocation (issue #149).
+  // `credential_revocation{outcome}` never carries the credential secret. The
+  // outcome vocabulary is deliberately fine-grained so telemetry can always
+  // distinguish a REAL revocation from a local resolution of one:
+  //   confirmed             — the authority invalidated the credential, on
+  //                           POSITIVE PROOF only (issue #149 fix 3): a 204, or
+  //                           a 401 carrying the authority's own
+  //                           CAPTURE_CREDENTIAL_INVALID verdict. A generic
+  //                           proxy / pre-rollout 401, a 404/405, or any other
+  //                           2xx is NOT proof and never lands here;
+  //   pending               — no authoritative answer; retried under backoff;
+  //   deferred              — a retry was skipped because it is inside its
+  //                           backoff window (bounded load, not a drop);
+  //   expiry_unverified     — an attempt was made and came back NON-authoritative
+  //                           while the credential also looks expired by the
+  //                           DEVICE clock. The clock is not authoritative, so
+  //                           the revoke stays pending; this records that the
+  //                           shortcut was REFUSED. The device clock can never
+  //                           produce a terminal `revoked` (issue #149, G1);
+  //   quarantined_unconfirmed
+  //                         — a bound was reached without the authority ever
+  //                           confirming: the CLOCK-INDEPENDENT attempt budget
+  //                           (REVOCATION_MAX_ATTEMPTS) or the marker's durable
+  //                           AGE bound. The revoke moves into the explicit
+  //                           "could not confirm" QUARANTINE — capability
+  //                           `revocation_unconfirmed`, deliberately NOT
+  //                           `revoked` (nothing confirmed the server row is
+  //                           dead) and NOT a silent discard (the credential is
+  //                           retained and the revoke keeps retrying). It
+  //                           REPLACES the former `abandoned_unconfirmed`, which
+  //                           destroyed the credential and so guaranteed the
+  //                           server row could never be killed;
+  //   quarantine_deferred   — a quarantined retry was inside its backoff window;
+  //   quarantine_repeat     — the user pressed Revoke AGAIN while a revoke was
+  //                           quarantined (the quarantine holds the material, so
+  //                           KEY_CREDENTIAL is already gone). It forces one
+  //                           immediate retry and leaves the state at
+  //                           `revocation_unconfirmed`. Distinct from
+  //                           `already_cleared` on purpose: folding the two lost
+  //                           the difference between an idempotent repeat of a
+  //                           CONFIRMED revoke and one the authority never
+  //                           confirmed;
+  //   quarantine_evicted    — the bounded quarantine list was at its cap and the
+  //                           OLDEST outstanding revocation was dropped. A
+  //                           revocation we can no longer pursue, so it is
+  //                           counted and warn-logged with the evicted
+  //                           credentialId (never the secret), AND recorded
+  //                           durably so the popup keeps reporting it;
+  //   terminal_withheld_abandoned
+  //                         — a quarantine sweep would have promoted the
+  //                           capability to a terminal `revoked`/`unknown`, but a
+  //                           cap-EVICTED revocation is still unconfirmed at the
+  //                           authority. The terminal is refused and the honest
+  //                           `revocation_unconfirmed` stands;
+  //   quarantine_malformed_dropped
+  //                         — a quarantine entry with no credentialId was
+  //                           dropped: it can never be retried, resolved or
+  //                           removed, so it is discarded — counted and logged,
+  //                           never a silent discard of credential material;
+  //   quarantine_retry_pending
+  //                         — a quarantined retry ran and was still not
+  //                           authoritative;
+  //   confirmed_after_quarantine
+  //                         — the authority finally confirmed a QUARANTINED
+  //                           revoke. Distinct from `confirmed`: a revocation
+  //                           confirmed late is not the same operational event
+  //                           as one confirmed on the spot;
+  //   quarantine_expired    — a quarantined revoke reached the credential's
+  //                           authoritative expiry, so the credential can no
+  //                           longer authenticate anything and the record is
+  //                           discarded. Lands on `unknown`, NEVER `revoked`;
+  //   forced_no_contact     — a USER-forced retry never reached the server, so it
+  //                           did not consume the authoritative attempt budget
+  //                           (an offline user pressing Pair must not end their
+  //                           own revoke). The marker's AGE bound still applies;
+  //   local_storage_error   — a user Revoke's DURABLE writes failed (e.g.
+  //                           QUOTA_BYTES) and NOTHING durable was possible even
+  //                           after shedding advisory telemetry. Capture is gated
+  //                           OFF in memory for this worker lifetime only, and the
+  //                           popup still gets a response; counted so the kill
+  //                           switch never fails open silently;
+  //   local_storage_error_recovered
+  //                         — same failure, but the small fail-closed writes
+  //                           landed on retry (after shedding the telemetry
+  //                           outbox), so the revoke stays durably retryable and
+  //                           capture stays off across a worker restart;
+  //   local_storage_error_marker_retained
+  //                         — same failure, the small writes rejected too, but a
+  //                           durable pending marker for the stored credential
+  //                           SURVIVED. That state is already fail-closed (the
+  //                           marker overrides a stale stored `ready`) and still
+  //                           retryable, so NOTHING is discarded — a later boot
+  //                           can still complete the revoke at the authority;
+  //   telemetry_shed / telemetry_shed_failed
+  //                         — the advisory telemetry outbox was shed (or could
+  //                           not be) to free quota for the kill switch. Load
+  //                           shedding is explicit and OBSERVED (CLAUDE.md),
+  //                           never silent;
+  //   local_storage_error_discarded
+  //                         — same failure, no durable marker survived either, so
+  //                           the credential material (and the stale stored
+  //                           capability) were REMOVED — `remove` frees quota —
+  //                           leaving a respawned worker nothing to capture with.
+  //                           A last-resort fail-closed discard: the SERVER-side
+  //                           revoke can no longer be pursued, which is why it is
+  //                           its own outcome plus a warn log. Lands on `unknown`,
+  //                           never `revoked`;
+  //   retry_error           — a storage failure aborted a retry. The durable
+  //                           marker is untouched, so the next due tick retries;
+  //                           counted so the abort is never silent;
+  //   orphaned              — the pending marker's credential material is gone,
+  //                           so no retry can ever succeed. A path to `revoked`
+  //                           without a server confirmation, hence its own
+  //                           outcome. Emitted by BOTH the timer-driven retry and
+  //                           the user-driven revoke, which reach it identically;
+  //   already_cleared       — a revoke arrived with no marker and no credential:
+  //                           an idempotent repeat of one that already completed,
+  //                           distinct from a genuine `orphaned` resolution;
+  //   marker_reconstructed  — a `revocation_pending` capability was found with no
+  //                           durable marker and the marker was rebuilt from the
+  //                           stored credential, so the revoke is not stranded.
+  | "credential_revocation"
   // The content script's capability-before-fetch gate (issue #155): a product
   // read that was refused because capture is not READY (unknown/disabled/revoked).
   // This is the observable proof that the fail-closed gate ran BEFORE any
@@ -32,9 +154,11 @@ export type MetricName =
   | "on_demand_latency_ms"
   | "watchlist_add"
   // The credential-scoped Confirmed-owned-target sync (#145, GET
-  // /ext/owned-targets): `owned_targets_sync{outcome}` records ok vs. a
-  // fail-closed clear (unavailable), and `owned_targets_count` gauges the
-  // current projected target count.
+  // /ext/owned-targets): `owned_targets_sync{outcome}` records ok, a fail-closed
+  // clear after a failed read (unavailable), a stale completion (stale), or a
+  // sync REFUSED before any request because capture is not ready — including an
+  // unconfirmed revocation (not_ready, issue #149). `owned_targets_count` gauges
+  // the current projected target count.
   | "owned_targets_sync"
   | "owned_targets_count"
   | "schedule_cycle"

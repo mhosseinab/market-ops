@@ -75,6 +75,7 @@ type Store interface {
 	ClaimPairingCode(ctx context.Context, arg db.ClaimPairingCodeParams) (db.ExtensionPairing, error)
 	ResolveCaptureCredential(ctx context.Context, credentialHash pgtype.Text) (db.ResolveCaptureCredentialRow, error)
 	RevokePairingsForAccount(ctx context.Context, marketplaceAccountID uuid.UUID) error
+	RevokeCaptureCredentialByID(ctx context.Context, id uuid.UUID) (int64, error)
 }
 
 // Clock supplies the current time; overridable in tests.
@@ -197,6 +198,28 @@ func (s *Service) RevokeForOrganization(ctx context.Context, organizationID uuid
 		return fmt.Errorf("pairing: revoke: %w", err)
 	}
 	return nil
+}
+
+// RevokeCredentialByID revokes EXACTLY ONE capture credential record — the
+// credential-scoped SELF-revoke (issue #149, EXT-009). The id always comes from
+// a credential the caller actually presented and the middleware resolved; it is
+// never caller-supplied, so an extension can only ever kill its OWN pairing,
+// never another device's or another account's.
+//
+// It reports whether the record transitioned. Revoking an already-revoked (or
+// absent) record is a no-op that returns false with NO error — idempotent, and
+// unambiguous: after this call the credential authorizes nothing either way.
+func (s *Service) RevokeCredentialByID(ctx context.Context, credentialID uuid.UUID) (bool, error) {
+	if credentialID == uuid.Nil {
+		// Fail closed: a zero id identifies no credential, so it must never be
+		// treated as a successful revocation.
+		return false, ErrInvalidCredential
+	}
+	rows, err := s.store.RevokeCaptureCredentialByID(ctx, credentialID)
+	if err != nil {
+		return false, fmt.Errorf("pairing: revoke credential: %w", err)
+	}
+	return rows > 0, nil
 }
 
 // newSecret returns a 256-bit random secret as hex. Used for both the pairing

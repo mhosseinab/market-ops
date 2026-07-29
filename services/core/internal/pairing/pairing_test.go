@@ -100,6 +100,18 @@ func (f *fakeStore) RevokePairingsForAccount(_ context.Context, accountID uuid.U
 	return nil
 }
 
+// RevokeCaptureCredentialByID models the single-row revoke query (issue #149):
+// it matches ONLY the given id and only while unrevoked, and reports the rows it
+// transitioned so an already-revoked credential is a no-op, not an error.
+func (f *fakeStore) RevokeCaptureCredentialByID(_ context.Context, id uuid.UUID) (int64, error) {
+	row, ok := f.rows[id]
+	if !ok || row.RevokedAt.Valid {
+		return 0, nil
+	}
+	row.RevokedAt = pgtype.Timestamptz{Time: f.now, Valid: true}
+	return 1, nil
+}
+
 func hashHex(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
@@ -214,5 +226,71 @@ func TestMintNoAccountFailsClosed(t *testing.T) {
 	svc := NewService(fs)
 	if _, err := svc.MintCode(context.Background(), uuid.New()); err != ErrNoAccount {
 		t.Fatalf("mint err = %v, want ErrNoAccount", err)
+	}
+}
+
+// TestRevokeCredentialByIDNilFailsClosed is the negative for the #149 self-revoke
+// primitive: a ZERO credential id identifies no credential, so it must never be
+// reported as a successful revocation (that would let a client believe its
+// credential is dead while it is still live).
+func TestRevokeCredentialByIDNilFailsClosed(t *testing.T) {
+	fs := newFakeStore()
+	svc := NewService(fs)
+	revoked, err := svc.RevokeCredentialByID(context.Background(), uuid.Nil)
+	if err != ErrInvalidCredential {
+		t.Fatalf("nil credential id err = %v, want ErrInvalidCredential", err)
+	}
+	if revoked {
+		t.Fatal("a nil credential id reported a successful revocation")
+	}
+}
+
+// TestRevokeCredentialByIDRevokesOnlyThatCredential proves the #149 self-revoke
+// is self-limiting and idempotent: it kills exactly the named record, leaves the
+// SAME account's other pairing alive, and reports a second revoke as a no-op
+// rather than an error.
+func TestRevokeCredentialByIDRevokesOnlyThatCredential(t *testing.T) {
+	fs := newFakeStore()
+	svc := NewService(fs).WithTTLs(time.Minute, time.Hour)
+	ctx := context.Background()
+
+	claim := func() Credential {
+		t.Helper()
+		code, err := svc.MintCode(ctx, uuid.New())
+		if err != nil {
+			t.Fatalf("mint: %v", err)
+		}
+		cred, err := svc.Claim(ctx, code.Code)
+		if err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		return cred
+	}
+	deviceOne := claim()
+	deviceTwo := claim()
+
+	revoked, err := svc.RevokeCredentialByID(ctx, deviceOne.CredentialID)
+	if err != nil || !revoked {
+		t.Fatalf("first revoke = (%v, %v), want (true, nil)", revoked, err)
+	}
+	if _, err := svc.ResolveCredential(ctx, deviceOne.Credential); err != ErrInvalidCredential {
+		t.Fatalf("revoked credential still resolves: err = %v", err)
+	}
+	// Self-limiting: the same account's other pairing is untouched.
+	if _, err := svc.ResolveCredential(ctx, deviceTwo.Credential); err != nil {
+		t.Fatalf("the OTHER device's credential was revoked too: %v", err)
+	}
+	// Idempotent: revoking again is an unambiguous no-op, never an error.
+	revoked, err = svc.RevokeCredentialByID(ctx, deviceOne.CredentialID)
+	if err != nil {
+		t.Fatalf("repeat revoke err = %v, want nil (idempotent)", err)
+	}
+	if revoked {
+		t.Fatal("repeat revoke reported a second transition; it must be a no-op")
+	}
+	// An unknown id is likewise a no-op, not an error — nothing to probe.
+	revoked, err = svc.RevokeCredentialByID(ctx, uuid.New())
+	if err != nil || revoked {
+		t.Fatalf("unknown credential revoke = (%v, %v), want (false, nil)", revoked, err)
 	}
 }

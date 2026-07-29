@@ -112,6 +112,11 @@
       "family": "red",
       "source": "internal/httpapi/telemetry.go"
     },
+    "ext.pairing.self_revoke": {
+      "type": "counter",
+      "family": "domain",
+      "source": "internal/httpapi/pairing.go"
+    },
     "connector.sync_failure_streak": {
       "type": "gauge",
       "family": "domain",

@@ -92,6 +92,12 @@ func TestContractSecurityMatchesRuntimeRoutePolicies(t *testing.T) {
 			want["cookieAuth"] = true
 		case kindCaptureRead:
 			want["captureAuth"] = true
+		case kindCaptureSelfRevoke:
+			// Issue #149 / PD-4(B): the credential-scoped SELF-revoke WRITE is
+			// captureAuth ONLY — never the human cookie (the extension holds no
+			// session and MV3 cross-origin cookie behavior may not be depended on)
+			// and never the LLM machine bearer (revocation is not a Draft action).
+			want["captureAuth"] = true
 		case kindProtected:
 			want["cookieAuth"] = true
 			if perm.GatewayCan(policy.action) {

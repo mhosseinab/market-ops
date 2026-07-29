@@ -44,7 +44,7 @@ CONSTRUCTOR_RE = re.compile(
 HELPER_RE = re.compile(r"\bctr\s*\(\s*\"([^\"]+)\"")
 # Metric names are OTLP-dotted in one of our known namespaces; this filters out any
 # incidental string that happens to sit after a paren.
-METRIC_NAME_RE = re.compile(r"^(?:execution|analytics|http|connector)\.[a-z0-9_.]+$")
+METRIC_NAME_RE = re.compile(r"^(?:execution|analytics|http|connector|ext)\.[a-z0-9_.]+$")
 
 
 def emitted_from_go() -> set[str]:

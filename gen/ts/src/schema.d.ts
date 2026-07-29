@@ -484,6 +484,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ext/pairing/self-revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke the PRESENTED capture credential itself (EXT-009 kill switch).
+         * @description The credential-scoped SELF-revoke the browser extension calls so its own kill switch actually invalidates authorization at the authority that verifies it (PRD §14 EXT-009). The credential to revoke is derived SOLELY from the presented capture credential (captureAuth) — there is NO body, query, or path parameter, so an extension can never revoke another seller's or another device's pairing (tenant/credential authority is credential-derived, never caller-supplied). It revokes EXACTLY the presenting credential; the account-wide human kill switch remains POST /ext/pairing/revoke (cookieAuth). This route exists because the extension holds a Bearer capture credential and no human session cookie, so the account-wide route is not reachable from the extension. Idempotency + fail-closed posture: the FIRST call on a live credential returns 204. Any later call presents an already-revoked (or expired, or unknown) credential, which fails closed with 401 BEFORE reaching the handler. A client MUST treat 401 here as CONFIRMED revocation — the credential is no longer valid at the authority — so a repeated revoke is idempotent in effect and a pending-revocation marker can always clear. Any other outcome (5xx, 503, transport failure) is NOT a confirmation: the client keeps capture disabled and retries. Because a client acts on 401 by discarding its credential, the server NEVER answers 401 for an infrastructure failure: an unconfigured pairing plane is 503 and a transient store failure is 500, so 401 always means the authority genuinely does not recognise this credential.
+         */
+        post: operations["selfRevokeCapturePairing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/ext/owned-targets": {
         parameters: {
             query?: never;
@@ -1869,7 +1889,7 @@ export interface components {
         PairingClaimRequest: {
             code: string;
         };
-        /** @description A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY the capture upload (POST /observation/capture) and the credential-scoped owned-target read (GET /ext/owned-targets), and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value. */
+        /** @description A scoped capture/overlay credential (EXT-001) issued for a claimed pairing code. It authorizes ONLY the capture upload (POST /observation/capture), the credential-scoped owned-target read (GET /ext/owned-targets), and its OWN revocation (POST /ext/pairing/self-revoke), and is bound to one marketplace account. It is NEVER a seller-API token; the extension stores only this value. */
         PairingCredential: {
             /** @description The raw capture credential; presented as a Bearer on uploads. */
             credential: string;
@@ -3775,6 +3795,51 @@ export interface operations {
             };
         };
     };
+    selfRevokeCapturePairing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The presented capture credential is revoked; its further capture uploads and owned-target reads are refused. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No valid capture credential (already revoked, expired, or unknown) — fail closed. The credential is not valid at the authority, which a client treats as a confirmed revocation. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description The pairing plane is not configured, so this instance cannot revoke anything. NOT a confirmation — the client stays pending and retries. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            /** @description Unexpected error. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     listOwnedTargets: {
         parameters: {
             query?: never;
@@ -3802,7 +3867,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            /** @description The observation plane is not configured. */
+            /** @description The pairing or observation plane is not configured. Distinct from 401 on purpose: 401 states the CREDENTIAL is invalid, while 503 states this instance cannot answer at all. */
             503: {
                 headers: {
                     [name: string]: unknown;

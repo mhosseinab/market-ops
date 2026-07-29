@@ -121,6 +121,28 @@ func (q *Queries) ResolveCaptureCredential(ctx context.Context, credentialHash p
 	return i, err
 }
 
+const revokeCaptureCredentialByID = `-- name: RevokeCaptureCredentialByID :execrows
+UPDATE extension_pairings
+SET revoked_at = now()
+WHERE id = $1
+  AND revoked_at IS NULL
+`
+
+// Revoke EXACTLY ONE pairing record — the credential-scoped SELF-revoke the
+// extension calls so its kill switch invalidates authorization at the authority
+// that verifies it (issue #149, EXT-009). The id is the record the presented
+// capture credential resolved to; it is NEVER caller-supplied. Returns the
+// number of rows transitioned, so revoking an already-revoked credential is an
+// unambiguous no-op (0 rows) rather than an error — idempotent by construction.
+// It touches no other credential, so one device's revoke never kills another's.
+func (q *Queries) RevokeCaptureCredentialByID(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, revokeCaptureCredentialByID, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const revokePairingsForAccount = `-- name: RevokePairingsForAccount :exec
 UPDATE extension_pairings
 SET revoked_at = now()

@@ -40,6 +40,19 @@ SET revoked_at = now()
 WHERE marketplace_account_id = $1
   AND revoked_at IS NULL;
 
+-- name: RevokeCaptureCredentialByID :execrows
+-- Revoke EXACTLY ONE pairing record — the credential-scoped SELF-revoke the
+-- extension calls so its kill switch invalidates authorization at the authority
+-- that verifies it (issue #149, EXT-009). The id is the record the presented
+-- capture credential resolved to; it is NEVER caller-supplied. Returns the
+-- number of rows transitioned, so revoking an already-revoked credential is an
+-- unambiguous no-op (0 rows) rather than an error — idempotent by construction.
+-- It touches no other credential, so one device's revoke never kills another's.
+UPDATE extension_pairings
+SET revoked_at = now()
+WHERE id = $1
+  AND revoked_at IS NULL;
+
 -- name: DeleteExpiredPairings :exec
 -- Sweep pairings whose code and credential are both expired (housekeeping).
 DELETE FROM extension_pairings

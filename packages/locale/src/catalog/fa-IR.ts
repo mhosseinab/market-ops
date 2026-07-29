@@ -870,6 +870,7 @@ export const faIR: Catalog = {
   "ext.degradation.notPaired": "جفت نشده — کد جفت‌سازی را وارد کنید.",
   "ext.degradation.credentialRevoked": "دسترسی لغو شد — برای ادامه دوباره جفت‌سازی کنید.",
   "ext.degradation.captureDisabled": "ضبط خاموش است.",
+  "ext.degradation.revocationPending": "ضبط خاموش است — در انتظار تایید لغو دسترسی از سرور.",
   "ext.onDemand.refresh": "بروزرسانی اکنون",
   "ext.onDemand.refreshing": "در حال بروزرسانی…",
   "ext.schedule.toggle": "بروزرسانی زمان‌بندی‌شده",
