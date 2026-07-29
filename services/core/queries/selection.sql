@@ -71,9 +71,18 @@ LIMIT 1;
 -- selection_set's account and — enforced by migration 0025's composite FKs and the
 -- recommendation-account trigger — the variant's and (when present) the
 -- recommendation's account, so a cross-account member is rejected at the DB.
+--
+-- BULK-PROTOCOL DESIGN RECORD (e) — SEALED OFFER IDENTITY (issue #87).
+-- offer_identity is the SERVER-SEALED observed-offer identity of this member,
+-- resolved by GetRecommendationSealedOfferIdentity from the member's OWN
+-- recommendation evidence. It is NEVER a client assertion: a client-supplied
+-- offerIdentity is only a SELECTOR validated against this value, and a mismatch
+-- fails closed as the same uniform not-found an unknown member produces. '' is
+-- EXPLICIT ABSENCE (a recommendation with no evidence observation), never inference.
 INSERT INTO selection_set_members (
-    selection_set_id, marketplace_account_id, variant_id, recommendation_id, disposition
-) VALUES ($1, $2, $3, $4, $5)
+    selection_set_id, marketplace_account_id, variant_id, recommendation_id, disposition,
+    offer_identity
+) VALUES ($1, $2, $3, $4, $5, $6)
 RETURNING *;
 
 -- name: ListSelectionSetMembers :many
@@ -83,3 +92,111 @@ ORDER BY created_at, id;
 
 -- name: CountSelectionSetMembers :one
 SELECT count(*) FROM selection_set_members WHERE selection_set_id = $1;
+
+-- name: GetRecommendationSealedOfferIdentity :one
+-- BULK-PROTOCOL DESIGN RECORD (e) — the SERVER's own sealed offer identity for a
+-- recommendation (issue #87, OBS-004). The identity comes from the recommendation's
+-- OWN persisted evidence observation, never from the request and never from a
+-- lookup-by-target (a target may carry MANY offer identities — picking one by target
+-- is the #87 defect itself).
+--
+-- Returns '' — EXPLICIT ABSENCE — when the recommendation is not observation-driven
+-- (evidence_observation_id IS NULL) or its evidence observation is no longer
+-- readable. Absence is never inferred into some other offer's identity.
+--
+-- CST-002 / historical reproducibility: recommendations are append-only, so a given
+-- recommendation id's evidence_observation_id is immutable and this resolution is a
+-- PURE FUNCTION of the recommendation id. Re-running it for a historical member
+-- reproduces exactly the identity that was sealed.
+-- FIX-CYCLE-1 FINDING F9 — TENANT QUARANTINE, DEFENCE IN DEPTH (§4.6 identity
+-- quarantine; the same posture as ListUnconsumedObservationsByTarget's issue-#131
+-- account predicate). The join is ALSO predicated on the observation belonging to the
+-- SAME marketplace account as the recommendation that cites it.
+-- recommendations.evidence_observation_id carries NO foreign key — none is
+-- constructable to a partitioned table — so nothing at the database otherwise binds a
+-- cited observation to the recommendation's account. Without the predicate, a
+-- recommendation citing a foreign-account observation would seal ANOTHER TENANT'S offer
+-- identity onto this tenant's member row. With it, such a citation resolves to '' —
+-- EXPLICIT ABSENCE / quarantine — which is the correct answer: this account has no offer
+-- identity for it. No reachable exploit exists today (the caller-ownership check runs
+-- first and evidence_observation_id is server-written), and it costs nothing at runtime.
+SELECT COALESCE(o.offer_identity, '')::text AS offer_identity
+FROM recommendations r
+LEFT JOIN observations o
+       ON o.id = r.evidence_observation_id
+      AND o.marketplace_account_id = r.marketplace_account_id
+WHERE r.id = $1
+LIMIT 1;
+
+-- name: ListLiveOfferQualitiesForRecommendationTarget :many
+-- FIX-CYCLE-1 FINDING F1 (issue #87 criterion C, §4.6 evidence-quality states).
+--
+-- The evidence QUALITIES of every LIVE APPLICABLE Observed Offer on the target(s) of a
+-- recommendation's variant. It is the input to the server-side conservative gate: a
+-- target is never MORE eligible than its worst applicable offer, so a member whose
+-- target carries an offer outside the usable set cannot be executable — even when the
+-- client submits nothing at all about that offer.
+--
+-- SCOPE, precisely:
+--   * the member's OWN offer is included. The gate asks about the TARGET, and the
+--     current-state projection's quality may have been demoted by the expiry sweep
+--     after the recommendation was assembled.
+--   * `ended_at IS NULL` — a CLOSED (disappeared, §16) offer is no longer applicable.
+--     Gating on a long-gone listing would be over-tightening, not conservatism.
+--   * account-predicated on BOTH the target and the offer, so one tenant's market can
+--     never gate (or fail to gate) another's.
+--
+-- IT RETURNS QUALITIES, NOT A VERDICT. The usable set is domain knowledge and lives in
+-- exactly one place — recommendation.EvidenceUsable (§10.3) — so this query cannot
+-- drift away from the taxonomy the rest of the plane enforces.
+--
+-- THIS IS NOT AN IDENTITY LOOKUP. Resolving a member's SEALED offer identity by target
+-- is the #87 defect itself (a target legitimately carries MANY identities); that
+-- resolution stays anchored to the recommendation's own evidence in
+-- GetRecommendationSealedOfferIdentity. This query reads only qualities and never
+-- selects an identity.
+SELECT DISTINCT oo.quality
+FROM recommendations r
+JOIN observation_targets t
+  ON t.variant_id = r.variant_id
+ AND t.marketplace_account_id = r.marketplace_account_id
+JOIN observed_offers oo
+  ON oo.target_id = t.id
+ AND oo.marketplace_account_id = r.marketplace_account_id
+WHERE r.id = $1
+  AND oo.ended_at IS NULL;
+
+-- name: InsertBulkActionBinding :one
+-- The APPEND-ONLY bulk provenance ledger row (issue #87, prior findings 1 and 3).
+-- It records that THIS selection-set version authorized THIS member's card, and it
+-- is what a later replay checks before reporting `already_authorized`.
+--
+-- Every duplicated provenance column is verified AT THE DATABASE against the
+-- referenced member and selection set (migration 0049's composite FKs + the
+-- bulk_action_bindings_provenance trigger), so a forged row — one claiming a
+-- set/lineage/version/variant/recommendation/offer the member does not have — is
+-- rejected by PostgreSQL, not merely by Go.
+--
+-- ON CONFLICT DO NOTHING on (selection_set_id, selection_set_member_id): a replayed
+-- confirmation collapses to exactly ONE binding per member (design record (c)).
+-- NEVER DO UPDATE — the ledger is audit-class and append-only (§4.6); re-pointing an
+-- existing binding is the forgery prior finding 1 describes.
+INSERT INTO bulk_action_bindings (
+    selection_set_member_id, selection_set_id, selection_set_lineage_id,
+    selection_set_version, marketplace_account_id, variant_id, recommendation_id,
+    offer_identity, card_id, action_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+ON CONFLICT (selection_set_id, selection_set_member_id) DO NOTHING
+RETURNING *;
+
+-- name: GetBulkActionBindingForMember :one
+-- The durable provenance a replay must match EXACTLY (prior finding 1). A card that
+-- was approved individually, or through a DIFFERENT selection set, has NO row here
+-- for this (set, member) pair — so it can never be reported `already_authorized` for
+-- this selection on the strength of being approved at all.
+--
+-- BULK-PROTOCOL DESIGN RECORD (d): the lookup is by the (set, member) PAIR. It never
+-- orders, ranges, or diffs a version, and never accepts a bare version — version
+-- counters are monotonic only WITHIN one lineage and are not comparable across them.
+SELECT * FROM bulk_action_bindings
+WHERE selection_set_id = $1 AND selection_set_member_id = $2;

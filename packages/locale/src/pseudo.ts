@@ -1,6 +1,9 @@
 import { en } from "./catalog/en";
 import type { Catalog, MessageKey } from "./catalog/keys";
 import { MESSAGE_KEYS } from "./catalog/keys";
+// The isolate controls come from the ONE place that defines them, so the pseudo
+// pack and `ltrIsolate` can never drift apart on an invisible character (DRY).
+import { LRI, PDI } from "./format/bidi";
 
 // Pseudo-localization pack (LOC-011). Derived from the English authoring catalog,
 // it is: EXPANDED (~40% longer, to surface clipping), BRACKETED (⟦…⟧, to surface
@@ -13,8 +16,6 @@ export const PSEUDO_ID = "pseudo" as const;
 export const PSEUDO_DIR = "ltr" as const;
 export const PSEUDO_OPEN = "⟦";
 export const PSEUDO_CLOSE = "⟧";
-const LRI = "⁦"; // Left-to-Right Isolate
-const PDI = "⁩"; // Pop Directional Isolate
 
 const ACCENT: Record<string, string> = {
   a: "á",

@@ -147,6 +147,21 @@ type BriefingEvent struct {
 	Severity   string
 }
 
+type BulkActionBinding struct {
+	ID                    uuid.UUID
+	SelectionSetMemberID  uuid.UUID
+	SelectionSetID        uuid.UUID
+	SelectionSetLineageID uuid.UUID
+	SelectionSetVersion   int32
+	MarketplaceAccountID  uuid.UUID
+	VariantID             uuid.UUID
+	RecommendationID      uuid.UUID
+	OfferIdentity         string
+	CardID                uuid.UUID
+	ActionID              uuid.UUID
+	CreatedAt             time.Time
+}
+
 type CatalogPayloadSnapshot struct {
 	ID                   uuid.UUID
 	MarketplaceAccountID uuid.UUID
@@ -307,6 +322,30 @@ type EventRelevanceFeedback struct {
 	Relevance string
 	Note      string
 	CreatedAt time.Time
+}
+
+type ExecutionReservationEvent struct {
+	ID                   uuid.UUID
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	CardID               uuid.UUID
+	ActionID             uuid.UUID
+	EventType            string
+	PriorCardID          pgtype.UUID
+	Reason               string
+	OccurredAt           time.Time
+	CreatedAt            time.Time
+}
+
+type ExecutionVariantReservation struct {
+	MarketplaceAccountID uuid.UUID
+	VariantID            uuid.UUID
+	CardID               uuid.UUID
+	ActionID             uuid.UUID
+	AcquiredAt           time.Time
+	ExpiresAt            time.Time
+	ReleasedAt           pgtype.Timestamptz
+	ReleaseReason        string
 }
 
 type ExtensionPairing struct {
@@ -847,6 +886,7 @@ type SelectionSetMember struct {
 	Disposition          string
 	CreatedAt            time.Time
 	MarketplaceAccountID uuid.UUID
+	OfferIdentity        string
 }
 
 type Session struct {

@@ -772,6 +772,7 @@ export const faIR: Catalog = {
   "bulk.status.warning": "هشدار",
   "bulk.status.blocked": "مسدود",
   "bulk.col.include": "شامل",
+  "bulk.col.include.aria.offer": "شامل کردن آگهی {offer} برای شناسه کالا {sku}",
   "bulk.col.product": "کالا",
   "bulk.col.sku": "شناسه کالا",
   "bulk.col.offer": "آگهی",
@@ -794,6 +795,8 @@ export const faIR: Catalog = {
   "bulk.reason.partial": "بهای جزئی؛ فقط تحلیل",
   "bulk.reason.jitRefresh": "نیازمند به‌روزرسانی لحظه‌ای",
   "bulk.reason.ready": "آمادهٔ اجرا",
+  "bulk.reason.targetOfferEvidenceUnusable":
+    "آگهی دیگری روی این کالا شواهد مشاهدهٔ قابل استفاده ندارد",
   "bulk.pagination.label": "صفحه‌بندی",
   "bulk.pagination.prev": "قبلی",
   "bulk.pagination.next": "بعدی",

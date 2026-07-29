@@ -23,14 +23,45 @@ var ErrUnknownMember = errors.New("recommendation: unknown or mismatched selecti
 type PreviewMemberInput struct {
 	VariantID        uuid.UUID
 	RecommendationID uuid.UUID
+	// OfferIdentity is an OPTIONAL client SELECTOR (issue #87, BULK-PROTOCOL DESIGN
+	// RECORD (e)) — never an assertion the server acts on. It is ADDITIVE: the empty
+	// string means "not asserted", so the pre-#87 {VariantID, RecommendationID} shape
+	// keeps working unchanged and this field is NEVER behaviorally required.
+	//
+	// When non-empty it is compared to the identity the SERVER seals from the named
+	// recommendation's own evidence. A mismatch fails closed as ErrUnknownMember —
+	// the SAME uniform not-found an unknown member produces, so it is no existence
+	// oracle for the real identity. It can therefore NARROW (reject) but never WIDEN
+	// or REDIRECT what gets authorized.
+	OfferIdentity string
 }
 
 // PreviewMemberView is one resolved member of a selection-set preview, with its
-// SERVER-derived disposition.
+// SERVER-derived disposition and SERVER-SEALED offer identity.
 type PreviewMemberView struct {
 	VariantID        uuid.UUID
 	RecommendationID uuid.UUID
 	Disposition      Disposition
+	// OfferIdentity is the observed-offer identity SEALED by the server from this
+	// member's own recommendation evidence (issue #87 criterion D, OBS-004). It is
+	// resolved from the recommendation — which names exactly ONE evidence observation
+	// — and NEVER by a lookup-by-target: a target may carry many offer identities, and
+	// picking one by target is the #87 defect itself.
+	//
+	// "" is EXPLICIT ABSENCE (a recommendation that is not observation-driven), never
+	// a stand-in for some other offer (quarantine over inference, §4.6).
+	OfferIdentity string
+	// Reason is a stable, NON-LOCALIZED ASCII diagnostic key explaining a
+	// SERVER-IMPOSED downgrade of this member's disposition (FIX-CYCLE-1 FINDING F1).
+	// It is empty for a member the server did not downgrade.
+	//
+	// It carries no authority and is never localized copy (LOC-001: this plane is
+	// locale-neutral — the edge maps the key onto operator-facing text). It is
+	// DIAGNOSTIC only and is deliberately NOT persisted on the sealed member row: the
+	// authoritative fact is the DISPOSITION, which IS sealed and IS bound into the
+	// membership fingerprint, and adding a derived field to the sealed row would put a
+	// second, drift-capable source of the same knowledge into the record.
+	Reason string
 }
 
 // PreviewResult is the server-minted bulk selection-set preview (PD-3 item 4).
@@ -129,8 +160,40 @@ func (s *Service) resolveBulkMembers(ctx context.Context, q *db.Queries, account
 		if row.MarketplaceAccountID != account || row.VariantID != m.VariantID {
 			return nil, nil, ErrUnknownMember
 		}
+		// BULK-PROTOCOL DESIGN RECORD (e) — the offer identity is SEALED HERE, from
+		// the server's OWN persisted state, on the SAME transaction that seals the
+		// version. It is read from the recommendation's evidence observation, so it is
+		// a pure function of the recommendation id and reproduces identically on a
+		// historical replay (CST-002).
+		sealedOffer, err := q.GetRecommendationSealedOfferIdentity(ctx, m.RecommendationID)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, nil, ErrUnknownMember
+			}
+			return nil, nil, err
+		}
+		// The client's value is a SELECTOR, validated against the sealed value — never
+		// an input. A mismatch fails closed as the SAME uniform not-found an unknown
+		// member produces (no existence oracle), and the whole preview rolls back, so
+		// no partially-sealed version can be observed or bound.
+		if m.OfferIdentity != "" && m.OfferIdentity != sealedOffer {
+			return nil, nil, ErrUnknownMember
+		}
 		disp := dispositionOf(row)
-		views = append(views, PreviewMemberView{VariantID: m.VariantID, RecommendationID: m.RecommendationID, Disposition: disp})
+		// FIX-CYCLE-1 FINDING F1 (issue #87 criterion C): the SERVER-SIDE conservative
+		// gate. It runs AFTER the recommendation's own disposition and can only make a
+		// member LESS eligible, never more.
+		disp, reason, err := s.gateOnTargetOfferQuality(ctx, q, m.RecommendationID, disp)
+		if err != nil {
+			return nil, nil, err
+		}
+		views = append(views, PreviewMemberView{
+			VariantID:        m.VariantID,
+			RecommendationID: m.RecommendationID,
+			Disposition:      disp,
+			OfferIdentity:    sealedOffer,
+			Reason:           reason,
+		})
 		contribs = append(contribs, memberContribution{
 			Available: row.ProposedContributionAvailable,
 			Mantissa:  row.ProposedContributionMantissa.Int64,
@@ -143,6 +206,65 @@ func (s *Service) resolveBulkMembers(ctx context.Context, q *db.Queries, account
 		return nil, nil, err
 	}
 	return views, impactPtr, nil
+}
+
+// ReasonTargetOfferEvidenceUnusable is the stable, NON-LOCALIZED ASCII reason key for a
+// member the server downgraded because its TARGET carries a live applicable Observed
+// Offer whose evidence quality is outside the usable set (FIX-CYCLE-1 FINDING F1).
+//
+// It is a distinct key from the PRC-002 BlockerUnusableEvidence code on purpose: that
+// code is about the member's OWN cited evidence and is produced by detectBlockers, whose
+// semantics were explicitly left untouched. This key says something different — "the
+// member's own evidence is fine, but its target is not fully attributable" — and
+// conflating them would make the two indistinguishable to an operator and to telemetry.
+const ReasonTargetOfferEvidenceUnusable = "target_offer_evidence_unusable"
+
+// gateOnTargetOfferQuality is the SERVER-SIDE CONSERVATIVE GATE of issue #87 criterion
+// C (FIX-CYCLE-1 FINDING F1). It refuses DispositionExecutable for a member when ANY
+// live applicable Observed Offer on that member's target carries an evidence quality
+// outside the usable set (recommendation.EvidenceUsable — verified/supported, §10.3),
+// and degrades it to the conservative disposition with a stable ASCII reason key.
+//
+// WHY IT MUST LIVE HERE. Every sibling offer on a target shares ONE recommendation id
+// and there is exactly one live control-bearing card per variant, so the blocked sibling
+// is not — and, under migration 0012's UNIQUE (selection_set_id, variant_id), cannot be
+// — a second member of the set. The client simply drops it from memberPayload and
+// submits the survivor. A client-side suppression would therefore leave the server
+// trusting a client OMISSION, which is exactly the posture BULK-PROTOCOL DESIGN RECORD
+// (e) forbids. This gate reads the server's own persisted market state, so it holds when
+// the client submits nothing at all about the sibling.
+//
+// DIRECTION. Strictly one-way: Executable → Blocked. A member the recommendation already
+// classified warning or blocked is returned unchanged — the gate can make a target LESS
+// eligible, never more. Its verdict is sealed into the member row's disposition (and so
+// into the membership fingerprint), which is what makes the authoritative confirmation
+// exclude the member rather than merely displaying a caveat.
+//
+// IT IS NOT AN IDENTITY LOOKUP. The member's SEALED offer identity is still resolved
+// from its OWN recommendation evidence; resolving an identity by target is the #87
+// defect itself. This gate reads QUALITIES by target and never selects an identity.
+//
+// FAIL CLOSED. A read failure propagates and rolls the whole preview back. A gate that
+// silently degraded to "no opinion" on a store error would reintroduce the defect
+// exactly when the market state is least knowable.
+func (s *Service) gateOnTargetOfferQuality(ctx context.Context, q *db.Queries, recommendationID uuid.UUID, disp Disposition) (Disposition, string, error) {
+	if disp != DispositionExecutable {
+		return disp, "", nil
+	}
+	qualities, err := q.ListLiveOfferQualitiesForRecommendationTarget(ctx, recommendationID)
+	if err != nil {
+		return "", "", err
+	}
+	for _, quality := range qualities {
+		if EvidenceUsable(quality) {
+			continue
+		}
+		// Observable, per §4.6: a gated member must be distinguishable in telemetry
+		// from a normally-blocked one, or the seam is incomplete.
+		s.tel().bulkMemberGatedOnTargetQuality(ctx, seamPreviewBulkSelection, recommendationID, quality)
+		return DispositionBlocked, ReasonTargetOfferEvidenceUnusable, nil
+	}
+	return disp, "", nil
 }
 
 // memberContribution is one selection member's contribution evidence, decoupled

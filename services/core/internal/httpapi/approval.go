@@ -14,7 +14,15 @@ import (
 	"github.com/mhosseinab/market-ops/services/core/internal/db"
 	"github.com/mhosseinab/market-ops/services/core/internal/money"
 	"github.com/mhosseinab/market-ops/services/core/internal/recommendation"
+	"github.com/mhosseinab/market-ops/services/core/internal/reservation"
 )
+
+// variantReservationHeldReason is the stable, NON-LOCALIZED reason key for
+// reservation.ErrVariantReserved on the INDIVIDUAL confirm surface. It is the exact
+// string the bulk surface already reports for this condition
+// (recommendation.authorizeBulkMember), so both surfaces are diagnosable from one
+// operator runbook and neither leaks err.Error() text onto the wire.
+const variantReservationHeldReason = "variant_reservation_held"
 
 // ApprovalService is the recommendation/approval orchestration the gateway
 // depends on (PRD §7.5 APR-001, §8.4). *recommendation.Service satisfies it. It
@@ -105,6 +113,20 @@ func (s *gatewayServer) ConfirmApproval(
 			// The card is not control-bearing (not AwaitingConfirmation / a
 			// simulation): free text / a stale surface cannot approve (PRC-002, §8).
 			return gateway.ConfirmApprovaldefaultJSONResponse{StatusCode: 409, Body: approvalErr(err)}, nil
+		case errors.Is(err, reservation.ErrVariantReserved):
+			// FIX-CYCLE-1 FINDING F6 / BULK-PROTOCOL DESIGN RECORD (a): a DIFFERENT card
+			// already holds an in-flight write on this owned variant. The confirmation
+			// rolled back entirely — nothing was authorized, nothing dispatched, and this
+			// card is still a live control — so it is a CONFLICT the operator can act on
+			// and retry once the holder reaches a definite external result, not the
+			// opaque 500 the `default:` arm produced. The reason key is the SAME stable,
+			// non-localized identifier the bulk surface reports for this exact condition,
+			// so one runbook covers both surfaces (§4.6: errors are actionable and name
+			// the failing seam; LOC-001: never localized copy as a diagnostic id).
+			return gateway.ConfirmApprovaldefaultJSONResponse{
+				StatusCode: 409,
+				Body:       gateway.ErrorEnvelope{Code: "APPROVAL_ERROR", Message: variantReservationHeldReason},
+			}, nil
 		default:
 			return gateway.ConfirmApprovaldefaultJSONResponse{StatusCode: 500, Body: approvalErr(err)}, nil
 		}
@@ -144,13 +166,23 @@ func (s *gatewayServer) ConfirmBulkApproval(
 	}
 	items := make([]gateway.BulkApprovalItemResult, 0, len(outcome.Items))
 	for _, it := range outcome.Items {
-		items = append(items, gateway.BulkApprovalItemResult{
+		item := gateway.BulkApprovalItemResult{
 			VariantId:        it.VariantID,
 			RecommendationId: it.RecommendationID,
 			Disposition:      gateway.SelectionSetDisposition(it.Disposition),
 			State:            gateway.BulkApprovalItemState(it.State),
 			Reason:           it.Reason,
-		})
+		}
+		// The SERVER-SEALED offer identity of the bound version's member (issue #87
+		// criterion D): preview and execution report the SAME explicit identity. It is
+		// emitted only when the member actually carries one — an absent field is
+		// EXPLICIT ABSENCE (a recommendation with no evidence observation, or a version
+		// sealed before #87), never an empty stand-in for another offer.
+		if it.OfferIdentity != "" {
+			offer := it.OfferIdentity
+			item.OfferIdentity = &offer
+		}
+		items = append(items, item)
 	}
 	result := gateway.BulkApprovalConfirmResult{
 		SelectionSetLineage: req.Body.SelectionSetLineage,

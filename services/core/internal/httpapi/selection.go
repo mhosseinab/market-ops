@@ -36,7 +36,18 @@ func (s *gatewayServer) PreviewSelectionSet(
 	}
 	members := make([]recommendation.PreviewMemberInput, 0, len(req.Body.Members))
 	for _, m := range req.Body.Members {
-		members = append(members, recommendation.PreviewMemberInput{VariantID: m.VariantId, RecommendationID: m.RecommendationId})
+		in := recommendation.PreviewMemberInput{VariantID: m.VariantId, RecommendationID: m.RecommendationId}
+		// BULK-PROTOCOL DESIGN RECORD (e) — the offer identity is a SELECTOR, never an
+		// input (issue #87). It is passed straight through to be VALIDATED against the
+		// server's own sealed value; the handler neither requires it nor defaults it,
+		// so an absent field stays "not asserted" and a client generated before #87 is
+		// behaviourally unchanged. A mismatch fails closed inside the service as
+		// ErrUnknownMember, which this handler already maps to the SAME uniform 404 an
+		// unknown member produces (no existence oracle).
+		if m.OfferIdentity != nil {
+			in.OfferIdentity = *m.OfferIdentity
+		}
+		members = append(members, in)
 	}
 	result, err := s.approval.PreviewBulkSelectionForOrg(ctx, orgFromCtx(ctx), req.Body.MarketplaceAccountId, lineage, req.Body.Name, criteria, members)
 	if err != nil {
@@ -69,11 +80,28 @@ func (s *gatewayServer) PreviewSelectionSet(
 func toSelectionSetPreviewResult(r recommendation.PreviewResult) gateway.SelectionSetPreviewResult {
 	members := make([]gateway.SelectionSetMemberView, 0, len(r.Members))
 	for _, m := range r.Members {
-		members = append(members, gateway.SelectionSetMemberView{
+		view := gateway.SelectionSetMemberView{
 			VariantId:        m.VariantID,
 			RecommendationId: m.RecommendationID,
 			Disposition:      gateway.SelectionSetDisposition(m.Disposition),
-		})
+		}
+		// The SERVER-SEALED offer identity (issue #87 criterion D). Emitted only when
+		// the member carries one: an absent field is EXPLICIT ABSENCE, never an empty
+		// stand-in for some other offer on the same target.
+		if m.OfferIdentity != "" {
+			offer := m.OfferIdentity
+			view.OfferIdentity = &offer
+		}
+		// The stable, NON-LOCALIZED ASCII key naming a SERVER-imposed downgrade of this
+		// member's disposition (issue #87 criterion C). Emitted only when the server
+		// actually downgraded the member; an absent field means "not downgraded", never
+		// an empty stand-in. It explains the conservative disposition and carries no
+		// authority of its own — the DISPOSITION is the authoritative, sealed fact.
+		if m.Reason != "" {
+			reason := m.Reason
+			view.Reason = &reason
+		}
+		members = append(members, view)
 	}
 	out := gateway.SelectionSetPreviewResult{
 		Id:          r.Set.ID,

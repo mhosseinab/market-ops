@@ -25,6 +25,7 @@ describe("pseudo-localization for bulk-approval + cost-import screens (LOC-011)"
           previewValid={false}
           stale={true}
           counts={{ executable: 1, warning: 0, blocked: 1 }}
+          eligibleCount={1}
           aggregateImpact={<span />}
           maxMovement={<span />}
           exclusions={<span />}

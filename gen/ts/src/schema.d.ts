@@ -2431,8 +2431,13 @@ export interface components {
             recommendationId: string;
             disposition: components["schemas"]["SelectionSetDisposition"];
             state: components["schemas"]["BulkApprovalItemState"];
-            /** @description A stable, non-localized diagnostic reason for the item's state. */
+            /** @description A stable, non-localized diagnostic reason for the item's state. `variant_reservation_held` reports BULK-PROTOCOL DESIGN RECORD (a): another card already holds the durable (account, variant) execution reservation, so this member was NOT dispatched; it is resume-safe and authorizes once the holder reaches a definite external result. `authorized_outside_selection` reports that the member's control was activated by an INDIVIDUAL confirmation or a DIFFERENT selection set, so this selection may not claim it (issue #87). */
             reason: string;
+            /**
+             * @description The SERVER-SEALED observed-offer identity of this member, read from the sealed member row of the BOUND selection-set version — the SAME value the preview reported (issue #87 criterion D). It is never re-derived by a lookup-by-target at confirm time, which could resolve a different sibling offer if the target's observations changed after the operator reviewed the preview.
+             *     An empty string is EXPLICIT ABSENCE, never a stand-in for another offer. ADDITIVE and OPTIONAL: it is not in `required`, and it is never a client assertion.
+             */
+            offerIdentity?: string;
         };
         /**
          * @description The execution mode of a completed Execute call. `write` attempted a real external write (write enabled); `recommend_only` tracked the approved action for external matching because writes are OFF (EXE-005).
@@ -2722,12 +2727,17 @@ export interface components {
          * @enum {string}
          */
         SelectionSetDisposition: "executable" | "warning" | "blocked";
-        /** @description One candidate member for a bulk selection-set preview. The server resolves the disposition from the NAMED recommendation's own persisted state (approvable / blockers) — never from a client assertion. */
+        /**
+         * @description One candidate member for a bulk selection-set preview. The server resolves the disposition from the NAMED recommendation's own persisted state (approvable / blockers) — never from a client assertion.
+         *     BULK-PROTOCOL DESIGN RECORD (e) — `offerIdentity` WIRE COMPATIBILITY (issue #87). The optional `offerIdentity` below is ADDITIVE: it is NOT in this schema's `required` set, `additionalProperties: false` is unchanged, and the handler NEVER requires it. An existing generated client submitting the formerly valid {variantId, recommendationId} shape keeps working unchanged and still receives the SERVER-SEALED identity back.
+         */
         SelectionSetPreviewMemberInput: {
             /** Format: uuid */
             variantId: string;
             /** Format: uuid */
             recommendationId: string;
+            /** @description OPTIONAL client SELECTOR — never an assertion the server acts on. The server seals this member's observed-offer identity from the NAMED recommendation's OWN evidence observation; when this field is present it is COMPARED to that sealed value, and a mismatch fails closed as the SAME uniform not-found an unknown member produces (no existence oracle for the real identity). It can therefore NARROW (reject) but never WIDEN or REDIRECT what gets authorized. Omit it to accept the server's sealed value. */
+            offerIdentity?: string;
         };
         /** @description The screens-native bulk preview request (PD-3 item 4). Carries NO version field by construction — the server is the sole authority that mints the selection-set version. */
         SelectionSetPreviewRequest: {
@@ -2745,12 +2755,24 @@ export interface components {
             };
             members: components["schemas"]["SelectionSetPreviewMemberInput"][];
         };
+        /** @description One resolved member of a selection-set preview, with its SERVER-derived disposition and SERVER-SEALED offer identity (issue #87). */
         SelectionSetMemberView: {
             /** Format: uuid */
             variantId: string;
             /** Format: uuid */
             recommendationId: string;
             disposition: components["schemas"]["SelectionSetDisposition"];
+            /**
+             * @description The observed-offer identity the SERVER sealed onto this member, from the member's OWN recommendation evidence (OBS-004). It is never derived by a lookup-by-target: a target may carry MANY offer identities, and picking one by target is the #87 defect itself. The authoritative bulk confirmation reports this SAME value, so preview and execution retain one explicit identity.
+             *     An empty string is EXPLICIT ABSENCE — a recommendation that is not observation-driven, or a selection-set version sealed before #87 — never a stand-in for some other offer. ADDITIVE and OPTIONAL: it is not in `required`, so a client generated before #87 is unaffected.
+             */
+            offerIdentity?: string;
+            /**
+             * @description A stable, NON-LOCALIZED ASCII diagnostic key naming why the SERVER downgraded this member's disposition; absent/empty when the server did not downgrade it (issue #87 criterion C).
+             *     The only value emitted today is `target_offer_evidence_unusable`: the member's target carries a LIVE APPLICABLE observed offer whose evidence quality is outside the usable set (verified/supported, §10.3), so the target may not be MORE eligible than its worst applicable offer. The disposition itself is already conservative — this key only EXPLAINS it and carries no authority (§8).
+             *     It is a KEY, never operator-facing copy: the edge maps it onto localized text (LOC-001 — this plane is locale-neutral). ADDITIVE and OPTIONAL: it is not in `required`, and the SelectionSetDisposition enum is UNCHANGED, so a strict client generated before this is unaffected.
+             */
+            reason?: string;
         };
         /** @description The server-minted selection-set preview (PD-3 item 4). `version` is assigned ENTIRELY server-side (append-only "next version per lineage"); a subsequent bulk confirmation (POST /approvals/bulk/confirm) binds to EXACTLY this lineage + version. */
         SelectionSetPreviewResult: {

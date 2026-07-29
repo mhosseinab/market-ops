@@ -1,4 +1,4 @@
-import type { MessageKey } from "@market-ops/locale";
+import { ltrIsolate, type MessageKey } from "@market-ops/locale";
 import { useQueries } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useLocale, useT } from "../app/i18n";
@@ -9,6 +9,7 @@ import { LtrToken } from "../components/LtrToken";
 import { FilterChips } from "../components/primitives";
 import { SectionError } from "../components/SectionError";
 import { ViewState } from "../components/ViewState";
+import { findByOfferIdentity, indexByRecommendation } from "../data/bulkResults";
 import { classifyDisposition, type Disposition } from "../data/disposition";
 import { formatCount } from "../data/format";
 import {
@@ -22,7 +23,6 @@ import {
 import { offerRowKey, offersByTargetId } from "../data/offers";
 import type {
   BulkApprovalConfirmResult,
-  BulkApprovalItemResult,
   BulkApprovalItemState,
   MarginReadiness,
   MarginReadinessState,
@@ -107,6 +107,11 @@ interface Candidate {
   readonly readinessFailed: boolean;
   readonly disposition?: Disposition;
   readonly reasonKey?: MessageKey;
+  // True when this candidate's target contributes exactly ONE offer row. It is the
+  // only case in which a server record that reports NO offer identity (a pre-#87
+  // sealed selection-set version) can be attributed unambiguously to this row; on a
+  // multi-offer target such a record belongs to no row and is never broadcast.
+  readonly soleOfferOnTarget: boolean;
 }
 
 // A candidate is one OBSERVED OFFER IDENTITY on a target (OBS-004): its selection
@@ -121,6 +126,52 @@ function candidateKey(c: Candidate): string {
 // (native variant + seller), else the target's native variant id.
 function candidateSlug(c: Candidate): string {
   return c.offer ? c.offer.offerIdentity : String(c.target.nativeVariantId);
+}
+
+// The include control's per-ROW accessible name (issue #87, prior finding 9).
+//
+// Sibling offers on one target share a product, a SKU, and a column header — the ONLY
+// thing that distinguishes their controls is the offer identity, so that is what the
+// name must carry. This is only ever called for a row that HAS an include control,
+// and a target with no observed offer classifies BLOCKED (quality Unknown → blocked,
+// data/disposition.ts) and therefore renders none — so an offer is always present and
+// there is no SKU-only fallback to maintain (issue #87, W5: the former fallback branch
+// and its catalog key were unreachable and untestable, and shipped dead Persian copy).
+//
+// Both identifiers are wrapped in a Unicode LTR isolate: an aria-label is a plain
+// string with no CSS, so `LtrToken`'s `unicode-bidi: isolate` does not apply and a
+// Latin identifier interpolated into RTL copy would otherwise be reordered (LOC-005).
+// Copy comes from catalog keys with NAMED slots — zero string literals.
+function includeControlLabel(
+  t: (key: MessageKey, vars?: Record<string, unknown>) => string,
+  offer: ObservedOffer,
+  nativeVariantId: number,
+): string {
+  return t("bulk.col.include.aria.offer", {
+    offer: ltrIsolate(offer.offerIdentity),
+    sku: ltrIsolate(String(nativeVariantId)),
+  });
+}
+
+// The SERVER's own conservative downgrade reasons (issue #87 criterion C), mapped
+// from the stable, non-localized ASCII wire KEY onto localized copy at the edge
+// (LOC-001 — the core plane is locale-neutral). An UNRECOGNIZED key renders NO copy:
+// the wire value is a diagnostic key, never operator-facing text, and fabricating a
+// localized claim for a reason this build does not know would be worse than silence.
+// The member's (already conservative) disposition still renders either way.
+const SERVER_MEMBER_REASONS: Readonly<Record<string, MessageKey>> = {
+  target_offer_evidence_unusable: "bulk.reason.targetOfferEvidenceUnusable",
+};
+
+// Restriction order for reconciling the client's ADVISORY per-offer classification
+// with the SERVER's sealed member disposition. The server is the authority, so a row
+// may never render a disposition MORE eligible than the sealed one — a conflicted or
+// stale offer must never make its target look more eligible than its worst applicable
+// offer. It may render a more restrictive one (the client's own blocked verdict).
+const DISPOSITION_RANK: Record<Disposition, number> = { executable: 0, warning: 1, blocked: 2 };
+
+function mostRestrictive(a: Disposition, b: Disposition): Disposition {
+  return DISPOSITION_RANK[a] >= DISPOSITION_RANK[b] ? a : b;
 }
 
 // Per-item result copy, keyed by the SERVER's BulkApprovalItemState. Every state the
@@ -256,6 +307,7 @@ export function BulkApproval() {
       const offerList: (ObservedOffer | undefined)[] = targetOffers.length
         ? targetOffers
         : [undefined];
+      const soleOfferOnTarget = offerList.length === 1;
       for (const offer of offerList) {
         // A FAILED readiness load is left unclassified — never fabricated into a
         // "missing cost" blocked verdict (error ≠ absence, issue #81/#245).
@@ -267,6 +319,7 @@ export function BulkApproval() {
             recommendationId,
             readiness: undefined,
             readinessFailed: true,
+            soleOfferOnTarget,
           });
           continue;
         }
@@ -280,6 +333,7 @@ export function BulkApproval() {
           readinessFailed: false,
           disposition: d.disposition,
           reasonKey: d.reasonKey,
+          soleOfferOnTarget,
         });
       }
     }
@@ -318,10 +372,24 @@ export function BulkApproval() {
   // candidates that have a live control-bearing card. Deduplicated by
   // recommendation, since sibling offer identities on one target share one variant
   // and therefore one approval control.
+  //
+  // A target carrying ANY blocked applicable offer is WITHHELD ENTIRELY (issue #87,
+  // W3). Sibling offers share one recommendation, so the previous code silently
+  // dropped a conflicted/stale sibling's blocked verdict and let the verified
+  // sibling submit the shared control — asking for exactly what #87 forbids. The
+  // server now gates this independently and is the authority; this keeps the CLIENT
+  // from requesting it. It is purely conservative: it can only make a target LESS
+  // eligible, never more, and it is scoped to targets that actually carry a blocked
+  // applicable offer, so single-offer and offerless targets are unaffected.
   const memberPayload = useMemo(() => {
+    const blockedTargets = new Set<string>();
+    for (const c of candidates) {
+      if (c.disposition === "blocked") blockedTargets.add(c.target.id);
+    }
     const byRecommendation = new Map<string, { variantId: string; recommendationId: string }>();
     for (const c of candidates) {
       if (c.readinessFailed || c.disposition === undefined || c.disposition === "blocked") continue;
+      if (blockedTargets.has(c.target.id)) continue;
       if (excluded.has(candidateKey(c)) || !c.recommendationId) continue;
       byRecommendation.set(c.recommendationId, {
         variantId: c.target.variantId,
@@ -331,13 +399,36 @@ export function BulkApproval() {
     return [...byRecommendation.values()];
   }, [candidates, excluded]);
 
-  // The server's authoritative per-item outcome, keyed by recommendation. Rendering
-  // reads THIS, never a reconstruction from local candidate state.
-  const resultByRecommendation = useMemo(() => {
-    const map = new Map<string, BulkApprovalItemResult>();
-    for (const item of result?.items ?? []) map.set(item.recommendationId, item);
-    return map;
-  }, [result]);
+  // The server's authoritative per-item outcome, and its SEALED selection members,
+  // both indexed by recommendation and then matched on the SERVER-SEALED OFFER
+  // IDENTITY (issue #87, W1). Keying by recommendation alone attributed one member's
+  // authorization to EVERY sibling offer row on its target — a conflicted, blocked
+  // offer rendered as approved with a positive tone. Rendering reads THESE, never a
+  // reconstruction from local candidate state.
+  const resultItemIndex = useMemo(() => indexByRecommendation(result?.items ?? []), [result]);
+  const sealedMemberIndex = useMemo(
+    () => indexByRecommendation(previewValid ? (selection?.members ?? []) : []),
+    [selection, previewValid],
+  );
+
+  function rowIdentity(c: Candidate) {
+    return {
+      recommendationId: c.recommendationId,
+      offerIdentity: c.offer?.offerIdentity,
+      soleOfferOnTarget: c.soleOfferOnTarget,
+    };
+  }
+
+  // What the approve control may HONESTLY claim it will authorize (issue #87, W2).
+  // Before a preview: the membership that would be REQUESTED. After a preview: the
+  // members the SERVER sealed as executable — the only ones a confirmation
+  // authorizes. The per-offer counts below stay ADVISORY row counts; they describe
+  // rows, and rows are not members (siblings share one recommendation), so driving
+  // the control's own label from them stated a consent scope that never matched what
+  // was POSTed.
+  const eligibleCount = previewValid
+    ? (selection?.members ?? []).filter((m) => m.disposition === "executable").length
+    : memberPayload.length;
 
   // The post-confirm summary is SERVER-authoritative (issue #90 fix cycle 1, F8):
   // it counts the items the server actually reported as authorized. Announcing the
@@ -359,6 +450,53 @@ export function BulkApproval() {
 
   const unavailable = t("common.notAvailable");
 
+  // The SERVER mints the selection set: this POSTs the membership only and pins
+  // whatever lineage + version comes back. Refreshing an existing lineage mints its
+  // NEXT version server-side — the browser never counts. Named (rather than inlined
+  // on the button) so the error state's retry can RE-SEND it: a control labelled
+  // "Try again" that only cleared mutation state promised a retry and performed a
+  // dismiss, with no request made (issue #87, W4 — "errors are actionable").
+  function runPreview() {
+    setResult(null);
+    const revisionAtPreview = revision;
+    selectionPreview.mutate(
+      {
+        name: "bulk-approval",
+        ...(selection ? { lineageId: selection.lineageId } : {}),
+        criteria: readinessFilter ? { readiness: readinessFilter } : {},
+        members: memberPayload,
+      },
+      {
+        onSuccess: (r) =>
+          setSelection({
+            lineageId: r.lineageId,
+            version: Number(r.version),
+            members: r.members,
+            revision: revisionAtPreview,
+          }),
+      },
+    );
+  }
+
+  // Bound to EXACTLY the server-minted identity. Without a server preview there is
+  // nothing to bind to and no request is made — a client-minted lineage/version can
+  // never reach the confirm endpoint.
+  //
+  // A RETRY re-sends the SAME (lineage, boundVersion) pair, never a fresh binding
+  // (BULK-PROTOCOL DESIGN RECORD (c)): each member's durable idempotency key derives
+  // from its own APR-001 card binding, so re-confirming an identical pair re-derives
+  // the same per-member keys and collapses to at most one authorization. A retry that
+  // re-previewed first would mint a NEW version — a different consent — which is
+  // exactly the loss of approval-control versioning across a retry that §4.6 forbids.
+  function runConfirm() {
+    if (!selection || !previewValid) return;
+    setResult(null);
+    bulkConfirm.mutate(
+      { selectionSetLineage: selection.lineageId, boundVersion: selection.version },
+      { onSuccess: (r) => setResult(r) },
+    );
+  }
+
   const columns: readonly Column<Candidate>[] = [
     {
       id: "include",
@@ -366,14 +504,23 @@ export function BulkApproval() {
       render: (c) => {
         // No include control for a blocked candidate, nor for an unclassified
         // (readiness-failed) row — an unknown verdict is never executable.
-        if (c.disposition === "blocked" || c.disposition === undefined) {
+        // `c.offer` is provably present here: a candidate with no observed offer
+        // classifies BLOCKED (quality Unknown) and returns above.
+        if (c.disposition === "blocked" || c.disposition === undefined || !c.offer) {
           return <LtrToken text="—" />;
         }
         const key = candidateKey(c);
         return (
           <input
             type="checkbox"
-            aria-label={t("bulk.col.include")}
+            // Issue #87, prior finding 9: every sibling offer's control needs its
+            // OWN accessible name. Sharing the bare column header ("Include") meant
+            // an assistive-technology user heard the same name for every offer on a
+            // target and could not tell which one they were excluding — the #87
+            // identity collapse resurfacing in the accessibility layer. Catalog keys
+            // with NAMED slots (zero string literals), and the identifiers are
+            // LTR-isolated because an aria-label carries no CSS (LOC-005).
+            aria-label={includeControlLabel(t, c.offer, c.target.nativeVariantId)}
             data-testid={`bulk-include-${candidateSlug(c)}`}
             checked={included(key)}
             onChange={() =>
@@ -433,14 +580,30 @@ export function BulkApproval() {
         if (c.disposition === undefined) {
           return <span className="muted">{unavailable}</span>;
         }
+        // The SERVER's sealed verdict for THIS offer row, when the previewed
+        // selection still describes the local one. The authority may only make a
+        // row LESS eligible here — a conflicted or stale offer must never make its
+        // target look more eligible than its worst applicable offer (issue #87).
+        const member = findByOfferIdentity(sealedMemberIndex, rowIdentity(c));
+        const disposition = member
+          ? mostRestrictive(c.disposition, member.disposition)
+          : c.disposition;
+        // The stable ASCII key naming WHY the authority downgraded the member.
+        // Absent ⇒ not downgraded ⇒ nothing extra is rendered.
+        const serverReasonKey = member?.reason ? SERVER_MEMBER_REASONS[member.reason] : undefined;
         return (
           <span className="bulk-status">
-            <span className={`badge badge--pill ${DISPOSITION_META[c.disposition].tone}`}>
+            <span className={`badge badge--pill ${DISPOSITION_META[disposition].tone}`}>
               <span className="badge__dot" aria-hidden />
-              {t(DISPOSITION_META[c.disposition].labelKey)}
+              {t(DISPOSITION_META[disposition].labelKey)}
             </span>
-            {c.disposition !== "executable" && c.reasonKey ? (
+            {disposition !== "executable" && c.reasonKey ? (
               <span className="muted bulk-status__reason">{t(c.reasonKey)}</span>
+            ) : null}
+            {serverReasonKey ? (
+              <span className="muted bulk-status__reason" data-testid="bulk-server-reason">
+                {t(serverReasonKey)}
+              </span>
             ) : null}
           </span>
         );
@@ -450,14 +613,14 @@ export function BulkApproval() {
       id: "result",
       header: "bulk.col.result",
       // The AUTHORITATIVE per-item outcome, read from the server's response items
-      // and keyed by recommendation (issue #90). The client no longer infers a
-      // result from its own candidate state: a row that the server did not report
-      // on is explicitly "not in the selection set", never an assumed success.
+      // and matched on the SERVER-SEALED OFFER IDENTITY (issue #90 + #87). The
+      // client no longer infers a result from its own candidate state, and no
+      // longer broadcasts one member's outcome across a target's sibling offers: a
+      // row the server did not report on is explicitly "not in the selection set",
+      // never an assumed success and never an inherited one.
       render: (c) => {
         if (!result?.valid) return <LtrToken text="—" />;
-        const item = c.recommendationId
-          ? resultByRecommendation.get(c.recommendationId)
-          : undefined;
+        const item = findByOfferIdentity(resultItemIndex, rowIdentity(c));
         if (!item) {
           return (
             <span className="muted" data-testid="result-excluded">
@@ -511,49 +674,14 @@ export function BulkApproval() {
           previewValid={previewValid}
           stale={previewStale}
           counts={counts}
+          eligibleCount={eligibleCount}
           aggregateImpact={<span className="muted">{unavailable}</span>}
           maxMovement={<span className="muted">{unavailable}</span>}
           exclusions={<span>{formatCount(counts.blocked, locale)}</span>}
           confirmPending={bulkConfirm.isPending}
           previewPending={selectionPreview.isPending}
-          onPreview={() => {
-            // The SERVER mints the selection set: this POSTs the membership only and
-            // pins whatever lineage + version comes back. Refreshing an existing
-            // lineage mints its NEXT version server-side — the browser never counts.
-            setResult(null);
-            const revisionAtPreview = revision;
-            selectionPreview.mutate(
-              {
-                name: "bulk-approval",
-                ...(selection ? { lineageId: selection.lineageId } : {}),
-                criteria: readinessFilter ? { readiness: readinessFilter } : {},
-                members: memberPayload,
-              },
-              {
-                onSuccess: (r) =>
-                  setSelection({
-                    lineageId: r.lineageId,
-                    version: Number(r.version),
-                    members: r.members,
-                    revision: revisionAtPreview,
-                  }),
-              },
-            );
-          }}
-          onApprove={() => {
-            // Bound to EXACTLY the server-minted identity. Without a server preview
-            // there is nothing to bind to and no request is made — a client-minted
-            // lineage/version can never reach the confirm endpoint.
-            if (!selection || !previewValid) return;
-            setResult(null);
-            bulkConfirm.mutate(
-              {
-                selectionSetLineage: selection.lineageId,
-                boundVersion: selection.version,
-              },
-              { onSuccess: (r) => setResult(r) },
-            );
-          }}
+          onPreview={runPreview}
+          onApprove={runConfirm}
         />
 
         {memberPayload.length === 0 ? (
@@ -573,7 +701,7 @@ export function BulkApproval() {
             titleKey="bulk.preview.error.title"
             bodyKey="bulk.preview.error.body"
             testId="bulk-preview-error"
-            onRetry={() => selectionPreview.reset()}
+            onRetry={runPreview}
           />
         ) : null}
 
@@ -582,7 +710,12 @@ export function BulkApproval() {
             titleKey="bulk.confirm.error.title"
             bodyKey="bulk.confirm.error.body"
             testId="bulk-confirm-error"
-            onRetry={() => bulkConfirm.reset()}
+            onRetry={runConfirm}
+            // A retry is only offered while the previewed selection is still the
+            // local one. Once it goes stale there is no live binding to re-send, and
+            // re-binding to a fresh version would be a NEW consent, not a retry; the
+            // toolbar's invalidation banner carries the recovery path (re-preview).
+            retryDisabled={!previewValid}
           />
         ) : null}
 
