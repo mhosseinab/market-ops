@@ -303,6 +303,24 @@ task test:integration   # cross-plane stack vs offline DK mock (needs Docker)
 | **Money / observability** | `task lint:money` | semgrep guard: ban raw arithmetic + float on money paths |
 | | `task obs:dashboards` | Regenerate §18 Grafana dashboard JSON from its source |
 | | `task obs:validate` | Validate dashboards + alert rules + runbook refs offline |
+| **Images** | `task images:build` | Build all four production images locally for the native platform |
+| | `task images:validate` | Inspect + health-check those images (non-root, entrypoint, labels, no baked secrets) |
+| **Release → production** | `task release:images -- --tag vX.Y.Z --env-file "$ENVFILE"` | Pin `$ENVFILE` to the digests the release run published |
+| | `task release:images:check` | Prove every pinned digest still exists in GHCR |
+| | `task prod:config` | Validate the resolved production Compose config (pass/fail only) |
+| | `task prod:certs:issue` / `task prod:certs:renew` | Issue or renew the TLS certificate via the one-shot certbot service |
+| | `task prod:migrate:status` / `task prod:migrate` | Show, then apply, the forward-only goose schema migrations |
+| | `task prod:up` | Start the production stack and block on health checks |
+| | `task prod:ps` / `task prod:logs` | Production service state and logs |
+| | `task prod:rollback` | Restore the previous release's digests and restart |
+
+The `prod:*` tasks are thin, fail-closed wrappers over
+`docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml …`. Production
+deploys digest-pinned images built by `.github/workflows/release.yml`, never a
+local build: `task release:images` copies the run's `images.env` digests into
+`$ENVFILE` so nothing is retyped. What a release run does and does not produce —
+a pull-request run publishes **no** images — is in
+[`DEPLOYMENT.md`](DEPLOYMENT.md) §6.1; the full sequence and its gates are §10.
 
 For running individual services without `task up`, see the per-plane tasks above (`task ts:dev`, `task go:build`, `task py:build`) — the LLM plane runs directly via `uv run uvicorn llm.asgi:app` from `services/llm`. The MV3 extension has no dev server; it builds to a load-unpacked bundle (`task ts:build`).
 
@@ -329,6 +347,7 @@ The binding invariants and contribution rules are in [`CLAUDE.md`](CLAUDE.md).
 | [`docs/DK Marketplace - Open API Service.yml`](docs/DK%20Marketplace%20-%20Open%20API%20Service.yml) | Frozen authenticated DK Seller API source |
 | [`docs/DK-public-research-result/`](docs/DK-public-research-result/) | Public API, Route C, selector, normalization, extension, and compliance evidence |
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | Local deployment, configuration, artifacts, extension installation, production readiness, rollout, and rollback |
+| [`docs/runbook-first-production-deploy.md`](docs/runbook-first-production-deploy.md) | Keystroke-level first production deployment on a single Debian 12 VPS |
 | [`runbooks/`](runbooks/README.md) | Connector, observation, parser, reconciliation, and LLM outage recovery |
 
 Project-wide contribution rules, code-generation triggers, test discipline, and production-operation gates are defined in [`CLAUDE.md`](CLAUDE.md) and [`AGENTS.md`](AGENTS.md).

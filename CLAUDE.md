@@ -92,6 +92,8 @@ If telemetry cannot distinguish these from correct behavior, the observability s
 
 `task doctor` · `task setup` · `task dev` · `task test:all` · `task lint:all` · `task contracts:generate` / `task contracts:drift` · `task db:reset` · `task ts:pseudoloc` · `task obs:dashboards` / `task obs:validate` (§18 dashboard regen + §20.1 alert/runbook validation, from S33) · `task ci:local` (the pre-merge gate — run it before merging anything) · `task test:integration` (compose-based, on merges to `dk-p0/main`).
 
+Release/production (S34-gated, never run unattended): `task release:images` pins `$ENVFILE` to the digests `.github/workflows/release.yml` published for a tag, and the `task prod:*` wrappers drive `deploy/compose.prod.yml` with that env file. A pull-request run of that workflow builds and Trivy-scans but publishes **nothing** — see `DEPLOYMENT.md` §6.1 before treating a green run as a release.
+
 Go: `GOWORK=off` in CI; golangci-lint per module; fresh clones need `task go:init`. Python: uv only, mypy from repo root. TS: pnpm workspaces, `workspace:*` for `gen/ts`.
 
 ## Conventions

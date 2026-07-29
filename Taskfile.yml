@@ -92,7 +92,7 @@ tasks:
       - task: ts:build
 
   images:build:
-    desc: Build and load all three production images for the native Docker platform.
+    desc: Build and load all four production images for the native Docker platform.
     silent: true
     cmds:
       - |
@@ -113,9 +113,13 @@ tasks:
             --file "${dockerfile}" \
             .
         }
+        # The same four images .github/workflows/release.yml publishes. These
+        # local builds are for inspection only: production always deploys the
+        # digest-pinned images that workflow pushed (DEPLOYMENT.md §6.1).
         build_image market-ops-core services/core/Dockerfile
         build_image market-ops-llm services/llm/Dockerfile
         build_image market-ops-nginx deploy/nginx/Dockerfile
+        build_image market-ops-goose deploy/goose.Dockerfile
 
   images:validate:
     desc: Build, inspect, and health-check all production images on loopback.
@@ -199,6 +203,17 @@ tasks:
         inspect_image market-ops-core /market-ops-core
         inspect_image market-ops-llm /opt/venv/bin/uvicorn
         inspect_image market-ops-nginx /usr/sbin/nginx
+        # The migration runner is inspected but never started here: it is a
+        # one-shot job that needs a database. Its forward-only guarantee is the
+        # entrypoint/command pair (deploy/goose.Dockerfile), so assert both —
+        # an image whose CMD drifted from `up` could reach `down` or `reset`.
+        inspect_image market-ops-goose /goose
+        goose_cmd="$(docker image inspect "market-ops-goose:${image_tag}" | jq -r '.[0].Config.Cmd | join(" ")')"
+        if [ "${goose_cmd}" != "up" ]; then
+          echo "market-ops-goose: CMD '${goose_cmd}', expected 'up' (forward-only)" >&2
+          exit 1
+        fi
+        echo "market-ops-goose:${image_tag}: forward-only entrypoint+CMD verified"
 
         docker network create "${network_name}" >/dev/null
 
@@ -234,6 +249,192 @@ tasks:
         curl --fail --silent --show-error "${nginx_base}/products/deep-link" >/dev/null
         echo "nginx: /healthz, stripped /api proxy, root, and SPA deep-link fallback verified"
 
+  # ─── Release consumption + production operation ───────────────────────────
+  # Everything below drives deploy/compose.prod.yml with an env file that lives
+  # OUTSIDE the checkout. Set ENVFILE once per shell:
+  #
+  #     export ENVFILE=/etc/market-ops/prod.env
+  #
+  # Every task fails closed when ENVFILE is unset or unreadable rather than
+  # falling back to a default that would boot a half-wired stack.
+  # Full sequence and gates: DEPLOYMENT.md §6.1 and §10.
+
+  release:images:
+    desc: >-
+      Write the release pipeline's digest-pinned image references into $ENVFILE.
+      Pass a source after `--`: `--tag v0.1.0` (downloads the image-digests
+      artifact with gh), `--from images.env` (manual download), or
+      `--resolve v0.1.0` (reads the digests back from GHCR). Refuses any
+      reference that is not @sha256-pinned.
+    silent: true
+    cmds:
+      - bash tools/deploy/release_images.sh {{.CLI_ARGS}}
+
+  release:images:check:
+    desc: Prove every digest currently pinned in $ENVFILE still exists in GHCR.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - bash tools/deploy/release_images.sh --check --env-file "$ENVFILE"
+
+  prod:envfile:
+    desc: Internal guard — fail closed unless $ENVFILE points at a readable file.
+    internal: true
+    silent: true
+    cmds:
+      - |
+        if [ -z "${ENVFILE:-}" ]; then
+          echo "ENVFILE is not set. Point it at the production env file kept outside the checkout:" >&2
+          echo "  export ENVFILE=/etc/market-ops/prod.env" >&2
+          echo "Create it from the template first: cp deploy/.env.prod.example \"\$ENVFILE\" && chmod 600 \"\$ENVFILE\"" >&2
+          exit 1
+        fi
+        if [ ! -r "$ENVFILE" ]; then
+          echo "ENVFILE '$ENVFILE' is not readable by this account." >&2
+          exit 1
+        fi
+
+  prod:config:
+    desc: >-
+      Validate the resolved production Compose configuration ($ENVFILE +
+      deploy/compose.prod.yml). Prints only pass/fail — the rendered config
+      contains every substituted secret and is never echoed.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml config --quiet
+      - echo "prod:config OK — every required value is set and the topology parses."
+
+  prod:migrate:status:
+    desc: Show applied/pending goose migrations without changing the schema.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml run --rm migrate status
+
+  prod:migrate:
+    desc: >-
+      Apply the goose application schema forward, once, before the stack serves
+      traffic. Forward-only by construction (deploy/goose.Dockerfile); re-running
+      on an already-migrated database is a no-op.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml run --rm migrate up
+
+  prod:bootstrap:
+    desc: >-
+      Create the first production owner (organization + owner user + credential +
+      the org's marketplace account), once, after prod:migrate. Prompts for the
+      password so it never reaches shell history or $ENVFILE. Idempotent: a
+      re-run reports the existing identifiers and changes nothing unless
+      BOOTSTRAP_ROTATE_PASSWORD=true is set in $ENVFILE.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - |
+        set -eu
+        printf 'Owner password (input hidden): '
+        stty -echo 2>/dev/null || true
+        IFS= read -r bootstrap_password
+        stty echo 2>/dev/null || true
+        printf '\n'
+        if [ -z "$bootstrap_password" ]; then
+          echo "No password entered; nothing was created." >&2
+          exit 1
+        fi
+        # Passed with -e for this one invocation only. The owner credential is
+        # never written to $ENVFILE and never appears in `docker compose config`.
+        docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml \
+          run --rm -e BOOTSTRAP_OWNER_PASSWORD="$bootstrap_password" bootstrap
+
+  prod:up:
+    desc: >-
+      Start the production stack and block on health checks. Compose ordering is
+      postgres → migrate → core/llm → nginx; `--wait` gates on the nginx probe,
+      which proxies /api/healthz through to core.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml up -d --wait
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml ps
+
+  prod:ps:
+    desc: Show production service state and health.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml ps
+
+  prod:logs:
+    desc: >-
+      Tail production logs (core llm nginx migrate by default; pass service names
+      after `--`). Redact before sharing.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml logs --tail 200 {{.CLI_ARGS | default "core llm nginx migrate"}}
+
+  prod:certs:issue:
+    desc: >-
+      Issue the initial TLS certificate with the one-shot certbot service. Run
+      BEFORE the first `prod:up` — nginx will not start without a certificate on
+      disk, and this needs port 80 free. Requires DK_DOMAIN and DK_ACME_EMAIL.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      # --cert-name market-ops is load-bearing: nginx.prod.conf names the live
+      # directory as a literal, and the image's ENTRYPOINT bypasses envsubst.
+      # Read the two values out of the env file rather than sourcing it: a
+      # production env file holds secrets, and `. "$ENVFILE"` would execute any
+      # unquoted value containing whitespace.
+      - |
+        set -eu
+        read_var() {
+          sed -n "s/^[[:space:]]*$1=//p" "$ENVFILE" | tail -n 1 | tr -d '"'"'"'\r'
+        }
+        DK_DOMAIN="$(read_var DK_DOMAIN)"
+        DK_ACME_EMAIL="$(read_var DK_ACME_EMAIL)"
+        if [ -z "$DK_DOMAIN" ] || [ -z "$DK_ACME_EMAIL" ]; then
+          echo "DK_DOMAIN and DK_ACME_EMAIL must both be set in $ENVFILE." >&2
+          exit 1
+        fi
+        docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml \
+          run --rm --service-ports certbot certonly --standalone \
+          --cert-name market-ops -d "$DK_DOMAIN" \
+          --email "$DK_ACME_EMAIL" --agree-tos --no-eff-email
+
+  prod:certs:renew:
+    desc: >-
+      Renew the certificate through the webroot the running nginx already serves
+      on port 80, then reload nginx. Safe to run from cron.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml run --rm certbot renew --webroot -w /var/www/certbot
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml exec nginx nginx -s reload
+
+  prod:rollback:
+    desc: >-
+      Restore the previous release's digests from $ENVFILE.prev-images (written
+      by release:images) and restart the stack. Application rollback only — it
+      does not touch the schema; see DEPLOYMENT.md §11 before rolling migrations
+      back.
+    silent: true
+    deps: [prod:envfile]
+    cmds:
+      - |
+        if [ ! -r "$ENVFILE.prev-images" ]; then
+          echo "No rollback snapshot at $ENVFILE.prev-images." >&2
+          echo "It is written when task release:images replaces existing digests." >&2
+          echo "Pin the previous release explicitly instead:" >&2
+          echo "  task release:images -- --tag <previous-version> --env-file \"\$ENVFILE\"" >&2
+          exit 1
+        fi
+      - bash tools/deploy/release_images.sh --from "$ENVFILE.prev-images" --env-file "$ENVFILE"
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml up -d --wait
+      - docker compose --env-file "$ENVFILE" -f deploy/compose.prod.yml ps
+
   test:all:
     desc: Run every language test suite in parallel.
     deps:
@@ -245,6 +446,7 @@ tasks:
       - bash tools/dev/db_reset_guard_test.sh
       - bash tools/ledger/validate_ledger_test.sh
       - bash tools/deploy/compose_ports_test.sh
+      - bash tools/deploy/release_images_test.sh
 
   lint:all:
     desc: Run every language linter in parallel.

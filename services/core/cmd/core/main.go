@@ -55,6 +55,16 @@ var (
 )
 
 func main() {
+	// With no arguments this binary is the gateway, exactly as before. With an
+	// argument it is a one-shot administrative command — the only way to reach
+	// one inside a distroless image that has no shell. See bootstrap.go.
+	if len(os.Args) > 1 {
+		if err := runSubcommand(os.Args[1], os.Args[2:]); err != nil {
+			slog.Error("core subcommand failed", "subcommand", os.Args[1], "error", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		// Logger may not exist yet on early failure; use the default.
 		slog.Error("core exited with error", "error", err)

@@ -42,3 +42,9 @@ that points back here.
 
 The dashboards referenced below live under `deploy/grafana/dashboards/` and are
 listed in the DK P0 Grafana folder.
+
+Release and deployment recovery is **not** a §20.1 failure domain and has no
+runbook here. A bad release is rolled back by restoring the previous digests —
+`task prod:rollback`, or `task release:images -- --tag <previous-version>` when
+no snapshot exists — and the full procedure, including when a schema rollback is
+and is not safe, is [`DEPLOYMENT.md`](../DEPLOYMENT.md) §11.

@@ -24,10 +24,24 @@
 # checklist items. Bringing this stack up satisfies the TLS/health line of that
 # gate and nothing beyond it.
 #
-# Image references are digest-pinned by the operator from the `images.env`
-# artifact the release workflow uploads. Tags are mutable; digests are not.
-# Every required value fails the `docker compose config` parse when unset
-# rather than defaulting to something that would quietly work in the wrong way.
+# Image references are digest-pinned from the `images.env` artifact the release
+# workflow uploads. Tags are mutable; digests are not. Every required value fails
+# the `docker compose config` parse when unset rather than defaulting to
+# something that would quietly work in the wrong way.
+#
+# Nothing here is meant to be driven by hand. The four *_IMAGE values come from
+# `task release:images` (tools/deploy/release_images.sh), and the lifecycle
+# commands are wrapped so the env file is never forgotten:
+#
+#   export ENVFILE=/etc/market-ops/prod.env
+#   task release:images -- --tag v0.1.0 --env-file "$ENVFILE"
+#   task release:images:check      task prod:config
+#   task prod:certs:issue          task prod:migrate:status / task prod:migrate
+#   task prod:up                   task prod:ps / task prod:logs
+#   task prod:rollback             (restores $ENVFILE.prev-images; images only)
+#
+# Each wrapper is exactly `docker compose --env-file "$ENVFILE" -f this-file …`
+# and fails closed when ENVFILE is unset. Full sequence: DEPLOYMENT.md §6.1, §10.
 
 name: market-ops-prod
 
@@ -72,6 +86,40 @@ services:
     networks: [internal]
     # A migration runner must never be restarted by the supervisor: a partially
     # applied migration re-run on a loop is how a schema gets corrupted.
+    restart: "no"
+
+  # ─── One-shot production owner provisioning ────────────────────────────
+  # The ONLY supported way to create the first user. `cmd/seede2e` is not it:
+  # that is test/CI-only, defaults to the owner@dev.local fixture identity and
+  # is not compiled into any published image. This service runs the SAME
+  # digest-pinned core image with the `bootstrap-owner` argument — the only way
+  # to reach a second command inside a distroless image with no shell.
+  #
+  # `profiles` keeps it out of `up`, exactly like certbot: it is run explicitly
+  # once per environment (DEPLOYMENT.md §10 step 9b), never supervised.
+  #
+  # BOOTSTRAP_OWNER_PASSWORD is deliberately NOT listed below. `task
+  # prod:bootstrap` prompts for it and passes it with `-e` for that one
+  # invocation, so the owner credential never comes to rest in $ENVFILE.
+  bootstrap:
+    image: ${CORE_IMAGE:?CORE_IMAGE must be set (digest-pinned)}
+    profiles: ["bootstrap"]
+    command: ["bootstrap-owner"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL must be set}
+      BOOTSTRAP_OWNER_EMAIL: ${BOOTSTRAP_OWNER_EMAIL:-}
+      BOOTSTRAP_ORG_NAME: ${BOOTSTRAP_ORG_NAME:-}
+      BOOTSTRAP_ACCOUNT_NATIVE_ID: ${BOOTSTRAP_ACCOUNT_NATIVE_ID:-}
+      BOOTSTRAP_ACCOUNT_DISPLAY_NAME: ${BOOTSTRAP_ACCOUNT_DISPLAY_NAME:-}
+      # Rotating an existing owner's password must be a conscious act: unset,
+      # a re-run reports the existing identifiers and changes nothing.
+      BOOTSTRAP_ROTATE_PASSWORD: ${BOOTSTRAP_ROTATE_PASSWORD:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [internal]
     restart: "no"
 
   # ─── Go deterministic core — gateway, money, policy, approval, execution ─

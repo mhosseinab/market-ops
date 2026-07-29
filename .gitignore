@@ -17,6 +17,13 @@
 *.p12
 *.pfx
 secrets/
+# The production env file belongs OUTSIDE the checkout (DEPLOYMENT.md §6.2), but
+# ignore the by-products of a release pin in case one is downloaded here by
+# mistake: `images.env` is the image-digests artifact, `*.prev-images` the
+# rollback snapshot tools/deploy/release_images.sh writes next to $ENVFILE.
+images.env
+image-digests/
+*.prev-images
 
 # ─── Go ─────────────────────────────────────────────────────────────
 # go.work is local-only (created by `task go:init`); CI uses GOWORK=off.
